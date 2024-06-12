@@ -1,0 +1,9 @@
+fault_tolerance:
+    initial_rank_heartbeat_timeout: null
+    rank_heartbeat_timeout: null
+    rank_section_timeouts:
+        init: 20
+        step: 10
+        checkpoint: 30
+    rank_out_of_section_timeout: 30
+    log_level: "DEBUG"

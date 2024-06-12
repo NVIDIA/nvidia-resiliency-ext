@@ -1,0 +1,23 @@
+stages:
+- ci
+
+trigger_nvrx_ci:
+  # Run the pipeline if
+  # - changes are commited to the main branch
+  # - changes are commited to a MR targeting the main branch
+  # - manual trigger is issued from the web UI
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH'
+    - if: '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  stage: ci
+  trigger:
+    project: dl/osiris/nvidia-resiliency-ext-ci
+    branch: main
+    strategy: depend
+  variables:
+    NVRX_TRIGGERING_BRANCH: $CI_COMMIT_REF_NAME
+    NVRX_COMMIT: $CI_COMMIT_SHA
+    NVRX_REPO: https://$CI_SERVER_HOST/$CI_PROJECT_PATH.git
+    RUN_FUNC_TESTS: '0'
+  allow_failure: false

@@ -1,0 +1,17 @@
+ARG FROM_IMAGE_NAME=nvcr.io/nvidia/pytorch:24.10-py3
+FROM ${FROM_IMAGE_NAME}
+
+# Set environment variables to non-interactive to avoid prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN pip install pytorch-lightning
+
+ARG NVRX_DIR=/opt/nvidia_resiliency_ext
+COPY . ${NVRX_DIR}
+
+# Set the working directory
+WORKDIR ${NVRX_DIR}
+RUN pip install .
+
+ENV PYTHONPATH="${NVRX_DIR}/tests/checkpointing/unit:$PYTHONPATH"
+
