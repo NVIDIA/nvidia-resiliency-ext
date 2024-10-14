@@ -1,0 +1,11 @@
+# Test image used for FT tests with NeMo 2.0 (`ft_test.sh`)
+
+ARG BASE_IMG
+FROM ${BASE_IMG}
+
+COPY . /workdir/nvidia_resiliency_ext
+RUN pip install /workdir/nvidia_resiliency_ext
+
+RUN python -c "import nvidia_resiliency_ext.fault_tolerance"
+
+WORKDIR /workdir/nvidia_resiliency_ext

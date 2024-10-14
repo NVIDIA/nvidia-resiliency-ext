@@ -1,0 +1,39 @@
+version: '3'
+
+networks:
+  app-tier:
+    driver: bridge
+
+services:
+
+  worker00: &worker
+    hostname: worker00
+    build: ../../
+    image: 'fault_tol_img'
+    command: 'ft_launcher --rdzv_backend=c10d --rdzv_endpoint=worker00:2323 --fault-tol-cfg-path=${TEST_BASE_DIR}/ft.yaml --max-restarts=100 --nnodes=4 --nproc-per-node=4 ${TEST_BASE_DIR}/test_worker.py'
+    networks:
+      - app-tier
+    ports:
+      - 2323:2323
+    deploy:
+        resources:
+          reservations:
+            devices:
+              - driver: nvidia
+                count: all
+                capabilities: [gpu]
+
+  worker01:
+    <<: *worker
+    hostname: worker01
+    ports: []
+
+  worker02:
+    <<: *worker
+    hostname: worker02
+    ports: []
+
+  worker03:
+    <<: *worker
+    hostname: worker03
+    ports: []
