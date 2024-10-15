@@ -53,11 +53,12 @@ jobs:
             echo "public directory exists. Proceeding with deployment."
             touch public/.nojekyll
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name 'public' -exec rm -rf {} +
-            cp -r public/* 
+            cp -r public/* .
             git add .
             git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
             git push origin gh-pages --force
           else
             echo "Error: 'public/' directory does not exist during deployment."
             exit 1
+          fi
 
