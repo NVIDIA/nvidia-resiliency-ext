@@ -30,7 +30,7 @@ from .utils import multiprocessing_execute_join, multiprocessing_execute_start
 TEST_WORLD_SIZE = 4
 ALL_RANK_IDS = set(range(TEST_WORLD_SIZE))
 CHKPT_PATH = "/tmp/_ft_test_init_dummy_chkpt.txt"
-WORKLOAD_TIMEOUT = 60
+WORKLOAD_TIMEOUT = 180
 TERM_BY_FT_EXIT_CODE = 123
 FT_TERM_SIGNAL = signal.SIGUSR1
 

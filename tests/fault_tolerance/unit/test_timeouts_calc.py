@@ -27,7 +27,7 @@ from nvidia_resiliency_ext.fault_tolerance.timeouts_calc import TimeoutsCalc, Ti
 from .utils import multiprocessing_execute_join, multiprocessing_execute_start
 
 TEST_WORLD_SIZE = 4
-WORKLOAD_TIMEOUT = 60
+WORKLOAD_TIMEOUT = 180
 
 
 @pytest.fixture

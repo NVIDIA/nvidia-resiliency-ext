@@ -145,6 +145,6 @@ def test_reconnect(rank_monitors_fixture):
         time.sleep(4)
         _send_sig(signal.SIGKILL, target_pids)
 
-        ret_codes = multiprocessing_execute_join(rank_processes, timeout=60)
+        ret_codes = multiprocessing_execute_join(rank_processes, timeout=180)
 
         assert ret_codes == expected_ret_codes

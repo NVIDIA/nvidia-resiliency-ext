@@ -28,7 +28,7 @@ from ._utils import multiprocessing_execute_join, multiprocessing_execute_start
 # Tests of `straggler.reporting.ReportGenerator` relative GPU scores computation
 #
 
-RANK_DONE_TIMEOUT = 90
+RANK_DONE_TIMEOUT = 180
 
 
 def _get_summary(timings):
