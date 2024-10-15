@@ -34,11 +34,16 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git fetch --no-tags origin +refs/heads/gh-pages:refs/remotes/origin/gh-pages
-          git checkout gh-pages || git checkout --orphan gh-pages
+
+          if git ls-remote --exit-code origin gh-pages; then
+            git fetch origin gh-pages
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+          fi
+
           rm -rf *
           cp -r public/* .
           git add .
           git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
           git push origin gh-pages --force
-
