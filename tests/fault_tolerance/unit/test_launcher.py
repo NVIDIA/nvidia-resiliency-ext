@@ -47,6 +47,7 @@ def _run_launcher(cmd_to_run, timeout):
             cmd_to_run,
             shell=True,
             stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
         stdout, _ = proc.communicate(timeout=timeout)
@@ -78,7 +79,7 @@ def test_rank_not_send_initial_hb(tmp_dir):
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -97,7 +98,7 @@ def test_rank_failed(tmp_dir):
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -115,7 +116,7 @@ def test_ranks_exit_gracefully(tmp_dir):
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()}"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -135,7 +136,7 @@ def test_launcher_sigterm_graceful_exit(tmp_dir):
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=return0"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -156,7 +157,7 @@ def test_launcher_sigterm_ignored(tmp_dir):
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=ignore"
     launcher_cmd = (
-        "ft_launcher --term-timeout=5 --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --term-timeout=5 --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -177,7 +178,7 @@ def test_ranks_restart(tmp_dir):
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --tmp_dir={tmp_dir}"
     launcher_cmd = (
-        "ft_launcher --max-restarts=2 --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --max-restarts=2 --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -199,7 +200,7 @@ def test_missing_cfg(tmp_dir):
     # By default, launcher should raise an error if FT config cant be read
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={empty_ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -209,7 +210,7 @@ def test_missing_cfg(tmp_dir):
     # Empty config file again, But this time there are FT args in CLI, so should be fine
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={empty_ft_cfg_path} --nproc-per-node={WORLD_SIZE} --ft-param-rank_heartbeat_timeout=1.0"
         f" {cmd_to_run}"
     )
@@ -218,7 +219,7 @@ def test_missing_cfg(tmp_dir):
     # Empty config file again, launcher run with `--ignore-missing-fault-tol-cfg` should use defaults
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={empty_ft_cfg_path} --ignore-missing-fault-tol-cfg"
         f" --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
@@ -227,7 +228,7 @@ def test_missing_cfg(tmp_dir):
     # Invalid config file path - should fail despite --ignore-missing-fault-tol-cfg and FT args specified via CLI
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
+        "PYTHONFAULTHANDLER=1 ft_launcher --monitor-interval=1"
         " --fault-tol-cfg-path=/not/there.yaml"
         " --ft-param-rank_heartbeat_timeout=1.0"
         f" --nproc-per-node={WORLD_SIZE} --ignore-missing-fault-tol-cfg"
@@ -249,7 +250,10 @@ def test_config_provided_via_cli(tmp_dir):
         " --ft-param-log_level=WARNING"
     )
     cmd_to_run = f"{_get_util_script_path()} --scenario=dump_cfg --tmp_dir={tmp_dir}"
-    launcher_cmd = "ft_launcher" f" {ft_params_str} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+    launcher_cmd = (
+        "PYTHONFAULTHANDLER=1 ft_launcher"
+        f" {ft_params_str} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+    )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert ret_code == 0, f"Launcher should return with 0. Ret value={ret_code}. Output=\n{output}"
 
@@ -285,7 +289,7 @@ def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
     )
     cmd_to_run = f"{_get_util_script_path()} --scenario=dump_cfg --tmp_dir={tmp_dir}"
     launcher_cmd = (
-        "ft_launcher"
+        "PYTHONFAULTHANDLER=1 ft_launcher"
         f" {ft_params_str} --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
