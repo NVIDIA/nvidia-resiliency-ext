@@ -19,8 +19,6 @@ import torch
 
 from nvidia_resiliency_ext.fault_tolerance import dict_utils as ft_utils
 
-torch.set_default_device("cuda")
-
 
 def test_merge_state_dicts():
     d1 = {}
