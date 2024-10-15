@@ -84,11 +84,8 @@ jobs:
         
       - name: Set up environment
         run: |
-          python --version
-          pip install --upgrade pip
           pip install pytest lightning
-          WHEEL_PATH=$(ls ./dist/nvidia_resiliency_ext-*-cp310-cp310-*_x86_64.whl)
-          pip install ${WHEEL_PATH}
+          pip install ./dist/nvidia_resiliency_ext-*.whl
 
       - name: Run Fault Tolerance unit tests
         run: |
