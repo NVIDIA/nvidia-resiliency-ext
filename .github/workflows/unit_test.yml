@@ -3,11 +3,9 @@ on:
   push:
     branches:
       - main
-      - unit_tests_in_ci
   pull_request:
     branches:
       - main
-      - unit_tests_in_ci
   
 jobs:
     
