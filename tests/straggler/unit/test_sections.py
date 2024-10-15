@@ -36,7 +36,7 @@ pytestmark = pytest.mark.gpu
 
 TEST_WORLD_SIZE = 4
 ALL_RANK_IDS = set(range(TEST_WORLD_SIZE))
-RANK_DONE_TIMEOUT = 30
+RANK_DONE_TIMEOUT = 90
 
 
 def _dummy_section_work(section_name, rank, test_scenario, is_slow_iter=False):

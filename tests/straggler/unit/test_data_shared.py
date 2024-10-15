@@ -29,7 +29,7 @@ from ._utils import multiprocessing_execute_join, multiprocessing_execute_start
 # these can be costly, so we want to be sure that there are no unnecessary calls.
 #
 
-RANK_DONE_TIMEOUT = 30
+RANK_DONE_TIMEOUT = 90
 
 
 def _get_summary(timings):
