@@ -1,0 +1,38 @@
+name: Build Docs
+
+on:
+  push:
+    branches:
+      - main  # You can change this to the branch where you want the action to trigger
+  pull_request:
+    branches:
+      - main  # Optional: Run when a PR is opened against the main branch
+
+jobs:
+  build_docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'  # Use the appropriate Python version for your project
+
+      - name: Install dependencies
+        run: |
+          pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon lightning
+          pip install ./dist/nvidia_resiliency_ext-0.1.3-cp310-cp310-manylinux_2_31_x86_64.whl
+
+      - name: Build Documentation
+        run: |
+          sphinx-build -b html docs/source public/
+
+      - name: Upload documentation as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: public
+          path: public
+
