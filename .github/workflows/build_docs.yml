@@ -22,13 +22,17 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Sphinx and dependencies
+      - name: Install dependencies
         run: |
-          pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon lightning
+          pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon lightning psutil
 
       - name: Build Documentation
         run: |
           sphinx-build -b html docs/source public/
+          if [ ! -d "public" ]; then
+            echo "Error: Documentation build failed. 'public/' directory not found."
+            exit 1
+          fi
 
       - name: Deploy to GitHub Pages
         run: |
@@ -42,8 +46,15 @@ jobs:
             git checkout --orphan gh-pages
           fi
 
-          rm -rf *
-          cp -r public/* .
-          git add .
-          git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
-          git push origin gh-pages --force
+          if [ -d "public" ]; then
+            echo "public directory exists. Proceeding with deployment."
+            rm -rf *
+            cp -r public/* .
+            git add .
+            git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
+            git push origin gh-pages --force
+          else
+            echo "Error: 'public/' directory does not exist during deployment."
+            exit 1
+          fi
+
