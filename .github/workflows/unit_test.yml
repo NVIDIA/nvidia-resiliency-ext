@@ -4,30 +4,91 @@ on:
   push:
     branches:
       - main
+      - unit_tests_in_ci
   pull_request:
     branches:
       - main
+      - unit_tests_in_ci
+  workflow_dispatch:
+
+
 
 jobs:
+  build_wheels:
+    runs-on: ubuntu-latest
+
+    container:
+      image: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04
+
+    steps:
+      - name: Update GCC
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt update && apt install -y build-essential gcc-10 g++-10
+
+      - name: Install Python versions and pips
+        run: |
+            export DEBIAN_FRONTEND=noninteractive
+            apt update && apt install -y software-properties-common curl
+            add-apt-repository ppa:deadsnakes/ppa
+            apt-get install -y python3.10 python3.10-dev python3.10-distutils
+            apt-get install -y python3.11 python3.11-dev python3.11-distutils
+            apt-get install -y python3.12 python3.12-dev python3.12-distutils
+            curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
+            curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+            curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
+
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build wheel with Python 3.10
+        run: |
+          python3.10 -m pip install -U poetry build six
+          python3.10 -m poetry build -f wheel
+
+      - name: Build wheel with Python 3.11
+        run: |
+          python3.11 -m pip install -U poetry build six
+          python3.11 -m poetry build -f wheel
+
+      - name: Build wheel with Python 3.12
+        run: |
+          python3.12 -m pip install -U poetry build six
+          python3.12 -m poetry build -f wheel
+
+      - name: Upload the wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: resiliency-wheels
+          path: dist/*.whl
+
+
   unit_test_pytorch_2_4_1_cuda_12_1:
     runs-on: ubuntu-latest
+
+    needs: build_wheels
 
     container:
       image: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
 
     steps:
+
       - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: Set up Python environment
+        
+      - name: Download wheels
+        uses: actions/download-artifact@v3
+        with:
+          name: resiliency-wheels
+          path: ./dist/
+        
+      - name: Set up environment
         run: |
           python --version
           pip install --upgrade pip
-
-      - name: Install dependencies
-        run: |
-          pip install .
-          pip install pytest
+          pip install pytest lightning
+          WHEEL_PATH=$(ls ./dist/nvidia_resiliency_ext-*-cp310-cp310-*_x86_64.whl)
+          pip install ${WHEEL_PATH}
 
       - name: Run Fault Tolerance unit tests
         run: |
