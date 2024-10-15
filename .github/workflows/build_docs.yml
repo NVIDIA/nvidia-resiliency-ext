@@ -48,8 +48,10 @@ jobs:
 
           if [ -d "public" ]; then
             echo "public directory exists. Proceeding with deployment."
-            rm -rf *
+            ls -la public
+            find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name 'public' -exec rm -rf {} +
             cp -r public/* .
+            ls -la .
             git add .
             git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
             git push origin gh-pages --force
