@@ -206,7 +206,7 @@ def _run_trainining(
     trainer = pl.Trainer(
         strategy='ddp',
         devices=1,
-        accelerator='gpu',
+        accelerator='cpu',
         logger=False,
         max_steps=max_steps,
         max_epochs=max_epochs,
@@ -243,7 +243,7 @@ def _run_eval(tmp_path, which='not set'):
     trainer = pl.Trainer(
         strategy='ddp',
         devices=1,
-        accelerator='gpu',
+        accelerator='cpu',
         logger=False,
         callbacks=[fault_tol_cb, checkpoint_callback],
     )
