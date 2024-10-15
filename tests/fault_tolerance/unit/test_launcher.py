@@ -47,7 +47,6 @@ def _run_launcher(cmd_to_run, timeout):
             cmd_to_run,
             shell=True,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
             text=True,
         )
         stdout, _ = proc.communicate(timeout=timeout)
@@ -85,7 +84,7 @@ def test_rank_not_send_initial_hb(tmp_dir):
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
     assert "RANK IS SKIPPING INITIAL HB" in output
-    assert ret_code == 1
+    assert ret_code == 1, f"Launcher should return with 1. Ret value={ret_code}. Output=\n{output}"
 
 
 def test_rank_failed(tmp_dir):
@@ -104,7 +103,7 @@ def test_rank_failed(tmp_dir):
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
     assert "RANK FAILED" in output
-    assert ret_code == 1
+    assert ret_code == 1, f"Launcher should return with 1. Ret value={ret_code}. Output=\n{output}"
 
 
 def test_ranks_exit_gracefully(tmp_dir):
@@ -122,7 +121,7 @@ def test_ranks_exit_gracefully(tmp_dir):
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
     assert "RANK EXITS GRACEFULLY" in output
-    assert ret_code == 0
+    assert ret_code == 0, f"Launcher should return with 0. Ret value={ret_code}. Output=\n{output}"
 
 
 def test_launcher_sigterm_graceful_exit(tmp_dir):
@@ -143,7 +142,7 @@ def test_launcher_sigterm_graceful_exit(tmp_dir):
     assert "ALL RANKS STARTED" in output
     assert "SIGTERM SENT TO LAUNCHER" in output
     assert "RANK GOT SIGTERM: RETURN0" in output
-    assert ret_code == 0
+    assert ret_code == 0, f"Launcher should return with 0. Ret value={ret_code}. Output=\n{output}"
 
 
 def test_launcher_sigterm_ignored(tmp_dir):
@@ -164,7 +163,7 @@ def test_launcher_sigterm_ignored(tmp_dir):
     assert "ALL RANKS STARTED" in output
     assert "SIGTERM SENT TO LAUNCHER" in output
     assert "RANK GOT SIGTERM: IGNORED" in output
-    assert ret_code == 1
+    assert ret_code == 1, f"Launcher should return with 1. Ret value={ret_code}. Output=\n{output}"
 
 
 def test_ranks_restart(tmp_dir):
@@ -189,7 +188,7 @@ def test_ranks_restart(tmp_dir):
     assert "RANK FAILED" in output
     assert "RESTART #2" in output
     assert "RANK EXITS GRACEFULLY" in output
-    assert ret_code == 0
+    assert ret_code == 0, f"Launcher should return with 0. Ret value={ret_code}. Output=\n{output}"
 
 
 def test_missing_cfg(tmp_dir):
@@ -204,7 +203,9 @@ def test_missing_cfg(tmp_dir):
         f" --fault-tol-cfg-path={empty_ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code != 0
+    assert (
+        ret_code != 0
+    ), f"Launcher should return with non 0. Ret value={ret_code}. Output=\n{output}"
     # Empty config file again, But this time there are FT args in CLI, so should be fine
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
@@ -213,7 +214,7 @@ def test_missing_cfg(tmp_dir):
         f" {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code == 0
+    assert ret_code == 0, f"Launcher should return with 0. Ret value={ret_code}. Output=\n{output}"
     # Empty config file again, launcher run with `--ignore-missing-fault-tol-cfg` should use defaults
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
@@ -222,7 +223,7 @@ def test_missing_cfg(tmp_dir):
         f" --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code == 0
+    assert ret_code == 0, f"Launcher should return with 0. Ret value={ret_code}. Output=\n{output}"
     # Invalid config file path - should fail despite --ignore-missing-fault-tol-cfg and FT args specified via CLI
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
@@ -233,7 +234,9 @@ def test_missing_cfg(tmp_dir):
         f" {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code != 0
+    assert (
+        ret_code != 0
+    ), f"Launcher should return with non 0. Ret value={ret_code}. Output=\n{output}"
 
 
 def test_config_provided_via_cli(tmp_dir):
@@ -248,7 +251,7 @@ def test_config_provided_via_cli(tmp_dir):
     cmd_to_run = f"{_get_util_script_path()} --scenario=dump_cfg --tmp_dir={tmp_dir}"
     launcher_cmd = "ft_launcher" f" {ft_params_str} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code == 0
+    assert ret_code == 0, f"Launcher should return with 0. Ret value={ret_code}. Output=\n{output}"
 
     dumped_ft_cfg_path = os.path.join(tmp_dir, "cfg_dump.yaml")
     assert os.path.exists(dumped_ft_cfg_path)
@@ -286,7 +289,7 @@ def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
         f" {ft_params_str} --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code == 0
+    assert ret_code == 0, f"Launcher should return with 0. Ret value={ret_code}. Output=\n{output}"
 
     dumped_ft_cfg_path = os.path.join(tmp_dir, "cfg_dump.yaml")
     assert os.path.exists(dumped_ft_cfg_path)
