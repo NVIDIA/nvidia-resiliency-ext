@@ -52,18 +52,21 @@ jobs:
           if [ -d "public" ]; then
             echo "public directory exists. Proceeding with deployment."
 
-
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name 'public' -exec rm -rf {} +
+
             cp -r public/* .
+
             touch .nojekyll
 
-            ls -la .
-
             git add .
-            git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
-            git push origin gh-pages --force
+            if git diff --cached --quiet; then
+              echo "No changes to commit. Skipping deployment."
+              exit 0
+            else
+              git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
+              git push origin gh-pages --force
+            fi
           else
             echo "Error: 'public/' directory does not exist during deployment."
             exit 1
           fi
-
