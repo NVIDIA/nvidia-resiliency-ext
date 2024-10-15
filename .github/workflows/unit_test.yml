@@ -39,7 +39,7 @@ jobs:
             curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
 
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Build wheel with Python 3.10
         run: |
@@ -74,10 +74,10 @@ jobs:
     steps:
 
       - name: Checkout code
-        uses: actions/checkout@v3
-        
+        uses: actions/checkout@v4
+
       - name: Download wheels
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: resiliency-wheels
           path: ./dist/
