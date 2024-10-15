@@ -1,0 +1,669 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.straggler.reporting &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../ft_usage.html">Fault Tolerance Usage Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../ft_api.html">Fault Tolerance API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_usage.html">Straggler Detection Usage Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_api.html">Straggler Detection API</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.straggler.reporting</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.straggler.reporting</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">dataclasses</span>
+<span class="kn">import</span> <span class="nn">math</span>
+<span class="kn">import</span> <span class="nn">time</span>
+<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span>
+
+<span class="kn">import</span> <span class="nn">torch</span>
+
+<span class="kn">from</span> <span class="nn">.</span> <span class="kn">import</span> <span class="n">dist_utils</span>
+<span class="kn">from</span> <span class="nn">.name_mapper</span> <span class="kn">import</span> <span class="n">NameMapper</span>
+<span class="kn">from</span> <span class="nn">.statistics</span> <span class="kn">import</span> <span class="n">Statistic</span>
+
+<span class="n">_SummaryType</span> <span class="o">=</span> <span class="n">Mapping</span><span class="p">[</span><span class="n">Statistic</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span>  <span class="c1"># type alias for kernel or section statistics</span>
+
+
+<div class="viewcode-block" id="StragglerId">
+<a class="viewcode-back" href="../../../straggler_api.html#nvidia_resiliency_ext.straggler.reporting.StragglerId">[docs]</a>
+<span class="nd">@dataclasses</span><span class="o">.</span><span class="n">dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span> <span class="nc">StragglerId</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Straggler identity</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">rank</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">node</span><span class="p">:</span> <span class="nb">str</span></div>
+
+
+
+<div class="viewcode-block" id="Report">
+<a class="viewcode-back" href="../../../straggler_api.html#nvidia_resiliency_ext.straggler.reporting.Report">[docs]</a>
+<span class="nd">@dataclasses</span><span class="o">.</span><span class="n">dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span> <span class="nc">Report</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    There are 2 types of the performance scores provided in this report:</span>
+<span class="sd">      - Relative performance scores (0...1) that compare the performance of the current rank to the best performing rank.</span>
+<span class="sd">      - Individual performance scores (0...1) that compare the performance of the current rank to the rank&#39;s past performance.</span>
+<span class="sd">    Relative scores need inter-rank synchronization to be computed, while individual scores can be computed on each rank separately.</span>
+<span class="sd">    All performance scores can be interpreted as a ratio of: current performance/reference performance.</span>
+<span class="sd">    For example:</span>
+<span class="sd">        - If the relative performance score is 0.5, it means that the current rank is 2x slower than the best performing rank.</span>
+<span class="sd">        - If the individual performance score is 0.5, it means that the current rank is 2x slower than its best performance.</span>
+<span class="sd">    If `gather_on_rank0=True`:  `*_perf_scores` fields contain results for all ranks (only on rank0, otherwise undefined).</span>
+<span class="sd">    If `gather_on_rank0=False`:  `*_perf_scores` fields contain only current rank results.</span>
+
+<span class="sd">    Containers can be empty if there are no results.</span>
+
+<span class="sd">    * gpu_relative_perf_scores: Rank -&gt; GPU relative performance score.</span>
+<span class="sd">    * section_relative_perf_scores: Section name -&gt; (Rank -&gt; Section relative performance score).</span>
+<span class="sd">    * gpu_individual_perf_scores: Rank -&gt; GPU individual performance score.</span>
+<span class="sd">    * section_individual_perf_scores: Section name -&gt; (Rank -&gt; Section individual performance score).</span>
+<span class="sd">    * rank_to_node: Rank -&gt; Node name, aux mapping useful for results reporting.</span>
+<span class="sd">    * local_section_summaries: Local (e.g. this rank) timing stats for each user defined section/context.</span>
+<span class="sd">    * local_kernel_summaries: Local (e.g. this rank) timing stats for each captured CUDA kernel.</span>
+<span class="sd">    * generate_report_elapsed_time: How long did it take to generate this report.</span>
+<span class="sd">    * gather_on_rank0 : Mode for results gather, if gather_on_rank0 = False,</span>
+<span class="sd">    * rank: Rank of the current report. None if not corresponding to any rank (i.e. gather_on_rank0=True).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">gpu_relative_perf_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span>
+    <span class="n">section_relative_perf_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span>
+    <span class="n">gpu_individual_perf_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span>
+    <span class="n">section_individual_perf_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span>
+    <span class="n">rank_to_node</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span>
+    <span class="n">local_section_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
+    <span class="n">local_kernel_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
+    <span class="n">generate_report_elapsed_time</span><span class="p">:</span> <span class="nb">float</span>
+    <span class="n">gather_on_rank0</span><span class="p">:</span> <span class="nb">bool</span>
+    <span class="n">rank</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span>
+
+<div class="viewcode-block" id="Report.identify_stragglers">
+<a class="viewcode-back" href="../../../straggler_api.html#nvidia_resiliency_ext.straggler.reporting.Report.identify_stragglers">[docs]</a>
+    <span class="k">def</span> <span class="nf">identify_stragglers</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">gpu_rel_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.75</span><span class="p">,</span>
+        <span class="n">section_rel_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.75</span><span class="p">,</span>
+        <span class="n">gpu_indiv_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.75</span><span class="p">,</span>
+        <span class="n">section_indiv_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.75</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Identify the ranks with straggler GPUs based on performance</span>
+<span class="sd">        thresholds.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            gpu_rel_threshold (float): The threshold for relative GPU performance scores to identify stragglers. Default is 0.75</span>
+<span class="sd">            section_rel_threshold (float): The threshold for relative sections performance scores. Default is 0.75</span>
+<span class="sd">            gpu_indiv_threshold (float): The threshold for individual GPU performance scores. Default is 0.75</span>
+<span class="sd">            section_indiv_threshold (float): The threshold for individual section performance scores. Default is 0.75</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Dict with string keys:</span>
+<span class="sd">                - &#39;straggler_gpus_relative&#39; (Set[StragglerId]): Stragglers with relative GPU performance scores below the threshold</span>
+<span class="sd">                - &#39;straggler_gpus_individual&#39; (Set[StragglerId]): Stragglers with individual GPU performance scores below the threshold</span>
+<span class="sd">                - &#39;straggler_sections_relative&#39; (Dict[str, Set[StragglerId]]): Sections with ranks having relative performance scores below the threshold</span>
+<span class="sd">                - &#39;straggler_sections_individual&#39; (Dict[str, Set[StragglerId]]): Sections with ranks having individual performance scores below the threshold</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">stragglers</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;straggler_gpus_relative&#39;</span><span class="p">:</span> <span class="p">(</span>
+                <span class="p">{</span>
+                    <span class="n">StragglerId</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="n">r</span><span class="p">,</span> <span class="n">node</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span><span class="p">[</span><span class="n">r</span><span class="p">])</span>
+                    <span class="k">for</span> <span class="n">r</span><span class="p">,</span> <span class="n">d</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">gpu_relative_perf_scores</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                    <span class="k">if</span> <span class="n">d</span> <span class="o">&lt;</span> <span class="n">gpu_rel_threshold</span>
+                <span class="p">}</span>
+            <span class="p">),</span>
+            <span class="s1">&#39;straggler_gpus_individual&#39;</span><span class="p">:</span> <span class="p">(</span>
+                <span class="p">{</span>
+                    <span class="n">StragglerId</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="n">r</span><span class="p">,</span> <span class="n">node</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span><span class="p">[</span><span class="n">r</span><span class="p">])</span>
+                    <span class="k">for</span> <span class="n">r</span><span class="p">,</span> <span class="n">d</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">gpu_individual_perf_scores</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                    <span class="k">if</span> <span class="n">d</span> <span class="o">&lt;</span> <span class="n">gpu_indiv_threshold</span>
+                <span class="p">}</span>
+            <span class="p">),</span>
+            <span class="s1">&#39;straggler_sections_relative&#39;</span><span class="p">:</span> <span class="p">{},</span>
+            <span class="s1">&#39;straggler_sections_individual&#39;</span><span class="p">:</span> <span class="p">{},</span>
+        <span class="p">}</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">section_relative_perf_scores</span><span class="p">:</span>
+            <span class="k">for</span> <span class="p">(</span>
+                <span class="n">section</span><span class="p">,</span>
+                <span class="n">perf_scores</span><span class="p">,</span>
+            <span class="p">)</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">section_relative_perf_scores</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="k">if</span> <span class="n">straggler_ranks</span> <span class="o">:=</span> <span class="p">{</span>
+                    <span class="n">StragglerId</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="n">r</span><span class="p">,</span> <span class="n">node</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span><span class="p">[</span><span class="n">r</span><span class="p">])</span>
+                    <span class="k">for</span> <span class="n">r</span><span class="p">,</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">perf_scores</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                    <span class="k">if</span> <span class="n">d</span> <span class="o">&lt;</span> <span class="n">section_rel_threshold</span>
+                <span class="p">}:</span>
+                    <span class="n">stragglers</span><span class="p">[</span><span class="s1">&#39;straggler_sections_relative&#39;</span><span class="p">][</span><span class="n">section</span><span class="p">]</span> <span class="o">=</span> <span class="n">straggler_ranks</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">section_individual_perf_scores</span><span class="p">:</span>
+            <span class="k">for</span> <span class="p">(</span>
+                <span class="n">section</span><span class="p">,</span>
+                <span class="n">perf_scores</span><span class="p">,</span>
+            <span class="p">)</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">section_individual_perf_scores</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="k">if</span> <span class="n">straggler_ranks</span> <span class="o">:=</span> <span class="p">{</span>
+                    <span class="n">StragglerId</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="n">r</span><span class="p">,</span> <span class="n">node</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span><span class="p">[</span><span class="n">r</span><span class="p">])</span>
+                    <span class="k">for</span> <span class="n">r</span><span class="p">,</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">perf_scores</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                    <span class="k">if</span> <span class="n">d</span> <span class="o">&lt;</span> <span class="n">section_indiv_threshold</span>
+                <span class="p">}:</span>
+                    <span class="n">stragglers</span><span class="p">[</span><span class="s1">&#39;straggler_sections_individual&#39;</span><span class="p">][</span><span class="n">section</span><span class="p">]</span> <span class="o">=</span> <span class="n">straggler_ranks</span>
+
+        <span class="k">return</span> <span class="n">stragglers</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="ReportGenerator">
+<a class="viewcode-back" href="../../../straggler_api.html#nvidia_resiliency_ext.straggler.reporting.ReportGenerator">[docs]</a>
+<span class="k">class</span> <span class="nc">ReportGenerator</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;This class is responsible for generating the performance report, based</span>
+<span class="sd">    on the section and kernel summaries (section/kernel name -&gt; stats).</span>
+
+<span class="sd">    It is guaranteed that `.generate_report` is called on all ranks,</span>
+<span class="sd">    so any required data synchronization can be done here.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">scores_to_compute</span><span class="p">,</span>
+        <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="n">pg</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+        <span class="n">node_name</span><span class="o">=</span><span class="s1">&#39;&lt;notset&gt;&#39;</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Args:</span>
+<span class="sd">            scores_to_compute (list): List of scores to compute, e.g. [&#39;relative_perf_scores&#39;, &#39;individual_perf_scores&#39;]</span>
+<span class="sd">            gather_on_rank0 (bool): If True, report on rank 0 includes results for all ranks, reports on other ranks are empty</span>
+<span class="sd">                                    If False, report on any rank contains just the results for that particular rank</span>
+<span class="sd">            pg: Process group for communication</span>
+<span class="sd">            node_name: User-friendly name of the current node, that will be used in reports</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_rel_scores</span> <span class="o">=</span> <span class="s1">&#39;relative_perf_scores&#39;</span> <span class="ow">in</span> <span class="n">scores_to_compute</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_indiv_scores</span> <span class="o">=</span> <span class="s1">&#39;individual_perf_scores&#39;</span> <span class="ow">in</span> <span class="n">scores_to_compute</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">gather_on_rank0</span> <span class="o">=</span> <span class="n">gather_on_rank0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group</span> <span class="o">=</span> <span class="n">pg</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">world_size</span> <span class="o">=</span> <span class="n">dist_utils</span><span class="o">.</span><span class="n">get_world_size</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">group</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">dist_utils</span><span class="o">.</span><span class="n">get_rank</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">group</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">node_name</span> <span class="o">=</span> <span class="n">node_name</span>
+
+        <span class="c1"># dicts of best median execution times, used for individual scores normalization</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">min_local_kernel_times</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span>
+            <span class="k">lambda</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;inf&#39;</span><span class="p">)</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">min_local_section_times</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span>
+            <span class="k">lambda</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;inf&#39;</span><span class="p">)</span>
+        <span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span> <span class="o">=</span> <span class="n">NameMapper</span><span class="p">(</span><span class="n">pg</span><span class="o">=</span><span class="n">pg</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="s1">&#39;&lt;unk&gt;&#39;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_compute_sections_perf_scores</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">sections_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">],</span>
+        <span class="n">reference</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Compute local rank performance scores (0...1) for each custom section.&quot;&quot;&quot;</span>
+
+        <span class="c1"># Section scoring algorithm outline:</span>
+        <span class="c1"># for each section calculate ratio: reference median time / median time on this rank</span>
+        <span class="c1"># where &quot;reference median time&quot; can be:</span>
+        <span class="c1"># - min median time across all ranks (aka &quot;workload min&quot;)</span>
+        <span class="c1"># - min median time observed on this rank (aka &quot;rank historical min&quot;)</span>
+        <span class="c1"># I.e. if a rank median time for a section is 2x higher than median on the fastest rank,</span>
+        <span class="c1"># and the reference is &quot;workload min&quot;, the rank will get a score 0.5</span>
+        <span class="c1"># I.e. if a rank median time for a section is 2x higher that the minimum ever observed</span>
+        <span class="c1"># on this rank, and the reference is &quot;rank historical min&quot;, the rank will get a score 0.5</span>
+
+        <span class="n">section_to_score</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">section</span><span class="p">,</span> <span class="n">summary</span> <span class="ow">in</span> <span class="n">sections_summaries</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">score</span> <span class="o">=</span> <span class="n">reference</span><span class="p">[</span><span class="n">section</span><span class="p">]</span> <span class="o">/</span> <span class="n">summary</span><span class="p">[</span><span class="n">Statistic</span><span class="o">.</span><span class="n">MED</span><span class="p">]</span>
+            <span class="n">section_to_score</span><span class="p">[</span><span class="n">section</span><span class="p">]</span> <span class="o">=</span> <span class="n">score</span>
+        <span class="k">return</span> <span class="n">section_to_score</span>
+
+    <span class="k">def</span> <span class="nf">_compute_gpu_perf_score</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">kernels_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">],</span>
+        <span class="n">reference</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Compute local rank GPU performance score (0...1) based on the gathered</span>
+<span class="sd">        kernel summaries.&quot;&quot;&quot;</span>
+
+        <span class="c1"># GPU scoring algorithm outline:</span>
+        <span class="c1"># for each kernel calculate ratio: reference median / median time on this rank</span>
+        <span class="c1"># reference median can be:</span>
+        <span class="c1"># - min of median times across all ranks (aka &quot;workload min&quot;)</span>
+        <span class="c1"># - min median ever observed on this rank (aka &quot;rank historical min&quot;)</span>
+        <span class="c1"># compute final result, as a weighted arithmetic average of all kernel scores,</span>
+        <span class="c1"># using total time spent in the kernel as a weight.</span>
+        <span class="c1"># Kernels thet were not executed on all ranks are skipped.</span>
+        <span class="c1"># (TODO can we allow for different ranks to capture different kernels?).</span>
+
+        <span class="n">rank_score</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">kernels_summaries</span><span class="p">:</span>
+            <span class="n">weighted_scores_sum</span> <span class="o">=</span> <span class="mf">0.0</span>
+            <span class="n">weights_sum</span> <span class="o">=</span> <span class="mf">0.0</span>
+            <span class="n">num_common_kernels</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="k">for</span> <span class="n">kernel</span><span class="p">,</span> <span class="n">summary</span> <span class="ow">in</span> <span class="n">kernels_summaries</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="n">ref</span> <span class="o">=</span> <span class="n">reference</span><span class="p">[</span><span class="n">kernel</span><span class="p">]</span>
+                <span class="k">if</span> <span class="n">math</span><span class="o">.</span><span class="n">isnan</span><span class="p">(</span><span class="n">ref</span><span class="p">):</span>
+                    <span class="k">continue</span>  <span class="c1"># no reference for this kernel, some ranks have not executed it</span>
+                <span class="n">num_common_kernels</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="n">score</span> <span class="o">=</span> <span class="n">ref</span> <span class="o">/</span> <span class="n">summary</span><span class="p">[</span><span class="n">Statistic</span><span class="o">.</span><span class="n">MED</span><span class="p">]</span>
+                <span class="n">weight</span> <span class="o">=</span> <span class="n">summary</span><span class="p">[</span><span class="n">Statistic</span><span class="o">.</span><span class="n">NUM</span><span class="p">]</span> <span class="o">*</span> <span class="n">summary</span><span class="p">[</span><span class="n">Statistic</span><span class="o">.</span><span class="n">AVG</span><span class="p">]</span>
+                <span class="n">weighted_scores_sum</span> <span class="o">+=</span> <span class="n">score</span> <span class="o">*</span> <span class="n">weight</span>
+                <span class="n">weights_sum</span> <span class="o">+=</span> <span class="n">weight</span>
+            <span class="k">if</span> <span class="n">num_common_kernels</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="n">rank_score</span> <span class="o">=</span> <span class="n">weighted_scores_sum</span> <span class="o">/</span> <span class="n">weights_sum</span>
+        <span class="k">return</span> <span class="n">rank_score</span>
+
+    <span class="k">def</span> <span class="nf">_all_reduce_times</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">kernel_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">],</span>
+        <span class="n">section_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Get minimum (across all ranks) median times for kernels and sections</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            kernel_summaries: local kernel summaries</span>
+<span class="sd">            section_summaries: local section summaries</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Tuple of dicts: kernel name -&gt; min median time, section name -&gt; min median time</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Pack local median times into a tensor, then all-reduce it</span>
+        <span class="n">num_kernels</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">kernel_counter</span>
+        <span class="n">num_sections</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">section_counter</span>
+        <span class="n">total_len</span> <span class="o">=</span> <span class="n">num_kernels</span> <span class="o">+</span> <span class="n">num_sections</span>
+        <span class="n">times_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">total_len</span><span class="p">,),</span> <span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s1">&#39;cpu&#39;</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">kernel_summaries</span><span class="p">:</span>
+            <span class="n">idx</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">get_kernel_id</span><span class="p">(</span><span class="n">k</span><span class="p">)</span>
+            <span class="n">times_tensor</span><span class="p">[</span><span class="n">idx</span><span class="p">]</span> <span class="o">=</span> <span class="n">kernel_summaries</span><span class="p">[</span><span class="n">k</span><span class="p">][</span><span class="n">Statistic</span><span class="o">.</span><span class="n">MED</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">section_summaries</span><span class="p">:</span>
+            <span class="n">idx</span> <span class="o">=</span> <span class="n">num_kernels</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">get_section_id</span><span class="p">(</span><span class="n">s</span><span class="p">)</span>
+            <span class="n">times_tensor</span><span class="p">[</span><span class="n">idx</span><span class="p">]</span> <span class="o">=</span> <span class="n">section_summaries</span><span class="p">[</span><span class="n">s</span><span class="p">][</span><span class="n">Statistic</span><span class="o">.</span><span class="n">MED</span><span class="p">]</span>
+        <span class="n">times_tensor</span> <span class="o">=</span> <span class="n">times_tensor</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">dist_utils</span><span class="o">.</span><span class="n">get_device_for_backend</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">group</span><span class="p">))</span>
+        <span class="n">dist_utils</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">times_tensor</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">MIN</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">group</span><span class="p">)</span>
+        <span class="c1"># Unpack reduced tensor into dicts of name-&gt;score</span>
+        <span class="c1"># NOTE: -1 will be obtained if some rank(s) did not have stats for given kernel/section</span>
+        <span class="c1"># convert these to NaNs, to simplify further processing.</span>
+        <span class="n">times_tensor</span> <span class="o">=</span> <span class="n">times_tensor</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span>
+        <span class="n">min_kernel_times</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">kernel_id</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_kernels</span><span class="p">):</span>
+            <span class="n">kernel_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">get_kernel_name</span><span class="p">(</span><span class="n">kernel_id</span><span class="p">)</span>
+            <span class="n">val</span> <span class="o">=</span> <span class="n">times_tensor</span><span class="p">[</span><span class="n">kernel_id</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+            <span class="n">min_kernel_times</span><span class="p">[</span><span class="n">kernel_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">val</span> <span class="k">if</span> <span class="n">val</span> <span class="o">&gt;=</span> <span class="mf">0.0</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">)</span>
+        <span class="n">min_section_times</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">section_id</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_sections</span><span class="p">):</span>
+            <span class="n">section_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">get_section_name</span><span class="p">(</span><span class="n">section_id</span><span class="p">)</span>
+            <span class="n">val</span> <span class="o">=</span> <span class="n">times_tensor</span><span class="p">[</span><span class="n">num_kernels</span> <span class="o">+</span> <span class="n">section_id</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+            <span class="n">min_section_times</span><span class="p">[</span><span class="n">section_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">val</span> <span class="k">if</span> <span class="n">val</span> <span class="o">&gt;=</span> <span class="mf">0.0</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">min_kernel_times</span><span class="p">,</span> <span class="n">min_section_times</span>
+
+    <span class="k">def</span> <span class="nf">_update_local_min_times</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">kernel_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">],</span>
+        <span class="n">section_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Update minimum median times observed on this rank</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            kernel_summaries: local kernel summaries</span>
+<span class="sd">            section_summaries: local section summaries</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">for</span> <span class="n">kernel</span><span class="p">,</span> <span class="n">summary</span> <span class="ow">in</span> <span class="n">kernel_summaries</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">new_val</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">min_local_kernel_times</span><span class="p">[</span><span class="n">kernel</span><span class="p">],</span> <span class="n">summary</span><span class="p">[</span><span class="n">Statistic</span><span class="o">.</span><span class="n">MED</span><span class="p">])</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">min_local_kernel_times</span><span class="p">[</span><span class="n">kernel</span><span class="p">]</span> <span class="o">=</span> <span class="n">new_val</span>
+        <span class="k">for</span> <span class="n">section</span><span class="p">,</span> <span class="n">summary</span> <span class="ow">in</span> <span class="n">section_summaries</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">new_val</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">min_local_section_times</span><span class="p">[</span><span class="n">section</span><span class="p">],</span> <span class="n">summary</span><span class="p">[</span><span class="n">Statistic</span><span class="o">.</span><span class="n">MED</span><span class="p">])</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">min_local_section_times</span><span class="p">[</span><span class="n">section</span><span class="p">]</span> <span class="o">=</span> <span class="n">new_val</span>
+
+    <span class="k">def</span> <span class="nf">_maybe_gather_rank_to_node</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Gather auxiliary rank to node mapping if not gathered yet&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">gather_on_rank0</span><span class="p">:</span>
+                <span class="n">gathered_rank_node</span> <span class="o">=</span> <span class="n">dist_utils</span><span class="o">.</span><span class="n">all_gather_object</span><span class="p">(</span>
+                    <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">node_name</span><span class="p">),</span> <span class="bp">self</span><span class="o">.</span><span class="n">group</span>
+                <span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">gathered_rank_node</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="c1"># if results are not gathered on rank0,</span>
+                <span class="c1"># just put the current rank and node into the mapping,</span>
+                <span class="c1"># in this case each rank deals only with its own results</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">node_name</span>
+
+    <span class="k">def</span> <span class="nf">_filter_out_nccl_kernels</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">kernel_summaries</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">]:</span>
+        <span class="c1"># TODO: NCCL kernels are skipped due to huge differences in execution time between ranks observerd:</span>
+        <span class="c1"># E.g. `*ncclDevKernel_AllReduce_Sum*` MED=256us on a &quot;fast&quot; rank VS MED=3369us on a &quot;slow&quot; rank; need to:</span>
+        <span class="c1"># - Explain that behaviour</span>
+        <span class="c1"># - Decide on NCCL kernels: should we skip them all? or just a subset?</span>
+        <span class="c1"># - Is the kernel name reliable way to identify NCCL kernels?</span>
+        <span class="k">return</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">v</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">kernel_summaries</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="s2">&quot;ncclDev&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">k</span><span class="p">}</span>
+
+    <span class="k">def</span> <span class="nf">_get_tensor_from_scores</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">gpu_individual_score</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+        <span class="n">sections_individual_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span>
+        <span class="n">gpu_relative_score</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+        <span class="n">sections_relative_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Pack local GPU and section scores into a flat/1D CPU tensor&quot;&quot;&quot;</span>
+        <span class="n">sections_individual_scores</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span>
+            <span class="k">lambda</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">),</span> <span class="n">sections_individual_scores</span>
+        <span class="p">)</span>
+        <span class="n">sections_relative_scores</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span>
+            <span class="k">lambda</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">),</span> <span class="n">sections_relative_scores</span>
+        <span class="p">)</span>
+        <span class="n">num_sections</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">section_counter</span>
+        <span class="n">num_scores_per_rank</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">+</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">num_sections</span>
+        <span class="n">scores_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">num_scores_per_rank</span><span class="p">,),</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">),</span> <span class="n">device</span><span class="o">=</span><span class="s1">&#39;cpu&#39;</span><span class="p">)</span>
+        <span class="n">scores_tensor</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">gpu_individual_score</span>
+        <span class="n">scores_tensor</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">gpu_relative_score</span>
+        <span class="k">for</span> <span class="n">section_id</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_sections</span><span class="p">):</span>
+            <span class="n">section_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">get_section_name</span><span class="p">(</span><span class="n">section_id</span><span class="p">)</span>
+            <span class="n">scores_tensor</span><span class="p">[</span><span class="mi">2</span> <span class="o">+</span> <span class="n">section_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">sections_individual_scores</span><span class="p">[</span><span class="n">section_name</span><span class="p">]</span>
+            <span class="n">scores_tensor</span><span class="p">[</span><span class="mi">2</span> <span class="o">+</span> <span class="n">num_sections</span> <span class="o">+</span> <span class="n">section_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">sections_relative_scores</span><span class="p">[</span><span class="n">section_name</span><span class="p">]</span>
+        <span class="k">return</span> <span class="n">scores_tensor</span>
+
+    <span class="k">def</span> <span class="nf">_get_scores_from_tensor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Unpack flat/1D tensor obtained with `_get_tensor_from_scores`&quot;&quot;&quot;</span>
+        <span class="n">gpu_individual_score</span> <span class="o">=</span> <span class="n">tensor</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+        <span class="n">gpu_relative_score</span> <span class="o">=</span> <span class="n">tensor</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+        <span class="n">num_sections</span> <span class="o">=</span> <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">tensor</span><span class="p">)</span> <span class="o">-</span> <span class="mi">2</span><span class="p">)</span> <span class="o">//</span> <span class="mi">2</span>
+        <span class="k">assert</span> <span class="n">num_sections</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">section_counter</span>
+        <span class="n">sections_individual_scores</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">sections_relative_scores</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">section_id</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_sections</span><span class="p">):</span>
+            <span class="n">section_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">get_section_name</span><span class="p">(</span><span class="n">section_id</span><span class="p">)</span>
+            <span class="n">sections_individual_scores</span><span class="p">[</span><span class="n">section_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">tensor</span><span class="p">[</span><span class="mi">2</span> <span class="o">+</span> <span class="n">section_id</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+            <span class="n">sections_relative_scores</span><span class="p">[</span><span class="n">section_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">tensor</span><span class="p">[</span><span class="mi">2</span> <span class="o">+</span> <span class="n">num_sections</span> <span class="o">+</span> <span class="n">section_id</span><span class="p">]</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="n">gpu_individual_score</span><span class="p">,</span>
+            <span class="n">sections_individual_scores</span><span class="p">,</span>
+            <span class="n">gpu_relative_score</span><span class="p">,</span>
+            <span class="n">sections_relative_scores</span><span class="p">,</span>
+        <span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_gather_results_on_rank0</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">gpu_individual_score</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+        <span class="n">sections_individual_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span>
+        <span class="n">gpu_relative_score</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+        <span class="n">sections_relative_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Mapping</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Collect all perf scores on rank0 and return them in the expected output format&quot;&quot;&quot;</span>
+        <span class="n">scores_tensor</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_tensor_from_scores</span><span class="p">(</span>
+            <span class="n">gpu_individual_score</span><span class="p">,</span>
+            <span class="n">sections_individual_scores</span><span class="p">,</span>
+            <span class="n">gpu_relative_score</span><span class="p">,</span>
+            <span class="n">sections_relative_scores</span><span class="p">,</span>
+        <span class="p">)</span>
+
+        <span class="n">gather_list</span> <span class="o">=</span> <span class="n">dist_utils</span><span class="o">.</span><span class="n">gather_on_rank0</span><span class="p">(</span><span class="n">scores_tensor</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">group</span><span class="p">)</span>
+
+        <span class="n">res_gi</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># rank -&gt; GPU individual score</span>
+        <span class="n">res_gr</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># rank -&gt; GPU relative score</span>
+        <span class="n">res_si</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span>
+            <span class="nb">dict</span>
+        <span class="p">)</span>  <span class="c1"># section -&gt; (rank-&gt;section individual score)</span>
+        <span class="n">res_sr</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span>
+            <span class="nb">dict</span>
+        <span class="p">)</span>  <span class="c1"># section -&gt; (rank-&gt;section relative score)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="c1"># convert gathered per-rank scores into the final multi-rank dicts</span>
+            <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">world_size</span><span class="p">):</span>
+                <span class="n">gi</span><span class="p">,</span> <span class="n">si</span><span class="p">,</span> <span class="n">gr</span><span class="p">,</span> <span class="n">sr</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_scores_from_tensor</span><span class="p">(</span><span class="n">gather_list</span><span class="p">[</span><span class="n">r</span><span class="p">])</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_indiv_scores</span><span class="p">:</span>
+                    <span class="n">res_gi</span><span class="p">[</span><span class="n">r</span><span class="p">]</span> <span class="o">=</span> <span class="n">gi</span>
+                    <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">si</span><span class="p">:</span>
+                        <span class="n">res_si</span><span class="p">[</span><span class="n">s</span><span class="p">]</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">r</span><span class="p">:</span> <span class="n">si</span><span class="p">[</span><span class="n">s</span><span class="p">]})</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_rel_scores</span><span class="p">:</span>
+                    <span class="n">res_gr</span><span class="p">[</span><span class="n">r</span><span class="p">]</span> <span class="o">=</span> <span class="n">gr</span>
+                    <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">sr</span><span class="p">:</span>
+                        <span class="n">res_sr</span><span class="p">[</span><span class="n">s</span><span class="p">]</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">r</span><span class="p">:</span> <span class="n">sr</span><span class="p">[</span><span class="n">s</span><span class="p">]})</span>
+        <span class="k">return</span> <span class="n">res_gi</span><span class="p">,</span> <span class="nb">dict</span><span class="p">(</span><span class="n">res_si</span><span class="p">),</span> <span class="n">res_gr</span><span class="p">,</span> <span class="nb">dict</span><span class="p">(</span><span class="n">res_sr</span><span class="p">)</span>
+
+<div class="viewcode-block" id="ReportGenerator.generate_report">
+<a class="viewcode-back" href="../../../straggler_api.html#nvidia_resiliency_ext.straggler.reporting.ReportGenerator.generate_report">[docs]</a>
+    <span class="k">def</span> <span class="nf">generate_report</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">section_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">],</span>
+        <span class="n">kernel_summaries</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">_SummaryType</span><span class="p">],</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Generate a performance report based on the given summaries.</span>
+
+<span class="sd">        All ranks need to call .generate_report, as there can be synchronization between ranks.</span>
+
+<span class="sd">        If `gather_on_rank0` is True:</span>
+<span class="sd">            - The report on rank 0 includes results for all ranks.</span>
+<span class="sd">            - On all other ranks the return value is None.</span>
+
+<span class="sd">        If `gather_on_rank0` is False:</span>
+<span class="sd">            - The report on any rank contains just the results for that particular rank.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            section_summaries (dict): Timing stats collected for user-defined sections on the current rank.</span>
+<span class="sd">            kernel_summaries (dict): Timing stats collected for captured CUDA kernels on the current rank.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            A `Report` object containing the performance scores and summaries,</span>
+<span class="sd">            or None if gather_on_rank0 is True and the current rank is not 0</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">report_start</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter_ns</span><span class="p">()</span>
+
+        <span class="c1"># update rank and world size in case they are not set</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">world_size</span> <span class="o">=</span> <span class="n">dist_utils</span><span class="o">.</span><span class="n">get_world_size</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">group</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">dist_utils</span><span class="o">.</span><span class="n">get_rank</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">group</span><span class="p">)</span>
+
+        <span class="n">kernel_summaries</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_filter_out_nccl_kernels</span><span class="p">(</span><span class="n">kernel_summaries</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_maybe_gather_rank_to_node</span><span class="p">()</span>  <span class="c1"># one time rank-&gt;node mapping synchronization</span>
+
+        <span class="c1"># prepare name mapper, so we can map kernel/section names to integer IDs if needed.</span>
+        <span class="c1"># name mapper is not used if there is no inter-rank synchronization e.g.</span>
+        <span class="c1"># with individual scores only + no gather_on_rank0. NOTE: inter-rank names synchronization</span>
+        <span class="c1"># is expected to happen just at the beginning, when there are new kernels/sections captured.</span>
+        <span class="n">need_name_mapper</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_rel_scores</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">gather_on_rank0</span>
+        <span class="k">if</span> <span class="n">need_name_mapper</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">name_mapper</span><span class="o">.</span><span class="n">gather_and_assign_ids</span><span class="p">(</span>
+                <span class="n">kernel_names</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">kernel_summaries</span><span class="o">.</span><span class="n">keys</span><span class="p">()),</span>
+                <span class="n">section_names</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">section_summaries</span><span class="o">.</span><span class="n">keys</span><span class="p">()),</span>
+            <span class="p">)</span>
+
+        <span class="n">gpu_individual_score</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">)</span>
+        <span class="n">sections_individual_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_indiv_scores</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_update_local_min_times</span><span class="p">(</span><span class="n">kernel_summaries</span><span class="p">,</span> <span class="n">section_summaries</span><span class="p">)</span>
+            <span class="n">gpu_individual_score</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compute_gpu_perf_score</span><span class="p">(</span>
+                <span class="n">kernel_summaries</span><span class="p">,</span>
+                <span class="n">reference</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">min_local_kernel_times</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="n">sections_individual_scores</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compute_sections_perf_scores</span><span class="p">(</span>
+                <span class="n">section_summaries</span><span class="p">,</span>
+                <span class="n">reference</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">min_local_section_times</span><span class="p">,</span>
+            <span class="p">)</span>
+
+        <span class="n">gpu_relative_score</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">)</span>
+        <span class="n">sections_relative_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_rel_scores</span><span class="p">:</span>
+            <span class="n">min_workload_kernel_times</span><span class="p">,</span> <span class="n">min_workload_section_times</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_all_reduce_times</span><span class="p">(</span>
+                <span class="n">kernel_summaries</span><span class="p">,</span> <span class="n">section_summaries</span>
+            <span class="p">)</span>
+            <span class="n">gpu_relative_score</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compute_gpu_perf_score</span><span class="p">(</span>
+                <span class="n">kernel_summaries</span><span class="p">,</span>
+                <span class="n">reference</span><span class="o">=</span><span class="n">min_workload_kernel_times</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="n">sections_relative_scores</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compute_sections_perf_scores</span><span class="p">(</span>
+                <span class="n">section_summaries</span><span class="p">,</span>
+                <span class="n">reference</span><span class="o">=</span><span class="n">min_workload_section_times</span><span class="p">,</span>
+            <span class="p">)</span>
+
+        <span class="c1"># now we have scores for the local rank, need to format them for the report</span>
+        <span class="n">res_gpu_indiv</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># rank-&gt;GPU perf score</span>
+        <span class="n">res_section_idiv</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="p">{}</span>
+        <span class="p">)</span>  <span class="c1"># section-&gt;(rank-&gt;section perf score)</span>
+        <span class="n">res_gpu_rel</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># rank-&gt;GPU perf score</span>
+        <span class="n">res_section_rel</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="p">{}</span>
+        <span class="p">)</span>  <span class="c1"># section-&gt;(rank-&gt;section perf score)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">gather_on_rank0</span><span class="p">:</span>
+            <span class="n">gathered_scores</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gather_results_on_rank0</span><span class="p">(</span>
+                <span class="n">gpu_individual_score</span><span class="p">,</span>
+                <span class="n">sections_individual_scores</span><span class="p">,</span>
+                <span class="n">gpu_relative_score</span><span class="p">,</span>
+                <span class="n">sections_relative_scores</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="p">(</span>
+                    <span class="n">res_gpu_indiv</span><span class="p">,</span>
+                    <span class="n">res_section_idiv</span><span class="p">,</span>
+                    <span class="n">res_gpu_rel</span><span class="p">,</span>
+                    <span class="n">res_section_rel</span><span class="p">,</span>
+                <span class="p">)</span> <span class="o">=</span> <span class="n">gathered_scores</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># convert local rank scores to rank-&gt;score format</span>
+            <span class="c1"># and local section scores from name-&gt;score to name-&gt;rank-&gt;score</span>
+            <span class="c1"># for consitency with the gather_on_rank0=True case.</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_indiv_scores</span><span class="p">:</span>
+                <span class="n">res_gpu_indiv</span> <span class="o">=</span> <span class="p">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">:</span> <span class="n">gpu_individual_score</span><span class="p">}</span>
+                <span class="n">res_section_idiv</span> <span class="o">=</span> <span class="p">{</span>
+                    <span class="n">k</span><span class="p">:</span> <span class="p">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">:</span> <span class="n">v</span><span class="p">}</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">sections_individual_scores</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                <span class="p">}</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_computing_rel_scores</span><span class="p">:</span>
+                <span class="n">res_gpu_rel</span> <span class="o">=</span> <span class="p">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">:</span> <span class="n">gpu_relative_score</span><span class="p">}</span>
+                <span class="n">res_section_rel</span> <span class="o">=</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="p">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">:</span> <span class="n">v</span><span class="p">}</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">sections_relative_scores</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
+
+        <span class="n">report_stop</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter_ns</span><span class="p">()</span>
+        <span class="n">report_elapsed</span> <span class="o">=</span> <span class="p">(</span><span class="n">report_stop</span> <span class="o">-</span> <span class="n">report_start</span><span class="p">)</span> <span class="o">*</span> <span class="mf">1e-6</span>
+
+        <span class="n">report_params</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;gpu_relative_perf_scores&#39;</span><span class="p">:</span> <span class="n">res_gpu_rel</span><span class="p">,</span>
+            <span class="s1">&#39;section_relative_perf_scores&#39;</span><span class="p">:</span> <span class="n">res_section_rel</span><span class="p">,</span>
+            <span class="s1">&#39;gpu_individual_perf_scores&#39;</span><span class="p">:</span> <span class="n">res_gpu_indiv</span><span class="p">,</span>
+            <span class="s1">&#39;section_individual_perf_scores&#39;</span><span class="p">:</span> <span class="n">res_section_idiv</span><span class="p">,</span>
+            <span class="s1">&#39;rank_to_node&#39;</span><span class="p">:</span> <span class="nb">dict</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_to_node</span><span class="p">),</span>
+            <span class="s1">&#39;local_section_summaries&#39;</span><span class="p">:</span> <span class="n">section_summaries</span><span class="p">,</span>
+            <span class="s1">&#39;local_kernel_summaries&#39;</span><span class="p">:</span> <span class="n">kernel_summaries</span><span class="p">,</span>
+            <span class="s1">&#39;generate_report_elapsed_time&#39;</span><span class="p">:</span> <span class="n">report_elapsed</span><span class="p">,</span>
+            <span class="s1">&#39;gather_on_rank0&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">gather_on_rank0</span><span class="p">,</span>
+            <span class="s1">&#39;rank&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+        <span class="p">}</span>
+
+        <span class="n">report</span> <span class="o">=</span> <span class="n">Report</span><span class="p">(</span><span class="o">**</span><span class="n">report_params</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">gather_on_rank0</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">report</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span> <span class="k">else</span> <span class="kc">None</span>
+
+        <span class="c1"># otherwise, report scores for each rank separately</span>
+        <span class="k">return</span> <span class="n">report</span></div>
+</div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

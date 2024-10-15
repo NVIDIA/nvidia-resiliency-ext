@@ -1,0 +1,335 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Straggler Detection Usage Guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=2709fde1"></script>
+      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Straggler Detection API" href="straggler_api.html" />
+    <link rel="prev" title="Fault Tolerance API" href="ft_api.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="ft_usage.html">Fault Tolerance Usage Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ft_api.html">Fault Tolerance API</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Straggler Detection Usage Guide</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#straggler-detection-package-design-overview">Straggler Detection Package Design Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#straggler-detection-usage-overview">Straggler Detection Usage Overview</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#alternative-reporting">Alternative Reporting</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#reducing-the-overhead">Reducing the Overhead</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#straggler-detection-integration-guide">Straggler Detection Integration Guide</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="straggler_api.html">Straggler Detection API</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Straggler Detection Usage Guide</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/straggler_usage.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="straggler-detection-usage-guide">
+<h1>Straggler Detection Usage Guide<a class="headerlink" href="#straggler-detection-usage-guide" title="Link to this heading"></a></h1>
+<p>The <strong>Straggler Detection</strong> package’s purpose is to detect slower ranks participating in a PyTorch distributed workload.
+The <code class="docutils literal notranslate"><span class="pre">nvidia-resiliency-ext</span></code> package also includes the PTL callback <code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code> that simplifies integration with PyTorch Lightning-based workloads.</p>
+<p>Straggler Detection is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.straggler</span></code> package.
+<code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code> is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.ptl_resiliency</span></code> package.</p>
+<section id="straggler-detection-package-design-overview">
+<h2>Straggler Detection Package Design Overview<a class="headerlink" href="#straggler-detection-package-design-overview" title="Link to this heading"></a></h2>
+<p>Package users can mark sections of their code as “straggler detection sections”.
+Timing information is collected for such sections, which includes CPU (wall-clock) time spent in the section.
+Additionally, CUDA kernels launched in the detection sections can be benchmarked.</p>
+<dl class="simple">
+<dt>Based on the timings collected, the following performance scores are computed:</dt><dd><ul class="simple">
+<li><p>For each detection section, there is a per-rank performance score based on the measured CPU wall-clock time spent in the section.</p></li>
+<li><p>[Optionally] All CUDA kernel timing information from all monitored sections is aggregated into a single per-rank GPU performance score.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Performance scores are scalar values from 0.0 (worst) to 1.0 (best), reflecting each rank’s performance.
+A performance score can be interpreted as the ratio of current performance to reference performance.</p>
+<dl class="simple">
+<dt>Depending on the reference used, there are two types of performance scores:</dt><dd><ul class="simple">
+<li><p>Relative performance score: The best-performing rank in the workload is used as a reference.</p></li>
+<li><p>Individual performance score: The best historical performance of the rank is used as a reference.</p></li>
+</ul>
+</dd>
+<dt>Examples:</dt><dd><ul class="simple">
+<li><p>If the relative performance score is 0.5, it means that a rank is twice as slow as the fastest rank.</p></li>
+<li><p>If the individual performance score is 0.5, it means that a rank is twice as slow as its best performance.</p></li>
+</ul>
+</dd>
+</dl>
+<p>If there are 8 ranks and 2 sections “data_loading” and “fwd” defined, scores might look like this:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Relative section performance scores:
+{
+&#39;data_loading&#39;: {0: 0.961, 1: 0.919, 2: 0.941, 3: 0.999, 4: 1.0, 5: 0.847, 6: 0.591, 7: 0.788},
+&#39;fwd&#39;: {0: 0.994, 1: 0.949, 2: 0.994, 3: 0.998, 4: 1.0, 5: 0.947, 6: 0.991, 7: 0.988}
+}
+Relative GPU performance scores:
+{
+0: 0.703, 1: 0.978, 2: 0.689, 3: 0.663, 4: 0.673, 5: 0.925, 6: 0.720, 7: 0.737
+}
+
+# NOTE: GPU performance scores are not related to any particular section.
+
+#
+# Individual scores have the same structure as relative scores.
+#
+</pre></div>
+</div>
+<p>If the performance score drops below the specified threshold, the corresponding section or GPU is identified as a straggler.
+To detect the stragglers, users should call the reporting function periodically and check the returned report object for stragglers.</p>
+</section>
+<section id="straggler-detection-usage-overview">
+<h2>Straggler Detection Usage Overview<a class="headerlink" href="#straggler-detection-usage-overview" title="Link to this heading"></a></h2>
+<dl class="simple">
+<dt>Sections of the user code that should be monitored for performance (“detection sections”) can be defined using:</dt><dd><ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Detector.detection_section</span></code> context manager that allows wrapping a custom code block.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Detector.wrap_callables</span></code> method that wraps given callables within <code class="docutils literal notranslate"><span class="pre">Detector.detection_section</span></code>.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Both methods yield the same results. Users can choose the API that is most convenient for their needs.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>If a detection section is monitored for CPU performance, a given section is supposed to run a similar amount of work on all ranks
+(e.g., if a significant amount of additional work was conducted on rank 0, rank 0 would be identified as a straggler).
+Captured CUDA kernels can differ between ranks, but there should be some subset common to all ranks.
+The simplest approach might be to wrap the model’s <code class="docutils literal notranslate"><span class="pre">forward</span></code> call.</p>
+</div>
+<p>Using <code class="docutils literal notranslate"><span class="pre">Detector.detection_section</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">nvidia_resiliency_ext.straggler</span> <span class="k">as</span> <span class="nn">straggler</span>
+
+<span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span>
+   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;relative_perf_scores&quot;</span><span class="p">,</span> <span class="s2">&quot;individual_perf_scores&quot;</span><span class="p">],</span>
+   <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">True</span> <span class="c1"># all ranks&#39; results will be available on rank 0</span>
+<span class="p">)</span>
+
+<span class="k">for</span> <span class="n">training_iter</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_iters</span><span class="p">):</span>
+
+   <span class="o">...</span>
+
+   <span class="k">with</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">detection_section</span><span class="p">(</span><span class="s2">&quot;data_loading&quot;</span><span class="p">,</span> <span class="n">profile_cuda</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+      <span class="n">data</span><span class="p">,</span> <span class="n">labels</span> <span class="o">=</span> <span class="n">data_loader</span><span class="o">.</span><span class="n">get_next_batch</span><span class="p">()</span>
+
+   <span class="k">with</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">detection_section</span><span class="p">(</span><span class="s2">&quot;fwd&quot;</span><span class="p">,</span> <span class="n">profile_cuda</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+      <span class="n">out</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+   <span class="o">...</span>
+
+   <span class="k">if</span> <span class="p">(</span><span class="n">training_iter</span> <span class="o">%</span> <span class="n">STRAGGLER_REPORT_INTERVAL</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+      <span class="n">report</span> <span class="o">=</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">generate_report</span><span class="p">()</span>
+      <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">stragglers</span> <span class="o">=</span> <span class="n">report</span><span class="o">.</span><span class="n">identify_stragglers</span><span class="p">()</span>
+            <span class="n">maybe_notify_user</span><span class="p">(</span><span class="n">stragglers</span><span class="p">)</span>
+
+<span class="o">...</span>
+
+<span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Using <code class="docutils literal notranslate"><span class="pre">Detector.wrap_callables</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">nvidia_resiliency_ext.straggler</span> <span class="k">as</span> <span class="nn">straggler</span>
+
+<span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span>
+   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;relative_perf_scores&quot;</span><span class="p">,</span> <span class="s2">&quot;individual_perf_scores&quot;</span><span class="p">],</span>
+   <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">True</span> <span class="c1"># all ranks&#39; results will be available on rank 0</span>
+<span class="p">)</span>
+
+<span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">wrap_callables</span><span class="p">(</span>
+   <span class="n">callable_ids</span><span class="o">=</span><span class="p">[</span>
+      <span class="n">straggler</span><span class="o">.</span><span class="n">CallableId</span><span class="p">(</span><span class="n">DataLoaderClass</span><span class="p">,</span> <span class="s2">&quot;get_next_batch&quot;</span><span class="p">,</span> <span class="n">ignored_args</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;self&quot;</span><span class="p">,)),</span>
+      <span class="n">straggler</span><span class="o">.</span><span class="n">CallableId</span><span class="p">(</span><span class="n">ModelClass</span><span class="p">,</span> <span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">ignored_args</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;self&quot;</span><span class="p">,)),</span>
+   <span class="p">]</span>
+<span class="p">)</span>
+
+<span class="k">for</span> <span class="n">training_iter</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_iters</span><span class="p">):</span>
+
+   <span class="o">...</span>
+
+   <span class="n">data</span><span class="p">,</span> <span class="n">labels</span> <span class="o">=</span> <span class="n">data_loader</span><span class="o">.</span><span class="n">get_next_batch</span><span class="p">()</span>
+   <span class="n">out</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+
+   <span class="o">...</span>
+
+   <span class="k">if</span> <span class="p">(</span><span class="n">training_iter</span> <span class="o">%</span> <span class="n">STRAGGLER_REPORT_INTERVAL</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+      <span class="n">report</span> <span class="o">=</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">generate_report</span><span class="p">()</span>
+      <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">stragglers</span> <span class="o">=</span> <span class="n">report</span><span class="o">.</span><span class="n">identify_stragglers</span><span class="p">()</span>
+            <span class="n">maybe_notify_user</span><span class="p">(</span><span class="n">stragglers</span><span class="p">)</span>
+
+<span class="o">...</span>
+
+<span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+</pre></div>
+</div>
+<section id="alternative-reporting">
+<h3>Alternative Reporting<a class="headerlink" href="#alternative-reporting" title="Link to this heading"></a></h3>
+<p>Besides calling <code class="docutils literal notranslate"><span class="pre">Detector.generate_report</span></code> after a fixed number of iterations tweaked for a particular workload,
+users can choose to call <code class="docutils literal notranslate"><span class="pre">.generate_report_if_interval_elapsed</span></code> along with each training step.
+The report generation will occur <strong>approximately</strong> within each time period specified through <code class="docutils literal notranslate"><span class="pre">Detector.initialize(report_time_interval=...)</span></code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Straggler detection might involve inter-rank synchronization and should be invoked with reasonable frequency (e.g., every few minutes).</p>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">nvidia_resiliency_ext.straggler</span> <span class="k">as</span> <span class="nn">straggler</span>
+
+<span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span><span class="n">report_time_interval</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span> <span class="c1"># Report every 5 minutes</span>
+
+<span class="k">for</span> <span class="n">training_iter</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_iters</span><span class="p">):</span>
+
+   <span class="o">...</span>
+
+   <span class="c1"># During each training iteration</span>
+   <span class="n">report</span> <span class="o">=</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">generate_report_if_interval_elapsed</span><span class="p">()</span>
+   <span class="k">if</span> <span class="n">report</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+      <span class="n">handle_report</span><span class="p">(</span><span class="n">report</span><span class="p">)</span>
+
+   <span class="c1"># Note: straggler.Detector.generate_report() works as usual, users can alternatively use:</span>
+   <span class="c1"># if (iter_idx % REPORT_INTERVAL) == 0:</span>
+   <span class="c1">#     straggler.Detector.generate_report()</span>
+
+<span class="o">...</span>
+
+<span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="reducing-the-overhead">
+<h3>Reducing the Overhead<a class="headerlink" href="#reducing-the-overhead" title="Link to this heading"></a></h3>
+<p>CUDA kernel profiling imposes some small step time overhead that depends on the workload but generally is expected to be &lt;1%.
+If needed, the amount of overhead can be reduced with <code class="docutils literal notranslate"><span class="pre">Detector.initialize(profiling_interval=...)</span></code>.
+If <code class="docutils literal notranslate"><span class="pre">profiling_interval</span></code> is &gt; 1, only a fraction of section runs are profiled.</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">Detector.generate_report()</span></code> overhead depends on the <code class="docutils literal notranslate"><span class="pre">Detector.initialize</span></code> parameters:</dt><dd><ul class="simple">
+<li><p>Relative performance score calculation (<code class="docutils literal notranslate"><span class="pre">scores_to_compute=[&quot;relative_perf_scores&quot;,</span> <span class="pre">...]</span></code>) involves sharing some data between ranks.</p></li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">gather_on_rank0=True</span></code>, results from all ranks are gathered on rank 0.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Hence, the following initialization parameters can be used to avoid any inter-rank synchronization:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span>
+   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;individual_perf_scores&quot;</span><span class="p">],</span>
+   <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">False</span> <span class="c1"># each rank will report its own results</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>In that case, all ranks compute and report their own, individual results only.</p>
+</section>
+</section>
+<section id="straggler-detection-integration-guide">
+<h2>Straggler Detection Integration Guide<a class="headerlink" href="#straggler-detection-integration-guide" title="Link to this heading"></a></h2>
+<p>This section describes integration with a PTL-based workload (e.g., NeMo) using <code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code>.
+All that is needed is to include <code class="xref py py-class docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code> in the PTL trainer callbacks.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.ptl_resiliency</span> <span class="kn">import</span> <span class="n">StragglerDetectionCallback</span>
+
+<span class="n">straggler_cb_args</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span>
+   <span class="n">report_time_interval</span><span class="o">=</span><span class="mf">300.0</span><span class="p">,</span>
+   <span class="n">calc_relative_gpu_perf</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+   <span class="n">calc_individual_gpu_perf</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+   <span class="n">num_gpu_perf_scores_to_log</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>
+   <span class="n">gpu_relative_perf_threshold</span><span class="o">=</span><span class="mf">0.7</span><span class="p">,</span>
+   <span class="n">gpu_individual_perf_threshold</span><span class="o">=</span><span class="mf">0.7</span><span class="p">,</span>
+   <span class="n">stop_if_detected</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+   <span class="n">logger_name</span><span class="o">=</span><span class="s2">&quot;test_logger&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">straggler_det_cb</span> <span class="o">=</span> <span class="n">StragglerDetectionCallback</span><span class="p">(</span><span class="o">**</span><span class="n">straggler_cb_args</span><span class="p">)</span>
+
+<span class="n">trainer</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">Trainer</span><span class="p">(</span>
+   <span class="o">...</span>
+   <span class="n">callbacks</span><span class="o">=</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">straggler_det_cb</span><span class="p">],</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code> initialization parameters:</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="ft_api.html" class="btn btn-neutral float-left" title="Fault Tolerance API" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="straggler_api.html" class="btn btn-neutral float-right" title="Straggler Detection API" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
