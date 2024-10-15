@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon lightning psutil
+          pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon psutil
 
       - name: Build Documentation
         run: |
@@ -39,6 +39,9 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
+          git reset --hard
+          git clean -fdx
+
           if git ls-remote --exit-code origin gh-pages; then
             git fetch origin gh-pages
             git checkout gh-pages
@@ -49,15 +52,12 @@ jobs:
           if [ -d "public" ]; then
             echo "public directory exists. Proceeding with deployment."
             touch public/.nojekyll
-            ls -la public
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name 'public' -exec rm -rf {} +
-            cp -r public/* .
-            ls -la .
+            cp -r public/* 
             git add .
             git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
             git push origin gh-pages --force
           else
             echo "Error: 'public/' directory does not exist during deployment."
             exit 1
-          fi
 
