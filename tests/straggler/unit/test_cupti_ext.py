@@ -21,6 +21,7 @@ from nvidia_resiliency_ext.straggler import cupti_module
 
 pytestmark = pytest.mark.gpu
 
+
 def test_basic_kernel_tracking():
     cupti_ext = cupti_module.CuptiProfiler()
     a = torch.randn(1000, 1000, device="cuda")

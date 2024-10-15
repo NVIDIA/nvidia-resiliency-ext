@@ -21,6 +21,7 @@ import torch
 
 from .dist_utils import get_device_for_backend
 
+
 @dataclasses.dataclass
 class ReportIntervalTracker:
     """

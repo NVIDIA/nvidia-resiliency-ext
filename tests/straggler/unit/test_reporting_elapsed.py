@@ -24,7 +24,6 @@ import torch.nn as nn
 
 from nvidia_resiliency_ext import straggler
 
-
 pytestmark = pytest.mark.gpu
 
 
