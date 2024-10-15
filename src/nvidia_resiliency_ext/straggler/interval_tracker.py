@@ -19,6 +19,7 @@ from typing import Optional, Sequence
 
 import torch
 
+from .dist_utils import get_device_for_backend
 
 @dataclasses.dataclass
 class ReportIntervalTracker:
@@ -48,9 +49,10 @@ class ReportIntervalTracker:
 
         step_times = torch.tensor(self.step_times, dtype=torch.float32)
         median_step_time = torch.median(step_times)
-
-        gathered_interval = (self.time_interval / median_step_time).to(torch.cuda.current_device())
+        gathered_interval = self.time_interval / median_step_time
         if torch.distributed.is_initialized():
+            device = get_device_for_backend(group=None)
+            gathered_interval = gathered_interval.to(device)
             torch.distributed.all_reduce(gathered_interval, op=torch.distributed.ReduceOp.MAX)
         # it makes no sense to report more frequently than the profiling interval
         self.iter_interval = int(max(gathered_interval.item(), self.profiling_interval))

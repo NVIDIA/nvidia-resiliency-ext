@@ -13,10 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
 import time
 
 from nvidia_resiliency_ext.straggler import interval_tracker
-
 
 def test_estimate():
 

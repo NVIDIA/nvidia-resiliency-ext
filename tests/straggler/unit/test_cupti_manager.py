@@ -18,6 +18,7 @@ import torch
 
 from nvidia_resiliency_ext.straggler.cupti import CuptiManager
 
+pytestmark = pytest.mark.gpu
 
 def test_cupti_manager_start_stop():
     cupti_mgr = CuptiManager()
