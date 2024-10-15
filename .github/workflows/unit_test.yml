@@ -1,0 +1,42 @@
+name: Run Unit Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  unit_test_pytorch_2_4_1_cuda_12_1:
+    runs-on: ubuntu-latest
+
+    container:
+      image: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python environment
+        run: |
+          python --version
+          pip install --upgrade pip
+
+      - name: Install dependencies
+        run: |
+          pip install .
+          pip install pytest
+
+      - name: Run Fault Tolerance unit tests
+        run: |
+          pytest  -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/ 
+
+      - name: Run Straggler unit tests
+        run: |
+          pytest  -s -vvv -m "not gpu" ./tests/straggler/unit/ 
+
+      - name: Run PTL callbacks unit tests
+        run: |
+          pytest  -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
