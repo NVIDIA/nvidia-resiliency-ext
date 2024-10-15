@@ -47,7 +47,7 @@ def _run_launcher(cmd_to_run, timeout):
             cmd_to_run,
             shell=True,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
             text=True,
         )
         stdout, _ = proc.communicate(timeout=timeout)
