@@ -48,6 +48,7 @@ jobs:
 
           if [ -d "public" ]; then
             echo "public directory exists. Proceeding with deployment."
+            touch public/.nojekyll
             ls -la public
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name 'public' -exec rm -rf {} +
             cp -r public/* .
