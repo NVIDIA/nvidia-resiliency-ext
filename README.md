@@ -9,14 +9,24 @@ This project combines multiple resiliency-related solutions.
 ## Installation:
 
 ### From sources
-- `git clone --recursive <this repo URL>`
-- `cd <repo>`
+- `git clone https://github.com/NVIDIA/nvidia-resiliency-ext`
+- `cd nvidia-resiliency-ext`
 - `pip install .`
 
-Requirements:
-- Python >= 3.10
-- gcc >= 8.0
-- CUDA >= 11.8
+### Platform Support
+
+| Category            | Supported Versions / Requirements            |
+|---------------------|----------------------------------------------|
+| Architecture         | x86_64                                      |
+| Operating System     | Ubuntu 22.04                                |
+| Python Version       | >= 3.10, < 3.13                             |
+| PyTorch Version      | 2.3+                                        |
+| CUDA & CUDA Toolkit  | 12.5+                                       |
+| NVML Driver          | 550 or later                                |
+| NCCL Version         | 2.21.5+                                     |
+
+**Note**: The package is designed to support Python >= 3.10, CUDA >= 11.8, PyTorch >= 2.0 and Ubuntu 20.04, but the recommended and tested environment for production is Python >= 3.10, < 3.13, CUDA 12.5+, and Ubuntu 22.04.
+
 
 ## Fault Tolerance integration guide
 
