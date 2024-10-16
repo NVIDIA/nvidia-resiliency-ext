@@ -61,6 +61,8 @@ jobs:
         test_type: ['fault_tolerance', 'straggler', 'ptl_resiliency']
     container:
       image: ${{ matrix.container }}
+    env:
+        MKL_SERVICE_FORCE_INTEL: 1 # Fix for "MKL_THREADING_LAYER=INTEL is incompatible with libgomp.so.1 library."
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -71,20 +73,20 @@ jobs:
           path: ./dist/
       - name: Set up environment
         run: |
-          pip install pytest lightning pytest-rerunfailures
+          pip install pytest lightning
           PY_VER_NODOT=$(python -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
           pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
       - name: Run unit tests
         shell: bash
         run: |
           if [[ "${{ matrix.test_type }}" == "straggler" ]]; then
-            pytest --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/straggler/unit/
+            pytest -s -vvv -m "not gpu" ./tests/straggler/unit/
             exit 0
           elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
-            pytest --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
+            pytest -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
             exit 0
           elif [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
-            pytest --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
+            pytest -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
             exit 0
           else
             echo "Unknown test type: ${{ matrix.test_type }}"
