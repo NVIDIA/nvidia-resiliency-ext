@@ -71,16 +71,16 @@ jobs:
           path: ./dist/
       - name: Set up environment
         run: |
-          pip install pytest lightning
+          pip install pytest lightning pytest-xdist pytest-rerunfailures
           PY_VER_NODOT=$(python -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
           pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
       - name: Run unit tests
         shell: bash
         run: |
           if [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
-            pytest -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
+            pytest -n auto --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
           elif [[ "${{ matrix.test_type }}" == "straggler" ]]; then
-            pytest -s -vvv -m "not gpu" ./tests/straggler/unit/
+            pytest -n auto --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/straggler/unit/
           elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
-            pytest -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
+            pytest -n auto --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
           fi
