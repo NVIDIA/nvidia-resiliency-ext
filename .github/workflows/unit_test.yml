@@ -79,8 +79,14 @@ jobs:
         run: |
           if [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
             pytest --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
+            exit 0
           elif [[ "${{ matrix.test_type }}" == "straggler" ]]; then
             pytest --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/straggler/unit/
+            exit 0
           elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
             pytest --reruns 3 --maxfail=1 -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
+            exit 0
+          else
+            echo "Unknown test type: ${{ matrix.test_type }}"
+            exit 1
           fi
