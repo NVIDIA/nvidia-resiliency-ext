@@ -82,7 +82,7 @@ jobs:
           pytest  -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/ 
       - name: Run Straggler unit tests
         run: |
-          pytest  -s -vvv -m "not gpu" ./tests/straggler/unit/test_data_shared.py
+          pytest  -s -vvv -m "not gpu" ./tests/straggler/unit/
       - name: Run PTL callbacks unit tests
         run: |
           pytest  -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
