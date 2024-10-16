@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import contextlib
+import gc
 import os
 import socket
 import sys
@@ -111,9 +112,19 @@ def distributed_worker(
 
     ready_flag.set()
 
+    print(f"RANK {rank} STARTS WORKER FN", flush=True, file=sys.stderr)
+
     worker_fn(**kwargs)
 
+    print(f"RANK {rank} BEFORE destroy_process_group", flush=True, file=sys.stderr)
+
+    # destroy_process_group hangs were observed in CI
+    # use GC collect and barrier to mitigate the issue
+    gc.collect()
+    torch.distributed.barrier()
     torch.distributed.destroy_process_group()
+
+    print(f"RANK {rank} AFTER destroy_process_group", flush=True, file=sys.stderr)
 
     sys.exit(0)
 
