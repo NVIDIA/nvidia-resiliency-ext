@@ -197,7 +197,7 @@ def test_shutdown(test_scenario):
     else:
         raise Exception(f"Unrecognized action {test_scenario}")
 
-    ret_codes = multiprocessing_execute_join(rank_processes, timeout=180)
+    ret_codes = multiprocessing_execute_join(rank_processes, timeout=60)
 
     assert ret_codes == test_scenario['expected_ret_codes']
 
@@ -232,6 +232,6 @@ def test_explicit_shutdown():
 
     wait_for_mp_events(rank_ready_events, timeout=60)
 
-    ret_codes = multiprocessing_execute_join(rank_processes, timeout=180)
+    ret_codes = multiprocessing_execute_join(rank_processes, timeout=60)
 
     assert all([r == 0 for r in ret_codes])

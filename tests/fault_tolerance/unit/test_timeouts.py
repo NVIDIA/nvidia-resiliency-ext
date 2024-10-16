@@ -31,7 +31,7 @@ from .utils import multiprocessing_execute_join, multiprocessing_execute_start
 
 TEST_WORLD_SIZE = 4
 ALL_RANK_IDS = set(range(TEST_WORLD_SIZE))
-WORKLOAD_TIMEOUT = 180
+WORKLOAD_TIMEOUT = 60
 TERM_BY_FT_EXIT_CODE = 123
 FT_TERM_SIGNAL = signal.SIGUSR1
 TIMEOUTS_FILENAME = "_ft_timeouts.json"
