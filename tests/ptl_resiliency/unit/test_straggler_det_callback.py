@@ -26,6 +26,8 @@ from torch import nn
 
 from nvidia_resiliency_ext.ptl_resiliency import StragglerDetectionCallback
 
+pytestmark = pytest.mark.gpu
+
 
 class OnesDataset(torch.utils.data.Dataset):
     def __init__(self, dataset_len):

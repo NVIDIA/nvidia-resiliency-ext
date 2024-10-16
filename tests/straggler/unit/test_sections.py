@@ -24,6 +24,9 @@ from nvidia_resiliency_ext import straggler
 
 from ._utils import multiprocessing_execute_join, multiprocessing_execute_start
 
+# FIXME: should work without GPU as well
+pytestmark = pytest.mark.gpu
+
 # This is a basic test of custom sections:
 # - Run distributed dummy workload, where each rank has 3 custom sections
 # - Each rank executes the sections in a loop

@@ -24,6 +24,8 @@ import torch.nn as nn
 
 from nvidia_resiliency_ext import straggler
 
+pytestmark = pytest.mark.gpu
+
 
 class Layer(nn.Module):
     def __init__(self, in_features, out_features, bias):

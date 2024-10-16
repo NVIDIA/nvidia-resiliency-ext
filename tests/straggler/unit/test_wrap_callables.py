@@ -24,6 +24,8 @@ from nvidia_resiliency_ext import straggler
 
 from ._utils import multiprocessing_execute_join, multiprocessing_execute_start
 
+pytestmark = pytest.mark.gpu
+
 TEST_WORLD_SIZE = 4
 ALL_RANK_IDS = set(range(TEST_WORLD_SIZE))
 RANK_DONE_TIMEOUT = 30
