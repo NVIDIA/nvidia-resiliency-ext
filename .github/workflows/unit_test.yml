@@ -63,7 +63,7 @@ jobs:
     container:
       image: ${{ matrix.container }}
     env:
-        MKL_SERVICE_FORCE_INTEL: 1
+        MKL_SERVICE_FORCE_INTEL: 1 # Fix for "MKL_THREADING_LAYER=INTEL is incompatible with libgomp.so.1 library."
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -77,12 +77,12 @@ jobs:
           pip install pytest lightning
           PY_VER_NODOT=$(python -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
           pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
-      #- name: Run Fault Tolerance unit tests
-      #  run: |
-      #    pytest  -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/ 
+      - name: Run Fault Tolerance unit tests
+        run: |
+          pytest  -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/ 
       - name: Run Straggler unit tests
         run: |
           pytest  -s -vvv -m "not gpu" ./tests/straggler/unit/test_data_shared.py
-      #- name: Run PTL callbacks unit tests
-      #  run: |
-      #    pytest  -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
+      - name: Run PTL callbacks unit tests
+        run: |
+          pytest  -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
