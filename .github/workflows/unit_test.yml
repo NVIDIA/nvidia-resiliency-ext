@@ -49,7 +49,18 @@ jobs:
           name: resiliency-wheels
           path: dist/*.whl
 
-  test_setup: &test_setup
+  unit_tests:
+    runs-on: ubuntu-24.04
+    needs: build_wheels
+    strategy:
+      matrix:
+        container:
+          - 'pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
+          - 'pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime'
+          - 'pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime'
+        test_type: ['fault_tolerance', 'straggler', 'ptl_resiliency']
+    container:
+      image: ${{ matrix.container }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -63,95 +74,12 @@ jobs:
           pip install pytest lightning
           PY_VER_NODOT=$(python -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
           pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
-
-  unit_test_2_4_1_fault_tolerance:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run Fault Tolerance unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
-
-  unit_test_2_4_1_straggler:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run Straggler unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/straggler/unit/
-
-  unit_test_2_4_1_ptl_resiliency:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run PTL Resiliency unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
-
-  # Unit tests for PyTorch 2.2.2
-  unit_test_2_2_2_fault_tolerance:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run Fault Tolerance unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
-
-  unit_test_2_2_2_straggler:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run Straggler unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/straggler/unit/
-
-  unit_test_2_2_2_ptl_resiliency:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run PTL Resiliency unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
-
-  unit_test_2_1_0_fault_tolerance:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run Fault Tolerance unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
-
-  unit_test_2_1_0_straggler:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run Straggler unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/straggler/unit/
-
-  unit_test_2_1_0_ptl_resiliency:
-    runs-on: ubuntu-24.04
-    needs: build_wheels
-    container:
-      image: 'pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime'
-    <<: *test_setup
-    steps:
-      - name: Run PTL Resiliency unit tests
-        run: pytest -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
-
+      - name: Run unit tests
+        run: |
+          if [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
+            pytest -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
+          elif [[ "${{ matrix.test_type }}" == "straggler" ]]; then
+            pytest -s -vvv -m "not gpu" ./tests/straggler/unit/
+          elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
+            pytest -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
+          fi
