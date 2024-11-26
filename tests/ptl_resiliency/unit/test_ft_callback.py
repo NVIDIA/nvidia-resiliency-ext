@@ -24,8 +24,8 @@ import signal
 import sys
 import tempfile
 
-import pytest
 import lightning.pytorch as pl
+import pytest
 import torch
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.exceptions import _TunerExitException

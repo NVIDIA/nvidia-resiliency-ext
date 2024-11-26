@@ -19,8 +19,8 @@ import pathlib
 import shutil
 import tempfile
 
-import pytest
 import lightning.pytorch as pl
+import pytest
 import torch
 from torch import nn
 
