@@ -25,10 +25,10 @@ import sys
 import tempfile
 
 import pytest
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from pytorch_lightning.callbacks import Callback
-from pytorch_lightning.utilities.exceptions import _TunerExitException
+from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.utilities.exceptions import _TunerExitException
 from torch import nn
 
 import nvidia_resiliency_ext.fault_tolerance as fault_tolerance

@@ -19,7 +19,7 @@ import time
 from typing import Optional
 
 import torch
-from pytorch_lightning.callbacks import Callback
+from lightning.pytorch.callbacks import Callback
 
 import nvidia_resiliency_ext.straggler as straggler
 
