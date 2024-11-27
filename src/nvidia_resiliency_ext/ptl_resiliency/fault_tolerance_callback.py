@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 
 import torch
-from pytorch_lightning.callbacks import Callback
+from lightning.pytorch.callbacks import Callback
 
 import nvidia_resiliency_ext.fault_tolerance as ft
 
