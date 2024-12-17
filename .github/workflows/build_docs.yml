@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon psutil
+          pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon sphinx_copybutton lightning
 
       - name: Build Documentation
         run: |
