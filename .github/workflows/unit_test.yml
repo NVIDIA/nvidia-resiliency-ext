@@ -10,7 +10,6 @@ on:
 jobs:
 
   build_wheels:
-    #if: true # Temporarily disable unit-test
     runs-on: ubuntu-24.04
     container:
       image: 'nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04'
@@ -59,7 +58,7 @@ jobs:
           - 'pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
           - 'pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime'
           - 'pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime'
-        test_type: ['fault_tolerance', 'straggler', 'ptl_resiliency']
+        test_type: ['fault_tolerance', 'straggler', 'ptl_resiliency', 'inprocess']
     container:
       image: ${{ matrix.container }}
     env:
@@ -81,14 +80,19 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.test_type }}" == "straggler" ]]; then
-            pytest -s -vvv -m "not gpu" ./tests/straggler/unit/
-            exit 0
-          elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
-            pytest -s -vvv -m "not gpu" ./tests/ptl_resiliency/unit/
-            exit 0
+              FT_CPU_TESTS_PATTERN="test_all_gather_object_calls_num \
+              or test_fail_if_not_initialized \
+              or test_individual_gpu_scores_one_rank \
+              or test_relative_gpu_scores_ \
+              or test_name_mapper_ \
+              or test_relative_gpu_scores_"
+              pytest -s -vvv tests/straggler/unit/ -k "${FT_CPU_TESTS_PATTERN}"
           elif [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
-            pytest -s -vvv -m "not gpu" ./tests/fault_tolerance/unit/
-            exit 0
+              pytest -s -vvv ./tests/fault_tolerance/unit/
+          elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
+            pytest -s -vvv ./tests/ptl_resiliency/unit/test_ft_state_machine.py
+          elif [[ "${{ matrix.test_type }}" == "inprocess" ]]; then
+            pytest -s -vvv ./tests/inprocess/
           else
             echo "Unknown test type: ${{ matrix.test_type }}"
             exit 1
