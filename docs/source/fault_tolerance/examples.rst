@@ -6,3 +6,4 @@ Examples
    :caption: Examples
 
    examples/basic_example.rst
+   examples/train_ddp.rst
