@@ -49,7 +49,7 @@ jobs:
           name: resiliency-wheels
           path: dist/*.whl
 
-  unit_tests_cpu_only:
+  unit_tests_cpu_subset:
     runs-on: ubuntu-24.04
     needs: build_wheels
     strategy:
