@@ -41,21 +41,41 @@ FT Package Design Overview
 FT Integration Guide for PyTorch
 ********************************
 
-Prerequisite:
-=============
+1. Prerequisites:
+=================
 Run ranks using ``ft_launcher``. The command line is mostly compatible with ``torchrun``. 
-FT configuration is passed to ``ft_launcher`` via YAML file ``--fault-tol-cfg-path`` or CLI arguments (``--ft-param-...``).
+
+.. note::
+   Some clusters (e.g. SLURM) use SIGTERM as a default method of requesting a graceful workload shutdown.
+   It is recommended to implement appropriate signal handling in a fault-tolerant workload.
+   To avoid deadlocks and other unintended side effects, signal handling should be synchronized across all ranks.
+   Please refer to the :doc:`train_ddp.py example <examples>` for a basic signal handling implementation.
+
+
+2. FT configuration:
+====================
+
+FT configuration is passed to ``ft_launcher`` 
+via YAML file ``--fault-tol-cfg-path`` or CLI arguments ``--ft-param-...``, 
+from where it's propagated to other FT components.
+
 Timeouts for fault detection need to be adjusted for a given workload:
    * ``initial_rank_heartbeat_timeout`` should be long enough to allow for workload initialization.
    * ``rank_heartbeat_timeout`` should be at least as long as the longest possible interval between steps.
 
-Integration with a workload:  
-============================
-1. Initialize a ``RankMonitorClient`` instance on each rank with ``RankMonitorClient.init_workload_monitoring()``.
-2. *(Optional)* Restore the state of ``RankMonitorClient`` instances using ``RankMonitorClient.load_state_dict()``.
+**Importantly, heartbeats are not sent during checkpoint loading and saving**, so time for checkpointing-related operations should be taken into account.
+
+Summary of all FT configuration items:
+
+.. autoclass:: nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig
+
+
+3. Integration with a PyTorch workload:  
+=======================================
+1. Initialize a ``RankMonitorClient`` instance on each rank with ``RankMonitorClient.init_workload_monitoring()``.  
+2. *(Optional)* Restore the state of ``RankMonitorClient`` instances using ``RankMonitorClient.load_state_dict()``.  
 3. Periodically send heartbeats from ranks using ``RankMonitorClient.send_heartbeat()``.
 4. *(Optional)* After a sufficient range of heartbeat intervals has been observed, call ``RankMonitorClient.calculate_and_set_timeouts()`` to estimate timeouts.  
-   **Note:** Operations such as checkpoint loading and saving might result in longer intervals between heartbeats.
 5. *(Optional)* Save the ``RankMonitorClient`` instance's ``state_dict()`` to a file so that computed timeouts can be reused in the next run.
 6. Shut down ``RankMonitorClient`` instances using ``RankMonitorClient.shutdown_workload_monitoring()``.
 
@@ -68,12 +88,9 @@ This section describes Fault Tolerance integration with a PTL-based workload (i.
 1. Use ``ft_launcher`` to start the workload
 ============================================
 
-Fault tolerance relies on a special launcher (``ft_launcher``), which is a modified ``torchrun``. The FT launcher runs background processes called rank monitors. 
-**You need to use ft_launcher to start your workload if you are using FT**. 
-For example, the `NeMo-Framework-Launcher <https://github.com/NVIDIA/NeMo-Framework-Launcher>`_ can be used to generate SLURM batch scripts with FT support.
+Fault tolerance relies on a special launcher (``ft_launcher``), which is a modified ``torchrun``. 
+If you are using NeMo, the `NeMo-Framework-Launcher <https://github.com/NVIDIA/NeMo-Framework-Launcher>`_ can be used to generate SLURM batch scripts with the FT support.
 
-``ft_launcher`` is similar to ``torchrun`` but it starts a rank monitor for each started rank. ``ft_launcher`` takes the FT configuration in a YAML file (``--fault-tol-cfg-path``) or via CLI args (``--ft-param-...``). 
-FT configuration items are described in the :class:`FaultToleranceConfig <nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig>` docstring. 
 
 2. Add FT callback to the PTL trainer
 =====================================
@@ -128,28 +145,3 @@ The following mechanism can be used to implement an auto-resuming launcher scrip
 
       * If ``FAULT_TOL_FINISHED_FLAG_FILE`` exists, the auto-resume loop can be broken, as the training is completed.
       * If ``FAULT_TOL_FINISHED_FLAG_FILE`` does not exist, the continuation job can be issued (other conditions can be checked, e.g., if the maximum number of failures is not reached).
-
-4. FT configuration
-===================
-
-FT configuration is passed to ``ft_launcher`` via a YAML file or CLI args, from where it's propagated to other FT components.
-
-Timeouts for fault detection need to be adjusted for a given workload:
-   * ``initial_rank_heartbeat_timeout`` should be long enough to allow for workload initialization.
-   * ``rank_heartbeat_timeout`` should be at least as long as the longest possible interval between steps.
-
-**Importantly, heartbeats are not sent during checkpoint loading and saving**, so time for checkpointing-related operations should be taken into account.
-
-If ``calculate_timeouts: True``, timeouts will be automatically estimated based on observed intervals. Estimated timeouts take precedence over timeouts defined in the config file. 
-**Timeouts are estimated at the end of a training run when checkpoint loading and saving were observed**. Hence, in a multi-part training started from scratch, 
-estimated timeouts won't be available during the initial two runs. Estimated timeouts are stored in a separate JSON file.
-
-``max_subsequent_job_failures`` allows for the automatic continuation of training on a SLURM cluster. This feature requires the SLURM job to be scheduled with ``NeMo-Framework-Launcher`` or other compatible launcher framework. 
-If ``max_subsequent_job_failures`` value is `>0`, a continuation job is prescheduled. It will continue the work until ``max_subsequent_job_failures`` subsequent jobs fail (SLURM job exit code is `!= 0`) 
-or the training is completed successfully ("end of training" marker file is produced by the ``FaultToleranceCallback``, i.e., due to iterations or time limit reached).
-
-Summary of all FT configuration items:
-
-.. autoclass:: nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig
-   :members:
-   :exclude-members: from_args, from_kwargs, from_yaml_file, to_yaml_file
