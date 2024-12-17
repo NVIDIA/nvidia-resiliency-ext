@@ -52,6 +52,8 @@ jobs:
           if [ -d "public" ]; then
             echo "public directory exists. Proceeding with deployment."
 
+            ls -al public/
+
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name 'public' -exec rm -rf {} +
 
             cp -r public/* .
