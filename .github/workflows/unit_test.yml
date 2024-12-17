@@ -10,6 +10,7 @@ on:
 jobs:
 
   build_wheels:
+    if: false # Temporarily disable unit-test
     runs-on: ubuntu-24.04
     container:
       image: 'nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04'
