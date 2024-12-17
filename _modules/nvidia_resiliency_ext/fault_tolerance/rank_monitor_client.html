@@ -105,14 +105,14 @@
 
 
 <div class="viewcode-block" id="RankMonitorClientError">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClientError">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClientError">[docs]</a>
 <span class="k">class</span> <span class="nc">RankMonitorClientError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
     <span class="k">pass</span></div>
 
 
 
 <div class="viewcode-block" id="HeartbeatTimeouts">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts">[docs]</a>
 <span class="nd">@dataclass</span>
 <span class="k">class</span> <span class="nc">HeartbeatTimeouts</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
@@ -141,7 +141,7 @@
 
 
 <div class="viewcode-block" id="RankMonitorClient">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient">[docs]</a>
 <span class="k">class</span> <span class="nc">RankMonitorClient</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    `RankMonitorClient` is a client for `RankMonitorServer`.</span>
@@ -214,7 +214,7 @@
         <span class="k">return</span> <span class="n">alpha</span> <span class="o">*</span> <span class="n">new_value</span> <span class="o">+</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">alpha</span><span class="p">)</span> <span class="o">*</span> <span class="n">old_value</span>
 
 <div class="viewcode-block" id="RankMonitorClient.calculate_and_set_timeouts">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts">[docs]</a>
     <span class="k">def</span> <span class="nf">calculate_and_set_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">skip_if_not_ready</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Calculates and sets the timeouts used for hang detection.</span>
@@ -291,7 +291,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span> <span class="o">=</span> <span class="n">reply_for_init</span><span class="o">.</span><span class="n">cfg</span>
 
 <div class="viewcode-block" id="RankMonitorClient.init_workload_monitoring">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring">[docs]</a>
     <span class="k">def</span> <span class="nf">init_workload_monitoring</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -334,7 +334,7 @@
 
 
 <div class="viewcode-block" id="RankMonitorClient.shutdown_workload_monitoring">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.shutdown_workload_monitoring">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.shutdown_workload_monitoring">[docs]</a>
     <span class="k">def</span> <span class="nf">shutdown_workload_monitoring</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Shutdown the workload monitoring and close the connection to the RankMonitorServer.</span>
@@ -347,7 +347,7 @@
 
 
 <div class="viewcode-block" id="RankMonitorClient.send_heartbeat">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_heartbeat">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_heartbeat">[docs]</a>
     <span class="k">def</span> <span class="nf">send_heartbeat</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Sends a empty (not containing a state) heartbeat message to the rank monitor server.</span>
@@ -356,7 +356,7 @@
 
 
 <div class="viewcode-block" id="RankMonitorClient.state_dict">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.state_dict">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.state_dict">[docs]</a>
     <span class="k">def</span> <span class="nf">state_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Returns the state dictionary of this RankMonitorClient object.</span>
@@ -376,7 +376,7 @@
 
 
 <div class="viewcode-block" id="RankMonitorClient.load_state_dict">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.load_state_dict">[docs]</a>
+<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.load_state_dict">[docs]</a>
     <span class="k">def</span> <span class="nf">load_state_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Loads the state of the RankMonitorClient from a dictionary.</span>

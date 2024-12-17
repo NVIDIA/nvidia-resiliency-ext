@@ -1,29 +1,27 @@
 
 
 <!DOCTYPE html>
-<html class="writer-html5" lang="en" data-content_root="../">
+<html class="writer-html5" lang="en" data-content_root="./">
 <head>
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Usage guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=80d5e7a1" />
-      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
-      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+  <title>Fault Tolerance Usage Guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
 
   
-      <script src="../_static/jquery.js?v=5d32c60e"></script>
-      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="../_static/documentation_options.js?v=2709fde1"></script>
-      <script src="../_static/doctools.js?v=9bcbadda"></script>
-      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
-      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
-      <script src="../_static/copybutton.js?v=f281be69"></script>
-    <script src="../_static/js/theme.js"></script>
-    <link rel="index" title="Index" href="../genindex.html" />
-    <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="API documentation" href="api.html" />
-    <link rel="prev" title="Fault Tolerance" href="index.html" /> 
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=2709fde1"></script>
+      <script src="_static/doctools.js?v=9bcbadda"></script>
+      <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="_static/copybutton.js?v=f281be69"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -34,11 +32,11 @@
 
           
           
-          <a href="../index.html" class="icon icon-home">
+          <a href="index.html" class="icon icon-home">
             nvidia-resiliency-ext
           </a>
 <div role="search">
-  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
     <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
     <input type="hidden" name="check_keywords" value="yes" />
     <input type="hidden" name="area" value="default" />
@@ -46,33 +44,12 @@
 </div>
         </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
-<ul class="current">
-<li class="toctree-l1 current"><a class="reference internal" href="index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2 current"><a class="current reference internal" href="#">Usage guide</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#terms">Terms</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#ft-package-design-overview">FT Package Design Overview</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#ft-integration-guide-for-pytorch">FT Integration Guide for PyTorch</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#prerequisite">Prerequisite:</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#integration-with-a-workload">Integration with a workload:</a></li>
-</ul>
-</li>
-<li class="toctree-l3"><a class="reference internal" href="#ft-integration-guide-for-pytorch-lightning">FT Integration Guide for PyTorch Lightning</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#use-ft-launcher-to-start-the-workload">1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#add-ft-callback-to-the-ptl-trainer">2. Add FT callback to the PTL trainer</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#implementing-auto-resume">3. Implementing auto-resume</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#ft-configuration">4. FT configuration</a></li>
-</ul>
-</li>
-</ul>
-</li>
-<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="../inprocess/index.html">Inprocess Restart</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
 </ul>
 
         </div>
@@ -81,18 +58,17 @@
 
     <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
           <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
-          <a href="../index.html">nvidia-resiliency-ext</a>
+          <a href="index.html">nvidia-resiliency-ext</a>
       </nav>
 
       <div class="wy-nav-content">
         <div class="rst-content">
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
-      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="index.html">Fault Tolerance</a></li>
-      <li class="breadcrumb-item active">Usage guide</li>
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Fault Tolerance Usage Guide</li>
       <li class="wy-breadcrumbs-aside">
-            <a href="../_sources/fault_tolerance/usage_guide.rst.txt" rel="nofollow"> View page source</a>
+            <a href="_sources/ft_usage.rst.txt" rel="nofollow"> View page source</a>
       </li>
   </ul>
   <hr/>
@@ -100,8 +76,20 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="usage-guide">
-<h1>Usage guide<a class="headerlink" href="#usage-guide" title="Link to this heading"></a></h1>
+  <section id="fault-tolerance-usage-guide">
+<h1>Fault Tolerance Usage Guide<a class="headerlink" href="#fault-tolerance-usage-guide" title="Link to this heading"></a></h1>
+<dl class="simple">
+<dt>Fault Tolerance is a Python package that features:</dt><dd><ul class="simple">
+<li><p>Workload hang detection.</p></li>
+<li><p>Automatic calculation of timeouts used for hang detection.</p></li>
+<li><p>Detection of rank(s) terminated due to an error.</p></li>
+<li><p>Workload respawning in case of a failure.</p></li>
+</ul>
+</dd>
+</dl>
+<p>The <code class="docutils literal notranslate"><span class="pre">nvidia-resiliency-ext</span></code> package also includes the PTL callback <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> that simplifies FT package integration with PyTorch Lightning-based workloads.</p>
+<p>Fault Tolerance is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance</span></code> package.
+<code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.ptl_resiliency</span></code> package.</p>
 <section id="terms">
 <h2>Terms<a class="headerlink" href="#terms" title="Link to this heading"></a></h2>
 <ul class="simple">
@@ -141,35 +129,16 @@
 </pre></div>
 </div>
 </section>
-<section id="ft-integration-guide-for-pytorch">
-<h2>FT Integration Guide for PyTorch<a class="headerlink" href="#ft-integration-guide-for-pytorch" title="Link to this heading"></a></h2>
-<section id="prerequisite">
-<h3>Prerequisite:<a class="headerlink" href="#prerequisite" title="Link to this heading"></a></h3>
-<p>Run ranks using <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>. The command line is mostly compatible with <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.
-FT configuration is passed to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> via YAML file <code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code> or CLI arguments (<code class="docutils literal notranslate"><span class="pre">--ft-param-...</span></code>).
-Timeouts for fault detection need to be adjusted for a given workload:</p>
-<blockquote>
-<div><ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">initial_rank_heartbeat_timeout</span></code> should be long enough to allow for workload initialization.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">rank_heartbeat_timeout</span></code> should be at least as long as the longest possible interval between steps.</p></li>
-</ul>
-</div></blockquote>
-</section>
-<section id="integration-with-a-workload">
-<h3>Integration with a workload:<a class="headerlink" href="#integration-with-a-workload" title="Link to this heading"></a></h3>
+<section id="ft-package-usage-overview">
+<h2>FT Package Usage Overview<a class="headerlink" href="#ft-package-usage-overview" title="Link to this heading"></a></h2>
 <ol class="arabic simple">
-<li><p>Initialize a <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance on each rank with <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.init_workload_monitoring()</span></code>.</p></li>
-<li><p><em>(Optional)</em> Restore the state of <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.load_state_dict()</span></code>.</p></li>
-<li><p>Periodically send heartbeats from ranks using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.send_heartbeat()</span></code>.</p></li>
-<li><p><em>(Optional)</em> After a sufficient range of heartbeat intervals has been observed, call <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.calculate_and_set_timeouts()</span></code> to estimate timeouts.
-<strong>Note:</strong> Operations such as checkpoint loading and saving might result in longer intervals between heartbeats.</p></li>
-<li><p><em>(Optional)</em> Save the <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance’s <code class="docutils literal notranslate"><span class="pre">state_dict()</span></code> to a file so that computed timeouts can be reused in the next run.</p></li>
-<li><p>Shut down <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.shutdown_workload_monitoring()</span></code>.</p></li>
+<li><p>Initialize a <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance in each rank.</p></li>
+<li><p>Send heartbeats from ranks using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.send_heartbeat()</span></code>.</p></li>
+<li><p>Run ranks using <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>. The command line is mostly compatible with <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>. Additionally, you might need to provide the FT config via <code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code> or CLI args (<code class="docutils literal notranslate"><span class="pre">--ft-param-...</span></code>).</p></li>
 </ol>
 </section>
-</section>
-<section id="ft-integration-guide-for-pytorch-lightning">
-<h2>FT Integration Guide for PyTorch Lightning<a class="headerlink" href="#ft-integration-guide-for-pytorch-lightning" title="Link to this heading"></a></h2>
+<section id="ft-integration-guide">
+<h2>FT Integration Guide<a class="headerlink" href="#ft-integration-guide" title="Link to this heading"></a></h2>
 <p>This section describes Fault Tolerance integration with a PTL-based workload (i.e., NeMo) using <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code>.</p>
 <section id="use-ft-launcher-to-start-the-workload">
 <h3>1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload<a class="headerlink" href="#use-ft-launcher-to-start-the-workload" title="Link to this heading"></a></h3>
@@ -177,7 +146,7 @@ Timeouts for fault detection need to be adjusted for a given workload:</p>
 <strong>You need to use ft_launcher to start your workload if you are using FT</strong>.
 For example, the <a class="reference external" href="https://github.com/NVIDIA/NeMo-Framework-Launcher">NeMo-Framework-Launcher</a> can be used to generate SLURM batch scripts with FT support.</p>
 <p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> is similar to <code class="docutils literal notranslate"><span class="pre">torchrun</span></code> but it starts a rank monitor for each started rank. <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> takes the FT configuration in a YAML file (<code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code>) or via CLI args (<code class="docutils literal notranslate"><span class="pre">--ft-param-...</span></code>).
-FT configuration items are described in the <a class="reference internal" href="../ft_usage.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code></a> docstring.</p>
+FT configuration items are described in the <a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code></a> docstring.</p>
 </section>
 <section id="add-ft-callback-to-the-ptl-trainer">
 <h3>2. Add FT callback to the PTL trainer<a class="headerlink" href="#add-ft-callback-to-the-ptl-trainer" title="Link to this heading"></a></h3>
@@ -214,7 +183,7 @@ FT configuration items are described in the <a class="reference internal" href="
 <p>FT callback initialization parameters:</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.__init__">
-<span class="sig-prename descclassname"><span class="pre">FaultToleranceCallback.</span></span><span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">autoresume</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calculate_timeouts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">simulated_fault_params</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">logger_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'nemo_logger.FaultToleranceCallback'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/ptl_resiliency/fault_tolerance_callback.html#FaultToleranceCallback.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.__init__" title="Link to this definition"></a></dt>
+<span class="sig-prename descclassname"><span class="pre">FaultToleranceCallback.</span></span><span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">autoresume</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calculate_timeouts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">simulated_fault_params</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">logger_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'nemo_logger.FaultToleranceCallback'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/nvidia_resiliency_ext/ptl_resiliency/fault_tolerance_callback.html#FaultToleranceCallback.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.__init__" title="Link to this definition"></a></dt>
 <dd><p>Initialize callback instance.</p>
 <p>This is a lightweight initialization. Most of the initialization is conducted in the ‘setup’ hook.</p>
 <dl class="field-list simple">
@@ -225,7 +194,7 @@ FT configuration items are described in the <a class="reference internal" href="
 Calculated timeouts overwrite the timeouts from the FT config.
 Timeouts are computed at the end of a training job, if there was checkpoint loading and saving.
 For example, for training started from scratch, the timeouts are computed at the end of the second job.</p></li>
-<li><p><strong>simulated_fault_params</strong> (<a class="reference internal" href="../ft_api.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams" title="nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams"><em>SimulatedFaultParams</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)"><em>dict</em></a><em>, </em><em>DictConfig</em><em>, </em><em>None</em>) – Simulated fault spec. It’s for debugging only. Defaults to None.
+<li><p><strong>simulated_fault_params</strong> (<a class="reference internal" href="ft_api.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams" title="nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams"><em>SimulatedFaultParams</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)"><em>dict</em></a><em>, </em><em>DictConfig</em><em>, </em><em>None</em>) – Simulated fault spec. It’s for debugging only. Defaults to None.
 Should be a <cite>SimulatedFaultParams</cite> instance or any object that can be used for SimulatedFaultParams initialization with <cite>SimulatedFaultParams(**obj)</cite>.</p></li>
 <li><p><strong>exp_dir</strong> (<em>Union</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.13)"><em>pathlib.Path</em></a><em>, </em><em>None</em><em>]</em><em>, </em><em>optional</em>) – Directory where the FT state should be saved.
 Must be available for all training jobs. NOTE: Beware that PTL can move files written to its <cite>trainer.log_dir</cite>.
@@ -283,7 +252,7 @@ or the training is completed successfully (“end of training” marker file is 
 <p>Summary of all FT configuration items:</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="Link to this definition"></a></dt>
 <dd><dl>
 <dt>Configuration of fault tolerance</dt><dd><ul class="simple">
 <li><p><cite>workload_check_interval</cite> [float] periodic rank check interval (in seconds) in rank monitors.</p></li>
@@ -321,10 +290,7 @@ If None this timeout needs to be deduced and set during runtime, based on the ob
 
            </div>
           </div>
-          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="index.html" class="btn btn-neutral float-left" title="Fault Tolerance" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="api.html" class="btn btn-neutral float-right" title="API documentation" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
-    </div>
+          <footer>
 
   <hr/>
 
