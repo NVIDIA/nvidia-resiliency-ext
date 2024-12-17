@@ -1,0 +1,366 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Replication &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" />
+    <link rel="next" title="GroupWrapper" href="group_utils.html" />
+    <link rel="prev" title="LocalCheckpointManager" href="local_ckpt_manager.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Local Checkpointing</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="callback.html">PTL Callback support</a></li>
+<li class="toctree-l3"><a class="reference internal" href="base_ckpt_manager.html">BaseCheckpointManager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="local_ckpt_manager.html">LocalCheckpointManager</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Replication</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy"><code class="docutils literal notranslate"><span class="pre">CliqueReplicationStrategy</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyCliqueReplicationStrategy"><code class="docutils literal notranslate"><span class="pre">LazyCliqueReplicationStrategy</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder"><code class="docutils literal notranslate"><span class="pre">LazyReplicationStrategyBuilder</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError"><code class="docutils literal notranslate"><span class="pre">NoReplicasAvailableError</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy"><code class="docutils literal notranslate"><span class="pre">ReplicationStrategy</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="group_utils.html">GroupWrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="base_state_dict.html">BaseTensorAwareStateDict</a></li>
+<li class="toctree-l3"><a class="reference internal" href="basic_state_dict.html">BasicTensorAwareStateDict</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Local Checkpointing</a></li>
+          <li class="breadcrumb-item"><a href="../api.html">API documentation</a></li>
+      <li class="breadcrumb-item active">Replication</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../../_sources/checkpointing/local/api/replication.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="module-nvidia_resiliency_ext.checkpointing.local.replication.strategies">
+<span id="replication"></span><h1>Replication<a class="headerlink" href="#module-nvidia_resiliency_ext.checkpointing.local.replication.strategies" title="Link to this heading"></a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">CliqueReplicationStrategy</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">local_group</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target_device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'cpu'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#CliqueReplicationStrategy"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy"><code class="xref py py-class docutils literal notranslate"><span class="pre">ReplicationStrategy</span></code></a></p>
+<p>Implements a replication strategy where all participants are in a single group.</p>
+<p>This strategy replicates local checkpoints among all ranks in the local process group,
+enabling efficient retrieval and communication of tensor data.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>local_group</strong> (<a class="reference internal" href="group_utils.html#nvidia_resiliency_ext.checkpointing.local.replication.group_utils.GroupWrapper" title="nvidia_resiliency_ext.checkpointing.local.replication.group_utils.GroupWrapper"><em>GroupWrapper</em></a><em> | </em><em>ProcessGroup</em>)</p>
+</dd>
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.from_replication_params">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_replication_params</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">replication_jump</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">replication_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#CliqueReplicationStrategy.from_replication_params"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.from_replication_params" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy"><em>CliqueReplicationStrategy</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.replicate">
+<span class="sig-name descname"><span class="pre">replicate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">local_ckpt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">id_</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#CliqueReplicationStrategy.replicate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.replicate" title="Link to this definition"></a></dt>
+<dd><p>Replicates the local checkpoint and returns the replicated checkpoints with IDs.</p>
+<p>This method splits the local checkpoint into a hollow state dictionary and its tensor data,
+gathers replicated copies from other ranks, and reconstructs the state dictionaries.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>local_ckpt</strong> (<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>) – The local checkpoint to replicate.</p></li>
+<li><p><strong>id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – Identifier for the state dict.</p></li>
+<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><ul class="simple">
+<li><p>List[TensorAwareStateDict]: A list of replicated checkpoints.</p></li>
+<li><p>List[str]: A list of identifiers for the replicated checkpoints.</p></li>
+</ul>
+</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Tuple[List[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict">TensorAwareStateDict</a>], List[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a>]]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.retrieve_execute">
+<span class="sig-name descname"><span class="pre">retrieve_execute</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#CliqueReplicationStrategy.retrieve_execute"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.retrieve_execute" title="Link to this definition"></a></dt>
+<dd><p>Executes the retrieval plan using the local group.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>The result of executing the retrieval plan.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.retrieve_plan">
+<span class="sig-name descname"><span class="pre">retrieve_plan</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">globally_available_ids</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wanted</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#CliqueReplicationStrategy.retrieve_plan"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.retrieve_plan" title="Link to this definition"></a></dt>
+<dd><p>Creates a plan for retrieving the specified IDs from globally available replicas.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>globally_available_ids</strong> (<em>Mapping</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>List</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>]</em>) – Mapping of ranks to available IDs.</p></li>
+<li><p><strong>wanted</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>) – List of IDs to retrieve.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A plan detailing how to retrieve the requested IDs.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>ExchangePlan</p>
+</dd>
+<dt class="field-even">Raises<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError"><strong>NoReplicasAvailableError</strong></a> – If no replicas are found for a requested ID.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyCliqueReplicationStrategy">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">LazyCliqueReplicationStrategy</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">replication_jump</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">replication_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#LazyCliqueReplicationStrategy"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyCliqueReplicationStrategy" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">LazyReplicationStrategyBuilder</span></code></a>[<a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy"><code class="xref py py-class docutils literal notranslate"><span class="pre">CliqueReplicationStrategy</span></code></a>]</p>
+<p>Lazy version of CliqueReplicationStrategy allowing to delay process group formation.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">LazyReplicationStrategyBuilder</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#LazyReplicationStrategyBuilder"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy"><code class="xref py py-class docutils literal notranslate"><span class="pre">ReplicationStrategy</span></code></a>, <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a>, <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Generic" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Generic</span></code></a>[<code class="xref py py-obj docutils literal notranslate"><span class="pre">EagerT</span></code>]</p>
+<p>Represents an uninitialized replication strategy.</p>
+<p>Replication strategy needs process groups which can be impossible to initialize
+and the time of instantiation of the ReplicationStrategy class.</p>
+<p>This class allows for a lazy initialization of an instance of <cite>EagerT</cite> type:
+&gt;&gt;&gt; lazy_repl_strategy = LazyReplicationStrategyBuilder()
+&gt;&gt;&gt; …
+&gt;&gt;&gt; lazy_repl_strategy.replicate(…)  # performs lazy init transparently
+&gt;&gt;&gt; lazy_repl_strategy.retrieve_execute(…)  # reuses previously initialized instance transparently</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.replicate">
+<span class="sig-name descname"><span class="pre">replicate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">local_ckpt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">id_</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#LazyReplicationStrategyBuilder.replicate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.replicate" title="Link to this definition"></a></dt>
+<dd><p>Delegate to the underlying replication strategy.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>local_ckpt</strong> (<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>)</p></li>
+<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.13)"><em>Tuple</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>], <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a>]]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.replication_strategy">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">replication_strategy</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">EagerT</span></em><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.replication_strategy" title="Link to this definition"></a></dt>
+<dd><p>Lazy build on demand.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.retrieve_execute">
+<span class="sig-name descname"><span class="pre">retrieve_execute</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#LazyReplicationStrategyBuilder.retrieve_execute"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.retrieve_execute" title="Link to this definition"></a></dt>
+<dd><p>Delegate to the underlying replication strategy.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.retrieve_plan">
+<span class="sig-name descname"><span class="pre">retrieve_plan</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">globally_available_ids</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wanted</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#LazyReplicationStrategyBuilder.retrieve_plan"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.retrieve_plan" title="Link to this definition"></a></dt>
+<dd><p>Delegate to the underlying replication strategy.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>globally_available_ids</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Mapping" title="(in Python v3.13)"><em>Mapping</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>]</em>)</p></li>
+<li><p><strong>wanted</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Sequence" title="(in Python v3.13)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><em>ExchangePlan</em></p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py exception">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError">
+<em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">NoReplicasAvailableError</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#NoReplicasAvailableError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Exception</span></code></a></p>
+<p>Exception raised when no replicas are available for a requested ID.</p>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">ReplicationStrategy</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#ReplicationStrategy"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a></p>
+<p>Abstract base class defining the interface for replication strategies.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.replicate">
+<em class="property"><span class="pre">abstract</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">replicate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">local_ckpt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">id_</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#ReplicationStrategy.replicate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.replicate" title="Link to this definition"></a></dt>
+<dd><p>Replicates the local checkpoint.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>local_ckpt</strong> (<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>) – The local checkpoint to be replicated.</p></li>
+<li><p><strong>id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – Identifier for the checkpoint.</p></li>
+<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A list of replicated checkpoints together with correspinding IDs</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.13)"><em>Tuple</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>], <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a>]]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.retrieve_execute">
+<em class="property"><span class="pre">abstract</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">retrieve_execute</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#ReplicationStrategy.retrieve_execute"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.retrieve_execute" title="Link to this definition"></a></dt>
+<dd><p>Executes the retrieval plan.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.retrieve_plan">
+<em class="property"><span class="pre">abstract</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">retrieve_plan</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">globally_available_ids</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wanted</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#ReplicationStrategy.retrieve_plan"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.retrieve_plan" title="Link to this definition"></a></dt>
+<dd><p>Generates a retrieval plan based on globally available IDs.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>globally_available_ids</strong> (<em>Mapping</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>List</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>]</em>) – Mapping of ranks to available IDs.</p></li>
+<li><p><strong>wanted</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>) – List of IDs to retrieve.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A plan detailing how to retrieve the requested IDs.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>ExchangePlan</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="local_ckpt_manager.html" class="btn btn-neutral float-left" title="LocalCheckpointManager" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="group_utils.html" class="btn btn-neutral float-right" title="GroupWrapper" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

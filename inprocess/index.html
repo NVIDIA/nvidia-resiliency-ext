@@ -1,0 +1,186 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inprocess Restart &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Usage Guide" href="usage_guide.html" />
+    <link rel="prev" title="Basic usage example" href="../fault_tolerance/examples/basic_example.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Inprocess Restart</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Inprocess Restart</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/inprocess/index.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="inprocess-restart">
+<h1>Inprocess Restart<a class="headerlink" href="#inprocess-restart" title="Link to this heading"></a></h1>
+<p>In-process restart mechanism is implemented via a Python function wrapper that
+adds restart capabilities to an existing Python function implementing
+distributed PyTorch workload. Upon a fault, the wrapped function is restarted
+across all distributed ranks, within the same operating system process.
+Invoking restart of the wrapped function excludes distributed ranks that are
+terminated, missing, or deemed unhealthy. When a failure occurs on any worker,
+the wrapper ensures the function restarts simultaneously on all healthy ranks.
+This process continues until all ranks complete execution successfully or a
+termination condition is met.</p>
+<p>Compared to a traditional scheduler-level restart, restarting within the same
+process removes overheads associated with launching a new scheduler job,
+starting a container, initializing a new Python interpreter, loading
+dependencies, and creating a new CUDA context.</p>
+<p>Restarting in the same process also enables the reuse of pre-instantiated,
+process-group- and rank-independent objects across restart attempts. This reuse
+eliminates the overhead of repeated reinitialization and minimizes restart
+latency.</p>
+<p>Features:</p>
+<ul class="simple">
+<li><p>automatic deinitialization of PyTorch distributed process group, and restart
+of the wrapped function upon encountering an unhandled Python exception in
+any distributed rank</p></li>
+<li><p>timeout mechanism to detect and recover from deadlocks or livelocks, and a
+guarantee that the job is making meaningful forward progress</p></li>
+<li><p>modular and customizable rank reassignment and health check functions</p></li>
+<li><p>support for pre-allocated and pre-initialized spare workers</p></li>
+<li><p>gradual engineering ramp up: integration with existing codebase may start
+from restarting the entire <code class="docutils literal notranslate"><span class="pre">main()</span></code> function, then gradually refactor
+process-group-independent initialization into a separate function call in
+order to maximally reuse Python objects between restarts and minimize fault
+recovery overhead</p></li>
+</ul>
+<p>For a comprehensive description of this functionality, including detailed
+requirements, restrictions, and usage examples, please refer to the <a class="reference internal" href="usage_guide.html"><span class="doc">Usage
+Guide</span></a> and <a class="reference internal" href="examples.html"><span class="doc">Examples</span></a>.</p>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="usage_guide.html">Usage Guide</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#requirements">Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#restrictions">Restrictions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#functionality-overview">Functionality overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#restart-latency">Restart latency</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#known-issues">Known issues</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">API documentation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/wrap.html">Wrapper</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/compose.html">Compose</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html">Rank Assignment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html">Rank Filter</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/initialize.html">Initialize</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/abort.html">Abort</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/finalize.html">Finalize</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/health_check.html">Health Check</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/exception.html">Exceptions</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="examples/basic_example.html">Basic usage example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/optimal_example.html">Optimal usage example</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../fault_tolerance/examples/basic_example.html" class="btn btn-neutral float-left" title="Basic usage example" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="usage_guide.html" class="btn btn-neutral float-right" title="Usage Guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

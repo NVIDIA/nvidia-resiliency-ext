@@ -1,0 +1,196 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API documentation &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Wrapper" href="api/wrap.html" />
+    <link rel="prev" title="Usage Guide" href="usage_guide.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Inprocess Restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage Guide</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API documentation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/wrap.html">Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/compose.html">Compose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/rank_assignment.html">Rank Assignment</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/rank_filter.html">Rank Filter</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/initialize.html">Initialize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/abort.html">Abort</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/finalize.html">Finalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/health_check.html">Health Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/exception.html">Exceptions</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Inprocess Restart</a></li>
+      <li class="breadcrumb-item active">API documentation</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/inprocess/api.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="api-documentation">
+<h1>API documentation<a class="headerlink" href="#api-documentation" title="Link to this heading"></a></h1>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">API documentation</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="api/wrap.html">Wrapper</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper"><code class="docutils literal notranslate"><span class="pre">CallWrapper</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper.atomic"><code class="docutils literal notranslate"><span class="pre">CallWrapper.atomic()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper.iteration"><code class="docutils literal notranslate"><span class="pre">CallWrapper.iteration</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper.ping"><code class="docutils literal notranslate"><span class="pre">CallWrapper.ping()</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper"><code class="docutils literal notranslate"><span class="pre">Wrapper</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/compose.html">Compose</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/compose.html#nvidia_resiliency_ext.inprocess.Compose"><code class="docutils literal notranslate"><span class="pre">Compose</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/rank_assignment.html">Rank Assignment</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps"><code class="docutils literal notranslate"><span class="pre">FillGaps</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey"><code class="docutils literal notranslate"><span class="pre">FilterGroupedByKey</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="docutils literal notranslate"><span class="pre">RankAssignment</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded"><code class="docutils literal notranslate"><span class="pre">RankDiscarded</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks"><code class="docutils literal notranslate"><span class="pre">ShiftRanks</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/rank_filter.html">Rank Filter</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize"><code class="docutils literal notranslate"><span class="pre">MaxActiveWorldSize</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter"><code class="docutils literal notranslate"><span class="pre">RankFilter</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.WorldSizeDivisibleBy"><code class="docutils literal notranslate"><span class="pre">WorldSizeDivisibleBy</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/initialize.html">Initialize</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="docutils literal notranslate"><span class="pre">Initialize</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.RetryController"><code class="docutils literal notranslate"><span class="pre">RetryController</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/abort.html">Abort</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.Abort"><code class="docutils literal notranslate"><span class="pre">Abort</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="docutils literal notranslate"><span class="pre">AbortTorchDistributed</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/finalize.html">Finalize</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/finalize.html#nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="docutils literal notranslate"><span class="pre">Finalize</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/finalize.html#nvidia_resiliency_ext.inprocess.finalize.ThreadedFinalize"><code class="docutils literal notranslate"><span class="pre">ThreadedFinalize</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/health_check.html">Health Check</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck"><code class="docutils literal notranslate"><span class="pre">CudaHealthCheck</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.FaultCounter"><code class="docutils literal notranslate"><span class="pre">FaultCounter</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.FaultCounterExceeded"><code class="docutils literal notranslate"><span class="pre">FaultCounterExceeded</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="docutils literal notranslate"><span class="pre">HealthCheck</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/exception.html">Exceptions</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/exception.html#nvidia_resiliency_ext.inprocess.exception.HealthCheckError"><code class="docutils literal notranslate"><span class="pre">HealthCheckError</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/exception.html#nvidia_resiliency_ext.inprocess.exception.InternalError"><code class="docutils literal notranslate"><span class="pre">InternalError</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/exception.html#nvidia_resiliency_ext.inprocess.exception.RestartAbort"><code class="docutils literal notranslate"><span class="pre">RestartAbort</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/exception.html#nvidia_resiliency_ext.inprocess.exception.RestartError"><code class="docutils literal notranslate"><span class="pre">RestartError</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/exception.html#nvidia_resiliency_ext.inprocess.exception.TimeoutError"><code class="docutils literal notranslate"><span class="pre">TimeoutError</span></code></a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="usage_guide.html" class="btn btn-neutral float-left" title="Usage Guide" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="api/wrap.html" class="btn btn-neutral float-right" title="Wrapper" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

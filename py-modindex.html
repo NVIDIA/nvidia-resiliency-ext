@@ -8,6 +8,7 @@
   <title>Python Module Index &mdash; nvidia-resiliency-ext 0.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
 
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
@@ -15,6 +16,8 @@
       <script src="_static/documentation_options.js?v=2709fde1"></script>
       <script src="_static/doctools.js?v=9bcbadda"></script>
       <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="_static/copybutton.js?v=f281be69"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
@@ -44,10 +47,11 @@
         </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="ft_usage.html">Fault Tolerance Usage Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="ft_api.html">Fault Tolerance API</a></li>
-<li class="toctree-l1"><a class="reference internal" href="straggler_usage.html">Straggler Detection Usage Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="straggler_api.html">Straggler Detection API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
 </ul>
 
         </div>
@@ -93,27 +97,112 @@
      <tr class="cg-1">
        <td></td>
        <td>&#160;&#160;&#160;
-       <a href="ft_api.html#module-nvidia_resiliency_ext.fault_tolerance.config"><code class="xref">nvidia_resiliency_ext.fault_tolerance.config</code></a></td><td>
+       <a href="checkpointing/async/api/core.html#module-nvidia_resiliency_ext.checkpointing.async_ckpt.core"><code class="xref">nvidia_resiliency_ext.checkpointing.async_ckpt.core</code></a></td><td>
        <em></em></td></tr>
      <tr class="cg-1">
        <td></td>
        <td>&#160;&#160;&#160;
-       <a href="ft_api.html#module-nvidia_resiliency_ext.fault_tolerance.rank_monitor_client"><code class="xref">nvidia_resiliency_ext.fault_tolerance.rank_monitor_client</code></a></td><td>
+       <a href="checkpointing/async/api/torch_ckpt.html#module-nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt"><code class="xref">nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt</code></a></td><td>
        <em></em></td></tr>
      <tr class="cg-1">
        <td></td>
        <td>&#160;&#160;&#160;
-       <a href="ft_api.html#module-nvidia_resiliency_ext.fault_tolerance.rank_monitor_server"><code class="xref">nvidia_resiliency_ext.fault_tolerance.rank_monitor_server</code></a></td><td>
+       <a href="checkpointing/local/api/base_state_dict.html#module-nvidia_resiliency_ext.checkpointing.local.base_state_dict"><code class="xref">nvidia_resiliency_ext.checkpointing.local.base_state_dict</code></a></td><td>
        <em></em></td></tr>
      <tr class="cg-1">
        <td></td>
        <td>&#160;&#160;&#160;
-       <a href="straggler_api.html#module-nvidia_resiliency_ext.straggler.reporting"><code class="xref">nvidia_resiliency_ext.straggler.reporting</code></a></td><td>
+       <a href="checkpointing/local/api/basic_state_dict.html#module-nvidia_resiliency_ext.checkpointing.local.basic_state_dict"><code class="xref">nvidia_resiliency_ext.checkpointing.local.basic_state_dict</code></a></td><td>
        <em></em></td></tr>
      <tr class="cg-1">
        <td></td>
        <td>&#160;&#160;&#160;
-       <a href="straggler_api.html#module-nvidia_resiliency_ext.straggler.statistics"><code class="xref">nvidia_resiliency_ext.straggler.statistics</code></a></td><td>
+       <a href="checkpointing/local/api/base_ckpt_manager.html#module-nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager"><code class="xref">nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="checkpointing/local/api/local_ckpt_manager.html#module-nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager"><code class="xref">nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="checkpointing/local/api/group_utils.html#module-nvidia_resiliency_ext.checkpointing.local.replication.group_utils"><code class="xref">nvidia_resiliency_ext.checkpointing.local.replication.group_utils</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="checkpointing/local/api/replication.html#module-nvidia_resiliency_ext.checkpointing.local.replication.strategies"><code class="xref">nvidia_resiliency_ext.checkpointing.local.replication.strategies</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="fault_tolerance/api/config.html#module-nvidia_resiliency_ext.fault_tolerance.config"><code class="xref">nvidia_resiliency_ext.fault_tolerance.config</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="fault_tolerance/api/client.html#module-nvidia_resiliency_ext.fault_tolerance.rank_monitor_client"><code class="xref">nvidia_resiliency_ext.fault_tolerance.rank_monitor_client</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="fault_tolerance/api/server.html#module-nvidia_resiliency_ext.fault_tolerance.rank_monitor_server"><code class="xref">nvidia_resiliency_ext.fault_tolerance.rank_monitor_server</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="inprocess/api/wrap.html#module-nvidia_resiliency_ext.inprocess"><code class="xref">nvidia_resiliency_ext.inprocess</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="inprocess/api/abort.html#module-nvidia_resiliency_ext.inprocess.abort"><code class="xref">nvidia_resiliency_ext.inprocess.abort</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="inprocess/api/exception.html#module-nvidia_resiliency_ext.inprocess.exception"><code class="xref">nvidia_resiliency_ext.inprocess.exception</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="inprocess/api/finalize.html#module-nvidia_resiliency_ext.inprocess.finalize"><code class="xref">nvidia_resiliency_ext.inprocess.finalize</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="inprocess/api/health_check.html#module-nvidia_resiliency_ext.inprocess.health_check"><code class="xref">nvidia_resiliency_ext.inprocess.health_check</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="inprocess/api/initialize.html#module-nvidia_resiliency_ext.inprocess.initialize"><code class="xref">nvidia_resiliency_ext.inprocess.initialize</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="inprocess/api/rank_assignment.html#module-nvidia_resiliency_ext.inprocess.rank_assignment"><code class="xref">nvidia_resiliency_ext.inprocess.rank_assignment</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="inprocess/api/rank_filter.html#module-nvidia_resiliency_ext.inprocess.rank_filter"><code class="xref">nvidia_resiliency_ext.inprocess.rank_filter</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="fault_tolerance/api/callback.html#module-nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback"><code class="xref">nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="straggler_det/api/reporting.html#module-nvidia_resiliency_ext.straggler.reporting"><code class="xref">nvidia_resiliency_ext.straggler.reporting</code></a></td><td>
+       <em></em></td></tr>
+     <tr class="cg-1">
+       <td></td>
+       <td>&#160;&#160;&#160;
+       <a href="straggler_det/api/statistics.html#module-nvidia_resiliency_ext.straggler.statistics"><code class="xref">nvidia_resiliency_ext.straggler.statistics</code></a></td><td>
        <em></em></td></tr>
    </table>
 

@@ -1,0 +1,325 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.checkpointing.local.basic_state_dict &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.checkpointing.local.basic_state_dict</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.checkpointing.local.basic_state_dict</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">BasicTensorAwareStateDict provides a simple implementation of the TensorAwareStateDict interface,</span>
+<span class="sd">which is used to manage state dictionaries within a CheckpointManager.</span>
+
+<span class="sd">This class requires that all tensors in the user-provided state_dict are located on CUDA devices</span>
+<span class="sd">and are easily accessible (i.e., they can only be nested within dictionaries or lists).</span>
+
+<span class="sd">This implementation covers the most common use cases</span>
+<span class="sd">for state dict management in distributed training scenarios.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Union</span>
+
+<span class="kn">import</span> <span class="nn">torch</span>
+
+<span class="kn">from</span> <span class="nn">.base_state_dict</span> <span class="kn">import</span> <span class="n">TensorAwareStateDict</span>
+
+
+<div class="viewcode-block" id="nested_values">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.nested_values">[docs]</a>
+<span class="k">def</span> <span class="nf">nested_values</span><span class="p">(</span><span class="n">x</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">dict</span><span class="p">,</span> <span class="nb">list</span><span class="p">]):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Returns iterator over (nested) values of a given dict or list.&quot;&quot;&quot;</span>
+    <span class="n">x_iter</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">values</span><span class="p">()</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span> <span class="k">else</span> <span class="n">x</span>
+    <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">x_iter</span><span class="p">:</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="p">(</span><span class="nb">dict</span><span class="p">,</span> <span class="nb">list</span><span class="p">)):</span>
+            <span class="k">yield from</span> <span class="n">nested_values</span><span class="p">(</span><span class="n">v</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">yield</span> <span class="n">v</span></div>
+
+
+
+<div class="viewcode-block" id="dict_list_map_inplace">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.dict_list_map_inplace">[docs]</a>
+<span class="k">def</span> <span class="nf">dict_list_map_inplace</span><span class="p">(</span><span class="n">f</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Maps dicts and lists *in-place* with a given function.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">x</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">x</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">=</span> <span class="n">dict_list_map_inplace</span><span class="p">(</span><span class="n">f</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+        <span class="n">x</span><span class="p">[:]</span> <span class="o">=</span> <span class="p">(</span><span class="n">dict_list_map_inplace</span><span class="p">(</span><span class="n">f</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">x</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">f</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">x</span></div>
+
+
+
+<div class="viewcode-block" id="TensorPlaceholder">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder">[docs]</a>
+<span class="k">class</span> <span class="nc">TensorPlaceholder</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    A placeholder class that stores the device, shape, and dtype of tensor.</span>
+<span class="sd">    This can be used to instantiate new tensors with the same properties (device, shape, and dtype)</span>
+<span class="sd">    at a later time.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ten</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_device</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">device</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_shape</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">shape</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dtype</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">dtype</span>
+
+<div class="viewcode-block" id="TensorPlaceholder.init_tensor">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder.init_tensor">[docs]</a>
+    <span class="k">def</span> <span class="nf">init_tensor</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Creates a new tensor with using the saved properties (device, shape, and dtype).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_device</span><span class="p">)</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="BasicTensorAwareStateDict">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict">[docs]</a>
+<span class="k">class</span> <span class="nc">BasicTensorAwareStateDict</span><span class="p">(</span><span class="n">TensorAwareStateDict</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    The most basic implemention of TensorAwareStateDict</span>
+<span class="sd">    defining the interface between the user code and checkpoint manager.</span>
+
+<span class="sd">    This class requires that all tensors in the user state_dict are</span>
+<span class="sd">    on cuda and are easily accessible (can be only nested in dicts or lists)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span> <span class="o">=</span> <span class="n">state_dict</span>
+        <span class="k">for</span> <span class="n">state_dict_value</span> <span class="ow">in</span> <span class="n">nested_values</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">):</span>
+            <span class="c1"># This simplifies and optimizes copy_tensors_to_cpu while streamlining device management</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">state_dict_value</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
+                <span class="k">assert</span> <span class="n">state_dict_value</span><span class="o">.</span><span class="n">is_cuda</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_hollow</span> <span class="o">=</span> <span class="kc">False</span>
+
+<div class="viewcode-block" id="BasicTensorAwareStateDict.pop_tensors">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict.pop_tensors">[docs]</a>
+    <span class="k">def</span> <span class="nf">pop_tensors</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Extracts the tensor data from the state dict, preserving metadata.</span>
+
+<span class="sd">        Removes the tensor data while retaining metadata (e.g., shape, dtype, device)</span>
+<span class="sd">        needed to recreate empty tensors. After this operation, the state dictionary is &quot;hollow&quot;,</span>
+<span class="sd">        containing no tensor data.</span>
+<span class="sd">        Further calls to `pop_tensor` will raise an error.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            List of extracted tensors</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_hollow</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">tensors</span><span class="p">)</span>
+        <span class="n">dict_list_map_inplace</span><span class="p">(</span>
+            <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">TensorPlaceholder</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="k">else</span> <span class="n">x</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_hollow</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="k">return</span> <span class="n">result</span></div>
+
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">tensors</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Get the tensor data from the state dict.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_hollow</span>
+        <span class="k">for</span> <span class="n">state_dict_value</span> <span class="ow">in</span> <span class="n">nested_values</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">):</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">state_dict_value</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
+                <span class="k">yield</span> <span class="n">state_dict_value</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">is_hollow</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        True iff tensors had been extracted and have not been inserted back yet.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_hollow</span>
+
+<div class="viewcode-block" id="BasicTensorAwareStateDict.insert_tensors">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict.insert_tensors">[docs]</a>
+    <span class="k">def</span> <span class="nf">insert_tensors</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Reverse of `pop_tensors`. Replace tensor placeholders with actual values.</span>
+<span class="sd">        The value of `self` is considered to be the same after:</span>
+
+<span class="sd">        .. code-block:: python</span>
+
+<span class="sd">            self.insert_tensors(self.pop_tensors())</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            tensor_data : An iterable containing the tensor data to be inserted</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_hollow</span>
+        <span class="n">tensor_stack</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="nb">reversed</span><span class="p">(</span><span class="n">tensor_data</span><span class="p">))</span>
+        <span class="n">dict_list_map_inplace</span><span class="p">(</span>
+            <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">tensor_stack</span><span class="o">.</span><span class="n">pop</span><span class="p">()</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">TensorPlaceholder</span><span class="p">)</span> <span class="k">else</span> <span class="n">x</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_hollow</span> <span class="o">=</span> <span class="kc">False</span></div>
+
+
+<div class="viewcode-block" id="BasicTensorAwareStateDict.init_tensors">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict.init_tensors">[docs]</a>
+    <span class="k">def</span> <span class="nf">init_tensors</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Initializes empty tensors with the same properties as the original tensors.</span>
+
+<span class="sd">        This function should only be called after the original tensors have been popped.</span>
+<span class="sd">        It ensures that the newly created empty tensors match the shape,</span>
+<span class="sd">        dtype, and device of the originals, but contain no data.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_hollow</span>
+        <span class="n">dict_list_map_inplace</span><span class="p">(</span>
+            <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span><span class="o">.</span><span class="n">init_tensor</span><span class="p">()</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">TensorPlaceholder</span><span class="p">)</span> <span class="k">else</span> <span class="n">x</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_hollow</span> <span class="o">=</span> <span class="kc">False</span></div>
+
+
+<div class="viewcode-block" id="BasicTensorAwareStateDict.copy_tensors_to_cpu">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict.copy_tensors_to_cpu">[docs]</a>
+    <span class="k">def</span> <span class="nf">copy_tensors_to_cpu</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Stores CPU copies of tensors in the state_dict, replacing the originals,</span>
+<span class="sd">        but without destroying them.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            non_blocking (bool): if set to True allows for asynchronous copying.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_hollow</span>
+        <span class="n">dict_list_map_inplace</span><span class="p">(</span>
+            <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="n">non_blocking</span><span class="p">)</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="k">else</span> <span class="n">x</span><span class="p">,</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">,</span>
+        <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="BasicTensorAwareStateDict.restore_tensor_device">
+<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict.restore_tensor_device">[docs]</a>
+    <span class="k">def</span> <span class="nf">restore_tensor_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Restores all tensors to their original CUDA devices if a move is required.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            non_blocking (bool): if set to True allows for asynchronous copying.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_hollow</span>
+        <span class="n">dict_list_map_inplace</span><span class="p">(</span>
+            <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="n">non_blocking</span><span class="p">)</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="k">else</span> <span class="n">x</span><span class="p">,</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_dict</span><span class="p">,</span>
+        <span class="p">)</span></div>
+</div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

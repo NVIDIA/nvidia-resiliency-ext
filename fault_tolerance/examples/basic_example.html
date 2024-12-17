@@ -1,0 +1,283 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Basic usage example &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Inprocess Restart" href="../../inprocess/index.html" />
+    <link rel="prev" title="Examples" href="../examples.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../examples.html">Examples</a><ul class="current">
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Basic usage example</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
+          <li class="breadcrumb-item"><a href="../examples.html">Examples</a></li>
+      <li class="breadcrumb-item active">Basic usage example</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/fault_tolerance/examples/basic_example.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="basic-usage-example">
+<h1>Basic usage example<a class="headerlink" href="#basic-usage-example" title="Link to this heading"></a></h1>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="linenos">  1</span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="linenos">  2</span><span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="linenos">  3</span><span class="c1">#</span>
+<span class="linenos">  4</span><span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="linenos">  5</span><span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="linenos">  6</span><span class="c1"># You may obtain a copy of the License at</span>
+<span class="linenos">  7</span><span class="c1">#</span>
+<span class="linenos">  8</span><span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="linenos">  9</span><span class="c1">#</span>
+<span class="linenos"> 10</span><span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="linenos"> 11</span><span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="linenos"> 12</span><span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="linenos"> 13</span><span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="linenos"> 14</span><span class="c1"># limitations under the License.</span>
+<span class="linenos"> 15</span>
+<span class="linenos"> 16</span><span class="kn">import</span> <span class="nn">json</span>
+<span class="linenos"> 17</span>
+<span class="linenos"> 18</span><span class="kn">import</span> <span class="nn">torch</span>
+<span class="linenos"> 19</span><span class="kn">import</span> <span class="nn">torch.distributed</span> <span class="k">as</span> <span class="nn">dist</span>
+<span class="linenos"> 20</span><span class="kn">import</span> <span class="nn">torch.nn</span> <span class="k">as</span> <span class="nn">nn</span>
+<span class="linenos"> 21</span><span class="kn">import</span> <span class="nn">torch.optim</span> <span class="k">as</span> <span class="nn">optim</span>
+<span class="linenos"> 22</span><span class="kn">from</span> <span class="nn">torch.nn.parallel</span> <span class="kn">import</span> <span class="n">DistributedDataParallel</span> <span class="k">as</span> <span class="n">DDP</span>
+<span class="linenos"> 23</span><span class="kn">from</span> <span class="nn">torch.utils.data</span> <span class="kn">import</span> <span class="n">DataLoader</span><span class="p">,</span> <span class="n">DistributedSampler</span>
+<span class="linenos"> 24</span>
+<span class="linenos"> 25</span><span class="c1"># FT: import NVRx</span>
+<span class="linenos"> 26</span><span class="kn">import</span> <span class="nn">nvidia_resiliency_ext.fault_tolerance</span> <span class="k">as</span> <span class="nn">ft</span>
+<span class="linenos"> 27</span>
+<span class="linenos"> 28</span><span class="c1"># Simple example of using the FT library with PyTorch DDP.</span>
+<span class="linenos"> 29</span><span class="c1"># This script trains a dummy model on dummy data. CPU is used for training.</span>
+<span class="linenos"> 30</span><span class="c1"># After each epoch, FT timeouts are calculated and saved to the file &quot;./ft_state.json&quot;.</span>
+<span class="linenos"> 31</span><span class="c1">#</span>
+<span class="linenos"> 32</span><span class="c1"># You can run it using:</span>
+<span class="linenos"> 33</span><span class="c1"># `ft_launcher --nproc_per_node=4 --max-restarts=3 --ft-param-initial_rank_heartbeat_timeout=30 --ft-param-rank_heartbeat_timeout=15 examples/fault_tolerance/basic_ft_example.py`</span>
+<span class="linenos"> 34</span><span class="c1"># In this example configuration, at most 3 training restarts are allowed.</span>
+<span class="linenos"> 35</span><span class="c1">#</span>
+<span class="linenos"> 36</span><span class="c1"># To find rank PIDs, use:</span>
+<span class="linenos"> 37</span><span class="c1"># `ps aux | grep basic_ft_example.py | grep -v grep`</span>
+<span class="linenos"> 38</span><span class="c1">#</span>
+<span class="linenos"> 39</span><span class="c1"># Examples:</span>
+<span class="linenos"> 40</span><span class="c1">#</span>
+<span class="linenos"> 41</span><span class="c1"># 1. Hang detection using predefined timeouts:</span>
+<span class="linenos"> 42</span><span class="c1">#    - Remove `ft_state.json` if it exists (`rm ft_state.json`).</span>
+<span class="linenos"> 43</span><span class="c1">#    - During the 0th epoch, stop a rank using `kill -SIGSTOP &lt;rank_pid&gt;`.</span>
+<span class="linenos"> 44</span><span class="c1">#    - After approximately 15 seconds, a &quot;Did not get subsequent heartbeat.&quot; error should be raised.</span>
+<span class="linenos"> 45</span><span class="c1">#    - All ranks will be restarted.</span>
+<span class="linenos"> 46</span><span class="c1">#</span>
+<span class="linenos"> 47</span><span class="c1"># 2. Hang detection using computed timeouts:</span>
+<span class="linenos"> 48</span><span class="c1">#    - Run the example for more than 1 epoch to allow FT timeouts to be calculated.</span>
+<span class="linenos"> 49</span><span class="c1">#    - Stop a rank using `kill -SIGSTOP &lt;rank_pid&gt;`.</span>
+<span class="linenos"> 50</span><span class="c1">#    - After the computed timeout elapses, a &quot;Did not get subsequent heartbeat.&quot; error should be raised.</span>
+<span class="linenos"> 51</span><span class="c1">#    - All ranks will be restarted.</span>
+<span class="linenos"> 52</span><span class="c1">#</span>
+<span class="linenos"> 53</span><span class="c1"># 3. Rank error handling:</span>
+<span class="linenos"> 54</span><span class="c1">#    - Kill a rank using `kill -SIGKILL &lt;rank_pid&gt;`.</span>
+<span class="linenos"> 55</span><span class="c1">#    - All ranks will be restarted.</span>
+<span class="linenos"> 56</span>
+<span class="linenos"> 57</span>
+<span class="linenos"> 58</span><span class="n">FEAT_SIZE</span> <span class="o">=</span> <span class="mi">4096</span>
+<span class="linenos"> 59</span><span class="n">DNN_OUT_SIZE</span> <span class="o">=</span> <span class="mi">128</span>
+<span class="linenos"> 60</span><span class="n">BATCH_SIZE</span> <span class="o">=</span> <span class="mi">100</span>
+<span class="linenos"> 61</span><span class="n">NUM_EPOCHS</span> <span class="o">=</span> <span class="mi">10</span>
+<span class="linenos"> 62</span><span class="n">DATASET_LEN</span> <span class="o">=</span> <span class="mi">100000</span>
+<span class="linenos"> 63</span>
+<span class="linenos"> 64</span>
+<span class="linenos"> 65</span><span class="k">class</span> <span class="nc">SimpleDataset</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">Dataset</span><span class="p">):</span>
+<span class="linenos"> 66</span>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">size</span><span class="p">):</span>
+<span class="linenos"> 67</span>        <span class="bp">self</span><span class="o">.</span><span class="n">size</span> <span class="o">=</span> <span class="n">size</span>
+<span class="linenos"> 68</span>
+<span class="linenos"> 69</span>    <span class="k">def</span> <span class="fm">__len__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="linenos"> 70</span>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">size</span>
+<span class="linenos"> 71</span>
+<span class="linenos"> 72</span>    <span class="k">def</span> <span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">idx</span><span class="p">):</span>
+<span class="linenos"> 73</span>        <span class="n">x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">rand</span><span class="p">((</span><span class="n">FEAT_SIZE</span><span class="p">,),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s1">&#39;cpu&#39;</span><span class="p">)</span>
+<span class="linenos"> 74</span>        <span class="n">y</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">rand</span><span class="p">((</span><span class="n">DNN_OUT_SIZE</span><span class="p">,),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s1">&#39;cpu&#39;</span><span class="p">)</span>
+<span class="linenos"> 75</span>        <span class="k">return</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span>
+<span class="linenos"> 76</span>
+<span class="linenos"> 77</span>
+<span class="linenos"> 78</span><span class="k">class</span> <span class="nc">SimpleModel</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="linenos"> 79</span>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="linenos"> 80</span>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+<span class="linenos"> 81</span>        <span class="bp">self</span><span class="o">.</span><span class="n">fc1</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">FEAT_SIZE</span><span class="p">,</span> <span class="n">FEAT_SIZE</span><span class="p">)</span>
+<span class="linenos"> 82</span>        <span class="bp">self</span><span class="o">.</span><span class="n">fc2</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">FEAT_SIZE</span><span class="p">,</span> <span class="n">DNN_OUT_SIZE</span><span class="p">)</span>
+<span class="linenos"> 83</span>
+<span class="linenos"> 84</span>    <span class="k">def</span> <span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+<span class="linenos"> 85</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fc1</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+<span class="linenos"> 86</span>        <span class="n">x</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">functional</span><span class="o">.</span><span class="n">relu</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+<span class="linenos"> 87</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fc2</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+<span class="linenos"> 88</span>        <span class="k">return</span> <span class="n">x</span>
+<span class="linenos"> 89</span>
+<span class="linenos"> 90</span>
+<span class="linenos"> 91</span><span class="k">def</span> <span class="nf">print_on_rank0</span><span class="p">(</span><span class="n">msg</span><span class="p">):</span>
+<span class="linenos"> 92</span>    <span class="k">if</span> <span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<span class="linenos"> 93</span>        <span class="nb">print</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+<span class="linenos"> 94</span>
+<span class="linenos"> 95</span>
+<span class="linenos"> 96</span><span class="k">def</span> <span class="nf">main</span><span class="p">(</span><span class="n">rank</span><span class="p">,</span> <span class="n">world_size</span><span class="p">):</span>
+<span class="linenos"> 97</span>    <span class="n">dist</span><span class="o">.</span><span class="n">init_process_group</span><span class="p">(</span><span class="s2">&quot;gloo&quot;</span><span class="p">,</span> <span class="n">rank</span><span class="o">=</span><span class="n">rank</span><span class="p">,</span> <span class="n">world_size</span><span class="o">=</span><span class="n">world_size</span><span class="p">)</span>
+<span class="linenos"> 98</span>    <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Starting new training run... World size=</span><span class="si">{</span><span class="n">dist</span><span class="o">.</span><span class="n">get_world_size</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="linenos"> 99</span>
+<span class="linenos">100</span>    <span class="c1"># FT: initialize the client</span>
+<span class="linenos">101</span>    <span class="n">ft_client</span> <span class="o">=</span> <span class="n">ft</span><span class="o">.</span><span class="n">RankMonitorClient</span><span class="p">()</span>
+<span class="linenos">102</span>    <span class="n">ft_client</span><span class="o">.</span><span class="n">init_workload_monitoring</span><span class="p">()</span>
+<span class="linenos">103</span>    <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT initialized. Timeouts: </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">timeouts</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="linenos">104</span>    <span class="c1"># FT: load state (calculated timeouts)</span>
+<span class="linenos">105</span>    <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="s2">&quot;ft_state.json&quot;</span><span class="p">):</span>
+<span class="linenos">106</span>        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;ft_state.json&quot;</span><span class="p">,</span> <span class="s2">&quot;r&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+<span class="linenos">107</span>            <span class="n">ft_state</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
+<span class="linenos">108</span>            <span class="n">ft_client</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">ft_state</span><span class="p">)</span>
+<span class="linenos">109</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT timeouts </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">timeouts</span><span class="si">}</span><span class="s2"> loaded from ft_state.json&quot;</span><span class="p">)</span>
+<span class="linenos">110</span>
+<span class="linenos">111</span>    <span class="c1"># Dataset and DataLoader with DistributedSampler</span>
+<span class="linenos">112</span>    <span class="n">dataset</span> <span class="o">=</span> <span class="n">SimpleDataset</span><span class="p">(</span><span class="n">size</span><span class="o">=</span><span class="n">DATASET_LEN</span><span class="p">)</span>
+<span class="linenos">113</span>    <span class="n">sampler</span> <span class="o">=</span> <span class="n">DistributedSampler</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">num_replicas</span><span class="o">=</span><span class="n">world_size</span><span class="p">,</span> <span class="n">rank</span><span class="o">=</span><span class="n">rank</span><span class="p">)</span>
+<span class="linenos">114</span>    <span class="n">dataloader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="n">BATCH_SIZE</span><span class="p">,</span> <span class="n">sampler</span><span class="o">=</span><span class="n">sampler</span><span class="p">)</span>
+<span class="linenos">115</span>
+<span class="linenos">116</span>    <span class="c1"># Model, optimizer, and DDP</span>
+<span class="linenos">117</span>    <span class="n">model</span> <span class="o">=</span> <span class="n">SimpleModel</span><span class="p">()</span>
+<span class="linenos">118</span>    <span class="n">ddp_model</span> <span class="o">=</span> <span class="n">DDP</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="linenos">119</span>    <span class="n">optimizer</span> <span class="o">=</span> <span class="n">optim</span><span class="o">.</span><span class="n">SGD</span><span class="p">(</span><span class="n">ddp_model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="n">lr</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+<span class="linenos">120</span>    <span class="n">loss_fn</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">MSELoss</span><span class="p">()</span>
+<span class="linenos">121</span>
+<span class="linenos">122</span>    <span class="n">num_iters_in_epoch</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">dataloader</span><span class="p">)</span>
+<span class="linenos">123</span>    <span class="n">num_iters_for_10pct</span> <span class="o">=</span> <span class="n">num_iters_in_epoch</span> <span class="o">//</span> <span class="mi">10</span>  <span class="c1"># iters for 1/10 of epoch</span>
+<span class="linenos">124</span>
+<span class="linenos">125</span>    <span class="k">for</span> <span class="n">epoch</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">NUM_EPOCHS</span><span class="p">):</span>
+<span class="linenos">126</span>        <span class="n">sampler</span><span class="o">.</span><span class="n">set_epoch</span><span class="p">(</span><span class="n">epoch</span><span class="p">)</span>
+<span class="linenos">127</span>        <span class="k">for</span> <span class="n">batch_idx</span><span class="p">,</span> <span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">target</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">dataloader</span><span class="p">):</span>
+<span class="linenos">128</span>            <span class="k">if</span> <span class="p">(</span><span class="n">batch_idx</span> <span class="o">%</span> <span class="n">num_iters_for_10pct</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<span class="linenos">129</span>                <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Epoch </span><span class="si">{</span><span class="n">epoch</span><span class="si">}</span><span class="s2"> progress: </span><span class="si">{</span><span class="mi">100</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">batch_idx</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">num_iters_in_epoch</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">%&quot;</span><span class="p">)</span>
+<span class="linenos">130</span>            <span class="n">optimizer</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
+<span class="linenos">131</span>            <span class="n">output</span> <span class="o">=</span> <span class="n">ddp_model</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+<span class="linenos">132</span>            <span class="n">loss</span> <span class="o">=</span> <span class="n">loss_fn</span><span class="p">(</span><span class="n">output</span><span class="p">,</span> <span class="n">target</span><span class="p">)</span>
+<span class="linenos">133</span>            <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
+<span class="linenos">134</span>            <span class="n">optimizer</span><span class="o">.</span><span class="n">step</span><span class="p">()</span>
+<span class="linenos">135</span>            <span class="c1"># FT: send heartbeat to the server</span>
+<span class="linenos">136</span>            <span class="n">ft_client</span><span class="o">.</span><span class="n">send_heartbeat</span><span class="p">()</span>
+<span class="linenos">137</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Epoch </span><span class="si">{</span><span class="n">epoch</span><span class="si">}</span><span class="s2"> complete. Loss: </span><span class="si">{</span><span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="linenos">138</span>        <span class="c1"># FT: calculate and set new timeouts</span>
+<span class="linenos">139</span>        <span class="n">ft_client</span><span class="o">.</span><span class="n">calculate_and_set_timeouts</span><span class="p">()</span>
+<span class="linenos">140</span>        <span class="c1"># FT: save the state (calculated timeouts)</span>
+<span class="linenos">141</span>        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;ft_state.json&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+<span class="linenos">142</span>            <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">ft_client</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">f</span><span class="p">)</span>
+<span class="linenos">143</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT timeouts </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">timeouts</span><span class="si">}</span><span class="s2"> saved to ft_state.json&quot;</span><span class="p">)</span>
+<span class="linenos">144</span>
+<span class="linenos">145</span>    <span class="c1"># FT: shutdown the client</span>
+<span class="linenos">146</span>    <span class="n">ft_client</span><span class="o">.</span><span class="n">shutdown_workload_monitoring</span><span class="p">()</span>
+<span class="linenos">147</span>    <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
+<span class="linenos">148</span>
+<span class="linenos">149</span>
+<span class="linenos">150</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<span class="linenos">151</span>    <span class="kn">import</span> <span class="nn">os</span>
+<span class="linenos">152</span>
+<span class="linenos">153</span>    <span class="n">world_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;WORLD_SIZE&quot;</span><span class="p">])</span>
+<span class="linenos">154</span>    <span class="n">rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;RANK&quot;</span><span class="p">])</span>
+<span class="linenos">155</span>    <span class="n">main</span><span class="p">(</span><span class="n">rank</span><span class="p">,</span> <span class="n">world_size</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../examples.html" class="btn btn-neutral float-left" title="Examples" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../../inprocess/index.html" class="btn btn-neutral float-right" title="Inprocess Restart" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

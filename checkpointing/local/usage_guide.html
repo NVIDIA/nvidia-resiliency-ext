@@ -1,0 +1,259 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Usage guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="API documentation" href="api.html" />
+    <link rel="prev" title="Local Checkpointing" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Local Checkpointing</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Usage guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#requirements">Requirements</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#requirements-for-localcheckpointmanager">Requirements for <cite>LocalCheckpointManager</cite></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#requirements-for-basictensorawarestatedict">Requirements for <cite>BasicTensorAwareStateDict</cite></a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#restrictions">Restrictions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#functionality-overview">Functionality Overview</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#integration-overview">Integration Overview</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#checkpoint-replication">Checkpoint Replication</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#asynchronous-checkpoint-saving">Asynchronous Checkpoint Saving</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#logging">Logging</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Local Checkpointing</a></li>
+      <li class="breadcrumb-item active">Usage guide</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/checkpointing/local/usage_guide.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="usage-guide">
+<h1>Usage guide<a class="headerlink" href="#usage-guide" title="Link to this heading"></a></h1>
+<p>The <a class="reference internal" href="api/local_ckpt_manager.html#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager.LocalCheckpointManager" title="nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager.LocalCheckpointManager"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager.LocalCheckpointManager</span></code></a>
+serves as the primary interface for leveraging local checkpointing functionality, in combination with
+the <a class="reference internal" href="api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict</span></code></a>.</p>
+<p><cite>LocalCheckpointManager</cite> manages the local checkpointing path and defines replication strategies
+to enhance resiliency in the event of node failures. Meanwhile,
+<cite>BasicTensorAwareStateDict</cite> enhances the user-provided state_dict by enabling tensor-aware management,
+which is essential for efficient data exchange operations critical to local checkpointing with replication.</p>
+<p>This guide outlines the requirements, features, restrictions, and integration details for local checkpointing.</p>
+<section id="requirements">
+<h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading"></a></h2>
+<section id="requirements-for-localcheckpointmanager">
+<h3>Requirements for <cite>LocalCheckpointManager</cite><a class="headerlink" href="#requirements-for-localcheckpointmanager" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>The directory specified by the <cite>root_local_ckpt_dir</cite> parameter must have enough storage capacity to hold
+at least two checkpoint parts (clean and dirty) per rank.
+multiplied by the replication factor defined by the replication strategy (<cite>repl_strategy</cite>).</p></li>
+</ul>
+</section>
+<section id="requirements-for-basictensorawarestatedict">
+<h3>Requirements for <cite>BasicTensorAwareStateDict</cite><a class="headerlink" href="#requirements-for-basictensorawarestatedict" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><dl class="simple">
+<dt>All tensors within the user-provided state_dict must be:</dt><dd><ul>
+<li><p>Easily accessible (nested only within dictionaries or lists).</p></li>
+<li><p>CUDA tensors (i.e., moved to GPU).</p></li>
+</ul>
+</dd>
+</dl>
+</li>
+<li><dl class="simple">
+<dt>If these requirements are not met, a custom implementation of <cite>TensorAwareStateDict</cite> is necessary.</dt><dd><ul>
+<li><p>For instance, solutions based on NVIDIA Megatron-Core should use <cite>MCoreTensorAwareStateDict</cite> instead.</p></li>
+</ul>
+</dd>
+</dl>
+</li>
+</ul>
+</section>
+</section>
+<section id="restrictions">
+<h2>Restrictions<a class="headerlink" href="#restrictions" title="Link to this heading"></a></h2>
+<p>Currently under review - no documented restrictions at this time.</p>
+</section>
+<section id="functionality-overview">
+<h2>Functionality Overview<a class="headerlink" href="#functionality-overview" title="Link to this heading"></a></h2>
+<section id="integration-overview">
+<h3>Integration Overview<a class="headerlink" href="#integration-overview" title="Link to this heading"></a></h3>
+<p>Below is a simplified pseudocode example illustrating how
+to integrate local checkpointing into training scripts.
+This is a basic reference and may omit specific implementation details:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager</span> <span class="kn">import</span> <span class="n">LocalCheckpointManager</span>
+<span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.local.basic_state_dict</span> <span class="kn">import</span> <span class="n">BasicTensorAwareStateDict</span>
+
+<span class="c1"># Initialize CheckpointManager with the checkpoint directory</span>
+<span class="n">ckpt_manager</span> <span class="o">=</span> <span class="n">LocalCheckpointManager</span><span class="p">(</span><span class="n">ckpt_dir</span><span class="p">)</span>
+
+<span class="c1"># Load the latest checkpoint if available</span>
+<span class="n">iteration</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">find_latest</span><span class="p">()</span>
+<span class="k">if</span> <span class="n">iteration</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="p">:</span>
+    <span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">ckpt_part_id</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
+    <span class="c1"># Use the loaded state_dict to resume training</span>
+    <span class="n">state_dict</span> <span class="o">=</span> <span class="n">ta_state_dict</span><span class="o">.</span><span class="n">state_dict</span>
+<span class="k">else</span><span class="p">:</span>
+    <span class="c1"># An iteration value of -1 indicates that no local checkpoint was found.</span>
+    <span class="c1"># In this case, either return an error or initialize the model from scratch.</span>
+    <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+
+<span class="c1"># Training loop</span>
+<span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+    <span class="c1"># Perform a training iteration</span>
+
+    <span class="c1"># Save checkpoint if conditions are met</span>
+    <span class="k">if</span> <span class="n">save_condition</span><span class="p">():</span>
+        <span class="n">ta_state_dict</span> <span class="o">=</span> <span class="n">BasicTensorAwareStateDict</span><span class="p">(</span><span class="n">state_dict</span><span class="p">)</span>
+        <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">iteration</span><span class="p">,</span> <span class="n">is_async</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="checkpoint-replication">
+<h3>Checkpoint Replication<a class="headerlink" href="#checkpoint-replication" title="Link to this heading"></a></h3>
+<p>The <cite>LocalCheckpointManager</cite> supports both checkpoint saving with and without replication.
+To enable replication, the user must provide a <cite>repl_strategy</cite> argument when
+constructing the <cite>LocalCheckpointManager</cite>.</p>
+<p>We provide the <cite>CliqueReplicationStrategy</cite>, which groups ranks into rank “cliques” where
+checkpoint parts are replicated.
+The <cite>replication_factor</cite> parameter defines the size of each group (clique),
+while the <cite>replication_jump</cite> parameter determines how the cliques are formed. Specifically:</p>
+<ul class="simple">
+<li><p>If <cite>replication_jump = 1</cite>, consecutive ranks will form a clique (e.g., ranks 0, 1, 2, etc.).</p></li>
+<li><p>If <cite>replication_jump &gt; 1</cite>, ranks will be spaced further apart,
+with the value of replication_jump determining the gap between ranks in each clique
+(e.g., a jump of 2 would form cliques of ranks 0, 2, 4, etc.).</p></li>
+</ul>
+<p>This approach enables flexible and scalable replication configurations,
+providing fault tolerance and improving the resiliency of checkpointing across distributed systems.</p>
+<p>During the loading process, replicated parts can be utilized to populate nodes that
+do not have their respective parts stored.
+The retrieval mechanism is seamlessly integrated into the LocalCheckpointManager.load method.</p>
+</section>
+<section id="asynchronous-checkpoint-saving">
+<h3>Asynchronous Checkpoint Saving<a class="headerlink" href="#asynchronous-checkpoint-saving" title="Link to this heading"></a></h3>
+<p>The <cite>LocalCheckpointManager</cite> supports both synchronous and asynchronous saving,
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; skierat/documentation
+controlled by the <cite>is_async</cite> parameter in the <cite>save(…)</cite> method.</p>
+<ul class="simple">
+<li><p>Synchronous Save: When <cite>is_async</cite> is set to <cite>False</cite>, the <cite>save(…)</cite> method
+performs a blocking save operation, ensuring all data is written before returning.</p></li>
+<li><p>Asynchronous Save: When <cite>is_async</cite> is set to <cite>True</cite>, the <cite>save(…)</cite> method
+initiates a non-blocking save and returns an <cite>AsyncRequest</cite> object.
+This class is fully compatible with the <cite>nvidia_resiliency_ext.checkpointing.async_ckpt</cite> module.</p></li>
+</ul>
+<p>The returned <cite>AsyncRequest</cite> can then be submitted to an <cite>AsyncCallsQueue</cite>,
+enabling advanced asynchronous processing.
+The usage of <cite>AsyncRequest</cite> with <cite>AsyncCallsQueue</cite> is demonstrated in the provided example,
+showcasing how to efficiently manage non-blocking saves within your workflow.</p>
+</section>
+<section id="logging">
+<h3>Logging<a class="headerlink" href="#logging" title="Link to this heading"></a></h3>
+<p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">LocalCheckpointManager</span></code> uses Python’s logging module to generate output messages.
+Users can adjust the logging level or redirect logs based on their needs.</p>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="index.html" class="btn btn-neutral float-left" title="Local Checkpointing" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="api.html" class="btn btn-neutral float-right" title="API documentation" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

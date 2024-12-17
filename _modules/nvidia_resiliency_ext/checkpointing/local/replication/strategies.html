@@ -1,0 +1,420 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.checkpointing.local.replication.strategies &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.checkpointing.local.replication.strategies</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.checkpointing.local.replication.strategies</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span> <span class="nn">logging</span>
+<span class="kn">import</span> <span class="nn">random</span>
+<span class="kn">from</span> <span class="nn">abc</span> <span class="kn">import</span> <span class="n">ABC</span><span class="p">,</span> <span class="n">abstractmethod</span>
+<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">List</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Sequence</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">TypeVar</span><span class="p">,</span> <span class="n">Generic</span><span class="p">,</span> <span class="n">Optional</span>
+
+<span class="kn">import</span> <span class="nn">torch</span>
+
+<span class="kn">from</span> <span class="nn">..base_state_dict</span> <span class="kn">import</span> <span class="n">TensorAwareStateDict</span>
+<span class="kn">from</span> <span class="nn">.group_utils</span> <span class="kn">import</span> <span class="n">ExchangePlan</span><span class="p">,</span> <span class="n">GroupWrapper</span><span class="p">,</span> <span class="n">ProcessGroupLike</span><span class="p">,</span> <span class="n">parse_group_sequence</span>
+<span class="kn">from</span> <span class="nn">.utils</span> <span class="kn">import</span> <span class="n">debug_time</span><span class="p">,</span> <span class="n">debug_msg</span><span class="p">,</span> <span class="n">zip_strict</span>
+
+<span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="NoReplicasAvailableError">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError">[docs]</a>
+<span class="k">class</span> <span class="nc">NoReplicasAvailableError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Exception raised when no replicas are available for a requested ID.&quot;&quot;&quot;</span>
+
+    <span class="k">pass</span></div>
+
+
+
+<div class="viewcode-block" id="ReplicationStrategy">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy">[docs]</a>
+<span class="k">class</span> <span class="nc">ReplicationStrategy</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Abstract base class defining the interface for replication strategies.&quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="ReplicationStrategy.replicate">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.replicate">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span> <span class="nf">replicate</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">local_ckpt</span><span class="p">:</span> <span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="n">id_</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">TensorAwareStateDict</span><span class="p">],</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Replicates the local checkpoint.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            local_ckpt (TensorAwareStateDict): The local checkpoint to be replicated.</span>
+<span class="sd">            id_ (str): Identifier for the checkpoint.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            A list of replicated checkpoints together with correspinding IDs</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span></div>
+
+
+<div class="viewcode-block" id="ReplicationStrategy.retrieve_plan">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.retrieve_plan">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span> <span class="nf">retrieve_plan</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">globally_available_ids</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]],</span> <span class="n">wanted</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ExchangePlan</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Generates a retrieval plan based on globally available IDs.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            globally_available_ids (Mapping[int, List[str]]): Mapping of ranks to available IDs.</span>
+<span class="sd">            wanted (Sequence[str]): List of IDs to retrieve.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            ExchangePlan: A plan detailing how to retrieve the requested IDs.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span></div>
+
+
+<div class="viewcode-block" id="ReplicationStrategy.retrieve_execute">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.retrieve_execute">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span> <span class="nf">retrieve_execute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Executes the retrieval plan.&quot;&quot;&quot;</span>
+        <span class="k">pass</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="CliqueReplicationStrategy">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy">[docs]</a>
+<span class="k">class</span> <span class="nc">CliqueReplicationStrategy</span><span class="p">(</span><span class="n">ReplicationStrategy</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Implements a replication strategy where all participants are in a single group.</span>
+
+<span class="sd">    This strategy replicates local checkpoints among all ranks in the local process group,</span>
+<span class="sd">    enabling efficient retrieval and communication of tensor data.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">local_group</span><span class="p">:</span> <span class="n">ProcessGroupLike</span><span class="p">,</span> <span class="n">target_device</span><span class="o">=</span><span class="s2">&quot;cpu&quot;</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="p">:</span> <span class="n">GroupWrapper</span> <span class="o">=</span> <span class="n">GroupWrapper</span><span class="o">.</span><span class="n">wrap</span><span class="p">(</span><span class="n">local_group</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">target_device</span> <span class="o">=</span> <span class="n">target_device</span>
+
+<div class="viewcode-block" id="CliqueReplicationStrategy.replicate">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.replicate">[docs]</a>
+    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;CliqueReplicationStrategy.replicate&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">replicate</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">local_ckpt</span><span class="p">:</span> <span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="n">id_</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">TensorAwareStateDict</span><span class="p">],</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Replicates the local checkpoint and returns the replicated checkpoints with IDs.</span>
+
+<span class="sd">        This method splits the local checkpoint into a hollow state dictionary and its tensor data,</span>
+<span class="sd">        gathers replicated copies from other ranks, and reconstructs the state dictionaries.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            local_ckpt (TensorAwareStateDict): The local checkpoint to replicate.</span>
+<span class="sd">            id_ (str): Identifier for the state dict.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Tuple[List[TensorAwareStateDict], List[str]]:</span>
+<span class="sd">                - List[TensorAwareStateDict]: A list of replicated checkpoints.</span>
+<span class="sd">                - List[str]: A list of identifiers for the replicated checkpoints.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">sent_bytes</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="n">recv_bytes</span> <span class="o">=</span> <span class="mi">0</span>
+
+        <span class="c1"># Note: it makes the original local_ckpt hollow</span>
+        <span class="c1"># Split local_ckpt into a list of tensors and a picklable hollow state dict</span>
+        <span class="n">my_tensor_data</span> <span class="o">=</span> <span class="n">local_ckpt</span><span class="o">.</span><span class="n">pop_tensors</span><span class="p">()</span>
+        <span class="c1"># Send hollow state dicts and tensors separately</span>
+        <span class="k">with</span> <span class="n">debug_time</span><span class="p">(</span><span class="s2">&quot;all_gather_hollow_ckpt&quot;</span><span class="p">):</span>
+            <span class="n">others_local_ckpts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="o">.</span><span class="n">all_gather_object</span><span class="p">(</span><span class="n">local_ckpt</span><span class="p">)</span>
+
+        <span class="k">assert</span> <span class="nb">all</span><span class="p">(</span><span class="n">lch</span><span class="o">.</span><span class="n">is_hollow</span> <span class="k">for</span> <span class="n">lch</span> <span class="ow">in</span> <span class="n">others_local_ckpts</span><span class="p">)</span>
+        <span class="n">my_tensor_data_nbytes</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">ten</span><span class="o">.</span><span class="n">nbytes</span> <span class="k">for</span> <span class="n">ten</span> <span class="ow">in</span> <span class="n">my_tensor_data</span><span class="p">)</span>
+
+        <span class="k">with</span> <span class="n">debug_time</span><span class="p">(</span><span class="s2">&quot;all_gather_others_tensor_data&quot;</span><span class="p">):</span>
+            <span class="n">others_tensor_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="o">.</span><span class="n">all_gather_batch</span><span class="p">(</span>
+                <span class="n">my_tensor_data</span><span class="p">,</span> <span class="n">target_device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">target_device</span>
+            <span class="p">)</span>
+
+        <span class="n">others_tensor_data_nbytes</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span>
+            <span class="p">[</span><span class="nb">sum</span><span class="p">(</span><span class="n">ten</span><span class="o">.</span><span class="n">nbytes</span> <span class="k">for</span> <span class="n">ten</span> <span class="ow">in</span> <span class="n">tensor_list</span><span class="p">)</span> <span class="k">for</span> <span class="n">tensor_list</span> <span class="ow">in</span> <span class="n">others_tensor_data</span><span class="p">]</span>
+        <span class="p">)</span>
+        <span class="n">sent_bytes</span> <span class="o">+=</span> <span class="n">my_tensor_data_nbytes</span>
+        <span class="n">recv_bytes</span> <span class="o">+=</span> <span class="n">others_tensor_data_nbytes</span> <span class="o">-</span> <span class="n">my_tensor_data_nbytes</span>
+        <span class="c1"># Assemble hollow state dicts and tensors back into whole state dicts</span>
+        <span class="k">for</span> <span class="n">lch</span><span class="p">,</span> <span class="n">td</span> <span class="ow">in</span> <span class="n">zip_strict</span><span class="p">(</span><span class="n">others_local_ckpts</span><span class="p">,</span> <span class="n">others_tensor_data</span><span class="p">):</span>
+            <span class="n">lch</span><span class="o">.</span><span class="n">insert_tensors</span><span class="p">(</span><span class="n">td</span><span class="p">)</span>
+        <span class="k">assert</span> <span class="nb">all</span><span class="p">(</span><span class="ow">not</span> <span class="n">lch</span><span class="o">.</span><span class="n">is_hollow</span> <span class="k">for</span> <span class="n">lch</span> <span class="ow">in</span> <span class="n">others_local_ckpts</span><span class="p">)</span>
+
+        <span class="c1"># Label obtained state dicts with ids</span>
+        <span class="k">with</span> <span class="n">debug_time</span><span class="p">(</span><span class="s2">&quot;all_gather_other_ids&quot;</span><span class="p">):</span>
+            <span class="n">other_ids</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="o">.</span><span class="n">all_gather_object</span><span class="p">(</span><span class="n">id_</span><span class="p">)</span>
+
+        <span class="n">debug_msg</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">sent_bytes</span><span class="si">=}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">debug_msg</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">recv_bytes</span><span class="si">=}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">assert</span> <span class="n">local_ckpt</span><span class="o">.</span><span class="n">is_hollow</span>
+        <span class="k">return</span> <span class="n">others_local_ckpts</span><span class="p">,</span> <span class="n">other_ids</span></div>
+
+
+<div class="viewcode-block" id="CliqueReplicationStrategy.retrieve_plan">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.retrieve_plan">[docs]</a>
+    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;CliqueReplicationStrategy.retrieve_plan&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">retrieve_plan</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">globally_available_ids</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]],</span> <span class="n">wanted</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ExchangePlan</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Creates a plan for retrieving the specified IDs from globally available replicas.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            globally_available_ids (Mapping[int, List[str]]): Mapping of ranks to available IDs.</span>
+<span class="sd">            wanted (Sequence[str]): List of IDs to retrieve.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            ExchangePlan: A plan detailing how to retrieve the requested IDs.</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">            NoReplicasAvailableError: If no replicas are found for a requested ID.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># TODO: expand the function to multiple wanted IDs, and with smarter &quot;routing&quot;</span>
+        <span class="n">rng</span> <span class="o">=</span> <span class="n">random</span><span class="o">.</span><span class="n">Random</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">debug_time</span><span class="p">(</span><span class="s2">&quot;all_gather_wanted_ids&quot;</span><span class="p">):</span>
+            <span class="n">globally_wanted</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="o">.</span><span class="n">all_gather_object</span><span class="p">(</span><span class="n">wanted</span><span class="p">)</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">ExchangePlan</span><span class="p">(</span><span class="n">group</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">receiver</span><span class="p">,</span> <span class="n">currently_wanted</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="o">.</span><span class="n">ranks</span><span class="p">,</span> <span class="n">globally_wanted</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">wanted_id</span> <span class="ow">in</span> <span class="n">currently_wanted</span><span class="p">:</span>
+                <span class="n">available</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span>
+                    <span class="n">rank</span>
+                    <span class="k">for</span> <span class="n">rank</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="o">.</span><span class="n">ranks</span>
+                    <span class="k">if</span> <span class="n">wanted_id</span> <span class="ow">in</span> <span class="n">globally_available_ids</span><span class="p">[</span><span class="n">rank</span><span class="p">]</span>
+                <span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">available</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">NoReplicasAvailableError</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;No replicated copies for id=</span><span class="si">{</span><span class="n">wanted_id</span><span class="si">}</span><span class="s2"> found!&quot;</span>
+                    <span class="p">)</span>
+                <span class="k">if</span> <span class="n">receiver</span> <span class="ow">in</span> <span class="n">available</span><span class="p">:</span>
+                    <span class="n">sender</span> <span class="o">=</span> <span class="n">receiver</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">sender</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">choice</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">available</span><span class="p">)))</span>
+                <span class="n">result</span><span class="o">.</span><span class="n">plan</span><span class="p">(</span><span class="n">sender</span><span class="o">=</span><span class="n">sender</span><span class="p">,</span> <span class="n">receiver</span><span class="o">=</span><span class="n">receiver</span><span class="p">,</span> <span class="n">id_</span><span class="o">=</span><span class="n">wanted_id</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">result</span></div>
+
+
+<div class="viewcode-block" id="CliqueReplicationStrategy.retrieve_execute">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.retrieve_execute">[docs]</a>
+    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;CliqueReplicationStrategy.retrieve_execute&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">retrieve_execute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Executes the retrieval plan using the local group.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            The result of executing the retrieval plan.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_group</span><span class="o">.</span><span class="n">execute_plan</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="CliqueReplicationStrategy.from_replication_params">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.from_replication_params">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;CliqueReplicationStrategy.from_replication_params&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">from_replication_params</span><span class="p">(</span>
+        <span class="bp">cls</span><span class="p">,</span> <span class="n">replication_jump</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">(),</span> <span class="n">replication_factor</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;CliqueReplicationStrategy&#39;</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;Initializing </span><span class="si">{</span><span class="bp">cls</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+        <span class="n">repl_process_groups_ranks</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="n">parse_group_sequence</span><span class="p">(</span>
+            <span class="n">replication_jump</span><span class="o">=</span><span class="n">replication_jump</span><span class="p">,</span>
+            <span class="n">replication_factor</span><span class="o">=</span><span class="n">replication_factor</span><span class="p">,</span>
+            <span class="n">world_size</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_world_size</span><span class="p">(),</span>
+        <span class="p">)</span>
+        <span class="n">repl_process_groups</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ProcessGroup</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">new_group</span><span class="p">(</span><span class="n">g</span><span class="p">)</span> <span class="k">for</span> <span class="n">g</span> <span class="ow">in</span> <span class="n">repl_process_groups_ranks</span>
+        <span class="p">]</span>
+        <span class="n">my_process_group</span> <span class="o">=</span> <span class="n">GroupWrapper</span><span class="o">.</span><span class="n">from_list_of_groups</span><span class="p">(</span><span class="n">repl_process_groups</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">my_process_group</span><span class="p">,</span> <span class="n">target_device</span><span class="o">=</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span></div>
+</div>
+
+
+
+<span class="n">EagerT</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s1">&#39;EagerT&#39;</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="LazyReplicationStrategyBuilder">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder">[docs]</a>
+<span class="k">class</span> <span class="nc">LazyReplicationStrategyBuilder</span><span class="p">(</span><span class="n">ReplicationStrategy</span><span class="p">,</span> <span class="n">ABC</span><span class="p">,</span> <span class="n">Generic</span><span class="p">[</span><span class="n">EagerT</span><span class="p">]):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Represents an uninitialized replication strategy.</span>
+
+<span class="sd">    Replication strategy needs process groups which can be impossible to initialize</span>
+<span class="sd">    and the time of instantiation of the ReplicationStrategy class.</span>
+
+<span class="sd">    This class allows for a lazy initialization of an instance of `EagerT` type:</span>
+<span class="sd">    &gt;&gt;&gt; lazy_repl_strategy = LazyReplicationStrategyBuilder()</span>
+<span class="sd">    &gt;&gt;&gt; ...</span>
+<span class="sd">    &gt;&gt;&gt; lazy_repl_strategy.replicate(...)  # performs lazy init transparently</span>
+<span class="sd">    &gt;&gt;&gt; lazy_repl_strategy.retrieve_execute(...)  # reuses previously initialized instance transparently</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_replication_strategy</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">EagerT</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">replication_strategy</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">EagerT</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Lazy build on demand.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_replication_strategy</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_replication_strategy</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_eager_build</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_replication_strategy</span>
+
+<div class="viewcode-block" id="LazyReplicationStrategyBuilder.replicate">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.replicate">[docs]</a>
+    <span class="k">def</span> <span class="nf">replicate</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">local_ckpt</span><span class="p">:</span> <span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="n">id_</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">TensorAwareStateDict</span><span class="p">],</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Delegate to the underlying replication strategy.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">replication_strategy</span><span class="o">.</span><span class="n">replicate</span><span class="p">(</span><span class="n">local_ckpt</span><span class="p">,</span> <span class="n">id_</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LazyReplicationStrategyBuilder.retrieve_plan">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.retrieve_plan">[docs]</a>
+    <span class="k">def</span> <span class="nf">retrieve_plan</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">globally_available_ids</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]],</span> <span class="n">wanted</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ExchangePlan</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Delegate to the underlying replication strategy.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">replication_strategy</span><span class="o">.</span><span class="n">retrieve_plan</span><span class="p">(</span><span class="n">globally_available_ids</span><span class="p">,</span> <span class="n">wanted</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LazyReplicationStrategyBuilder.retrieve_execute">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder.retrieve_execute">[docs]</a>
+    <span class="k">def</span> <span class="nf">retrieve_execute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Delegate to the underlying replication strategy.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">replication_strategy</span><span class="o">.</span><span class="n">retrieve_execute</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
+
+
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span> <span class="nf">_eager_build</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">EagerT</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Instantiates the eager class.&quot;&quot;&quot;</span></div>
+
+
+
+<div class="viewcode-block" id="LazyCliqueReplicationStrategy">
+<a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyCliqueReplicationStrategy">[docs]</a>
+<span class="k">class</span> <span class="nc">LazyCliqueReplicationStrategy</span><span class="p">(</span><span class="n">LazyReplicationStrategyBuilder</span><span class="p">[</span><span class="n">CliqueReplicationStrategy</span><span class="p">]):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Lazy version of CliqueReplicationStrategy allowing to delay process group formation.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">replication_jump</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">(),</span> <span class="n">replication_factor</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>
+    <span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">replication_jump</span> <span class="o">=</span> <span class="n">replication_jump</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">replication_factor</span> <span class="o">=</span> <span class="n">replication_factor</span>
+
+    <span class="k">def</span> <span class="nf">_eager_build</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">CliqueReplicationStrategy</span><span class="o">.</span><span class="n">from_replication_params</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">replication_jump</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">replication_factor</span>
+        <span class="p">)</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

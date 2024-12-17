@@ -1,0 +1,185 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Usage guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="API documentation" href="api.html" />
+    <link rel="prev" title="Async Checkpointing" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Async Checkpointing</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Usage guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#requirements">Requirements</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#synchronization-of-asynchronous-checkpoint-requests">Synchronization of Asynchronous Checkpoint Requests</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Basic usage example</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Async Checkpointing</a></li>
+      <li class="breadcrumb-item active">Usage guide</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/checkpointing/async/usage_guide.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="usage-guide">
+<h1>Usage guide<a class="headerlink" href="#usage-guide" title="Link to this heading"></a></h1>
+<p>The <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue</span></code></a>
+provides application users with an interface to schedule <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest</span></code></a>,
+which defines checkpoint routine, its args/kwargs and finalization steps when the checkpoint routine is finished.</p>
+<dl class="simple">
+<dt><a class="reference internal" href="api/torch_ckpt.html#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint" title="nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint</span></code></a></dt><dd><p>is an instatiation of the core utilities to make <cite>torch.save</cite> run asynchronously.</p>
+</dd>
+</dl>
+<p>The implementation assumes all training ranks creates <code class="xref py py-class docutils literal notranslate"><span class="pre">core.AsyncCallsQueue</span></code> and synchronize with <code class="xref py py-class docutils literal notranslate"><span class="pre">core.AsyncCallsQueue.maybe_finalize_async_calls</span></code> by default.</p>
+<section id="requirements">
+<h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading"></a></h2>
+<p><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.utils</span></code> includes a couple of routines used for <a class="reference internal" href="api/core.html#module-nvidia_resiliency_ext.checkpointing.async_ckpt.core" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core</span></code></a>
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.utils.wrap_for_async</span></code> disables garbage collection in a forked process to run user’s checkpoint routine
+to prevent failures incurred by GC, which tries to deallocate CUDA tensors in a forked process.
+This routine requires the first argument of the passed user fn should be state dictionary containing tensors or objects for checkpoint</p>
+<p>The current implementation uses a forked process to run pre-staged tensors in host memory by pinned memcpy.
+So, the routine should include <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.utils.preload_tensors</span></code> to stage GPU tensors in a state dictionary to host memory before it’s passed to <cite>AsyncCallsQueue</cite></p>
+</section>
+<section id="synchronization-of-asynchronous-checkpoint-requests">
+<h2>Synchronization of Asynchronous Checkpoint Requests<a class="headerlink" href="#synchronization-of-asynchronous-checkpoint-requests" title="Link to this heading"></a></h2>
+<p>The class <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue</span></code></a>
+provides a method to verify whether asynchronous checkpointing has completed in the background.
+Each trainer can check the status of its forked checkpoint process by calling
+<a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls"><code class="xref py py-meth docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls()</span></code></a>
+with <cite>blocking=False</cite>.</p>
+<p>When a trainer needs to finalize all active checkpoint requests in a blocking manner, it can call the same method with <cite>blocking=True</cite>.</p>
+<p>Additionally,
+<code class="xref py py-meth docutils literal notranslate"><span class="pre">AsyncCallsQueue.maybe_finalize_async_calls()</span></code> includes another parameter that must be set to <cite>no_dist=False</cite> when global synchronization across all ranks is required.
+For example, if a checkpointing routine needs to write metadata (e.g., iteration or sharding information) after completing a set of checkpoints,
+global synchronization ensures that all ranks finish their asynchronous checkpointing before proceeding.</p>
+<p>This global synchronization is implemented using a single integer collective operation, ensuring that all ranks have completed their asynchronous checkpoint writes.
+The synchronization logic is handled within
+<a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done"><code class="xref py py-meth docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done()</span></code></a>, which is invoked by <code class="xref py py-meth docutils literal notranslate"><span class="pre">AsyncCallsQueue.maybe_finalize_async_calls()</span></code>.</p>
+<p>The following snippet demonstrates how global synchronization is performed when <cite>no_dist</cite> is set to <cite>False</cite> (indicating that synchronization is required):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">is_alive</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">is_alive</span><span class="p">())</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mi">0</span>
+
+<span class="n">is_done</span> <span class="o">=</span> <span class="n">is_alive</span>
+<span class="k">if</span> <span class="ow">not</span> <span class="n">no_dist</span><span class="p">:</span>
+    <span class="n">ten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="n">is_alive</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">())</span>
+</pre></div>
+</div>
+<p><cite>TorchAsyncCheckpoint</cite> wraps around these synchronization routines in <cite>nvidia_resiliency_ext.checkpointing.async_ckpt.TorchAsyncCheckpoint.finalize_async_save</cite>.
+The following example shows how the routine can be used to synchronize the asynchronous checkpoint in a non-blocking / blocking manner</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt</span> <span class="kn">import</span> <span class="n">TorchAsyncCheckpoint</span>
+<span class="o">...</span>
+<span class="n">async_impl</span> <span class="o">=</span> <span class="n">TorchAsyncCheckpoint</span>
+
+<span class="c1"># Training loop</span>
+<span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+    <span class="n">async_impl</span><span class="o">.</span><span class="n">finalize_async_save</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="c1"># Perform a training iteration</span>
+    <span class="o">...</span>
+    <span class="c1"># Save checkpoint if conditions are met</span>
+    <span class="k">if</span> <span class="n">save_condition</span><span class="p">():</span>
+            <span class="n">async_impl</span><span class="o">.</span><span class="n">async_save</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">ckpt_dir</span><span class="p">)</span>
+
+<span class="n">async_impl</span><span class="o">.</span><span class="n">finalize_async_save</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="index.html" class="btn btn-neutral float-left" title="Async Checkpointing" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="api.html" class="btn btn-neutral float-right" title="API documentation" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

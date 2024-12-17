@@ -1,0 +1,270 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rank Assignment &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Rank Filter" href="rank_filter.html" />
+    <link rel="prev" title="Compose" href="compose.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Inprocess Restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage Guide</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="wrap.html">Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="compose.html">Compose</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Rank Assignment</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps"><code class="docutils literal notranslate"><span class="pre">FillGaps</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey"><code class="docutils literal notranslate"><span class="pre">FilterGroupedByKey</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="docutils literal notranslate"><span class="pre">RankAssignment</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded"><code class="docutils literal notranslate"><span class="pre">RankDiscarded</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks"><code class="docutils literal notranslate"><span class="pre">ShiftRanks</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
+<li class="toctree-l3"><a class="reference internal" href="initialize.html">Initialize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="abort.html">Abort</a></li>
+<li class="toctree-l3"><a class="reference internal" href="finalize.html">Finalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="health_check.html">Health Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="exception.html">Exceptions</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Inprocess Restart</a></li>
+          <li class="breadcrumb-item"><a href="../api.html">API documentation</a></li>
+      <li class="breadcrumb-item active">Rank Assignment</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/inprocess/api/rank_assignment.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="module-nvidia_resiliency_ext.inprocess.rank_assignment">
+<span id="rank-assignment"></span><h1>Rank Assignment<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.rank_assignment" title="Link to this heading"></a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">FillGaps</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#FillGaps"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps" title="Link to this definition"></a></dt>
+<dd><p>A class for reassigning distributed ranks, filling in gaps caused by
+terminated or unhealthy ranks.</p>
+<p>The <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps" title="nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps"><code class="xref py py-class docutils literal notranslate"><span class="pre">FillGaps</span></code></a> class is a specialized rank assignment strategy
+that reorders ranks to fill gaps created by terminated or unhealthy ranks.
+It preserves the previous rank assignment for the first <code class="docutils literal notranslate"><span class="pre">world_size</span> <span class="pre">-</span>
+<span class="pre">len(terminated_ranks)</span></code> healthy ranks; the remaining healthy ranks are
+reassigned to fill in gaps left by unhealthy ranks.</p>
+<p>Example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="o">|&lt;---</span> <span class="n">preserved</span> <span class="o">---&gt;|&lt;-</span> <span class="n">moved</span> <span class="o">-&gt;|</span>     <span class="o">|&lt;--</span><span class="n">new</span> <span class="n">world</span> <span class="n">size</span><span class="o">-&gt;|</span>
+
+<span class="o">+---+---+---+---+---+---+---+---+</span>     <span class="o">+---+---+---+---+---+</span>
+<span class="o">|</span> <span class="mi">0</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="mi">2</span> <span class="o">|</span> <span class="mi">3</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="mi">6</span> <span class="o">|</span> <span class="mi">7</span> <span class="o">|</span> <span class="o">--&gt;</span> <span class="o">|</span> <span class="mi">0</span> <span class="o">|</span> <span class="mi">6</span> <span class="o">|</span> <span class="mi">2</span> <span class="o">|</span> <span class="mi">3</span> <span class="o">|</span> <span class="mi">7</span> <span class="o">|</span>
+<span class="o">+---+---+---+---+---+---+---+---+</span>     <span class="o">+---+---+---+---+---+</span>
+      <span class="o">^</span>           <span class="o">^</span>        <span class="o">|</span>  <span class="o">|</span>
+      <span class="o">|</span>           <span class="o">|</span>        <span class="o">|</span>  <span class="o">|</span>
+      <span class="o">---------------------</span>   <span class="o">|</span>
+                  <span class="o">|</span>           <span class="o">|</span>
+                  <span class="o">-------------</span>
+</pre></div>
+</div>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">FilterGroupedByKey</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">key_or_fn</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">condition</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">datetime.timedelta(seconds=60)</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#FilterGroupedByKey"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey" title="Link to this definition"></a></dt>
+<dd><p>A class for filtering distributed ranks by grouping by a key.</p>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey" title="nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey"><code class="xref py py-class docutils literal notranslate"><span class="pre">FilterGroupedByKey</span></code></a> organizes ranks into groups based on a
+specified string key. For each group, it increments a group counter by 1
+for every healthy rank. A given boolean <code class="docutils literal notranslate"><span class="pre">condition</span></code> is then evaluated for
+each rank, with the corresponding group counter passed as input.</p>
+<ul class="simple">
+<li><p>If <code class="docutils literal notranslate"><span class="pre">condition(group_counter)</span></code> evaluates to <code class="docutils literal notranslate"><span class="pre">True</span></code>, the rank is
+preserved.</p></li>
+<li><p>If it evaluates to <code class="docutils literal notranslate"><span class="pre">False</span></code>, the rank is considered unhealthy and marked
+for termination.</p></li>
+</ul>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey" title="nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey"><code class="xref py py-class docutils literal notranslate"><span class="pre">FilterGroupedByKey</span></code></a> needs to be followed by another
+<a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> that performs the actual rank termination by
+raising <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded"><code class="xref py py-exc docutils literal notranslate"><span class="pre">RankDiscarded</span></code></a> exception.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">condition</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">count</span><span class="p">:</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">2</span>
+
+<span class="o">+---+---+---+---+---+---+---+---+</span>     <span class="o">+---+---+---+---+---+---+---+---+</span>
+<span class="o">|</span> <span class="mi">0</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="mi">2</span> <span class="o">|</span> <span class="mi">3</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="mi">6</span> <span class="o">|</span> <span class="mi">7</span> <span class="o">|</span> <span class="o">--&gt;</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="mi">2</span> <span class="o">|</span> <span class="mi">3</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="mi">6</span> <span class="o">|</span> <span class="mi">7</span> <span class="o">|</span>
+<span class="o">+---+---+---+---+---+---+---+---+</span>     <span class="o">+---+---+---+---+---+---+---+---+</span>
+<span class="o">|</span> <span class="n">key</span><span class="o">=</span><span class="mi">0</span> <span class="o">|</span> <span class="n">key</span><span class="o">=</span><span class="mi">1</span> <span class="o">|</span> <span class="n">key</span><span class="o">=</span><span class="mi">2</span> <span class="o">|</span> <span class="n">key</span><span class="o">=</span><span class="mi">3</span> <span class="o">|</span>     <span class="o">|</span> <span class="n">key</span><span class="o">=</span><span class="mi">0</span> <span class="o">|</span> <span class="n">key</span><span class="o">=</span><span class="mi">1</span> <span class="o">|</span> <span class="n">key</span><span class="o">=</span><span class="mi">2</span> <span class="o">|</span> <span class="n">key</span><span class="o">=</span><span class="mi">3</span> <span class="o">|</span>
+<span class="o">|</span>       <span class="o">|</span>       <span class="o">|</span>       <span class="o">|</span>       <span class="o">|</span>     <span class="o">|</span>       <span class="o">|</span>       <span class="o">|</span>       <span class="o">|</span>       <span class="o">|</span>
+<span class="o">|</span><span class="n">count</span><span class="o">=</span><span class="mi">1</span><span class="o">|</span><span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="o">|</span><span class="n">count</span><span class="o">=</span><span class="mi">0</span><span class="o">|</span><span class="n">count</span><span class="o">=</span><span class="mi">2</span><span class="o">|</span>     <span class="o">|</span> <span class="kc">False</span> <span class="o">|</span> <span class="kc">True</span>  <span class="o">|</span> <span class="kc">False</span> <span class="o">|</span> <span class="kc">True</span>  <span class="o">|</span>
+</pre></div>
+</div>
+<p>Example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># hostname is the group key, and condition checks if exactly 8 ranks</span>
+<span class="c1"># corresponding to a given hostname are in a healthy state, if the</span>
+<span class="c1"># count is different than 8, all ranks from corresponding hostname are</span>
+<span class="c1"># considered unhealthy, and terminated; remaining healthy ranks are</span>
+<span class="c1"># shifted to the left to fill all gaps created by unhealthy ranks.</span>
+
+<span class="n">rank_assignment</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
+        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ShiftRanks</span><span class="p">(),</span>
+        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">FilterGroupedByKey</span><span class="p">(</span>
+            <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span><span class="p">(),</span>
+            <span class="n">condition</span><span class="o">=</span><span class="k">lambda</span> <span class="n">count</span><span class="p">:</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">8</span><span class="p">,</span>
+        <span class="p">),</span>
+    <span class="p">),</span>
+<span class="p">),</span>
+</pre></div>
+</div>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>key_or_fn</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>) – a string key, or a <code class="docutils literal notranslate"><span class="pre">Callable</span></code> evaluated with <code class="docutils literal notranslate"><span class="pre">(rank,</span>
+<span class="pre">world_size)</span></code> as the input to produce a string key</p></li>
+<li><p><strong>condition</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>]</em>) – condition to be evaluated with group counter as the input,
+if <code class="docutils literal notranslate"><span class="pre">False</span></code> the rank is terminated</p></li>
+<li><p><strong>timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – timeout for distributed barrier</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">RankAssignment</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#RankAssignment"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="Link to this definition"></a></dt>
+<dd><p>Abstract base class for <code class="docutils literal notranslate"><span class="pre">rank_assignment</span></code> argument for
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> is responsible for reassigning distributed ranks
+and computing the new world size for the next iteration of the wrapped
+function.</p>
+<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> could be composed with
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
+</dd></dl>
+
+<dl class="py exception">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded">
+<em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">RankDiscarded</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#RankDiscarded"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded" title="Link to this definition"></a></dt>
+<dd><p>Exception raised when unhealthy distributed rank is discarded by
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.rank_assignment.RankAssignment</span></code>.</p>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">ShiftRanks</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#ShiftRanks"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks" title="Link to this definition"></a></dt>
+<dd><p>A class for reassigning distributed ranks, filling in gaps caused by
+terminated or unhealthy ranks.</p>
+<p>The <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks" title="nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShiftRanks</span></code></a> class is a specialized rank assignment strategy
+that shifts all healthy ranks to the left to fill gaps created by
+terminated or unhealthy ranks. <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks" title="nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShiftRanks</span></code></a> preserves the
+relative order of all healthy ranks, but all ranks past the first unhealthy
+rank are reassigned (shifted).</p>
+<p>Example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span> <span class="o">&lt;-</span>   <span class="o">-&gt;|&lt;-------</span> <span class="n">moved</span> <span class="o">-------&gt;|</span>     <span class="o">|&lt;--</span><span class="n">new</span> <span class="n">world</span> <span class="n">size</span><span class="o">-&gt;|</span>
+
+          <span class="o">----</span>
+          <span class="n">v</span>   <span class="o">|</span>
+<span class="o">+---+---+---+---+---+---+---+---+</span>     <span class="o">+---+---+---+---+---+</span>
+<span class="o">|</span> <span class="mi">0</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="mi">2</span> <span class="o">|</span> <span class="mi">3</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="n">X</span> <span class="o">|</span> <span class="mi">6</span> <span class="o">|</span> <span class="mi">7</span> <span class="o">|</span> <span class="o">--&gt;</span> <span class="o">|</span> <span class="mi">0</span> <span class="o">|</span> <span class="mi">2</span> <span class="o">|</span> <span class="mi">3</span> <span class="o">|</span> <span class="mi">6</span> <span class="o">|</span> <span class="mi">7</span> <span class="o">|</span>
+<span class="o">+---+---+---+---+---+---+---+---+</span>     <span class="o">+---+---+---+---+---+</span>
+      <span class="o">^</span>   <span class="o">|</span>   <span class="o">^</span>   <span class="o">^</span>       <span class="o">|</span>   <span class="o">|</span>
+      <span class="o">|</span>   <span class="o">|</span>   <span class="o">|</span>   <span class="o">|</span>       <span class="o">|</span>   <span class="o">|</span>
+      <span class="o">----</span>     <span class="o">------------</span>   <span class="o">|</span>
+                  <span class="o">|</span>           <span class="o">|</span>
+                  <span class="o">------------</span>
+</pre></div>
+</div>
+</dd></dl>
+
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="compose.html" class="btn btn-neutral float-left" title="Compose" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="rank_filter.html" class="btn btn-neutral float-right" title="Rank Filter" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,401 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.inprocess.rank_assignment &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.inprocess.rank_assignment</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.inprocess.rank_assignment</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: NVIDIA CORPORATION &amp; AFFILIATES</span>
+<span class="c1"># Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span> <span class="nn">abc</span>
+<span class="kn">import</span> <span class="nn">datetime</span>
+<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Union</span>
+
+<span class="kn">from</span> <span class="nn">.</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">.state</span> <span class="kn">import</span> <span class="n">State</span>
+
+
+<div class="viewcode-block" id="RankDiscarded">
+<a class="viewcode-back" href="../../../inprocess/api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded">[docs]</a>
+<span class="k">class</span> <span class="nc">RankDiscarded</span><span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">RestartError</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Exception raised when unhealthy distributed rank is discarded by</span>
+<span class="sd">    :py:class:`inprocess.rank_assignment.RankAssignment`.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">pass</span></div>
+
+
+
+<div class="viewcode-block" id="RankAssignment">
+<a class="viewcode-back" href="../../../inprocess/api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment">[docs]</a>
+<span class="k">class</span> <span class="nc">RankAssignment</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABC</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Abstract base class for ``rank_assignment`` argument for</span>
+<span class="sd">    :py:class:`inprocess.Wrapper`.</span>
+
+
+<span class="sd">    :py:class:`RankAssignment` is responsible for reassigning distributed ranks</span>
+<span class="sd">    and computing the new world size for the next iteration of the wrapped</span>
+<span class="sd">    function.</span>
+
+<span class="sd">    Multiple instances of :py:class:`RankAssignment` could be composed with</span>
+<span class="sd">    :py:class:`inprocess.Compose` to achieve the desired behavior.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="nd">@abc</span><span class="o">.</span><span class="n">abstractmethod</span>
+    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span><span class="n">State</span><span class="p">,</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]):</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+
+<div class="viewcode-block" id="FillGaps">
+<a class="viewcode-back" href="../../../inprocess/api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps">[docs]</a>
+<span class="k">class</span> <span class="nc">FillGaps</span><span class="p">(</span><span class="n">RankAssignment</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    A class for reassigning distributed ranks, filling in gaps caused by</span>
+<span class="sd">    terminated or unhealthy ranks.</span>
+
+<span class="sd">    The :py:class:`FillGaps` class is a specialized rank assignment strategy</span>
+<span class="sd">    that reorders ranks to fill gaps created by terminated or unhealthy ranks.</span>
+<span class="sd">    It preserves the previous rank assignment for the first ``world_size -</span>
+<span class="sd">    len(terminated_ranks)`` healthy ranks; the remaining healthy ranks are</span>
+<span class="sd">    reassigned to fill in gaps left by unhealthy ranks.</span>
+
+<span class="sd">    Example:</span>
+
+<span class="sd">    .. code-block:: python</span>
+
+<span class="sd">        |&lt;--- preserved ---&gt;|&lt;- moved -&gt;|     |&lt;--new world size-&gt;|</span>
+
+<span class="sd">        +---+---+---+---+---+---+---+---+     +---+---+---+---+---+</span>
+<span class="sd">        | 0 | X | 2 | 3 | X | X | 6 | 7 | --&gt; | 0 | 6 | 2 | 3 | 7 |</span>
+<span class="sd">        +---+---+---+---+---+---+---+---+     +---+---+---+---+---+</span>
+<span class="sd">              ^           ^        |  |</span>
+<span class="sd">              |           |        |  |</span>
+<span class="sd">              ---------------------   |</span>
+<span class="sd">                          |           |</span>
+<span class="sd">                          -------------</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span><span class="n">State</span><span class="p">,</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]):</span>
+        <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
+        <span class="n">world_size</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">world_size</span>
+
+        <span class="n">ordered_terminated_ranks</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">terminated_ranks</span><span class="p">))</span>
+        <span class="n">world_size</span> <span class="o">=</span> <span class="n">world_size</span> <span class="o">-</span> <span class="nb">len</span><span class="p">(</span><span class="n">terminated_ranks</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">rank</span> <span class="ow">in</span> <span class="n">terminated_ranks</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">RankDiscarded</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">terminated_ranks</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">rank</span> <span class="o">&gt;=</span> <span class="n">world_size</span><span class="p">:</span>
+            <span class="n">rank</span> <span class="o">=</span> <span class="n">ordered_terminated_ranks</span><span class="p">[</span><span class="n">rank</span> <span class="o">-</span> <span class="n">world_size</span><span class="p">]</span>
+
+        <span class="n">state</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">rank</span>
+        <span class="n">state</span><span class="o">.</span><span class="n">world_size</span> <span class="o">=</span> <span class="n">world_size</span>
+        <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="k">return</span> <span class="n">state</span><span class="p">,</span> <span class="n">terminated_ranks</span></div>
+
+
+
+<div class="viewcode-block" id="ShiftRanks">
+<a class="viewcode-back" href="../../../inprocess/api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks">[docs]</a>
+<span class="k">class</span> <span class="nc">ShiftRanks</span><span class="p">(</span><span class="n">RankAssignment</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    A class for reassigning distributed ranks, filling in gaps caused by</span>
+<span class="sd">    terminated or unhealthy ranks.</span>
+
+<span class="sd">    The :py:class:`ShiftRanks` class is a specialized rank assignment strategy</span>
+<span class="sd">    that shifts all healthy ranks to the left to fill gaps created by</span>
+<span class="sd">    terminated or unhealthy ranks. :py:class:`ShiftRanks` preserves the</span>
+<span class="sd">    relative order of all healthy ranks, but all ranks past the first unhealthy</span>
+<span class="sd">    rank are reassigned (shifted).</span>
+
+<span class="sd">    Example:</span>
+
+<span class="sd">    .. code-block:: python</span>
+
+<span class="sd">         &lt;-   -&gt;|&lt;------- moved -------&gt;|     |&lt;--new world size-&gt;|</span>
+
+<span class="sd">                  ----</span>
+<span class="sd">                  v   |</span>
+<span class="sd">        +---+---+---+---+---+---+---+---+     +---+---+---+---+---+</span>
+<span class="sd">        | 0 | X | 2 | 3 | X | X | 6 | 7 | --&gt; | 0 | 2 | 3 | 6 | 7 |</span>
+<span class="sd">        +---+---+---+---+---+---+---+---+     +---+---+---+---+---+</span>
+<span class="sd">              ^   |   ^   ^       |   |</span>
+<span class="sd">              |   |   |   |       |   |</span>
+<span class="sd">              ----     ------------   |</span>
+<span class="sd">                          |           |</span>
+<span class="sd">                          ------------</span>
+
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span><span class="n">State</span><span class="p">,</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]):</span>
+        <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
+        <span class="n">world_size</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">world_size</span>
+
+        <span class="n">world_size</span> <span class="o">=</span> <span class="n">world_size</span> <span class="o">-</span> <span class="nb">len</span><span class="p">(</span><span class="n">terminated_ranks</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">rank</span> <span class="ow">in</span> <span class="n">terminated_ranks</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">RankDiscarded</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">terminated_ranks</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">rank</span> <span class="o">=</span> <span class="n">rank</span> <span class="o">-</span> <span class="nb">sum</span><span class="p">(</span>
+                <span class="n">rank</span> <span class="o">&gt;</span> <span class="n">terminated_rank</span> <span class="k">for</span> <span class="n">terminated_rank</span> <span class="ow">in</span> <span class="n">terminated_ranks</span>
+            <span class="p">)</span>
+
+        <span class="n">state</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">rank</span>
+        <span class="n">state</span><span class="o">.</span><span class="n">world_size</span> <span class="o">=</span> <span class="n">world_size</span>
+        <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="k">return</span> <span class="n">state</span><span class="p">,</span> <span class="n">terminated_ranks</span></div>
+
+
+
+<div class="viewcode-block" id="FilterGroupedByKey">
+<a class="viewcode-back" href="../../../inprocess/api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey">[docs]</a>
+<span class="k">class</span> <span class="nc">FilterGroupedByKey</span><span class="p">(</span><span class="n">RankAssignment</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    A class for filtering distributed ranks by grouping by a key.</span>
+
+<span class="sd">    :py:class:`FilterGroupedByKey` organizes ranks into groups based on a</span>
+<span class="sd">    specified string key. For each group, it increments a group counter by 1</span>
+<span class="sd">    for every healthy rank. A given boolean ``condition`` is then evaluated for</span>
+<span class="sd">    each rank, with the corresponding group counter passed as input.</span>
+
+<span class="sd">    - If ``condition(group_counter)`` evaluates to ``True``, the rank is</span>
+<span class="sd">      preserved.</span>
+<span class="sd">    - If it evaluates to ``False``, the rank is considered unhealthy and marked</span>
+<span class="sd">      for termination.</span>
+
+<span class="sd">    :py:class:`FilterGroupedByKey` needs to be followed by another</span>
+<span class="sd">    :py:class:`RankAssignment` that performs the actual rank termination by</span>
+<span class="sd">    raising :py:exc:`RankDiscarded` exception.</span>
+
+<span class="sd">    .. code-block:: python</span>
+
+<span class="sd">        condition = lambda count: count == 2</span>
+
+<span class="sd">        +---+---+---+---+---+---+---+---+     +---+---+---+---+---+---+---+---+</span>
+<span class="sd">        | 0 | X | 2 | 3 | X | X | 6 | 7 | --&gt; | X | X | 2 | 3 | X | X | 6 | 7 |</span>
+<span class="sd">        +---+---+---+---+---+---+---+---+     +---+---+---+---+---+---+---+---+</span>
+<span class="sd">        | key=0 | key=1 | key=2 | key=3 |     | key=0 | key=1 | key=2 | key=3 |</span>
+<span class="sd">        |       |       |       |       |     |       |       |       |       |</span>
+<span class="sd">        |count=1|count=2|count=0|count=2|     | False | True  | False | True  |</span>
+
+<span class="sd">    Example:</span>
+
+<span class="sd">    .. code-block:: python</span>
+
+<span class="sd">        # hostname is the group key, and condition checks if exactly 8 ranks</span>
+<span class="sd">        # corresponding to a given hostname are in a healthy state, if the</span>
+<span class="sd">        # count is different than 8, all ranks from corresponding hostname are</span>
+<span class="sd">        # considered unhealthy, and terminated; remaining healthy ranks are</span>
+<span class="sd">        # shifted to the left to fill all gaps created by unhealthy ranks.</span>
+
+<span class="sd">        rank_assignment = (</span>
+<span class="sd">            inprocess.Compose(</span>
+<span class="sd">                inprocess.rank_assignment.ShiftRanks(),</span>
+<span class="sd">                inprocess.rank_assignment.FilterGroupedByKey(</span>
+<span class="sd">                    key_or_fn=lambda _, _: socket.gethostname(),</span>
+<span class="sd">                    condition=lambda count: count == 8,</span>
+<span class="sd">                ),</span>
+<span class="sd">            ),</span>
+<span class="sd">        ),</span>
+
+
+<span class="sd">    Args:</span>
+<span class="sd">        key_or_fn: a string key, or a ``Callable`` evaluated with ``(rank,</span>
+<span class="sd">            world_size)`` as the input to produce a string key</span>
+<span class="sd">        condition: condition to be evaluated with group counter as the input,</span>
+<span class="sd">            if ``False`` the rank is terminated</span>
+<span class="sd">        timeout: timeout for distributed barrier</span>
+
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="n">instance_count</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">key_or_fn</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="nb">str</span><span class="p">]],</span>
+        <span class="n">condition</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">bool</span><span class="p">],</span>
+        <span class="n">timeout</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">60</span><span class="p">),</span>
+    <span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">key_or_fn</span> <span class="o">=</span> <span class="n">key_or_fn</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">condition</span> <span class="o">=</span> <span class="n">condition</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">timeout</span> <span class="o">=</span> <span class="n">timeout</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s1">_</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">instance_count</span><span class="si">}</span><span class="s1">&#39;</span>
+        <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">instance_count</span> <span class="o">+=</span> <span class="mi">1</span>
+
+    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span><span class="n">State</span><span class="p">,</span> <span class="nb">set</span><span class="p">[</span><span class="nb">int</span><span class="p">]):</span>
+        <span class="n">COUNT_ALIVE_BARRIER</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;count_alive_barrier_</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s1">&#39;</span>
+        <span class="n">SUBMIT_MISMATCHING_BARRIER</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;submit_mismatching_barrier_</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s1">&#39;</span>
+        <span class="n">RANKS_TO_TERMINATE</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;ranks_to_terminate_</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s1">&#39;</span>
+
+        <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
+        <span class="n">world_size</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">world_size</span>
+        <span class="n">store</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">store</span>
+
+        <span class="n">alive_world_size</span> <span class="o">=</span> <span class="n">world_size</span> <span class="o">-</span> <span class="nb">len</span><span class="p">(</span><span class="n">terminated_ranks</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">rank</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">terminated_ranks</span><span class="p">:</span>
+            <span class="n">key</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">key_or_fn</span><span class="p">(</span><span class="n">rank</span><span class="p">,</span> <span class="n">world_size</span><span class="p">)</span>
+                <span class="k">if</span> <span class="nb">callable</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">key_or_fn</span><span class="p">)</span>
+                <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">key_or_fn</span>
+            <span class="p">)</span>
+            <span class="n">key</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;filter_grouped_by_key_</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s1">_</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s1">&#39;</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">barrier</span><span class="p">(</span>
+                <span class="n">rank</span><span class="o">=</span><span class="n">rank</span><span class="p">,</span>
+                <span class="n">group_name</span><span class="o">=</span><span class="n">COUNT_ALIVE_BARRIER</span><span class="p">,</span>
+                <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">alive_world_size</span><span class="p">,</span>
+                <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">timeout</span><span class="p">,</span>
+            <span class="p">)</span>
+
+            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">condition</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">store</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">))):</span>
+                <span class="n">store</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">RANKS_TO_TERMINATE</span><span class="p">,</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s1">,&#39;</span><span class="p">)</span>
+
+            <span class="n">store</span><span class="o">.</span><span class="n">barrier</span><span class="p">(</span>
+                <span class="n">rank</span><span class="o">=</span><span class="n">rank</span><span class="p">,</span>
+                <span class="n">group_name</span><span class="o">=</span><span class="n">SUBMIT_MISMATCHING_BARRIER</span><span class="p">,</span>
+                <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">alive_world_size</span><span class="p">,</span>
+                <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">timeout</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">delete_key</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+
+            <span class="k">if</span> <span class="n">store</span><span class="o">.</span><span class="n">check</span><span class="p">([</span><span class="n">RANKS_TO_TERMINATE</span><span class="p">]):</span>
+                <span class="n">ranks_to_terminate</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span>
+                    <span class="nb">int</span><span class="p">(</span><span class="n">r</span><span class="p">)</span>
+                    <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">store</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">RANKS_TO_TERMINATE</span><span class="p">)</span>
+                    <span class="o">.</span><span class="n">decode</span><span class="p">()</span>
+                    <span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">)</span>
+                    <span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">)</span>
+                <span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">ranks_to_terminate</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+
+            <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="n">terminated_ranks</span><span class="o">.</span><span class="n">union</span><span class="p">(</span><span class="n">ranks_to_terminate</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">state</span><span class="p">,</span> <span class="n">terminated_ranks</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

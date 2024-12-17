@@ -9,6 +9,7 @@
   <title>nvidia-resiliency-ext &mdash; nvidia-resiliency-ext 0.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
 
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
@@ -16,10 +17,12 @@
       <script src="_static/documentation_options.js?v=2709fde1"></script>
       <script src="_static/doctools.js?v=9bcbadda"></script>
       <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="_static/copybutton.js?v=f281be69"></script>
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Fault Tolerance Usage Guide" href="ft_usage.html" /> 
+    <link rel="next" title="Fault Tolerance" href="fault_tolerance/index.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -43,10 +46,11 @@
         </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="ft_usage.html">Fault Tolerance Usage Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="ft_api.html">Fault Tolerance API</a></li>
-<li class="toctree-l1"><a class="reference internal" href="straggler_usage.html">Straggler Detection Usage Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="straggler_api.html">Straggler Detection API</a></li>
+<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
 </ul>
 
         </div>
@@ -79,37 +83,119 @@
 <section id="features">
 <h2>Features<a class="headerlink" href="#features" title="Link to this heading"></a></h2>
 <ul class="simple">
-<li><p>Hang detection and automatic restart</p></li>
+<li><p>Hang detection and automatic in-job restarting</p></li>
+<li><p>In-process restarting</p></li>
+<li><p>Async checkpointing</p></li>
+<li><p>Local checkpointing</p></li>
 <li><p>Straggler (slower ranks) detection</p></li>
 </ul>
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="ft_usage.html">Fault Tolerance Usage Guide</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="ft_usage.html#terms">Terms</a></li>
-<li class="toctree-l2"><a class="reference internal" href="ft_usage.html#ft-package-design-overview">FT Package Design Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="ft_usage.html#ft-package-usage-overview">FT Package Usage Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="ft_usage.html#ft-integration-guide">FT Integration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/usage_guide.html">Usage guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#terms">Terms</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#ft-package-design-overview">FT Package Design Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#ft-integration-guide-for-pytorch">FT Integration Guide for PyTorch</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#ft-integration-guide-for-pytorch-lightning">FT Integration Guide for PyTorch Lightning</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="ft_api.html">Fault Tolerance API</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="ft_api.html#nvidia-resiliency-ext-fault-tolerance-config-module">nvidia_resiliency_ext.fault_tolerance.config module</a></li>
-<li class="toctree-l2"><a class="reference internal" href="ft_api.html#nvidia-resiliency-ext-fault-tolerance-rank-monitor-client-module">nvidia_resiliency_ext.fault_tolerance.rank_monitor_client module</a></li>
-<li class="toctree-l2"><a class="reference internal" href="ft_api.html#nvidia-resiliency-ext-fault-tolerance-rank-monitor-server-module">nvidia_resiliency_ext.fault_tolerance.rank_monitor_server module</a></li>
-<li class="toctree-l2"><a class="reference internal" href="ft_api.html#nvidia-resiliency-ext-ptl-resiliency-fault-tolerance-callback-module">nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/api.html">API documentation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/api/config.html">Config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/api/client.html">Client</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/api/server.html">Server</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/api/callback.html">Callback</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="straggler_usage.html">Straggler Detection Usage Guide</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="straggler_usage.html#straggler-detection-package-design-overview">Straggler Detection Package Design Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="straggler_usage.html#straggler-detection-usage-overview">Straggler Detection Usage Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="straggler_usage.html#straggler-detection-integration-guide">Straggler Detection Integration Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/examples.html">Examples</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/basic_example.html">Basic usage example</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="straggler_api.html">Straggler Detection API</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="straggler_api.html#nvidia-resiliency-ext-straggler-straggler-module">nvidia_resiliency_ext.straggler.straggler module</a></li>
-<li class="toctree-l2"><a class="reference internal" href="straggler_api.html#nvidia-resiliency-ext-straggler-reporting-module">nvidia_resiliency_ext.straggler.reporting module</a></li>
-<li class="toctree-l2"><a class="reference internal" href="straggler_api.html#nvidia-resiliency-ext-straggler-statistics-module">nvidia_resiliency_ext.straggler.statistics module</a></li>
-<li class="toctree-l2"><a class="reference internal" href="straggler_api.html#nvidia-resiliency-ext-ptl-resiliency-straggler-det-callback-module">nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback module</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="inprocess/index.html">Inprocess Restart</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="inprocess/usage_guide.html">Usage Guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#requirements">Requirements</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#restrictions">Restrictions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#functionality-overview">Functionality overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#restart-latency">Restart latency</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#known-issues">Known issues</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="inprocess/api.html">API documentation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/wrap.html">Wrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/compose.html">Compose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/rank_assignment.html">Rank Assignment</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/rank_filter.html">Rank Filter</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/initialize.html">Initialize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/abort.html">Abort</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/finalize.html">Finalize</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/health_check.html">Health Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/api/exception.html">Exceptions</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="inprocess/examples.html">Examples</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/examples/basic_example.html">Basic usage example</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess/examples/optimal_example.html">Optimal usage example</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="checkpointing/async/usage_guide.html">Usage guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/async/usage_guide.html#requirements">Requirements</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/async/usage_guide.html#synchronization-of-asynchronous-checkpoint-requests">Synchronization of Asynchronous Checkpoint Requests</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="checkpointing/async/api.html">API documentation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/async/api/core.html">Asynchronous Checkpoint Core Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/async/api/torch_ckpt.html">Asynchronous PyTorch <cite>torch.save</cite> with the Core utility</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="checkpointing/async/examples.html">Basic usage example</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="checkpointing/local/usage_guide.html">Usage guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/usage_guide.html#requirements">Requirements</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/usage_guide.html#restrictions">Restrictions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/usage_guide.html#functionality-overview">Functionality Overview</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="checkpointing/local/api.html">API documentation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/callback.html">PTL Callback support</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/base_ckpt_manager.html">BaseCheckpointManager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/local_ckpt_manager.html">LocalCheckpointManager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/replication.html">Replication</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/group_utils.html">GroupWrapper</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/base_state_dict.html">BaseTensorAwareStateDict</a></li>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/basic_state_dict.html">BasicTensorAwareStateDict</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="checkpointing/local/examples.html">Examples</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/examples/basic_example.html">Basic usage example</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="straggler_det/usage_guide.html">Usage guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="straggler_det/usage_guide.html#straggler-detection-package-design-overview">Straggler Detection Package Design Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="straggler_det/usage_guide.html#straggler-detection-usage-overview">Straggler Detection Usage Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="straggler_det/usage_guide.html#straggler-detection-integration-guide">Straggler Detection Integration Guide</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="straggler_det/api.html">API documentation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="straggler_det/api/straggler.html">Straggler</a></li>
+<li class="toctree-l3"><a class="reference internal" href="straggler_det/api/reporting.html">Reporting</a></li>
+<li class="toctree-l3"><a class="reference internal" href="straggler_det/api/statistics.html">Statistics</a></li>
+<li class="toctree-l3"><a class="reference internal" href="straggler_det/api/callback.html">Callback</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="straggler_det/examples.html">Examples</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="straggler_det/examples/basic_example.html">Basic usage example</a></li>
+</ul>
+</li>
 </ul>
 </li>
 </ul>
@@ -121,7 +207,7 @@
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="ft_usage.html" class="btn btn-neutral float-right" title="Fault Tolerance Usage Guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="fault_tolerance/index.html" class="btn btn-neutral float-right" title="Fault Tolerance" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>
