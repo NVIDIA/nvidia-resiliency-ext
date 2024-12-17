@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[tool.poetry]
+name = "nvidia-resiliency-ext"
+repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
+version = "v0.2.0"
+description = "NVIDIA Resiliency Package"
+authors = ["NVIDIA Corporation"]
+readme = "README.md"
+license = "Apache 2.0"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+]
+packages = [
+    { include = "nvidia_resiliency_ext", from = "src" },
+]
+
+exclude = [
+    "src/nvidia_resiliency_ext/straggler/cupti_src"
+]
+
+[tool.poetry.build]
+script = "build.py"
+generate-setup-file = true
+
+[build-system]
+requires = ["poetry-core>=1.0.0", "pybind11", "setuptools", "wheel"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.dependencies]
+torch = ">=2.3.0"
+python = ">=3.10"
+psutil = ">=6.0.0"
+pyyaml = "*"
+
+[tool.poetry.scripts]
+ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
+
+[tool.isort]
+profile = "black"  # black-compatible
+line_length = 100  # should match black parameters
+py_version = 310  # python 3.10 as a target version
+extend_skip = ["setup.py", "build.py"]
+
+[tool.black]
+line_length = 100
+skip_string_normalization = true
+# major year version is stable, see details in
+# https://black.readthedocs.io/en/stable/the_black_code_style/index.html
+# `required_version` is necessary for consistency (other `black` versions will fail to reformat files)
+required_version = "24"
+target-version = ['py310', 'py311', 'py312']
+
+[tool.ruff]
+exclude = ["src/nvidia_resiliency_ext/fault_tolerance/_torch_elastic_compat"]
