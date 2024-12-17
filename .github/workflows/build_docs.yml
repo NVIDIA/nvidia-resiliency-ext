@@ -39,6 +39,17 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
+          # Save generated documentation
+          if [ -d "public" ]; then
+            echo "Saving generated documentation..."
+            ls -al public/
+            mv public /tmp/public_docs
+          else
+            echo "Error: 'public/' directory does not exist. Exiting."
+            exit 1
+          fi
+
+          # Clean and switch to gh-pages branch
           git reset --hard
           git clean -fdx
 
@@ -49,26 +60,21 @@ jobs:
             git checkout --orphan gh-pages
           fi
 
-          if [ -d "public" ]; then
-            echo "public directory exists. Proceeding with deployment."
+          # Clean old content and restore new documentation
+          echo "Cleaning old content..."
 
-            ls -al public/
+          find . -maxdepth 1 ! -name '.git' ! -name '.' -exec rm -rf {} +
+          echo "Restoring new documentation..."
+          mv /tmp/public_docs/* .
 
-            find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name 'public' -exec rm -rf {} +
-
-            cp -r public/* .
-
-            touch .nojekyll
-
-            git add .
-            if git diff --cached --quiet; then
-              echo "No changes to commit. Skipping deployment."
-              exit 0
-            else
-              git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
-              git push origin gh-pages --force
-            fi
+          # Deploy to GitHub Pages
+          touch .nojekyll
+          git add .
+          if git diff --cached --quiet; then
+            echo "No changes to commit. Skipping deployment."
+            exit 0
           else
-            echo "Error: 'public/' directory does not exist during deployment."
-            exit 1
+            git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
+            git push origin gh-pages --force
           fi
+
