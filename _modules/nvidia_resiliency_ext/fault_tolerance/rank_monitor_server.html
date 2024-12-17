@@ -320,8 +320,6 @@
         <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">exceptions</span><span class="o">.</span><span class="n">CancelledError</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;server.serve_forever() cancelled.&quot;</span><span class="p">)</span>
 
-<div class="viewcode-block" id="RankMonitorServer.run">
-<a class="viewcode-back" href="../../../fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.run">[docs]</a>
     <span class="nd">@staticmethod</span>
     <span class="k">def</span> <span class="nf">run</span><span class="p">(</span>
         <span class="n">cfg</span><span class="p">:</span> <span class="n">FaultToleranceConfig</span><span class="p">,</span>
@@ -348,19 +346,13 @@
             <span class="k">pass</span>  <span class="c1"># Ignore the exception</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Exception caught in RankMonitorServer.run: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-            <span class="k">pass</span>  <span class="c1"># Ignore the exception</span></div>
+            <span class="k">pass</span>  <span class="c1"># Ignore the exception</span>
 
-
-<div class="viewcode-block" id="RankMonitorServer.get_ipc_socket_path">
-<a class="viewcode-back" href="../../../fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.get_ipc_socket_path">[docs]</a>
     <span class="nd">@staticmethod</span>
     <span class="k">def</span> <span class="nf">get_ipc_socket_path</span><span class="p">(</span><span class="n">parent_rank</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
         <span class="n">parent_rank</span> <span class="o">=</span> <span class="n">parent_rank</span> <span class="k">if</span> <span class="n">parent_rank</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;RANK&quot;</span><span class="p">]</span>
-        <span class="k">return</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">tempfile</span><span class="o">.</span><span class="n">gettempdir</span><span class="p">()</span><span class="si">}</span><span class="s1">/fault_tol_rmon_</span><span class="si">{</span><span class="n">parent_rank</span><span class="si">}</span><span class="s1">.sock&#39;</span></div>
+        <span class="k">return</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">tempfile</span><span class="o">.</span><span class="n">gettempdir</span><span class="p">()</span><span class="si">}</span><span class="s1">/fault_tol_rmon_</span><span class="si">{</span><span class="n">parent_rank</span><span class="si">}</span><span class="s1">.sock&#39;</span>
 
-
-<div class="viewcode-block" id="RankMonitorServer.run_in_subprocess">
-<a class="viewcode-back" href="../../../fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.run_in_subprocess">[docs]</a>
     <span class="nd">@staticmethod</span>
     <span class="k">def</span> <span class="nf">run_in_subprocess</span><span class="p">(</span><span class="n">cfg</span><span class="p">,</span> <span class="n">parent_rank</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">mp_ctx</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">multiprocessing</span><span class="p">):</span>
         <span class="n">rank_monitor_ready_event</span> <span class="o">=</span> <span class="n">mp_ctx</span><span class="o">.</span><span class="n">Event</span><span class="p">()</span>
@@ -384,7 +376,6 @@
             <span class="p">)</span>
 
         <span class="k">return</span> <span class="n">rank_monitor_process</span></div>
-</div>
 
 </pre></div>
 

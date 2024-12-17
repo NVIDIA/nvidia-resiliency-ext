@@ -119,26 +119,6 @@
 </ul>
 </dd>
 </dl>
-<dl class="py property">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts.are_valid">
-<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">are_valid</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><span class="pre">bool</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts.are_valid" title="Link to this definition"></a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts.initial">
-<span class="sig-name descname"><span class="pre">initial</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><span class="pre">float</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts.initial" title="Link to this definition"></a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts.subsequent">
-<span class="sig-name descname"><span class="pre">subsequent</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><span class="pre">float</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts.subsequent" title="Link to this definition"></a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts.were_calculated">
-<span class="sig-name descname"><span class="pre">were_calculated</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><span class="pre">bool</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts.were_calculated" title="Link to this definition"></a></dt>
-<dd></dd></dl>
-
 </dd></dl>
 
 <dl class="py class">
@@ -162,11 +142,6 @@ is used to persist the state of the client, e.g. calculated timeouts.</p>
 <p>Basic initialization of RankMonitorClient instance.
 <cite>.init_workload_monitoring()</cite> and <cite>.load_state_dict()</cite> need to be called to fully initialize.
 Full FT configuration will be obtained from the server via IPC.</p>
-<dl class="py attribute">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.CURRENT_TIMEOUTS_STATE_KEY">
-<span class="sig-name descname"><span class="pre">CURRENT_TIMEOUTS_STATE_KEY</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'current_timeouts'</span></em><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.CURRENT_TIMEOUTS_STATE_KEY" title="Link to this definition"></a></dt>
-<dd></dd></dl>
-
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts">
 <span class="sig-name descname"><span class="pre">calculate_and_set_timeouts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">skip_if_not_ready</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.calculate_and_set_timeouts"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts" title="Link to this definition"></a></dt>

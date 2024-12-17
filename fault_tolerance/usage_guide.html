@@ -52,15 +52,15 @@
 <li class="toctree-l3"><a class="reference internal" href="#terms">Terms</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#ft-package-design-overview">FT Package Design Overview</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#ft-integration-guide-for-pytorch">FT Integration Guide for PyTorch</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#prerequisite">Prerequisite:</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#integration-with-a-workload">Integration with a workload:</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#prerequisites">1. Prerequisites:</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#ft-configuration">2. FT configuration:</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#integration-with-a-pytorch-workload">3. Integration with a PyTorch workload:</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="#ft-integration-guide-for-pytorch-lightning">FT Integration Guide for PyTorch Lightning</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#use-ft-launcher-to-start-the-workload">1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#add-ft-callback-to-the-ptl-trainer">2. Add FT callback to the PTL trainer</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#implementing-auto-resume">3. Implementing auto-resume</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#ft-configuration">4. FT configuration</a></li>
 </ul>
 </li>
 </ul>
@@ -143,26 +143,72 @@
 </section>
 <section id="ft-integration-guide-for-pytorch">
 <h2>FT Integration Guide for PyTorch<a class="headerlink" href="#ft-integration-guide-for-pytorch" title="Link to this heading"></a></h2>
-<section id="prerequisite">
-<h3>Prerequisite:<a class="headerlink" href="#prerequisite" title="Link to this heading"></a></h3>
-<p>Run ranks using <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>. The command line is mostly compatible with <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.
-FT configuration is passed to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> via YAML file <code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code> or CLI arguments (<code class="docutils literal notranslate"><span class="pre">--ft-param-...</span></code>).
-Timeouts for fault detection need to be adjusted for a given workload:</p>
-<blockquote>
-<div><ul class="simple">
+<section id="prerequisites">
+<h3>1. Prerequisites:<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h3>
+<p>Run ranks using <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>. The command line is mostly compatible with <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Some clusters (e.g. SLURM) use SIGTERM as a default method of requesting a graceful workload shutdown.
+It is recommended to implement appropriate signal handling in a fault-tolerant workload.
+To avoid deadlocks and other unintended side effects, signal handling should be synchronized across all ranks.
+Please refer to the <a class="reference internal" href="examples.html"><span class="doc">train_ddp.py example</span></a> for a basic signal handling implementation.</p>
+</div>
+</section>
+<section id="ft-configuration">
+<h3>2. FT configuration:<a class="headerlink" href="#ft-configuration" title="Link to this heading"></a></h3>
+<p>FT configuration is passed to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>
+via YAML file <code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code> or CLI arguments <code class="docutils literal notranslate"><span class="pre">--ft-param-...</span></code>,
+from where it’s propagated to other FT components.</p>
+<dl class="simple">
+<dt>Timeouts for fault detection need to be adjusted for a given workload:</dt><dd><ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">initial_rank_heartbeat_timeout</span></code> should be long enough to allow for workload initialization.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">rank_heartbeat_timeout</span></code> should be at least as long as the longest possible interval between steps.</p></li>
 </ul>
-</div></blockquote>
+</dd>
+</dl>
+<p><strong>Importantly, heartbeats are not sent during checkpoint loading and saving</strong>, so time for checkpointing-related operations should be taken into account.</p>
+<p>Summary of all FT configuration items:</p>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="Link to this definition"></a></dt>
+<dd><dl>
+<dt>Configuration of fault tolerance</dt><dd><ul class="simple">
+<li><p><cite>workload_check_interval</cite> [float] periodic rank check interval (in seconds) in rank monitors.</p></li>
+<li><p><cite>initial_rank_heartbeat_timeout</cite> [float] timeout (in seconds) for the first heartbeat from a rank.</p></li>
+</ul>
+<p>Usually, it takes a bit longer for the first heartbeat to be sent, as the rank needs to initialize.
+If rank does not send the first heartbeat within <cite>initial_rank_heartbeat_timeout</cite>, failure is detected.
+If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
+- <cite>rank_heartbeat_timeout</cite> [float] timeout (in seconds) for subsequent heartbeats from a rank.
+If no rank heartbeat is received within <cite>rank_heartbeat_timeout</cite>, failure is detected.
+If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
+- <cite>safety_factor</cite> [float] when deducing the timeouts, observed heartbeat intervals are multiplied by this factor to obtain the timeouts.
+- <cite>rank_termination_signal</cite> signal used to terminate the rank when failure is detected.
+- <cite>log_level</cite> log level of fault tolerance components</p>
+</dd>
+</dl>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>workload_check_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
+<li><p><strong>initial_rank_heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>rank_heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>safety_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
+<li><p><strong>rank_termination_signal</strong> (<a class="reference external" href="https://docs.python.org/3/library/signal.html#signal.Signals" title="(in Python v3.13)"><em>Signals</em></a>)</p></li>
+<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
 </section>
-<section id="integration-with-a-workload">
-<h3>Integration with a workload:<a class="headerlink" href="#integration-with-a-workload" title="Link to this heading"></a></h3>
+<section id="integration-with-a-pytorch-workload">
+<h3>3. Integration with a PyTorch workload:<a class="headerlink" href="#integration-with-a-pytorch-workload" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
 <li><p>Initialize a <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance on each rank with <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.init_workload_monitoring()</span></code>.</p></li>
 <li><p><em>(Optional)</em> Restore the state of <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.load_state_dict()</span></code>.</p></li>
 <li><p>Periodically send heartbeats from ranks using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.send_heartbeat()</span></code>.</p></li>
-<li><p><em>(Optional)</em> After a sufficient range of heartbeat intervals has been observed, call <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.calculate_and_set_timeouts()</span></code> to estimate timeouts.
-<strong>Note:</strong> Operations such as checkpoint loading and saving might result in longer intervals between heartbeats.</p></li>
+<li><p><em>(Optional)</em> After a sufficient range of heartbeat intervals has been observed, call <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.calculate_and_set_timeouts()</span></code> to estimate timeouts.</p></li>
 <li><p><em>(Optional)</em> Save the <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance’s <code class="docutils literal notranslate"><span class="pre">state_dict()</span></code> to a file so that computed timeouts can be reused in the next run.</p></li>
 <li><p>Shut down <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.shutdown_workload_monitoring()</span></code>.</p></li>
 </ol>
@@ -173,11 +219,8 @@ Timeouts for fault detection need to be adjusted for a given workload:</p>
 <p>This section describes Fault Tolerance integration with a PTL-based workload (i.e., NeMo) using <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code>.</p>
 <section id="use-ft-launcher-to-start-the-workload">
 <h3>1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload<a class="headerlink" href="#use-ft-launcher-to-start-the-workload" title="Link to this heading"></a></h3>
-<p>Fault tolerance relies on a special launcher (<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>), which is a modified <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>. The FT launcher runs background processes called rank monitors.
-<strong>You need to use ft_launcher to start your workload if you are using FT</strong>.
-For example, the <a class="reference external" href="https://github.com/NVIDIA/NeMo-Framework-Launcher">NeMo-Framework-Launcher</a> can be used to generate SLURM batch scripts with FT support.</p>
-<p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> is similar to <code class="docutils literal notranslate"><span class="pre">torchrun</span></code> but it starts a rank monitor for each started rank. <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> takes the FT configuration in a YAML file (<code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code>) or via CLI args (<code class="docutils literal notranslate"><span class="pre">--ft-param-...</span></code>).
-FT configuration items are described in the <a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code></a> docstring.</p>
+<p>Fault tolerance relies on a special launcher (<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>), which is a modified <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.
+If you are using NeMo, the <a class="reference external" href="https://github.com/NVIDIA/NeMo-Framework-Launcher">NeMo-Framework-Launcher</a> can be used to generate SLURM batch scripts with the FT support.</p>
 </section>
 <section id="add-ft-callback-to-the-ptl-trainer">
 <h3>2. Add FT callback to the PTL trainer<a class="headerlink" href="#add-ft-callback-to-the-ptl-trainer" title="Link to this heading"></a></h3>
@@ -262,58 +305,6 @@ the FT callback creates a special marker file when training is completed. The ma
 </ul>
 </dd>
 </dl>
-</section>
-<section id="ft-configuration">
-<h3>4. FT configuration<a class="headerlink" href="#ft-configuration" title="Link to this heading"></a></h3>
-<p>FT configuration is passed to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> via a YAML file or CLI args, from where it’s propagated to other FT components.</p>
-<dl class="simple">
-<dt>Timeouts for fault detection need to be adjusted for a given workload:</dt><dd><ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">initial_rank_heartbeat_timeout</span></code> should be long enough to allow for workload initialization.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">rank_heartbeat_timeout</span></code> should be at least as long as the longest possible interval between steps.</p></li>
-</ul>
-</dd>
-</dl>
-<p><strong>Importantly, heartbeats are not sent during checkpoint loading and saving</strong>, so time for checkpointing-related operations should be taken into account.</p>
-<p>If <code class="docutils literal notranslate"><span class="pre">calculate_timeouts:</span> <span class="pre">True</span></code>, timeouts will be automatically estimated based on observed intervals. Estimated timeouts take precedence over timeouts defined in the config file.
-<strong>Timeouts are estimated at the end of a training run when checkpoint loading and saving were observed</strong>. Hence, in a multi-part training started from scratch,
-estimated timeouts won’t be available during the initial two runs. Estimated timeouts are stored in a separate JSON file.</p>
-<p><code class="docutils literal notranslate"><span class="pre">max_subsequent_job_failures</span></code> allows for the automatic continuation of training on a SLURM cluster. This feature requires the SLURM job to be scheduled with <code class="docutils literal notranslate"><span class="pre">NeMo-Framework-Launcher</span></code> or other compatible launcher framework.
-If <code class="docutils literal notranslate"><span class="pre">max_subsequent_job_failures</span></code> value is <cite>&gt;0</cite>, a continuation job is prescheduled. It will continue the work until <code class="docutils literal notranslate"><span class="pre">max_subsequent_job_failures</span></code> subsequent jobs fail (SLURM job exit code is <cite>!= 0</cite>)
-or the training is completed successfully (“end of training” marker file is produced by the <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code>, i.e., due to iterations or time limit reached).</p>
-<p>Summary of all FT configuration items:</p>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="Link to this definition"></a></dt>
-<dd><dl>
-<dt>Configuration of fault tolerance</dt><dd><ul class="simple">
-<li><p><cite>workload_check_interval</cite> [float] periodic rank check interval (in seconds) in rank monitors.</p></li>
-<li><p><cite>initial_rank_heartbeat_timeout</cite> [float] timeout (in seconds) for the first heartbeat from a rank.</p></li>
-</ul>
-<p>Usually, it takes a bit longer for the first heartbeat to be sent, as the rank needs to initialize.
-If rank does not send the first heartbeat within <cite>initial_rank_heartbeat_timeout</cite>, failure is detected.
-If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
-- <cite>rank_heartbeat_timeout</cite> [float] timeout (in seconds) for subsequent heartbeats from a rank.
-If no rank heartbeat is received within <cite>rank_heartbeat_timeout</cite>, failure is detected.
-If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
-- <cite>safety_factor</cite> [float] when deducing the timeouts, observed heartbeat intervals are multiplied by this factor to obtain the timeouts.
-- <cite>rank_termination_signal</cite> signal used to terminate the rank when failure is detected.
-- <cite>log_level</cite> log level of fault tolerance components</p>
-</dd>
-</dl>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>workload_check_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
-<li><p><strong>initial_rank_heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>rank_heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>safety_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
-<li><p><strong>rank_termination_signal</strong> (<a class="reference external" href="https://docs.python.org/3/library/signal.html#signal.Signals" title="(in Python v3.13)"><em>Signals</em></a>)</p></li>
-<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
-</ul>
-</dd>
-</dl>
-</dd></dl>
-
 </section>
 </section>
 </section>
