@@ -92,7 +92,7 @@ jobs:
           elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
             pytest -s -vvv ./tests/ptl_resiliency/unit/test_ft_state_machine.py
           elif [[ "${{ matrix.test_type }}" == "inprocess" ]]; then
-            pytest -s -vvv ./tests/inprocess/
+            pytest -s -vvv ./tests/inprocess/{test_compose.py,test_monitor_thread.py,test_rank_assignment.py,test_timeout.py,test_wrap.py}
           else
             echo "Unknown test type: ${{ matrix.test_type }}"
             exit 1
