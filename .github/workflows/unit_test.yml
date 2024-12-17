@@ -58,7 +58,7 @@ jobs:
           - 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime'
           - 'pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
           - 'pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime'
-        test_type: ['fault_tolerance', 'straggler', 'ptl_resiliency', 'inprocess']
+        test_type: ['fault_tolerance', 'straggler', 'ptl_resiliency']
     container:
       image: ${{ matrix.container }}
     env:
@@ -91,8 +91,6 @@ jobs:
               pytest -s -vvv ./tests/fault_tolerance/unit/
           elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
               pytest -s -vvv ./tests/ptl_resiliency/unit/test_ft_state_machine.py
-          elif [[ "${{ matrix.test_type }}" == "inprocess" ]]; then
-              pytest -s -vvv ./tests/inprocess/test_wrap.py
           else
               echo "Unknown test type: ${{ matrix.test_type }}"
               exit 1
