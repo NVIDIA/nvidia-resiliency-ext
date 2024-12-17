@@ -116,7 +116,7 @@
 
 
 <div class="viewcode-block" id="RankMonitorServer">
-<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer">[docs]</a>
+<a class="viewcode-back" href="../../../fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer">[docs]</a>
 <span class="k">class</span> <span class="nc">RankMonitorServer</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    RankMonitorServer, running in a separate process, is responsible for monitoring the ranks.</span>
@@ -321,7 +321,7 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;server.serve_forever() cancelled.&quot;</span><span class="p">)</span>
 
 <div class="viewcode-block" id="RankMonitorServer.run">
-<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.run">[docs]</a>
+<a class="viewcode-back" href="../../../fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.run">[docs]</a>
     <span class="nd">@staticmethod</span>
     <span class="k">def</span> <span class="nf">run</span><span class="p">(</span>
         <span class="n">cfg</span><span class="p">:</span> <span class="n">FaultToleranceConfig</span><span class="p">,</span>
@@ -352,7 +352,7 @@
 
 
 <div class="viewcode-block" id="RankMonitorServer.get_ipc_socket_path">
-<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.get_ipc_socket_path">[docs]</a>
+<a class="viewcode-back" href="../../../fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.get_ipc_socket_path">[docs]</a>
     <span class="nd">@staticmethod</span>
     <span class="k">def</span> <span class="nf">get_ipc_socket_path</span><span class="p">(</span><span class="n">parent_rank</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
         <span class="n">parent_rank</span> <span class="o">=</span> <span class="n">parent_rank</span> <span class="k">if</span> <span class="n">parent_rank</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;RANK&quot;</span><span class="p">]</span>
@@ -360,7 +360,7 @@
 
 
 <div class="viewcode-block" id="RankMonitorServer.run_in_subprocess">
-<a class="viewcode-back" href="../../../ft_api.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.run_in_subprocess">[docs]</a>
+<a class="viewcode-back" href="../../../fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer.run_in_subprocess">[docs]</a>
     <span class="nd">@staticmethod</span>
     <span class="k">def</span> <span class="nf">run_in_subprocess</span><span class="p">(</span><span class="n">cfg</span><span class="p">,</span> <span class="n">parent_rank</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">mp_ctx</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">multiprocessing</span><span class="p">):</span>
         <span class="n">rank_monitor_ready_event</span> <span class="o">=</span> <span class="n">mp_ctx</span><span class="o">.</span><span class="n">Event</span><span class="p">()</span>
