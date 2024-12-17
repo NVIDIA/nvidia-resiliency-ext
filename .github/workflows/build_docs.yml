@@ -59,8 +59,13 @@ jobs:
             touch .nojekyll
 
             git add .
-            git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
-            git push origin gh-pages --force
+            if git diff --cached --quiet; then
+              echo "No changes to commit. Skipping deployment."
+              exit 0
+            else
+              git commit -m "Deploy updated documentation to GitHub Pages from commit $GITHUB_SHA"
+              git push origin gh-pages --force
+            fi
           else
             echo "Error: 'public/' directory does not exist during deployment."
             exit 1
