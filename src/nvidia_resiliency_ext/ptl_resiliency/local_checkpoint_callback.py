@@ -48,7 +48,22 @@ LOCAL_CKPT_OPTS_KEY = 'local_checkpoint_options'
 
 
 class LocalCheckpointCallback(pl.callbacks.ModelCheckpoint):
-    """ModelCheckpoint without most of the functionality. Only train_batch_end simple save."""
+    """ModelCheckpoint with basic functionality. Only train_batch_end simple save.
+
+    Simple callback for initiating local checkpoint save in `on_train_batch_end` method.
+    Since local checkpoints are ephemeral, they shouldn't be used for "major" checkpoint
+    types like `on_train_epoch_end`.
+
+    This callback must be used in conjunction with the HierarchicalCheckpointIO,
+    since the only thing this callback really does is passing some options
+    to `trainer.save_checkpoint` which can be captured with HierarchicalCheckpointIO.
+
+    Args:
+        every_n_train_steps (int, optional): controls local checkpointing interval in terms
+            of train iterations. Same semantic as in PTL ModelCheckpoint.
+        train_time_interval (int, optional): controls local checkpointing interval in terms
+            of wall time. Same semantics as in PTL ModelCheckpoint.
+    """
 
     def __init__(
         self,
@@ -89,9 +104,13 @@ class LocalCheckpointCallback(pl.callbacks.ModelCheckpoint):
 class HierarchicalCheckpointIO(_WrappingCheckpointIO):
     """Wrapper for a global CheckpointIO enabling local checkpointing.
 
-    Must be used in conjunction with LocalCheckpointCallback.
+    Based on the presence of local checkpointing options in saving `storage_options`,
+    routes the save to the original global CheckpointIO or the local checkpoint manager.
 
-    Arguments:
+    Must be used in conjunction with LocalCheckpointCallback which *initiates*
+    local checkpoint saving during training.
+
+    Args:
         wrapped_checkpoint_io (CheckpointIO): global CheckpointIO to wrap
         local_ckpt_manager (BaseCheckpointManager): local manager to use for local checkpoints
         get_global_ckpt_iteration_fn (Callable[[_PATH], int]): a function that
@@ -175,7 +194,6 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
 
     @abstractmethod
     def to_tensor_aware_state_dict(self, checkpoint: Dict[str, Any]) -> TensorAwareStateDict:
-        # TODO: consider providing a default implementation for a simple state dict
         raise NotImplementedError
 
     def from_tensor_aware_state_dict(self, tensor_aware_checkpoint: TensorAwareStateDict, **kwargs):

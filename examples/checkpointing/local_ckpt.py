@@ -10,13 +10,16 @@ import torch.nn as nn
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue
 from nvidia_resiliency_ext.checkpointing.local.basic_state_dict import BasicTensorAwareStateDict
-from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager import \
-    LocalCheckpointManager
-from nvidia_resiliency_ext.checkpointing.local.replication.group_utils import parse_group_sequence, GroupWrapper
-from nvidia_resiliency_ext.checkpointing.local.replication.strategies import CliqueReplicationStrategy
+from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager import (
+    LocalCheckpointManager,
+)
+from nvidia_resiliency_ext.checkpointing.local.replication.strategies import (
+    CliqueReplicationStrategy,
+)
 
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -44,9 +47,13 @@ def parse_args():
         '--replication_jump',
         default=4,
         type=int,
-        help="Specifies `k` such that replica of rank `n` is stored on ranks"
-        "`n+k`, `n+2k`, ..., `n+rk`. `r` is the --replication-factor"
-        "Needs to be specified if using --replication and have the same value on all ranks",
+        help=(
+            "Specifies `J`, the spacing between ranks storing replicas of a given rank's data. "
+            "Replicas for rank `n` may be on ranks `n+J`, `n+2J`, ..., or `n-J`, `n-2J`, etc. "
+            "This flag has an effect only if --replication is used. "
+            "and must be consistent across all ranks. "
+            "The default value of 4 is for demonstration purposes and can be adjusted as needed."
+        ),
     )
     parser.add_argument(
         '--replication_factor',
@@ -89,23 +96,18 @@ def init_distributed_backend(backend="nccl"):
         logging.error(f"Error initializing the distributed backend: {e}")
         raise
 
+
 def create_checkpoint_manager(args):
     if args.replication:
         logging.info("Creating CliqueReplicationStrategy.")
-        repl_process_groups_ranks : List[List[int]] = parse_group_sequence(
-            replication_jump=args.replication_jump,
-            replication_factor=args.replication_factor,
-            world_size=dist.get_world_size()
+        repl_strategy = CliqueReplicationStrategy.from_replication_params(
+            args.replication_jump, args.replication_factor
         )
-        repl_process_groups: List[torch.distributed.ProcessGroup] = [
-            torch.distributed.new_group(g) for g in repl_process_groups_ranks
-        ]
-        my_process_group = GroupWrapper.from_list_of_groups(repl_process_groups)
-        repl_strategy = CliqueReplicationStrategy(my_process_group)
     else:
         repl_strategy = None
 
     return LocalCheckpointManager(args.ckpt_dir, repl_strategy=repl_strategy)
+
 
 def save(args, ckpt_manager, async_queue, model, iteration):
     # Create Tensor-Aware State Dict
@@ -133,6 +135,7 @@ def load(args, ckpt_manager):
     logging.info(f"Successfully loaded checkpoint part (id: {ckpt_part_id})")
     return ta_state_dict.state_dict
 
+
 def main():
     args = parse_args()
     logging.info(f'{args}')
@@ -147,7 +150,7 @@ def main():
     ckpt_manager = create_checkpoint_manager(args)
     async_queue = AsyncCallsQueue() if args.async_save else None
 
-    iteration = 123 # training iteration (used as training state id)
+    iteration = 123  # training iteration (used as training state id)
 
     # Local checkpointing save
     save(args, ckpt_manager, async_queue, model, iteration)

@@ -38,11 +38,24 @@ logger = logging.getLogger(__name__)
 
 class LocalCheckpointManager(BaseCheckpointManager):
     """Local Checkpoint Manager designed for handling checkpoints on local storage devices
-    like SSDs or RAM disks."""
+    like SSDs or RAM disks.
+
+    Args:
+        root_local_ckpt_dir (str, Path): root checkpoint directory on local storage.
+            Checkpoints from different iterations can be saved within the same root directory,
+            as each will have a unique name
+        session_id (str, optional): adds additional identification opportunity for local
+            checkpoints used in different training workloads. An example use case
+            is the `root_local_ckpt_dir` being configured by the cluster administrator
+            (e.g. /tmp/...) and `session_id` configured by the end user for
+            differentiating different local checkpoints.
+        repl_strategy (ReplicationStrategy, optional): strategy used to perform local checkpoint
+            shards replication.
+    """
 
     def __init__(
         self,
-        root_local_ckpt_dir,
+        root_local_ckpt_dir: Union[str, Path],
         session_id: str = '',
         repl_strategy: Optional[ReplicationStrategy] = None,
     ):

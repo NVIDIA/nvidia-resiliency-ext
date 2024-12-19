@@ -1,3 +1,0 @@
-fault_tolerance:
-    initial_rank_heartbeat_timeout: 3
-    rank_heartbeat_timeout: 3

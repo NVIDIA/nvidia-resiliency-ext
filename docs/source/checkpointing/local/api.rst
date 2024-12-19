@@ -9,6 +9,5 @@ API documentation
    api/base_ckpt_manager
    api/local_ckpt_manager
    api/replication
-   api/group_utils
    api/base_state_dict
    api/basic_state_dict

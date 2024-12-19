@@ -497,7 +497,7 @@ Known issues
    participating in a Gloo collective stops making forward progress, the
    remaining ranks would wait till :py:class:`ProcessGroupGloo` timeout is
    exceeded; a workaround is to specify a short timeout for the ``gloo``
-   backend to enable faster restarts
+   backend to enable faster restarts.
 2. NCCL collective kernel termination is implemented by periodically checking a
    flag residing in mapped memory, and exiting from the kernel if the flag is
    set. Interval of checking for this flag is controlled by
@@ -521,3 +521,14 @@ Known issues
 5. NCCL net plugins must be disabled by setting ``NCCL_NET_PLUGIN`` environment
    variable to ``"none"``. This issue will be addressed in future NCCL
    versions.
+6. :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` is not fully compatible with
+   :py:func:`torch.distributed.run`. :py:func:`torch.distributed.run`
+   automatically terminates all worker processes if any one of them fails, in
+   this case :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` can only recover from transient
+   faults that don't cause termination of worker processes.
+7. By default, PyTorch NCCL Watchdog forcefully terminates the process if NCCL
+   call returns an error, or if CUDA context was corrupted. Forceful
+   termination of the worker process prevents :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`
+   from restarting the wrapper function. A workaround is to set
+   ``TORCH_NCCL_RETHROW_CUDA_ERRORS`` environment variable to ``0``, to avoid
+   rethrowing CUDA and NCCL errors in PyTorch NCCL Watchdog.
