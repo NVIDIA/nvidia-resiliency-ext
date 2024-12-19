@@ -62,7 +62,6 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="local_ckpt_manager.html">LocalCheckpointManager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="replication.html">Replication</a></li>
-<li class="toctree-l3"><a class="reference internal" href="group_utils.html">GroupWrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="base_state_dict.html">BaseTensorAwareStateDict</a></li>
 <li class="toctree-l3"><a class="reference internal" href="basic_state_dict.html">BasicTensorAwareStateDict</a></li>
 </ul>
@@ -128,6 +127,7 @@ abstracting replication mechanisms from the underlying implementations.</p>
 <span class="sig-name descname"><span class="pre">find_latest</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/ckpt_managers/base_manager.html#BaseCheckpointManager.find_latest"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager.BaseCheckpointManager.find_latest" title="Link to this definition"></a></dt>
 <dd><p>Searches for the most recent complete checkpoint and returns its iteration number.</p>
 <p>If no complete checkpoints are found, the method returns -1.</p>
+<p>All training ranks have to call this method at once.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
 <dd class="field-odd"><p>The iteration number of the most recent complete checkpoint,
@@ -144,6 +144,7 @@ or -1 if no checkpoints are available.</p>
 <span class="sig-name descname"><span class="pre">load</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/ckpt_managers/base_manager.html#BaseCheckpointManager.load"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager.BaseCheckpointManager.load" title="Link to this definition"></a></dt>
 <dd><p>Loads the most recent complete checkpoint.</p>
 <p>Ensure that <cite>find_latest()</cite> has been called first to identify the latest checkpoint.</p>
+<p>All training ranks have to call this method at once.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
 <dd class="field-odd"><p><dl class="simple">
@@ -173,6 +174,7 @@ or -1 if no checkpoints are available.</p>
 <p>If <cite>is_async</cite> is set to <cite>True</cite>, the save operation is performed asynchronously,
 and the function returns an <cite>AsyncRequest</cite> object. Otherwise, the save operation
 is completed synchronously.</p>
+<p>All training ranks have to call this method at once.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">

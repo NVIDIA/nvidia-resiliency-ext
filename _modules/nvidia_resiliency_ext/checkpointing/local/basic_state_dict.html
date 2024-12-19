@@ -109,8 +109,6 @@
 <span class="kn">from</span> <span class="nn">.base_state_dict</span> <span class="kn">import</span> <span class="n">TensorAwareStateDict</span>
 
 
-<div class="viewcode-block" id="nested_values">
-<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.nested_values">[docs]</a>
 <span class="k">def</span> <span class="nf">nested_values</span><span class="p">(</span><span class="n">x</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">dict</span><span class="p">,</span> <span class="nb">list</span><span class="p">]):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Returns iterator over (nested) values of a given dict or list.&quot;&quot;&quot;</span>
     <span class="n">x_iter</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">values</span><span class="p">()</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span> <span class="k">else</span> <span class="n">x</span>
@@ -118,12 +116,9 @@
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="p">(</span><span class="nb">dict</span><span class="p">,</span> <span class="nb">list</span><span class="p">)):</span>
             <span class="k">yield from</span> <span class="n">nested_values</span><span class="p">(</span><span class="n">v</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="k">yield</span> <span class="n">v</span></div>
+            <span class="k">yield</span> <span class="n">v</span>
 
 
-
-<div class="viewcode-block" id="dict_list_map_inplace">
-<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.dict_list_map_inplace">[docs]</a>
 <span class="k">def</span> <span class="nf">dict_list_map_inplace</span><span class="p">(</span><span class="n">f</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Maps dicts and lists *in-place* with a given function.&quot;&quot;&quot;</span>
     <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
@@ -133,12 +128,9 @@
         <span class="n">x</span><span class="p">[:]</span> <span class="o">=</span> <span class="p">(</span><span class="n">dict_list_map_inplace</span><span class="p">(</span><span class="n">f</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">x</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">f</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">x</span></div>
+    <span class="k">return</span> <span class="n">x</span>
 
 
-
-<div class="viewcode-block" id="TensorPlaceholder">
-<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder">[docs]</a>
 <span class="k">class</span> <span class="nc">TensorPlaceholder</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    A placeholder class that stores the device, shape, and dtype of tensor.</span>
@@ -151,15 +143,11 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_shape</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">shape</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_dtype</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">dtype</span>
 
-<div class="viewcode-block" id="TensorPlaceholder.init_tensor">
-<a class="viewcode-back" href="../../../../checkpointing/local/api/basic_state_dict.html#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder.init_tensor">[docs]</a>
     <span class="k">def</span> <span class="nf">init_tensor</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Creates a new tensor with using the saved properties (device, shape, and dtype).</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_device</span><span class="p">)</span></div>
-</div>
-
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_device</span><span class="p">)</span>
 
 
 <div class="viewcode-block" id="BasicTensorAwareStateDict">

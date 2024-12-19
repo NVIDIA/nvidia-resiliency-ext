@@ -147,7 +147,6 @@
 
 
 
-
 <div class="viewcode-block" id="BaseCheckpointManager">
 <a class="viewcode-back" href="../../../../../checkpointing/local/api/base_ckpt_manager.html#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager.BaseCheckpointManager">[docs]</a>
 <span class="k">class</span> <span class="nc">BaseCheckpointManager</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
@@ -247,6 +246,8 @@
 
 <span class="sd">        If no complete checkpoints are found, the method returns -1.</span>
 
+<span class="sd">        All training ranks have to call this method at once.</span>
+
 <span class="sd">        Returns:</span>
 <span class="sd">            int: The iteration number of the most recent complete checkpoint,</span>
 <span class="sd">            or -1 if no checkpoints are available.</span>
@@ -288,6 +289,8 @@
 
 <span class="sd">        Ensure that `find_latest()` has been called first to identify the latest checkpoint.</span>
 
+<span class="sd">        All training ranks have to call this method at once.</span>
+
 <span class="sd">        Returns:</span>
 <span class="sd">            Tuple[TensorAwareStateDict, str]</span>
 <span class="sd">                - `state_dict`: The state dictionary loaded from the most recent complete checkpoint.</span>
@@ -324,6 +327,8 @@
 <span class="sd">        If `is_async` is set to `True`, the save operation is performed asynchronously,</span>
 <span class="sd">        and the function returns an `AsyncRequest` object. Otherwise, the save operation</span>
 <span class="sd">        is completed synchronously.</span>
+
+<span class="sd">        All training ranks have to call this method at once.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            state_dict (dict): The state dictionary to be saved.</span>

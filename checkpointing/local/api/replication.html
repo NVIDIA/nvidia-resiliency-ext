@@ -22,7 +22,7 @@
     <script src="../../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../../genindex.html" />
     <link rel="search" title="Search" href="../../../search.html" />
-    <link rel="next" title="GroupWrapper" href="group_utils.html" />
+    <link rel="next" title="BaseTensorAwareStateDict" href="base_state_dict.html" />
     <link rel="prev" title="LocalCheckpointManager" href="local_ckpt_manager.html" /> 
 </head>
 
@@ -64,7 +64,6 @@
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy"><code class="docutils literal notranslate"><span class="pre">ReplicationStrategy</span></code></a></li>
 </ul>
 </li>
-<li class="toctree-l3"><a class="reference internal" href="group_utils.html">GroupWrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="base_state_dict.html">BaseTensorAwareStateDict</a></li>
 <li class="toctree-l3"><a class="reference internal" href="basic_state_dict.html">BasicTensorAwareStateDict</a></li>
 </ul>
@@ -112,17 +111,41 @@
 enabling efficient retrieval and communication of tensor data.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>local_group</strong> (<a class="reference internal" href="group_utils.html#nvidia_resiliency_ext.checkpointing.local.replication.group_utils.GroupWrapper" title="nvidia_resiliency_ext.checkpointing.local.replication.group_utils.GroupWrapper"><em>GroupWrapper</em></a><em> | </em><em>ProcessGroup</em>)</p>
+<dd class="field-odd"><p><strong>local_group</strong> (<em>GroupWrapper</em><em> | </em><em>ProcessGroup</em>)</p>
 </dd>
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.from_replication_params">
 <em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_replication_params</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">replication_jump</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">replication_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#CliqueReplicationStrategy.from_replication_params"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.from_replication_params" title="Link to this definition"></a></dt>
-<dd><dl class="field-list simple">
+<dd><p>Instantiates process groups necessary for checkpoint replication.</p>
+<p>Training ranks are divided into <cite>W // F</cite> distinct groups of size <cite>F</cite>, where
+<cite>W</cite> is the world size
+and <cite>F</cite> is the <cite>replication_factor</cite>.
+Each group consists of ranks:</p>
+<p><cite>n</cite>, <cite>n + J</cite>, <cite>n + 2J</cite>, …, <cite>n + (F - 1)J</cite>,</p>
+<dl class="simple">
+<dt>where <cite>J</cite> is the <cite>replication_jump</cite> and <cite>n = aJF + b</cite>, with:</dt><dd><ul class="simple">
+<li><p><cite>a = 0, 1, …, (W / (JF)) - 1</cite></p></li>
+<li><p><cite>b = 0, 1, …, J - 1</cite>.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Checkpoint shards are exchanged and fully replicated within each group.</p>
+<p><strong>Important:</strong> The world size (<cite>W</cite>) must be divisible by <cite>J * F</cite>.</p>
+<p>This grouping enables replication across different failure domains by specifying
+<cite>J</cite> equal to the failure blast radius.</p>
+<p><strong>Example:</strong>
+For a world size of 32, <cite>replication_jump = 8</cite>, and <cite>replication_factor = 2</cite>,
+the replication groups (cliques) are:</p>
+<p>0-8, 1-9, 2-10, 3-11, 4-12, 5-13, 6-14, 7-15,
+16-24, 17-25, 18-26, 19-27, 20-28, 21-29, 22-30, 23-31</p>
+<dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
-<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>J</cite> in the formula above. Represents the gap between
+successive ranks storing replicas of a given rank’s data.</p></li>
+<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>F</cite> in the formula above. Denotes the number of
+ranks storing replicas of a given rank’s data.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
@@ -199,11 +222,34 @@ gathers replicated copies from other ranks, and reconstructs the state dictionar
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">LazyCliqueReplicationStrategy</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">replication_jump</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">replication_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#LazyCliqueReplicationStrategy"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyCliqueReplicationStrategy" title="Link to this definition"></a></dt>
 <dd><p>Bases: <a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">LazyReplicationStrategyBuilder</span></code></a>[<a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy"><code class="xref py py-class docutils literal notranslate"><span class="pre">CliqueReplicationStrategy</span></code></a>]</p>
 <p>Lazy version of CliqueReplicationStrategy allowing to delay process group formation.</p>
+<p>Training ranks are divided into <cite>W // F</cite> distinct groups of size <cite>F</cite>, where
+<cite>W</cite> is the world size
+and <cite>F</cite> is the <cite>replication_factor</cite>.
+Each group consists of ranks:</p>
+<p><cite>n</cite>, <cite>n + J</cite>, <cite>n + 2J</cite>, …, <cite>n + (F - 1)J</cite>,</p>
+<dl class="simple">
+<dt>where <cite>J</cite> is the <cite>replication_jump</cite> and <cite>n = aJF + b</cite>, with:</dt><dd><ul class="simple">
+<li><p><cite>a = 0, 1, …, (W / (JF)) - 1</cite></p></li>
+<li><p><cite>b = 0, 1, …, J - 1</cite>.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Checkpoint shards are exchanged and fully replicated within each group.</p>
+<p><strong>Important:</strong> The world size (<cite>W</cite>) must be divisible by <cite>J * F</cite>.</p>
+<p>This grouping enables replication across different failure domains by specifying
+<cite>J</cite> equal to the failure blast radius.</p>
+<p><strong>Example:</strong>
+For a world size of 32, <cite>replication_jump = 8</cite>, and <cite>replication_factor = 2</cite>,
+the replication groups (cliques) are:</p>
+<p>0-8, 1-9, 2-10, 3-11, 4-12, 5-13, 6-14, 7-15,
+16-24, 17-25, 18-26, 19-27, 20-28, 21-29, 22-30, 23-31</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
-<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>J</cite> in the formula above. Represents the gap between
+successive ranks storing replicas of a given rank’s data.</p></li>
+<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>F</cite> in the formula above. Denotes the number of
+ranks storing replicas of a given rank’s data.</p></li>
 </ul>
 </dd>
 </dl>
@@ -337,7 +383,7 @@ and the time of instantiation of the ReplicationStrategy class.</p>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="local_ckpt_manager.html" class="btn btn-neutral float-left" title="LocalCheckpointManager" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="group_utils.html" class="btn btn-neutral float-right" title="GroupWrapper" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="base_state_dict.html" class="btn btn-neutral float-right" title="BaseTensorAwareStateDict" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

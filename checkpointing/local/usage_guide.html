@@ -115,8 +115,15 @@ which is essential for efficient data exchange operations critical to local chec
 <h3>Requirements for <cite>LocalCheckpointManager</cite><a class="headerlink" href="#requirements-for-localcheckpointmanager" title="Link to this heading"></a></h3>
 <ul class="simple">
 <li><p>The directory specified by the <cite>root_local_ckpt_dir</cite> parameter must have enough storage capacity to hold
-at least two checkpoint parts (clean and dirty) per rank.
+at least two checkpoint parts (clean and dirty) per rank
 multiplied by the replication factor defined by the replication strategy (<cite>repl_strategy</cite>).</p></li>
+<li><p>If a local checkpoint had been created with replication being enabled, it’s recommended to enable replication also
+when loading that checkpoint, in which case the replication parameters
+(i.e. <cite>world_size</cite>, <cite>–replication-jump</cite> and <cite>–replication-factor</cite>) must be the same as during save.
+If replication is disabled during load, the replicas are ignored even if available which might lead to
+inability to recover from an otherwise complete checkpoint.</p></li>
+<li><p>All training ranks must call <cite>LocalCheckpointManager</cite> methods (<cite>save</cite>, <cite>load</cite>, <cite>find_latest</cite>) at once,
+otherwise the training ends up in a corrupted state (a NCCL collective hang or tensor allocation OOM).</p></li>
 </ul>
 </section>
 <section id="requirements-for-basictensorawarestatedict">
@@ -162,11 +169,11 @@ This is a basic reference and may omit specific implementation details:</p>
 <span class="k">if</span> <span class="n">iteration</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="p">:</span>
     <span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">ckpt_part_id</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
     <span class="c1"># Use the loaded state_dict to resume training</span>
-    <span class="n">state_dict</span> <span class="o">=</span> <span class="n">ta_state_dict</span><span class="o">.</span><span class="n">state_dict</span>
+    <span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">ta_state_dict</span><span class="o">.</span><span class="n">state_dict</span><span class="p">)</span>
 <span class="k">else</span><span class="p">:</span>
     <span class="c1"># An iteration value of -1 indicates that no local checkpoint was found.</span>
     <span class="c1"># In this case, either return an error or initialize the model from scratch.</span>
-    <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s1">&#39;Starting training from scratch&#39;</span><span class="p">)</span>
 
 <span class="c1"># Training loop</span>
 <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
@@ -203,7 +210,6 @@ The retrieval mechanism is seamlessly integrated into the LocalCheckpointManager
 <section id="asynchronous-checkpoint-saving">
 <h3>Asynchronous Checkpoint Saving<a class="headerlink" href="#asynchronous-checkpoint-saving" title="Link to this heading"></a></h3>
 <p>The <cite>LocalCheckpointManager</cite> supports both synchronous and asynchronous saving,
-&gt;&gt;&gt;&gt;&gt;&gt;&gt; skierat/documentation
 controlled by the <cite>is_async</cite> parameter in the <cite>save(…)</cite> method.</p>
 <ul class="simple">
 <li><p>Synchronous Save: When <cite>is_async</cite> is set to <cite>False</cite>, the <cite>save(…)</cite> method

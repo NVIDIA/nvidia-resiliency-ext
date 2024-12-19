@@ -118,11 +118,24 @@
 <a class="viewcode-back" href="../../../../../checkpointing/local/api/local_ckpt_manager.html#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager.LocalCheckpointManager">[docs]</a>
 <span class="k">class</span> <span class="nc">LocalCheckpointManager</span><span class="p">(</span><span class="n">BaseCheckpointManager</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Local Checkpoint Manager designed for handling checkpoints on local storage devices</span>
-<span class="sd">    like SSDs or RAM disks.&quot;&quot;&quot;</span>
+<span class="sd">    like SSDs or RAM disks.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        root_local_ckpt_dir (str, Path): root checkpoint directory on local storage.</span>
+<span class="sd">            Checkpoints from different iterations can be saved within the same root directory,</span>
+<span class="sd">            as each will have a unique name</span>
+<span class="sd">        session_id (str, optional): adds additional identification opportunity for local</span>
+<span class="sd">            checkpoints used in different training workloads. An example use case</span>
+<span class="sd">            is the `root_local_ckpt_dir` being configured by the cluster administrator</span>
+<span class="sd">            (e.g. /tmp/...) and `session_id` configured by the end user for</span>
+<span class="sd">            differentiating different local checkpoints.</span>
+<span class="sd">        repl_strategy (ReplicationStrategy, optional): strategy used to perform local checkpoint</span>
+<span class="sd">            shards replication.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
-        <span class="n">root_local_ckpt_dir</span><span class="p">,</span>
+        <span class="n">root_local_ckpt_dir</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Path</span><span class="p">],</span>
         <span class="n">session_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span><span class="p">,</span>
         <span class="n">repl_strategy</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">ReplicationStrategy</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>

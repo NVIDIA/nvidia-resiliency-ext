@@ -297,6 +297,39 @@
     <span class="k">def</span> <span class="nf">from_replication_params</span><span class="p">(</span>
         <span class="bp">cls</span><span class="p">,</span> <span class="n">replication_jump</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">(),</span> <span class="n">replication_factor</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;CliqueReplicationStrategy&#39;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Instantiates process groups necessary for checkpoint replication.</span>
+
+<span class="sd">        Training ranks are divided into `W // F` distinct groups of size `F`, where</span>
+<span class="sd">        `W` is the world size</span>
+<span class="sd">        and `F` is the `replication_factor`.</span>
+<span class="sd">        Each group consists of ranks:</span>
+
+<span class="sd">        `n`, `n + J`, `n + 2J`, ..., `n + (F - 1)J`,</span>
+
+<span class="sd">        where `J` is the `replication_jump` and `n = aJF + b`, with:</span>
+<span class="sd">            - `a = 0, 1, ..., (W / (JF)) - 1`</span>
+<span class="sd">            - `b = 0, 1, ..., J - 1`.</span>
+
+<span class="sd">        Checkpoint shards are exchanged and fully replicated within each group.</span>
+
+<span class="sd">        **Important:** The world size (`W`) must be divisible by `J * F`.</span>
+
+<span class="sd">        This grouping enables replication across different failure domains by specifying</span>
+<span class="sd">        `J` equal to the failure blast radius.</span>
+
+<span class="sd">        **Example:**</span>
+<span class="sd">        For a world size of 32, `replication_jump = 8`, and `replication_factor = 2`,</span>
+<span class="sd">        the replication groups (cliques) are:</span>
+
+<span class="sd">        0-8, 1-9, 2-10, 3-11, 4-12, 5-13, 6-14, 7-15,</span>
+<span class="sd">        16-24, 17-25, 18-26, 19-27, 20-28, 21-29, 22-30, 23-31</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            replication_jump (int, optional): `J` in the formula above. Represents the gap between</span>
+<span class="sd">                successive ranks storing replicas of a given rank&#39;s data.</span>
+<span class="sd">            replication_factor (int, optional): `F` in the formula above. Denotes the number of</span>
+<span class="sd">                ranks storing replicas of a given rank&#39;s data.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;Initializing </span><span class="si">{</span><span class="bp">cls</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
         <span class="n">repl_process_groups_ranks</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="n">parse_group_sequence</span><span class="p">(</span>
             <span class="n">replication_jump</span><span class="o">=</span><span class="n">replication_jump</span><span class="p">,</span>
@@ -374,8 +407,39 @@
 <div class="viewcode-block" id="LazyCliqueReplicationStrategy">
 <a class="viewcode-back" href="../../../../../checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyCliqueReplicationStrategy">[docs]</a>
 <span class="k">class</span> <span class="nc">LazyCliqueReplicationStrategy</span><span class="p">(</span><span class="n">LazyReplicationStrategyBuilder</span><span class="p">[</span><span class="n">CliqueReplicationStrategy</span><span class="p">]):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Lazy version of CliqueReplicationStrategy allowing to delay process group formation.&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Lazy version of CliqueReplicationStrategy allowing to delay process group formation.</span>
 
+<span class="sd">    Training ranks are divided into `W // F` distinct groups of size `F`, where</span>
+<span class="sd">    `W` is the world size</span>
+<span class="sd">    and `F` is the `replication_factor`.</span>
+<span class="sd">    Each group consists of ranks:</span>
+
+<span class="sd">    `n`, `n + J`, `n + 2J`, ..., `n + (F - 1)J`,</span>
+
+<span class="sd">    where `J` is the `replication_jump` and `n = aJF + b`, with:</span>
+<span class="sd">        - `a = 0, 1, ..., (W / (JF)) - 1`</span>
+<span class="sd">        - `b = 0, 1, ..., J - 1`.</span>
+
+<span class="sd">    Checkpoint shards are exchanged and fully replicated within each group.</span>
+
+<span class="sd">    **Important:** The world size (`W`) must be divisible by `J * F`.</span>
+
+<span class="sd">    This grouping enables replication across different failure domains by specifying</span>
+<span class="sd">    `J` equal to the failure blast radius.</span>
+
+<span class="sd">    **Example:**</span>
+<span class="sd">    For a world size of 32, `replication_jump = 8`, and `replication_factor = 2`,</span>
+<span class="sd">    the replication groups (cliques) are:</span>
+
+<span class="sd">    0-8, 1-9, 2-10, 3-11, 4-12, 5-13, 6-14, 7-15,</span>
+<span class="sd">    16-24, 17-25, 18-26, 19-27, 20-28, 21-29, 22-30, 23-31</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        replication_jump (int, optional): `J` in the formula above. Represents the gap between</span>
+<span class="sd">            successive ranks storing replicas of a given rank&#39;s data.</span>
+<span class="sd">        replication_factor (int, optional): `F` in the formula above. Denotes the number of</span>
+<span class="sd">            ranks storing replicas of a given rank&#39;s data.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
     <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span> <span class="n">replication_jump</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">(),</span> <span class="n">replication_factor</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>
     <span class="p">):</span>

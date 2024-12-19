@@ -60,7 +60,6 @@
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="replication.html">Replication</a></li>
-<li class="toctree-l3"><a class="reference internal" href="group_utils.html">GroupWrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="base_state_dict.html">BaseTensorAwareStateDict</a></li>
 <li class="toctree-l3"><a class="reference internal" href="basic_state_dict.html">BasicTensorAwareStateDict</a></li>
 </ul>
@@ -109,8 +108,16 @@ like SSDs or RAM disks.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>session_id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
-<li><p><strong>repl_strategy</strong> (<a class="reference internal" href="replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy"><em>ReplicationStrategy</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>root_local_ckpt_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>Path</em>) – root checkpoint directory on local storage.
+Checkpoints from different iterations can be saved within the same root directory,
+as each will have a unique name</p></li>
+<li><p><strong>session_id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>optional</em>) – adds additional identification opportunity for local
+checkpoints used in different training workloads. An example use case
+is the <cite>root_local_ckpt_dir</cite> being configured by the cluster administrator
+(e.g. /tmp/…) and <cite>session_id</cite> configured by the end user for
+differentiating different local checkpoints.</p></li>
+<li><p><strong>repl_strategy</strong> (<a class="reference internal" href="replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy"><em>ReplicationStrategy</em></a><em>, </em><em>optional</em>) – strategy used to perform local checkpoint
+shards replication.</p></li>
 </ul>
 </dd>
 </dl>

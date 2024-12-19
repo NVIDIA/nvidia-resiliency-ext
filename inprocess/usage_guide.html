@@ -610,7 +610,7 @@ method to terminate pending Gloo collectives (<a class="reference external" href
 participating in a Gloo collective stops making forward progress, the
 remaining ranks would wait till <code class="xref py py-class docutils literal notranslate"><span class="pre">ProcessGroupGloo</span></code> timeout is
 exceeded; a workaround is to specify a short timeout for the <code class="docutils literal notranslate"><span class="pre">gloo</span></code>
-backend to enable faster restarts</p></li>
+backend to enable faster restarts.</p></li>
 <li><p>NCCL collective kernel termination is implemented by periodically checking a
 flag residing in mapped memory, and exiting from the kernel if the flag is
 set. Interval of checking for this flag is controlled by
@@ -633,6 +633,17 @@ from the wrapped function to reduce the depth of pending kernels queue.</p></li>
 <li><p>NCCL net plugins must be disabled by setting <code class="docutils literal notranslate"><span class="pre">NCCL_NET_PLUGIN</span></code> environment
 variable to <code class="docutils literal notranslate"><span class="pre">&quot;none&quot;</span></code>. This issue will be addressed in future NCCL
 versions.</p></li>
+<li><p><a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> is not fully compatible with
+<code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.run()</span></code>. <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.run()</span></code>
+automatically terminates all worker processes if any one of them fails, in
+this case <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> can only recover from transient
+faults that don’t cause termination of worker processes.</p></li>
+<li><p>By default, PyTorch NCCL Watchdog forcefully terminates the process if NCCL
+call returns an error, or if CUDA context was corrupted. Forceful
+termination of the worker process prevents <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a>
+from restarting the wrapper function. A workaround is to set
+<code class="docutils literal notranslate"><span class="pre">TORCH_NCCL_RETHROW_CUDA_ERRORS</span></code> environment variable to <code class="docutils literal notranslate"><span class="pre">0</span></code>, to avoid
+rethrowing CUDA and NCCL errors in PyTorch NCCL Watchdog.</p></li>
 </ol>
 </section>
 </section>

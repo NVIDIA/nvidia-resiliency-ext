@@ -57,13 +57,9 @@
 <li class="toctree-l3"><a class="reference internal" href="base_ckpt_manager.html">BaseCheckpointManager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="local_ckpt_manager.html">LocalCheckpointManager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="replication.html">Replication</a></li>
-<li class="toctree-l3"><a class="reference internal" href="group_utils.html">GroupWrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="base_state_dict.html">BaseTensorAwareStateDict</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">BasicTensorAwareStateDict</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.BasicTensorAwareStateDict"><code class="docutils literal notranslate"><span class="pre">BasicTensorAwareStateDict</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder"><code class="docutils literal notranslate"><span class="pre">TensorPlaceholder</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.dict_list_map_inplace"><code class="docutils literal notranslate"><span class="pre">dict_list_map_inplace()</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.nested_values"><code class="docutils literal notranslate"><span class="pre">nested_values()</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -190,38 +186,6 @@ Further calls to <cite>pop_tensor</cite> will raise an error.</p>
 <dd><p>Get the tensor data from the state dict.</p>
 </dd></dl>
 
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.basic_state_dict.</span></span><span class="sig-name descname"><span class="pre">TensorPlaceholder</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ten</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/basic_state_dict.html#TensorPlaceholder"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>A placeholder class that stores the device, shape, and dtype of tensor.
-This can be used to instantiate new tensors with the same properties (device, shape, and dtype)
-at a later time.</p>
-<dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder.init_tensor">
-<span class="sig-name descname"><span class="pre">init_tensor</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/basic_state_dict.html#TensorPlaceholder.init_tensor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.TensorPlaceholder.init_tensor" title="Link to this definition"></a></dt>
-<dd><p>Creates a new tensor with using the saved properties (device, shape, and dtype).</p>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py function">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.basic_state_dict.dict_list_map_inplace">
-<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.basic_state_dict.</span></span><span class="sig-name descname"><span class="pre">dict_list_map_inplace</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">f</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/basic_state_dict.html#dict_list_map_inplace"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.dict_list_map_inplace" title="Link to this definition"></a></dt>
-<dd><p>Maps dicts and lists <em>in-place</em> with a given function.</p>
-</dd></dl>
-
-<dl class="py function">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.basic_state_dict.nested_values">
-<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.basic_state_dict.</span></span><span class="sig-name descname"><span class="pre">nested_values</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/basic_state_dict.html#nested_values"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.basic_state_dict.nested_values" title="Link to this definition"></a></dt>
-<dd><p>Returns iterator over (nested) values of a given dict or list.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>x</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)"><em>dict</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a>)</p>
-</dd>
-</dl>
 </dd></dl>
 
 </section>
