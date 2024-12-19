@@ -17,8 +17,15 @@ Requirements
 Requirements for `LocalCheckpointManager`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 - The directory specified by the `root_local_ckpt_dir` parameter must have enough storage capacity to hold
-  at least two checkpoint parts (clean and dirty) per rank.
+  at least two checkpoint parts (clean and dirty) per rank
   multiplied by the replication factor defined by the replication strategy (`repl_strategy`).
+- If a local checkpoint had been created with replication being enabled, it's recommended to enable replication also
+  when loading that checkpoint, in which case the replication parameters
+  (i.e. `world_size`, `--replication-jump` and `--replication-factor`) must be the same as during save.
+  If replication is disabled during load, the replicas are ignored even if available which might lead to
+  inability to recover from an otherwise complete checkpoint.
+- All training ranks must call `LocalCheckpointManager` methods (`save`, `load`, `find_latest`) at once,
+  otherwise the training ends up in a corrupted state (a NCCL collective hang or tensor allocation OOM).
 
 Requirements for `BasicTensorAwareStateDict`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -54,11 +61,11 @@ This is a basic reference and may omit specific implementation details:
     if iteration != -1:
         ta_state_dict, ckpt_part_id = ckpt_manager.load()
         # Use the loaded state_dict to resume training
-        state_dict = ta_state_dict.state_dict
+        model.load_state_dict(ta_state_dict.state_dict)
     else:
         # An iteration value of -1 indicates that no local checkpoint was found.
         # In this case, either return an error or initialize the model from scratch.
-        return -1
+        print('Starting training from scratch')
 
     # Training loop
     while True:
@@ -95,7 +102,6 @@ The retrieval mechanism is seamlessly integrated into the LocalCheckpointManager
 Asynchronous Checkpoint Saving
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The `LocalCheckpointManager` supports both synchronous and asynchronous saving,
->>>>>>> skierat/documentation
 controlled by the `is_async` parameter in the `save(...)` method.
 
 - Synchronous Save: When `is_async` is set to `False`, the `save(...)` method

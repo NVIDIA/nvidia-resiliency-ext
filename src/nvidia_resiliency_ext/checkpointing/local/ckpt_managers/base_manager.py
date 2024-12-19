@@ -63,7 +63,6 @@ class SameMachineReplicationException(CheckpointingException):
         super().__init__(message)
 
 
-
 class BaseCheckpointManager(ABC):
     """
     The Base Checkpoint Manager provides an interface for integrating different checkpoint managers,
@@ -159,6 +158,8 @@ class BaseCheckpointManager(ABC):
 
         If no complete checkpoints are found, the method returns -1.
 
+        All training ranks have to call this method at once.
+
         Returns:
             int: The iteration number of the most recent complete checkpoint,
             or -1 if no checkpoints are available.
@@ -197,6 +198,8 @@ class BaseCheckpointManager(ABC):
 
         Ensure that `find_latest()` has been called first to identify the latest checkpoint.
 
+        All training ranks have to call this method at once.
+
         Returns:
             Tuple[TensorAwareStateDict, str]
                 - `state_dict`: The state dictionary loaded from the most recent complete checkpoint.
@@ -230,6 +233,8 @@ class BaseCheckpointManager(ABC):
         If `is_async` is set to `True`, the save operation is performed asynchronously,
         and the function returns an `AsyncRequest` object. Otherwise, the save operation
         is completed synchronously.
+
+        All training ranks have to call this method at once.
 
         Args:
             state_dict (dict): The state dictionary to be saved.

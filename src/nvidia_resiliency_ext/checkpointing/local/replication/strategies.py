@@ -191,6 +191,39 @@ class CliqueReplicationStrategy(ReplicationStrategy):
     def from_replication_params(
         cls, replication_jump: int = torch.cuda.device_count(), replication_factor: int = 2
     ) -> 'CliqueReplicationStrategy':
+        """Instantiates process groups necessary for checkpoint replication.
+
+        Training ranks are divided into `W // F` distinct groups of size `F`, where
+        `W` is the world size
+        and `F` is the `replication_factor`.
+        Each group consists of ranks:
+
+        `n`, `n + J`, `n + 2J`, ..., `n + (F - 1)J`,
+
+        where `J` is the `replication_jump` and `n = aJF + b`, with:
+            - `a = 0, 1, ..., (W / (JF)) - 1`
+            - `b = 0, 1, ..., J - 1`.
+
+        Checkpoint shards are exchanged and fully replicated within each group.
+
+        **Important:** The world size (`W`) must be divisible by `J * F`.
+
+        This grouping enables replication across different failure domains by specifying
+        `J` equal to the failure blast radius.
+
+        **Example:**
+        For a world size of 32, `replication_jump = 8`, and `replication_factor = 2`,
+        the replication groups (cliques) are:
+
+        0-8, 1-9, 2-10, 3-11, 4-12, 5-13, 6-14, 7-15,
+        16-24, 17-25, 18-26, 19-27, 20-28, 21-29, 22-30, 23-31
+
+        Args:
+            replication_jump (int, optional): `J` in the formula above. Represents the gap between
+                successive ranks storing replicas of a given rank's data.
+            replication_factor (int, optional): `F` in the formula above. Denotes the number of
+                ranks storing replicas of a given rank's data.
+        """
         logger.debug(f'Initializing {cls.__name__}')
         repl_process_groups_ranks: List[List[int]] = parse_group_sequence(
             replication_jump=replication_jump,
@@ -252,8 +285,39 @@ class LazyReplicationStrategyBuilder(ReplicationStrategy, ABC, Generic[EagerT]):
 
 
 class LazyCliqueReplicationStrategy(LazyReplicationStrategyBuilder[CliqueReplicationStrategy]):
-    """Lazy version of CliqueReplicationStrategy allowing to delay process group formation."""
+    """Lazy version of CliqueReplicationStrategy allowing to delay process group formation.
 
+    Training ranks are divided into `W // F` distinct groups of size `F`, where
+    `W` is the world size
+    and `F` is the `replication_factor`.
+    Each group consists of ranks:
+
+    `n`, `n + J`, `n + 2J`, ..., `n + (F - 1)J`,
+
+    where `J` is the `replication_jump` and `n = aJF + b`, with:
+        - `a = 0, 1, ..., (W / (JF)) - 1`
+        - `b = 0, 1, ..., J - 1`.
+
+    Checkpoint shards are exchanged and fully replicated within each group.
+
+    **Important:** The world size (`W`) must be divisible by `J * F`.
+
+    This grouping enables replication across different failure domains by specifying
+    `J` equal to the failure blast radius.
+
+    **Example:**
+    For a world size of 32, `replication_jump = 8`, and `replication_factor = 2`,
+    the replication groups (cliques) are:
+
+    0-8, 1-9, 2-10, 3-11, 4-12, 5-13, 6-14, 7-15,
+    16-24, 17-25, 18-26, 19-27, 20-28, 21-29, 22-30, 23-31
+
+    Args:
+        replication_jump (int, optional): `J` in the formula above. Represents the gap between
+            successive ranks storing replicas of a given rank's data.
+        replication_factor (int, optional): `F` in the formula above. Denotes the number of
+            ranks storing replicas of a given rank's data.
+    """
     def __init__(
         self, replication_jump: int = torch.cuda.device_count(), replication_factor: int = 2
     ):
