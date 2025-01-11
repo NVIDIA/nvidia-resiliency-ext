@@ -32,22 +32,22 @@ jobs:
           curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Ensure pybind11 is installed
+      - name: Install dependencies
         run: |
-          python3.10 -m pip install --root-user-action=ignore -U pybind11
-          python3.11 -m pip install --root-user-action=ignore -U pybind11
-          python3.12 -m pip install --root-user-action=ignore -U pybind11
+          python3.10 -m pip install --root-user-action=ignore -U setuptools poetry build six pybind11
+          python3.11 -m pip install --root-user-action=ignore -U setuptools poetry build six pybind11
+          python3.12 -m pip install --root-user-action=ignore -U setuptools poetry build six pybind11
       - name: Build wheel with Python 3.10
         run: |
-          python3.10 -m pip install --root-user-action=ignore -U setuptools poetry build six
+          python3.10 -c "import sys; sys.path = [p for p in sys.path if p != '/__w/nvidia-resiliency-ext/nvidia-resiliency-ext']; import build"  # Fix module conflict
           python3.10 -m poetry build -f wheel
       - name: Build wheel with Python 3.11
         run: |
-          python3.11 -m pip install --root-user-action=ignore -U setuptools poetry build six
+          python3.11 -c "import sys; sys.path = [p for p in sys.path if p != '/__w/nvidia-resiliency-ext/nvidia-resiliency-ext']; import build"  # Fix module conflict
           python3.11 -m poetry build -f wheel
       - name: Build wheel with Python 3.12
         run: |
-          python3.12 -m pip install --root-user-action=ignore -U setuptools poetry build six
+          python3.12 -c "import sys; sys.path = [p for p in sys.path if p != '/__w/nvidia-resiliency-ext/nvidia-resiliency-ext']; import build"  # Fix module conflict
           python3.12 -m poetry build -f wheel
       - name: Upload the wheel artifact
         uses: actions/upload-artifact@v4
