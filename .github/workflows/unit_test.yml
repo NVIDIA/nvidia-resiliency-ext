@@ -1,4 +1,5 @@
 name: Run Unit Tests
+
 on:
   push:
     branches:
@@ -31,17 +32,22 @@ jobs:
           curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
       - name: Checkout code
         uses: actions/checkout@v4
+      - name: Ensure pybind11 is installed
+        run: |
+          python3.10 -m pip install --root-user-action=ignore -U pybind11
+          python3.11 -m pip install --root-user-action=ignore -U pybind11
+          python3.12 -m pip install --root-user-action=ignore -U pybind11
       - name: Build wheel with Python 3.10
         run: |
-          python3.10 -m pip install -U setuptools poetry build six
+          python3.10 -m pip install --root-user-action=ignore -U setuptools poetry build six
           python3.10 -m poetry build -f wheel
       - name: Build wheel with Python 3.11
         run: |
-          python3.11 -m pip install -U setuptools poetry build six
+          python3.11 -m pip install --root-user-action=ignore -U setuptools poetry build six
           python3.11 -m poetry build -f wheel
       - name: Build wheel with Python 3.12
         run: |
-          python3.12 -m pip install -U setuptools poetry build six
+          python3.12 -m pip install --root-user-action=ignore -U setuptools poetry build six
           python3.12 -m poetry build -f wheel
       - name: Upload the wheel artifact
         uses: actions/upload-artifact@v4
@@ -73,7 +79,7 @@ jobs:
           path: ./dist/
       - name: Set up environment
         run: |
-          pip install pytest lightning
+          python -m pip install --no-cache-dir pytest lightning
           PY_VER_NODOT=$(python -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
           pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
       - name: Run unit tests
