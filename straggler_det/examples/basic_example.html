@@ -7,7 +7,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Basic usage example &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
 
@@ -111,24 +111,24 @@
 <span class="linenos"> 20</span><span class="c1"># You can try &quot;nvidia-smi -i &lt;GPU idx&gt; -lgc 800&quot; to slow down some GPUs and see the effect.</span>
 <span class="linenos"> 21</span><span class="c1">#</span>
 <span class="linenos"> 22</span>
-<span class="linenos"> 23</span><span class="kn">import</span> <span class="nn">argparse</span>
-<span class="linenos"> 24</span><span class="kn">import</span> <span class="nn">os</span>
-<span class="linenos"> 25</span><span class="kn">import</span> <span class="nn">time</span>
-<span class="linenos"> 26</span><span class="kn">import</span> <span class="nn">uuid</span>
+<span class="linenos"> 23</span><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
+<span class="linenos"> 24</span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="linenos"> 25</span><span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="linenos"> 26</span><span class="kn">import</span><span class="w"> </span><span class="nn">uuid</span>
 <span class="linenos"> 27</span>
-<span class="linenos"> 28</span><span class="kn">import</span> <span class="nn">torch</span>
-<span class="linenos"> 29</span><span class="kn">import</span> <span class="nn">torch.distributed</span> <span class="k">as</span> <span class="nn">dist</span>
-<span class="linenos"> 30</span><span class="kn">import</span> <span class="nn">torch.distributed.launcher</span> <span class="k">as</span> <span class="nn">pet</span>
-<span class="linenos"> 31</span><span class="kn">import</span> <span class="nn">torch.nn</span> <span class="k">as</span> <span class="nn">nn</span>
-<span class="linenos"> 32</span><span class="kn">from</span> <span class="nn">torch.nn.parallel</span> <span class="kn">import</span> <span class="n">DistributedDataParallel</span> <span class="k">as</span> <span class="n">DDP</span>
-<span class="linenos"> 33</span><span class="kn">from</span> <span class="nn">torch.utils.data</span> <span class="kn">import</span> <span class="n">DataLoader</span><span class="p">,</span> <span class="n">DistributedSampler</span>
-<span class="linenos"> 34</span><span class="kn">from</span> <span class="nn">torchvision</span> <span class="kn">import</span> <span class="n">datasets</span><span class="p">,</span> <span class="n">transforms</span>
+<span class="linenos"> 28</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="linenos"> 29</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch.distributed</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">dist</span>
+<span class="linenos"> 30</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch.distributed.launcher</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pet</span>
+<span class="linenos"> 31</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
+<span class="linenos"> 32</span><span class="kn">from</span><span class="w"> </span><span class="nn">torch.nn.parallel</span><span class="w"> </span><span class="kn">import</span> <span class="n">DistributedDataParallel</span> <span class="k">as</span> <span class="n">DDP</span>
+<span class="linenos"> 33</span><span class="kn">from</span><span class="w"> </span><span class="nn">torch.utils.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataLoader</span><span class="p">,</span> <span class="n">DistributedSampler</span>
+<span class="linenos"> 34</span><span class="kn">from</span><span class="w"> </span><span class="nn">torchvision</span><span class="w"> </span><span class="kn">import</span> <span class="n">datasets</span><span class="p">,</span> <span class="n">transforms</span>
 <span class="linenos"> 35</span>
-<span class="linenos"> 36</span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext</span> <span class="kn">import</span> <span class="n">straggler</span>
+<span class="linenos"> 36</span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext</span><span class="w"> </span><span class="kn">import</span> <span class="n">straggler</span>
 <span class="linenos"> 37</span>
 <span class="linenos"> 38</span>
-<span class="linenos"> 39</span><span class="k">class</span> <span class="nc">Model</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
-<span class="linenos"> 40</span>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="linenos"> 39</span><span class="k">class</span><span class="w"> </span><span class="nc">Model</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="linenos"> 40</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="linenos"> 41</span>        <span class="nb">super</span><span class="p">(</span><span class="n">Model</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
 <span class="linenos"> 42</span>        <span class="bp">self</span><span class="o">.</span><span class="n">layers</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span><span class="p">(</span>
 <span class="linenos"> 43</span>            <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">784</span><span class="p">,</span> <span class="mi">128</span><span class="p">),</span>
@@ -140,12 +140,12 @@
 <span class="linenos"> 49</span>            <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">32</span><span class="p">,</span> <span class="mi">10</span><span class="p">),</span>
 <span class="linenos"> 50</span>        <span class="p">)</span>
 <span class="linenos"> 51</span>
-<span class="linenos"> 52</span>    <span class="k">def</span> <span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+<span class="linenos"> 52</span>    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
 <span class="linenos"> 53</span>        <span class="n">x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
 <span class="linenos"> 54</span>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">layers</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
 <span class="linenos"> 55</span>
 <span class="linenos"> 56</span>
-<span class="linenos"> 57</span><span class="k">def</span> <span class="nf">train</span><span class="p">(</span><span class="n">args</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="linenos"> 57</span><span class="k">def</span><span class="w"> </span><span class="nf">train</span><span class="p">(</span><span class="n">args</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="linenos"> 58</span>    <span class="nb">print</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>
 <span class="linenos"> 59</span>
 <span class="linenos"> 60</span>    <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span><span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
@@ -220,7 +220,7 @@
 <span class="linenos">129</span>    <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
 <span class="linenos">130</span>
 <span class="linenos">131</span>
-<span class="linenos">132</span><span class="k">def</span> <span class="nf">main</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="linenos">132</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="linenos">133</span>    <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">()</span>
 <span class="linenos">134</span>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--num-processes&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
 <span class="linenos">135</span>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--num-epochs&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>

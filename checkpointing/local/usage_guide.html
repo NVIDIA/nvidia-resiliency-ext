@@ -7,7 +7,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Usage guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
 
@@ -158,8 +158,8 @@ otherwise the training ends up in a corrupted state (a NCCL collective hang or t
 <p>Below is a simplified pseudocode example illustrating how
 to integrate local checkpointing into training scripts.
 This is a basic reference and may omit specific implementation details:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager</span> <span class="kn">import</span> <span class="n">LocalCheckpointManager</span>
-<span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.local.basic_state_dict</span> <span class="kn">import</span> <span class="n">BasicTensorAwareStateDict</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">LocalCheckpointManager</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.local.basic_state_dict</span><span class="w"> </span><span class="kn">import</span> <span class="n">BasicTensorAwareStateDict</span>
 
 <span class="c1"># Initialize CheckpointManager with the checkpoint directory</span>
 <span class="n">ckpt_manager</span> <span class="o">=</span> <span class="n">LocalCheckpointManager</span><span class="p">(</span><span class="n">ckpt_dir</span><span class="p">)</span>

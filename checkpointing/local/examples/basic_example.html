@@ -7,7 +7,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Basic usage example &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
 
@@ -90,22 +90,22 @@
              
   <section id="basic-usage-example">
 <h1>Basic usage example<a class="headerlink" href="#basic-usage-example" title="Link to this heading"></a></h1>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="linenos">  1</span><span class="kn">import</span> <span class="nn">argparse</span>
-<span class="linenos">  2</span><span class="kn">import</span> <span class="nn">logging</span>
-<span class="linenos">  3</span><span class="kn">import</span> <span class="nn">os</span>
-<span class="linenos">  4</span><span class="kn">import</span> <span class="nn">shutil</span>
-<span class="linenos">  5</span><span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Union</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="linenos">  1</span><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
+<span class="linenos">  2</span><span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="linenos">  3</span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="linenos">  4</span><span class="kn">import</span><span class="w"> </span><span class="nn">shutil</span>
+<span class="linenos">  5</span><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Union</span>
 <span class="linenos">  6</span>
-<span class="linenos">  7</span><span class="kn">import</span> <span class="nn">torch</span>
-<span class="linenos">  8</span><span class="kn">import</span> <span class="nn">torch.distributed</span> <span class="k">as</span> <span class="nn">dist</span>
-<span class="linenos">  9</span><span class="kn">import</span> <span class="nn">torch.nn</span> <span class="k">as</span> <span class="nn">nn</span>
+<span class="linenos">  7</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="linenos">  8</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch.distributed</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">dist</span>
+<span class="linenos">  9</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
 <span class="linenos"> 10</span>
-<span class="linenos"> 11</span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt.core</span> <span class="kn">import</span> <span class="n">AsyncCallsQueue</span>
-<span class="linenos"> 12</span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.local.basic_state_dict</span> <span class="kn">import</span> <span class="n">BasicTensorAwareStateDict</span>
-<span class="linenos"> 13</span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager</span> <span class="kn">import</span> <span class="p">(</span>
+<span class="linenos"> 11</span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncCallsQueue</span>
+<span class="linenos"> 12</span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.local.basic_state_dict</span><span class="w"> </span><span class="kn">import</span> <span class="n">BasicTensorAwareStateDict</span>
+<span class="linenos"> 13</span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
 <span class="linenos"> 14</span>    <span class="n">LocalCheckpointManager</span><span class="p">,</span>
 <span class="linenos"> 15</span><span class="p">)</span>
-<span class="linenos"> 16</span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.local.replication.strategies</span> <span class="kn">import</span> <span class="p">(</span>
+<span class="linenos"> 16</span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.local.replication.strategies</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
 <span class="linenos"> 17</span>    <span class="n">CliqueReplicationStrategy</span><span class="p">,</span>
 <span class="linenos"> 18</span><span class="p">)</span>
 <span class="linenos"> 19</span>
@@ -113,7 +113,7 @@
 <span class="linenos"> 21</span><span class="n">logging</span><span class="o">.</span><span class="n">basicConfig</span><span class="p">(</span><span class="n">level</span><span class="o">=</span><span class="n">logging</span><span class="o">.</span><span class="n">INFO</span><span class="p">)</span>
 <span class="linenos"> 22</span>
 <span class="linenos"> 23</span>
-<span class="linenos"> 24</span><span class="k">def</span> <span class="nf">parse_args</span><span class="p">():</span>
+<span class="linenos"> 24</span><span class="k">def</span><span class="w"> </span><span class="nf">parse_args</span><span class="p">():</span>
 <span class="linenos"> 25</span>    <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">(</span>
 <span class="linenos"> 26</span>        <span class="n">description</span><span class="o">=</span><span class="s1">&#39;Local Checkpointing Basic Example&#39;</span><span class="p">,</span>
 <span class="linenos"> 27</span>        <span class="n">formatter_class</span><span class="o">=</span><span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentDefaultsHelpFormatter</span><span class="p">,</span>
@@ -157,20 +157,20 @@
 <span class="linenos"> 65</span>
 <span class="linenos"> 66</span>
 <span class="linenos"> 67</span><span class="c1"># Define a simple model</span>
-<span class="linenos"> 68</span><span class="k">class</span> <span class="nc">SimpleModel</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
-<span class="linenos"> 69</span>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="linenos"> 68</span><span class="k">class</span><span class="w"> </span><span class="nc">SimpleModel</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="linenos"> 69</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="linenos"> 70</span>        <span class="nb">super</span><span class="p">(</span><span class="n">SimpleModel</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
 <span class="linenos"> 71</span>        <span class="bp">self</span><span class="o">.</span><span class="n">fc1</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">5</span><span class="p">)</span>  <span class="c1"># Linear layer: input size 10, output size 5</span>
 <span class="linenos"> 72</span>        <span class="bp">self</span><span class="o">.</span><span class="n">fc2</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>  <span class="c1"># Linear layer: input size 5, output size 2</span>
 <span class="linenos"> 73</span>        <span class="bp">self</span><span class="o">.</span><span class="n">activation</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ReLU</span><span class="p">()</span>  <span class="c1"># Activation function: ReLU</span>
 <span class="linenos"> 74</span>
-<span class="linenos"> 75</span>    <span class="k">def</span> <span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+<span class="linenos"> 75</span>    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
 <span class="linenos"> 76</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">activation</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">fc1</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
 <span class="linenos"> 77</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fc2</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
 <span class="linenos"> 78</span>        <span class="k">return</span> <span class="n">x</span>
 <span class="linenos"> 79</span>
 <span class="linenos"> 80</span>
-<span class="linenos"> 81</span><span class="k">def</span> <span class="nf">init_distributed_backend</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;nccl&quot;</span><span class="p">):</span>
+<span class="linenos"> 81</span><span class="k">def</span><span class="w"> </span><span class="nf">init_distributed_backend</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;nccl&quot;</span><span class="p">):</span>
 <span class="linenos"> 82</span><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="linenos"> 83</span><span class="sd">    Initialize the distributed process group for NCCL backend.</span>
 <span class="linenos"> 84</span><span class="sd">    Assumes the environment variables (CUDA_VISIBLE_DEVICES, etc.) are already set.</span>
@@ -189,7 +189,7 @@
 <span class="linenos"> 97</span>        <span class="k">raise</span>
 <span class="linenos"> 98</span>
 <span class="linenos"> 99</span>
-<span class="linenos">100</span><span class="k">def</span> <span class="nf">create_checkpoint_manager</span><span class="p">(</span><span class="n">args</span><span class="p">):</span>
+<span class="linenos">100</span><span class="k">def</span><span class="w"> </span><span class="nf">create_checkpoint_manager</span><span class="p">(</span><span class="n">args</span><span class="p">):</span>
 <span class="linenos">101</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">replication</span><span class="p">:</span>
 <span class="linenos">102</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Creating CliqueReplicationStrategy.&quot;</span><span class="p">)</span>
 <span class="linenos">103</span>        <span class="n">repl_strategy</span> <span class="o">=</span> <span class="n">CliqueReplicationStrategy</span><span class="o">.</span><span class="n">from_replication_params</span><span class="p">(</span>
@@ -201,7 +201,7 @@
 <span class="linenos">109</span>    <span class="k">return</span> <span class="n">LocalCheckpointManager</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="p">,</span> <span class="n">repl_strategy</span><span class="o">=</span><span class="n">repl_strategy</span><span class="p">)</span>
 <span class="linenos">110</span>
 <span class="linenos">111</span>
-<span class="linenos">112</span><span class="k">def</span> <span class="nf">save</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">,</span> <span class="n">async_queue</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
+<span class="linenos">112</span><span class="k">def</span><span class="w"> </span><span class="nf">save</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">,</span> <span class="n">async_queue</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
 <span class="linenos">113</span>    <span class="c1"># Create Tensor-Aware State Dict</span>
 <span class="linenos">114</span>    <span class="n">ta_state_dict</span> <span class="o">=</span> <span class="n">BasicTensorAwareStateDict</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">())</span>
 <span class="linenos">115</span>
@@ -217,7 +217,7 @@
 <span class="linenos">125</span>        <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">iteration</span><span class="p">)</span>
 <span class="linenos">126</span>
 <span class="linenos">127</span>
-<span class="linenos">128</span><span class="k">def</span> <span class="nf">load</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">):</span>
+<span class="linenos">128</span><span class="k">def</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">):</span>
 <span class="linenos">129</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Loading TASD checkpoint...&quot;</span><span class="p">)</span>
 <span class="linenos">130</span>    <span class="n">iteration</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">find_latest</span><span class="p">()</span>
 <span class="linenos">131</span>    <span class="k">assert</span> <span class="n">iteration</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;Local checkpoint has not been found&quot;</span>
@@ -228,7 +228,7 @@
 <span class="linenos">136</span>    <span class="k">return</span> <span class="n">ta_state_dict</span><span class="o">.</span><span class="n">state_dict</span>
 <span class="linenos">137</span>
 <span class="linenos">138</span>
-<span class="linenos">139</span><span class="k">def</span> <span class="nf">main</span><span class="p">():</span>
+<span class="linenos">139</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
 <span class="linenos">140</span>    <span class="n">args</span> <span class="o">=</span> <span class="n">parse_args</span><span class="p">()</span>
 <span class="linenos">141</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">args</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
 <span class="linenos">142</span>

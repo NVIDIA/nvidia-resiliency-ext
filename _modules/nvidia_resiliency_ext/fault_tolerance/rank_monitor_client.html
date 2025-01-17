@@ -6,7 +6,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nvidia_resiliency_ext.fault_tolerance.rank_monitor_client &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
 
@@ -91,22 +91,22 @@
 <span class="c1"># See the License for the specific language governing permissions and</span>
 <span class="c1"># limitations under the License.</span>
 
-<span class="kn">import</span> <span class="nn">dataclasses</span>
-<span class="kn">import</span> <span class="nn">logging</span>
-<span class="kn">import</span> <span class="nn">os</span>
-<span class="kn">import</span> <span class="nn">socket</span>
-<span class="kn">from</span> <span class="nn">dataclasses</span> <span class="kn">import</span> <span class="n">dataclass</span>
-<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">socket</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
 
-<span class="kn">from</span> <span class="nn">.data</span> <span class="kn">import</span> <span class="n">AuthkeyMsg</span><span class="p">,</span> <span class="n">HeartbeatMsg</span><span class="p">,</span> <span class="n">InitMsg</span><span class="p">,</span> <span class="n">OkMsg</span><span class="p">,</span> <span class="n">RankInfo</span><span class="p">,</span> <span class="n">UpdateConfigMsg</span>
-<span class="kn">from</span> <span class="nn">.rank_monitor_server</span> <span class="kn">import</span> <span class="n">RankMonitorServer</span>
-<span class="kn">from</span> <span class="nn">.timeouts_calc</span> <span class="kn">import</span> <span class="n">TimeoutsCalc</span>
-<span class="kn">from</span> <span class="nn">.utils</span> <span class="kn">import</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">,</span> <span class="n">write_object_to_ipc_socket</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">AuthkeyMsg</span><span class="p">,</span> <span class="n">HeartbeatMsg</span><span class="p">,</span> <span class="n">InitMsg</span><span class="p">,</span> <span class="n">OkMsg</span><span class="p">,</span> <span class="n">RankInfo</span><span class="p">,</span> <span class="n">UpdateConfigMsg</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_monitor_server</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankMonitorServer</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.timeouts_calc</span><span class="w"> </span><span class="kn">import</span> <span class="n">TimeoutsCalc</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">,</span> <span class="n">write_object_to_ipc_socket</span>
 
 
 <div class="viewcode-block" id="RankMonitorClientError">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClientError">[docs]</a>
-<span class="k">class</span> <span class="nc">RankMonitorClientError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RankMonitorClientError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
     <span class="k">pass</span></div>
 
 
@@ -114,7 +114,7 @@
 <div class="viewcode-block" id="HeartbeatTimeouts">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts">[docs]</a>
 <span class="nd">@dataclass</span>
-<span class="k">class</span> <span class="nc">HeartbeatTimeouts</span><span class="p">:</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HeartbeatTimeouts</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Contains hearbeat related timeouts used by FT.</span>
 <span class="sd">    - `initial` is the timeout for the first heartbeat.</span>
@@ -130,10 +130,10 @@
     <span class="n">were_calculated</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="nd">@property</span>
-    <span class="k">def</span> <span class="nf">are_valid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">are_valid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">initial</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">subsequent</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
 
-    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
         <span class="n">ini</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">initial</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">initial</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="s2">&quot;None&quot;</span>
         <span class="n">subs</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">subsequent</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">subsequent</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="s2">&quot;None&quot;</span>
         <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;HeartbeatTimeouts(initial=</span><span class="si">{</span><span class="n">ini</span><span class="si">}</span><span class="s2">, subsequent=</span><span class="si">{</span><span class="n">subs</span><span class="si">}</span><span class="s2">, were_calculated=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">were_calculated</span><span class="si">}</span><span class="s2">)&quot;</span></div>
@@ -142,7 +142,7 @@
 
 <div class="viewcode-block" id="RankMonitorClient">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient">[docs]</a>
-<span class="k">class</span> <span class="nc">RankMonitorClient</span><span class="p">:</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RankMonitorClient</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    `RankMonitorClient` is a client for `RankMonitorServer`.</span>
 <span class="sd">    Its instances are created in each rank process. After creation,</span>
@@ -165,7 +165,7 @@
 
     <span class="n">CURRENT_TIMEOUTS_STATE_KEY</span> <span class="o">=</span> <span class="s2">&quot;current_timeouts&quot;</span>
 
-    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Basic initialization of RankMonitorClient instance.</span>
 <span class="sd">        `.init_workload_monitoring()` and `.load_state_dict()` need to be called to fully initialize.</span>
@@ -182,18 +182,18 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">&quot;RankMonitorClient&quot;</span><span class="p">)</span>
 
-    <span class="k">def</span> <span class="nf">_ensure_is_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_ensure_is_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="s2">&quot;RankMonitorClient is not initialized&quot;</span><span class="p">)</span>
         <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
 
-    <span class="k">def</span> <span class="nf">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">sock</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">sock</span><span class="p">):</span>
         <span class="n">reply</span> <span class="o">=</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">(</span><span class="n">sock</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">reply</span><span class="p">,</span> <span class="n">OkMsg</span><span class="p">):</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unexpected reply: </span><span class="si">{</span><span class="n">reply</span><span class="si">}</span><span class="s2">. Expected OkMsg&quot;</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">reply</span>
 
-    <span class="k">def</span> <span class="nf">_set_calculated_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_timeouts</span><span class="p">:</span> <span class="n">HeartbeatTimeouts</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_set_calculated_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_timeouts</span><span class="p">:</span> <span class="n">HeartbeatTimeouts</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Send calculated timeouts to the server. They have an effect immediately after the call.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
@@ -207,7 +207,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span> <span class="o">=</span> <span class="n">new_timeouts</span>
 
     <span class="nd">@staticmethod</span>
-    <span class="k">def</span> <span class="nf">_merge_timeouts</span><span class="p">(</span><span class="n">new_value</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">old_value</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">alpha</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.75</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_merge_timeouts</span><span class="p">(</span><span class="n">new_value</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">old_value</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">alpha</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.75</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Merge computed timeout values with EMA&quot;&quot;&quot;</span>
         <span class="k">assert</span> <span class="mi">0</span> <span class="o">&lt;</span> <span class="n">alpha</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;Alpha must be in the range (0, 1].&quot;</span>
         <span class="k">assert</span> <span class="n">old_value</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">new_value</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;Timeout values must be non-negative.&quot;</span>
@@ -215,7 +215,7 @@
 
 <div class="viewcode-block" id="RankMonitorClient.calculate_and_set_timeouts">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts">[docs]</a>
-    <span class="k">def</span> <span class="nf">calculate_and_set_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">skip_if_not_ready</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">calculate_and_set_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">skip_if_not_ready</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Calculates and sets the timeouts used for hang detection.</span>
 
@@ -254,7 +254,7 @@
                 <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="s2">&quot;Not enough heartbeats to compute timeouts.&quot;</span><span class="p">)</span></div>
 
 
-    <span class="k">def</span> <span class="nf">_send_heartbeat_impl</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_send_heartbeat_impl</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Implementation of heartbeat sending.</span>
 
@@ -272,7 +272,7 @@
                 <span class="sa">f</span><span class="s2">&quot;RankMonitorClient could not send the heartbeat. Exception: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span>
             <span class="p">)</span>
 
-    <span class="k">def</span> <span class="nf">_connect_to_rmon_server</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_connect_to_rmon_server</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span> <span class="ow">is</span> <span class="kc">None</span>
         <span class="n">ipc_socket_path</span> <span class="o">=</span> <span class="n">RankMonitorServer</span><span class="o">.</span><span class="n">get_ipc_socket_path</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">rank</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span> <span class="o">=</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">(</span><span class="n">socket</span><span class="o">.</span><span class="n">AF_UNIX</span><span class="p">,</span> <span class="n">socket</span><span class="o">.</span><span class="n">SOCK_STREAM</span><span class="p">)</span>
@@ -292,7 +292,7 @@
 
 <div class="viewcode-block" id="RankMonitorClient.init_workload_monitoring">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring">[docs]</a>
-    <span class="k">def</span> <span class="nf">init_workload_monitoring</span><span class="p">(</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">init_workload_monitoring</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
@@ -335,7 +335,7 @@
 
 <div class="viewcode-block" id="RankMonitorClient.shutdown_workload_monitoring">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.shutdown_workload_monitoring">[docs]</a>
-    <span class="k">def</span> <span class="nf">shutdown_workload_monitoring</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">shutdown_workload_monitoring</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Shutdown the workload monitoring and close the connection to the RankMonitorServer.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
@@ -348,7 +348,7 @@
 
 <div class="viewcode-block" id="RankMonitorClient.send_heartbeat">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_heartbeat">[docs]</a>
-    <span class="k">def</span> <span class="nf">send_heartbeat</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">send_heartbeat</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Sends a empty (not containing a state) heartbeat message to the rank monitor server.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
@@ -357,7 +357,7 @@
 
 <div class="viewcode-block" id="RankMonitorClient.state_dict">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.state_dict">[docs]</a>
-    <span class="k">def</span> <span class="nf">state_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">state_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Returns the state dictionary of this RankMonitorClient object.</span>
 
@@ -377,7 +377,7 @@
 
 <div class="viewcode-block" id="RankMonitorClient.load_state_dict">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.load_state_dict">[docs]</a>
-    <span class="k">def</span> <span class="nf">load_state_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">load_state_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Loads the state of the RankMonitorClient from a dictionary.</span>
 

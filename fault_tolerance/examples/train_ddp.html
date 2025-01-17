@@ -7,7 +7,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DDP usage example &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
 
@@ -110,34 +110,34 @@
 <span class="linenos"> 17</span><span class="sd">Demo of fault tolerance with DDP training</span>
 <span class="linenos"> 18</span><span class="sd">&quot;&quot;&quot;</span>
 <span class="linenos"> 19</span>
-<span class="linenos"> 20</span><span class="kn">import</span> <span class="nn">argparse</span>
-<span class="linenos"> 21</span><span class="kn">import</span> <span class="nn">logging</span>
-<span class="linenos"> 22</span><span class="kn">import</span> <span class="nn">os</span>
-<span class="linenos"> 23</span><span class="kn">import</span> <span class="nn">random</span>
-<span class="linenos"> 24</span><span class="kn">import</span> <span class="nn">signal</span>
-<span class="linenos"> 25</span><span class="kn">import</span> <span class="nn">sys</span>
-<span class="linenos"> 26</span><span class="kn">import</span> <span class="nn">threading</span>
-<span class="linenos"> 27</span><span class="kn">import</span> <span class="nn">time</span>
+<span class="linenos"> 20</span><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
+<span class="linenos"> 21</span><span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="linenos"> 22</span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="linenos"> 23</span><span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
+<span class="linenos"> 24</span><span class="kn">import</span><span class="w"> </span><span class="nn">signal</span>
+<span class="linenos"> 25</span><span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
+<span class="linenos"> 26</span><span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
+<span class="linenos"> 27</span><span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
 <span class="linenos"> 28</span>
-<span class="linenos"> 29</span><span class="kn">import</span> <span class="nn">dist_utils</span>
-<span class="linenos"> 30</span><span class="kn">import</span> <span class="nn">log_utils</span>
-<span class="linenos"> 31</span><span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
-<span class="linenos"> 32</span><span class="kn">import</span> <span class="nn">torch</span>
-<span class="linenos"> 33</span><span class="kn">import</span> <span class="nn">torch.nn</span> <span class="k">as</span> <span class="nn">nn</span>
+<span class="linenos"> 29</span><span class="kn">import</span><span class="w"> </span><span class="nn">dist_utils</span>
+<span class="linenos"> 30</span><span class="kn">import</span><span class="w"> </span><span class="nn">log_utils</span>
+<span class="linenos"> 31</span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="linenos"> 32</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="linenos"> 33</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
 <span class="linenos"> 34</span>
-<span class="linenos"> 35</span><span class="kn">import</span> <span class="nn">nvidia_resiliency_ext.fault_tolerance</span> <span class="k">as</span> <span class="nn">fault_tolerance</span>
+<span class="linenos"> 35</span><span class="kn">import</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.fault_tolerance</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fault_tolerance</span>
 <span class="linenos"> 36</span>
 <span class="linenos"> 37</span>
 <span class="linenos"> 38</span><span class="c1"># Dummy dataset.</span>
-<span class="linenos"> 39</span><span class="k">class</span> <span class="nc">Dataset</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">Dataset</span><span class="p">):</span>
-<span class="linenos"> 40</span>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">size</span><span class="p">,</span> <span class="n">hidden</span><span class="p">):</span>
+<span class="linenos"> 39</span><span class="k">class</span><span class="w"> </span><span class="nc">Dataset</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">Dataset</span><span class="p">):</span>
+<span class="linenos"> 40</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">size</span><span class="p">,</span> <span class="n">hidden</span><span class="p">):</span>
 <span class="linenos"> 41</span>        <span class="bp">self</span><span class="o">.</span><span class="n">size</span> <span class="o">=</span> <span class="n">size</span>
 <span class="linenos"> 42</span>        <span class="bp">self</span><span class="o">.</span><span class="n">hidden</span> <span class="o">=</span> <span class="n">hidden</span>
 <span class="linenos"> 43</span>
-<span class="linenos"> 44</span>    <span class="k">def</span> <span class="fm">__len__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="linenos"> 44</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__len__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="linenos"> 45</span>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">size</span>
 <span class="linenos"> 46</span>
-<span class="linenos"> 47</span>    <span class="k">def</span> <span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">idx</span><span class="p">):</span>
+<span class="linenos"> 47</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">idx</span><span class="p">):</span>
 <span class="linenos"> 48</span>        <span class="n">data</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span>
 <span class="linenos"> 49</span>            <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">hidden</span><span class="p">,),</span>
 <span class="linenos"> 50</span>            <span class="n">fill_value</span><span class="o">=</span><span class="n">idx</span><span class="p">,</span>
@@ -148,25 +148,25 @@
 <span class="linenos"> 55</span>
 <span class="linenos"> 56</span>
 <span class="linenos"> 57</span><span class="c1"># Dummy model</span>
-<span class="linenos"> 58</span><span class="k">class</span> <span class="nc">Model</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
-<span class="linenos"> 59</span>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hidden</span><span class="p">):</span>
+<span class="linenos"> 58</span><span class="k">class</span><span class="w"> </span><span class="nc">Model</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="linenos"> 59</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hidden</span><span class="p">):</span>
 <span class="linenos"> 60</span>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
 <span class="linenos"> 61</span>        <span class="bp">self</span><span class="o">.</span><span class="n">l1</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">hidden</span><span class="p">,</span> <span class="n">hidden</span><span class="p">)</span>
 <span class="linenos"> 62</span>        <span class="bp">self</span><span class="o">.</span><span class="n">l2</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">hidden</span><span class="p">,</span> <span class="n">hidden</span><span class="p">)</span>
 <span class="linenos"> 63</span>
-<span class="linenos"> 64</span>    <span class="k">def</span> <span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+<span class="linenos"> 64</span>    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
 <span class="linenos"> 65</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">l1</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
 <span class="linenos"> 66</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">l2</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
 <span class="linenos"> 67</span>        <span class="k">return</span> <span class="n">x</span>
 <span class="linenos"> 68</span>
 <span class="linenos"> 69</span>
-<span class="linenos"> 70</span><span class="k">def</span> <span class="nf">parse_args</span><span class="p">():</span>
-<span class="linenos"> 71</span>    <span class="k">def</span> <span class="nf">tuple_type</span><span class="p">(</span><span class="n">strings</span><span class="p">):</span>
+<span class="linenos"> 70</span><span class="k">def</span><span class="w"> </span><span class="nf">parse_args</span><span class="p">():</span>
+<span class="linenos"> 71</span>    <span class="k">def</span><span class="w"> </span><span class="nf">tuple_type</span><span class="p">(</span><span class="n">strings</span><span class="p">):</span>
 <span class="linenos"> 72</span>        <span class="n">strings</span> <span class="o">=</span> <span class="n">strings</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">&quot;(&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">&quot;)&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>
 <span class="linenos"> 73</span>        <span class="n">mapped_int</span> <span class="o">=</span> <span class="nb">map</span><span class="p">(</span><span class="nb">int</span><span class="p">,</span> <span class="n">strings</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;,&quot;</span><span class="p">))</span>
 <span class="linenos"> 74</span>        <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">mapped_int</span><span class="p">)</span>
 <span class="linenos"> 75</span>
-<span class="linenos"> 76</span>    <span class="k">def</span> <span class="nf">fault_desc</span><span class="p">(</span><span class="n">strings</span><span class="p">):</span>
+<span class="linenos"> 76</span>    <span class="k">def</span><span class="w"> </span><span class="nf">fault_desc</span><span class="p">(</span><span class="n">strings</span><span class="p">):</span>
 <span class="linenos"> 77</span>        <span class="n">parts</span> <span class="o">=</span> <span class="n">strings</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;,&quot;</span><span class="p">)</span>
 <span class="linenos"> 78</span>        <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span> <span class="o">==</span> <span class="mi">2</span>
 <span class="linenos"> 79</span>        <span class="k">return</span> <span class="p">{</span><span class="s1">&#39;fault&#39;</span><span class="p">:</span> <span class="n">parts</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="s1">&#39;delay&#39;</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="n">parts</span><span class="p">[</span><span class="mi">1</span><span class="p">])}</span>
@@ -224,7 +224,7 @@
 <span class="linenos">131</span>    <span class="k">return</span> <span class="n">args</span>
 <span class="linenos">132</span>
 <span class="linenos">133</span>
-<span class="linenos">134</span><span class="k">def</span> <span class="nf">load_checkpoint</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+<span class="linenos">134</span><span class="k">def</span><span class="w"> </span><span class="nf">load_checkpoint</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
 <span class="linenos">135</span>    <span class="n">map_location</span> <span class="o">=</span> <span class="p">{</span>
 <span class="linenos">136</span>        <span class="s1">&#39;cpu&#39;</span><span class="p">:</span> <span class="s1">&#39;cpu&#39;</span><span class="p">,</span>
 <span class="linenos">137</span>    <span class="p">}</span>
@@ -236,7 +236,7 @@
 <span class="linenos">143</span>    <span class="k">return</span> <span class="n">checkpoint</span>
 <span class="linenos">144</span>
 <span class="linenos">145</span>
-<span class="linenos">146</span><span class="k">def</span> <span class="nf">save_checkpoint</span><span class="p">(</span>
+<span class="linenos">146</span><span class="k">def</span><span class="w"> </span><span class="nf">save_checkpoint</span><span class="p">(</span>
 <span class="linenos">147</span>    <span class="n">progress</span><span class="p">,</span>
 <span class="linenos">148</span>    <span class="n">model</span><span class="p">,</span>
 <span class="linenos">149</span>    <span class="n">optimizer</span><span class="p">,</span>
@@ -259,7 +259,7 @@
 <span class="linenos">166</span>            <span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">checkpoint_path</span><span class="p">)</span>
 <span class="linenos">167</span>
 <span class="linenos">168</span>
-<span class="linenos">169</span><span class="k">def</span> <span class="nf">training_loop</span><span class="p">(</span>
+<span class="linenos">169</span><span class="k">def</span><span class="w"> </span><span class="nf">training_loop</span><span class="p">(</span>
 <span class="linenos">170</span>    <span class="n">ft_client</span><span class="p">,</span>
 <span class="linenos">171</span>    <span class="n">para_model</span><span class="p">,</span>
 <span class="linenos">172</span>    <span class="n">model</span><span class="p">,</span>
@@ -330,7 +330,7 @@
 <span class="linenos">237</span>                <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
 <span class="linenos">238</span>
 <span class="linenos">239</span>
-<span class="linenos">240</span><span class="k">def</span> <span class="nf">validation_loop</span><span class="p">(</span><span class="n">ft_client</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">val_dataloader</span><span class="p">,</span> <span class="n">epoch_idx</span><span class="p">,</span> <span class="n">device</span><span class="p">):</span>
+<span class="linenos">240</span><span class="k">def</span><span class="w"> </span><span class="nf">validation_loop</span><span class="p">(</span><span class="n">ft_client</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">val_dataloader</span><span class="p">,</span> <span class="n">epoch_idx</span><span class="p">,</span> <span class="n">device</span><span class="p">):</span>
 <span class="linenos">241</span>    <span class="n">total_val_loss</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="linenos">242</span>    <span class="n">model</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
 <span class="linenos">243</span>
@@ -350,12 +350,12 @@
 <span class="linenos">257</span><span class="n">_sim_fault_is_set</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="linenos">258</span>
 <span class="linenos">259</span>
-<span class="linenos">260</span><span class="k">def</span> <span class="nf">_cancel_simulated_fault</span><span class="p">():</span>
+<span class="linenos">260</span><span class="k">def</span><span class="w"> </span><span class="nf">_cancel_simulated_fault</span><span class="p">():</span>
 <span class="linenos">261</span>    <span class="k">global</span> <span class="n">_sim_fault_canceled</span>
 <span class="linenos">262</span>    <span class="n">_sim_fault_canceled</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="linenos">263</span>
 <span class="linenos">264</span>
-<span class="linenos">265</span><span class="k">def</span> <span class="nf">_setup_simulated_fault</span><span class="p">(</span><span class="n">ft_client</span><span class="p">,</span> <span class="n">fault_desc</span><span class="p">,</span> <span class="n">device</span><span class="p">):</span>
+<span class="linenos">265</span><span class="k">def</span><span class="w"> </span><span class="nf">_setup_simulated_fault</span><span class="p">(</span><span class="n">ft_client</span><span class="p">,</span> <span class="n">fault_desc</span><span class="p">,</span> <span class="n">device</span><span class="p">):</span>
 <span class="linenos">266</span>    <span class="c1"># FIXME: hanging rank with SIGTSTP results in rank monitor</span>
 <span class="linenos">267</span>    <span class="c1"># blocked when trying to receive the data in _on_ipc_data_from_rank</span>
 <span class="linenos">268</span>
@@ -394,7 +394,7 @@
 <span class="linenos">301</span>        <span class="sa">f</span><span class="s2">&quot;Selected fault=</span><span class="si">{</span><span class="n">fault_type</span><span class="si">}</span><span class="s2">; target rank=</span><span class="si">{</span><span class="n">rank_to_fail</span><span class="si">}</span><span class="s2">; delay=</span><span class="si">{</span><span class="n">delay</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
 <span class="linenos">302</span>    <span class="p">)</span>
 <span class="linenos">303</span>
-<span class="linenos">304</span>    <span class="k">def</span> <span class="nf">__fault_thread</span><span class="p">():</span>
+<span class="linenos">304</span>    <span class="k">def</span><span class="w"> </span><span class="nf">__fault_thread</span><span class="p">():</span>
 <span class="linenos">305</span>        <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">delay</span><span class="p">)</span>
 <span class="linenos">306</span>        <span class="k">if</span> <span class="n">_sim_fault_canceled</span><span class="p">:</span>
 <span class="linenos">307</span>            <span class="k">return</span>
@@ -412,13 +412,13 @@
 <span class="linenos">319</span><span class="n">_signal_received</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="linenos">320</span>
 <span class="linenos">321</span>
-<span class="linenos">322</span><span class="k">def</span> <span class="nf">_sig_handler</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<span class="linenos">322</span><span class="k">def</span><span class="w"> </span><span class="nf">_sig_handler</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
 <span class="linenos">323</span>    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Signal received!&quot;</span><span class="p">,</span> <span class="n">file</span><span class="o">=</span><span class="n">sys</span><span class="o">.</span><span class="n">stderr</span><span class="p">)</span>
 <span class="linenos">324</span>    <span class="k">global</span> <span class="n">_signal_received</span>
 <span class="linenos">325</span>    <span class="n">_signal_received</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="linenos">326</span>
 <span class="linenos">327</span>
-<span class="linenos">328</span><span class="k">def</span> <span class="nf">main</span><span class="p">():</span>
+<span class="linenos">328</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
 <span class="linenos">329</span>    <span class="n">signal</span><span class="o">.</span><span class="n">signal</span><span class="p">(</span><span class="n">signal</span><span class="o">.</span><span class="n">SIGTERM</span><span class="p">,</span> <span class="n">_sig_handler</span><span class="p">)</span>
 <span class="linenos">330</span>
 <span class="linenos">331</span>    <span class="n">args</span> <span class="o">=</span> <span class="n">parse_args</span><span class="p">()</span>

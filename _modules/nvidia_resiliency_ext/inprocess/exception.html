@@ -6,7 +6,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nvidia_resiliency_ext.inprocess.exception &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
 
@@ -95,7 +95,7 @@
 
 <div class="viewcode-block" id="RestartError">
 <a class="viewcode-back" href="../../../inprocess/api/exception.html#nvidia_resiliency_ext.inprocess.exception.RestartError">[docs]</a>
-<span class="k">class</span> <span class="nc">RestartError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RestartError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">    Base :py:exc:`Exception` for exceptions raised by</span>
 <span class="sd">    :py:class:`inprocess.Wrapper`.</span>
@@ -107,7 +107,7 @@
 
 <div class="viewcode-block" id="RestartAbort">
 <a class="viewcode-back" href="../../../inprocess/api/exception.html#nvidia_resiliency_ext.inprocess.exception.RestartAbort">[docs]</a>
-<span class="k">class</span> <span class="nc">RestartAbort</span><span class="p">(</span><span class="ne">BaseException</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">RestartAbort</span><span class="p">(</span><span class="ne">BaseException</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">    A terminal Python :py:exc:`BaseException` indicating that the</span>
 <span class="sd">    :py:class:`inprocess.Wrapper` should be aborted immediately, bypassing any</span>
@@ -120,7 +120,7 @@
 
 <div class="viewcode-block" id="HealthCheckError">
 <a class="viewcode-back" href="../../../inprocess/api/exception.html#nvidia_resiliency_ext.inprocess.exception.HealthCheckError">[docs]</a>
-<span class="k">class</span> <span class="nc">HealthCheckError</span><span class="p">(</span><span class="n">RestartError</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HealthCheckError</span><span class="p">(</span><span class="n">RestartError</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">    :py:exc:`RestartError` exception to indicate that</span>
 <span class="sd">    :py:class:`inprocess.health_check.HealthCheck` raised errors, and execution</span>
@@ -133,7 +133,7 @@
 
 <div class="viewcode-block" id="InternalError">
 <a class="viewcode-back" href="../../../inprocess/api/exception.html#nvidia_resiliency_ext.inprocess.exception.InternalError">[docs]</a>
-<span class="k">class</span> <span class="nc">InternalError</span><span class="p">(</span><span class="n">RestartError</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">InternalError</span><span class="p">(</span><span class="n">RestartError</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">    :py:class:`inprocess.Wrapper` internal error.</span>
 <span class="sd">    &#39;&#39;&#39;</span>
@@ -144,7 +144,7 @@
 
 <div class="viewcode-block" id="TimeoutError">
 <a class="viewcode-back" href="../../../inprocess/api/exception.html#nvidia_resiliency_ext.inprocess.exception.TimeoutError">[docs]</a>
-<span class="k">class</span> <span class="nc">TimeoutError</span><span class="p">(</span><span class="n">RestartError</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TimeoutError</span><span class="p">(</span><span class="n">RestartError</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">    :py:class:`inprocess.Wrapper` timeout error.</span>
 <span class="sd">    &#39;&#39;&#39;</span>

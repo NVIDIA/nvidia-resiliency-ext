@@ -6,7 +6,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nvidia_resiliency_ext.fault_tolerance.config &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
 
@@ -91,21 +91,21 @@
 <span class="c1"># See the License for the specific language governing permissions and</span>
 <span class="c1"># limitations under the License.</span>
 
-<span class="kn">import</span> <span class="nn">argparse</span>
-<span class="kn">import</span> <span class="nn">contextlib</span>
-<span class="kn">import</span> <span class="nn">dataclasses</span>
-<span class="kn">import</span> <span class="nn">logging</span>
-<span class="kn">import</span> <span class="nn">signal</span>
-<span class="kn">from</span> <span class="nn">dataclasses</span> <span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">fields</span>
-<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Optional</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">contextlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">signal</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">fields</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Optional</span>
 
-<span class="kn">import</span> <span class="nn">yaml</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">yaml</span>
 
 
 <div class="viewcode-block" id="FaultToleranceConfig">
 <a class="viewcode-back" href="../../../fault_tolerance/usage_guide.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">[docs]</a>
 <span class="nd">@dataclass</span>
-<span class="k">class</span> <span class="nc">FaultToleranceConfig</span><span class="p">:</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">FaultToleranceConfig</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Configuration of fault tolerance</span>
 <span class="sd">        - `workload_check_interval` [float] periodic rank check interval (in seconds) in rank monitors.</span>
@@ -131,7 +131,7 @@
 <div class="viewcode-block" id="FaultToleranceConfig.from_kwargs">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs">[docs]</a>
     <span class="nd">@staticmethod</span>
-    <span class="k">def</span> <span class="nf">from_kwargs</span><span class="p">(</span><span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;FaultToleranceConfig&#39;</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_kwargs</span><span class="p">(</span><span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;FaultToleranceConfig&#39;</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Create a FaultToleranceConfig object from keyword arguments.</span>
 
@@ -156,7 +156,7 @@
 <div class="viewcode-block" id="FaultToleranceConfig.from_yaml_file">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_yaml_file">[docs]</a>
     <span class="nd">@staticmethod</span>
-    <span class="k">def</span> <span class="nf">from_yaml_file</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;FaultToleranceConfig&#39;</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_yaml_file</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;FaultToleranceConfig&#39;</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Load the fault tolerance configuration from a YAML file.</span>
 
@@ -188,7 +188,7 @@
 <div class="viewcode-block" id="FaultToleranceConfig.from_args">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args">[docs]</a>
     <span class="nd">@staticmethod</span>
-    <span class="k">def</span> <span class="nf">from_args</span><span class="p">(</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_args</span><span class="p">(</span>
         <span class="n">args</span><span class="p">:</span> <span class="n">argparse</span><span class="o">.</span><span class="n">Namespace</span><span class="p">,</span>
         <span class="n">cfg_file_arg</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">ft_args_prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span><span class="p">,</span>
@@ -242,7 +242,7 @@
 
 <div class="viewcode-block" id="FaultToleranceConfig.to_yaml_file">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.to_yaml_file">[docs]</a>
-    <span class="k">def</span> <span class="nf">to_yaml_file</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">to_yaml_file</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Convert the configuration object to a YAML file and save it to the specified path.</span>
 
@@ -265,7 +265,7 @@
 
 
     <span class="nd">@staticmethod</span>
-    <span class="k">def</span> <span class="nf">_find_fault_tol_section</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_find_fault_tol_section</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">):</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
             <span class="k">if</span> <span class="s2">&quot;fault_tolerance&quot;</span> <span class="ow">in</span> <span class="n">yaml_data</span><span class="p">:</span>
                 <span class="k">return</span> <span class="n">yaml_data</span><span class="p">[</span><span class="s2">&quot;fault_tolerance&quot;</span><span class="p">]</span>
@@ -281,7 +281,7 @@
                     <span class="k">return</span> <span class="n">sub_config</span>
         <span class="k">return</span> <span class="kc">None</span>
 
-    <span class="k">def</span> <span class="nf">_fix_rank_termination_signal_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_fix_rank_termination_signal_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span> <span class="o">=</span> <span class="n">signal</span><span class="o">.</span><span class="n">Signals</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="p">)</span>
         <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
@@ -298,7 +298,7 @@
                 <span class="sa">f</span><span class="s2">&quot;Invalid value for rank_termination_signal: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="si">}</span><span class="s2">&quot;</span>
             <span class="p">)</span>
 
-    <span class="k">def</span> <span class="nf">_fix_log_level_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_fix_log_level_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>
             <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span> <span class="o">&lt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span> <span class="o">&lt;=</span> <span class="n">logging</span><span class="o">.</span><span class="n">CRITICAL</span><span class="p">):</span>
                 <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
@@ -321,7 +321,7 @@
         <span class="k">else</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Invalid value for rank_termination_signal: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
-    <span class="k">def</span> <span class="nf">__post_init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">__post_init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_fix_rank_termination_signal_type</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_fix_log_level_type</span><span class="p">()</span></div>
 

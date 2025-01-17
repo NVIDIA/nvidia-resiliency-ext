@@ -7,7 +7,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Usage guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
 
@@ -225,7 +225,7 @@ If you are using NeMo, the <a class="reference external" href="https://github.co
 <section id="add-ft-callback-to-the-ptl-trainer">
 <h3>2. Add FT callback to the PTL trainer<a class="headerlink" href="#add-ft-callback-to-the-ptl-trainer" title="Link to this heading"></a></h3>
 <p>Add the FT callback to PTL callbacks.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.ptl_resiliency</span> <span class="kn">import</span> <span class="n">FaultToleranceCallback</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.ptl_resiliency</span><span class="w"> </span><span class="kn">import</span> <span class="n">FaultToleranceCallback</span>
 
 <span class="n">fault_tol_cb</span> <span class="o">=</span> <span class="n">FaultToleranceCallback</span><span class="p">(</span>
    <span class="n">autoresume</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>

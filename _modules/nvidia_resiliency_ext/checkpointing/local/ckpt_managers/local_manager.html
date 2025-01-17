@@ -6,7 +6,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../../../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../../../../_static/copybutton.css?v=76b2166b" />
 
@@ -93,18 +93,18 @@
 
 <span class="sd">&quot;&quot;&quot; A basic manager for local checkpoints.&quot;&quot;&quot;</span>
 
-<span class="kn">import</span> <span class="nn">logging</span>
-<span class="kn">import</span> <span class="nn">os</span>
-<span class="kn">import</span> <span class="nn">re</span>
-<span class="kn">from</span> <span class="nn">pathlib</span> <span class="kn">import</span> <span class="n">Path</span>
-<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Iterable</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Iterable</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
 
-<span class="kn">import</span> <span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
-<span class="kn">from</span> <span class="nn">..base_state_dict</span> <span class="kn">import</span> <span class="n">TensorAwareStateDict</span>
-<span class="kn">from</span> <span class="nn">..replication.strategies</span> <span class="kn">import</span> <span class="n">ReplicationStrategy</span>
-<span class="kn">from</span> <span class="nn">..replication.utils</span> <span class="kn">import</span> <span class="n">debug_time</span>
-<span class="kn">from</span> <span class="nn">.base_manager</span> <span class="kn">import</span> <span class="p">(</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">..base_state_dict</span><span class="w"> </span><span class="kn">import</span> <span class="n">TensorAwareStateDict</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">..replication.strategies</span><span class="w"> </span><span class="kn">import</span> <span class="n">ReplicationStrategy</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">..replication.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">debug_time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.base_manager</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">BaseCheckpointManager</span><span class="p">,</span>
     <span class="n">CheckpointingException</span><span class="p">,</span>
     <span class="n">CkptID</span><span class="p">,</span>
@@ -116,7 +116,7 @@
 
 <div class="viewcode-block" id="LocalCheckpointManager">
 <a class="viewcode-back" href="../../../../../checkpointing/local/api/local_ckpt_manager.html#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager.LocalCheckpointManager">[docs]</a>
-<span class="k">class</span> <span class="nc">LocalCheckpointManager</span><span class="p">(</span><span class="n">BaseCheckpointManager</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">LocalCheckpointManager</span><span class="p">(</span><span class="n">BaseCheckpointManager</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Local Checkpoint Manager designed for handling checkpoints on local storage devices</span>
 <span class="sd">    like SSDs or RAM disks.</span>
 
@@ -133,7 +133,7 @@
 <span class="sd">            shards replication.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">root_local_ckpt_dir</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Path</span><span class="p">],</span>
         <span class="n">session_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span><span class="p">,</span>
@@ -145,18 +145,18 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_dir</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="nd">@property</span>
-    <span class="k">def</span> <span class="nf">local_ckpt_dir</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">local_ckpt_dir</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_dir</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_dir</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">root_local_ckpt_dir</span><span class="p">)</span> <span class="o">/</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span> <span class="o">/</span> <span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">)</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_dir</span>
 
-    <span class="k">def</span> <span class="nf">_ensure_dir</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_ensure_dir</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Ensure the checkpoint directory exists, creating it if necessary.&quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dir_created</span><span class="p">:</span>
             <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_dir_created</span> <span class="o">=</span> <span class="kc">True</span>
 
-    <span class="k">def</span> <span class="nf">_my_ckpt_ids</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterable</span><span class="p">[</span><span class="n">CkptID</span><span class="p">]:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_my_ckpt_ids</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterable</span><span class="p">[</span><span class="n">CkptID</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Collect all locally available checkpoint IDs.&quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_dir</span><span class="p">()</span>
         <span class="n">my_files</span> <span class="o">=</span> <span class="p">[</span><span class="n">f</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()</span> <span class="k">if</span> <span class="n">f</span><span class="o">.</span><span class="n">is_file</span><span class="p">()]</span>
@@ -168,7 +168,7 @@
         <span class="p">]</span>
 
     <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;LocalCheckpointManager._load&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
-    <span class="k">def</span> <span class="nf">_load</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">:</span> <span class="n">CkptID</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_load</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">:</span> <span class="n">CkptID</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Load of the checkpoint identified by ckpt_id.&quot;&quot;&quot;</span>
         <span class="n">local_ckpt_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_path_from_id</span><span class="p">(</span><span class="n">ckpt_id</span><span class="p">)</span>
         <span class="k">try</span><span class="p">:</span>
@@ -182,10 +182,10 @@
             <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
             <span class="n">ckpt_files</span> <span class="o">=</span> <span class="p">[</span><span class="n">f</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()]</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">err_msg</span><span class="si">}</span><span class="s1">. Checkpoint directory content: </span><span class="si">{</span><span class="n">ckpt_files</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
-            <span class="k">raise</span> <span class="n">CheckpointingException</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span> <span class="kn">from</span> <span class="nn">e</span>
+            <span class="k">raise</span> <span class="n">CheckpointingException</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
 
     <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;LocalCheckpointManager._save&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
-    <span class="k">def</span> <span class="nf">_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">:</span> <span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">:</span> <span class="n">CkptID</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">:</span> <span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">:</span> <span class="n">CkptID</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Save of the tensor_aware_state_dict identified by ckpt_id.&quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_dir</span><span class="p">()</span>
         <span class="n">save_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_path_from_id</span><span class="p">(</span><span class="n">ckpt_id</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
@@ -207,10 +207,10 @@
         <span class="k">except</span> <span class="ne">FileExistsError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="n">ckpt_files</span> <span class="o">=</span> <span class="p">[</span><span class="n">f</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()]</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;Checkpoint directory content: </span><span class="si">{</span><span class="n">ckpt_files</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
-            <span class="k">raise</span> <span class="n">SameMachineReplicationException</span><span class="p">(</span><span class="n">ckpt_id</span><span class="p">)</span> <span class="kn">from</span> <span class="nn">e</span>
+            <span class="k">raise</span> <span class="n">SameMachineReplicationException</span><span class="p">(</span><span class="n">ckpt_id</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
 
     <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;LocalCheckpointManager._cleanup&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
-    <span class="k">def</span> <span class="nf">_cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Removes outdated or invalid checkpoints after successfully saving the checkpoint</span>
 <span class="sd">        for the specified iteration.</span>
 
@@ -224,7 +224,7 @@
             <span class="n">ckpt</span><span class="o">.</span><span class="n">unlink</span><span class="p">()</span>
 
     <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;LocalCheckpointManager._cleanup_failed_save&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
-    <span class="k">def</span> <span class="nf">_cleanup_failed_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup_failed_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Removes invalid checkpoints that could not be saved due to a failure.</span>
 
 <span class="sd">        Args:</span>
@@ -235,7 +235,7 @@
             <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Removing </span><span class="si">{</span><span class="n">ckpt</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
             <span class="n">ckpt</span><span class="o">.</span><span class="n">unlink</span><span class="p">()</span>
 
-    <span class="k">def</span> <span class="nf">_filename_from_template</span><span class="p">(</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_filename_from_template</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="n">rank</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="n">extra_suffix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
     <span class="p">):</span>
         <span class="n">digits</span> <span class="o">=</span> <span class="mi">7</span>
@@ -245,14 +245,14 @@
         <span class="n">file_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;iter_</span><span class="si">{</span><span class="n">iteration_string</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">_local</span><span class="si">{</span><span class="n">extra_suffix</span><span class="si">}</span><span class="s2">.pt&quot;</span>
         <span class="k">return</span> <span class="n">file_name</span>
 
-    <span class="k">def</span> <span class="nf">_local_ckpt_path_from_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">,</span> <span class="n">is_dirty</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_local_ckpt_path_from_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">,</span> <span class="n">is_dirty</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
         <span class="n">iteration</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">session_id</span> <span class="o">=</span> <span class="n">ckpt_id</span>
         <span class="k">assert</span> <span class="n">session_id</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span>
         <span class="n">suffix</span> <span class="o">=</span> <span class="s2">&quot;.dirty&quot;</span> <span class="k">if</span> <span class="n">is_dirty</span> <span class="k">else</span> <span class="s2">&quot;&quot;</span>
         <span class="n">file_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="n">iteration</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">suffix</span><span class="p">)</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span> <span class="o">/</span> <span class="n">file_name</span>
 
-    <span class="k">def</span> <span class="nf">_filename_to_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filename</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_filename_to_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filename</span><span class="p">):</span>
         <span class="n">_</span><span class="p">,</span> <span class="n">iteration</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">filename</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;_&#39;</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
         <span class="k">return</span> <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">iteration</span><span class="p">),</span> <span class="nb">int</span><span class="p">(</span><span class="n">rank</span><span class="p">),</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span></div>
 

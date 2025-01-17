@@ -7,7 +7,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Usage guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
 
@@ -132,7 +132,7 @@ The synchronization logic is handled within
 </div>
 <p><cite>TorchAsyncCheckpoint</cite> wraps around these synchronization routines in <cite>nvidia_resiliency_ext.checkpointing.async_ckpt.TorchAsyncCheckpoint.finalize_async_save</cite>.
 The following example shows how the routine can be used to synchronize the asynchronous checkpoint in a non-blocking / blocking manner</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt</span> <span class="kn">import</span> <span class="n">TorchAsyncCheckpoint</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt</span><span class="w"> </span><span class="kn">import</span> <span class="n">TorchAsyncCheckpoint</span>
 <span class="o">...</span>
 <span class="n">async_impl</span> <span class="o">=</span> <span class="n">TorchAsyncCheckpoint</span>
 

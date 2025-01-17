@@ -6,7 +6,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nvidia_resiliency_ext.inprocess.wrap &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
 
@@ -92,56 +92,56 @@
 <span class="c1"># See the License for the specific language governing permissions and</span>
 <span class="c1"># limitations under the License.</span>
 
-<span class="kn">import</span> <span class="nn">contextlib</span>
-<span class="kn">import</span> <span class="nn">datetime</span>
-<span class="kn">import</span> <span class="nn">functools</span>
-<span class="kn">import</span> <span class="nn">gc</span>
-<span class="kn">import</span> <span class="nn">itertools</span>
-<span class="kn">import</span> <span class="nn">logging</span>
-<span class="kn">import</span> <span class="nn">pathlib</span>
-<span class="kn">import</span> <span class="nn">threading</span>
-<span class="kn">import</span> <span class="nn">time</span>
-<span class="kn">from</span> <span class="nn">datetime</span> <span class="kn">import</span> <span class="n">timedelta</span>
-<span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Optional</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">contextlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">datetime</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">itertools</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">timedelta</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Optional</span>
 
-<span class="kn">import</span> <span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
-<span class="kn">from</span> <span class="nn">.</span> <span class="kn">import</span> <span class="n">param_utils</span>
-<span class="kn">from</span> <span class="nn">.abort</span> <span class="kn">import</span> <span class="n">Abort</span>
-<span class="kn">from</span> <span class="nn">.abort</span> <span class="kn">import</span> <span class="n">AbortTorchDistributed</span>
-<span class="kn">from</span> <span class="nn">.attribution</span> <span class="kn">import</span> <span class="n">Interruption</span>
-<span class="kn">from</span> <span class="nn">.attribution</span> <span class="kn">import</span> <span class="n">InterruptionRecord</span>
-<span class="kn">from</span> <span class="nn">.exception</span> <span class="kn">import</span> <span class="n">HealthCheckError</span>
-<span class="kn">from</span> <span class="nn">.exception</span> <span class="kn">import</span> <span class="n">InternalError</span>
-<span class="kn">from</span> <span class="nn">.exception</span> <span class="kn">import</span> <span class="n">RestartError</span>
-<span class="kn">from</span> <span class="nn">.finalize</span> <span class="kn">import</span> <span class="n">Finalize</span>
-<span class="kn">from</span> <span class="nn">.health_check</span> <span class="kn">import</span> <span class="n">HealthCheck</span>
-<span class="kn">from</span> <span class="nn">.initialize</span> <span class="kn">import</span> <span class="n">Initialize</span>
-<span class="kn">from</span> <span class="nn">.logging</span> <span class="kn">import</span> <span class="n">Logging</span>
-<span class="kn">from</span> <span class="nn">.logging</span> <span class="kn">import</span> <span class="n">log_exc</span>
-<span class="kn">from</span> <span class="nn">.monitor_process</span> <span class="kn">import</span> <span class="n">MonitorProcess</span>
-<span class="kn">from</span> <span class="nn">.monitor_thread</span> <span class="kn">import</span> <span class="n">MonitorThread</span>
-<span class="kn">from</span> <span class="nn">.monitor_thread</span> <span class="kn">import</span> <span class="n">RankShouldRestart</span>
-<span class="kn">from</span> <span class="nn">.monitor_thread</span> <span class="kn">import</span> <span class="n">reraise_if_unraisable</span>
-<span class="kn">from</span> <span class="nn">.param_utils</span> <span class="kn">import</span> <span class="n">enforce_subclass</span>
-<span class="kn">from</span> <span class="nn">.param_utils</span> <span class="kn">import</span> <span class="n">enforce_type</span>
-<span class="kn">from</span> <span class="nn">.param_utils</span> <span class="kn">import</span> <span class="n">enforce_value</span>
-<span class="kn">from</span> <span class="nn">.progress_watchdog</span> <span class="kn">import</span> <span class="n">ProgressWatchdog</span>
-<span class="kn">from</span> <span class="nn">.rank_assignment</span> <span class="kn">import</span> <span class="n">RankAssignment</span>
-<span class="kn">from</span> <span class="nn">.rank_assignment</span> <span class="kn">import</span> <span class="n">ShiftRanks</span>
-<span class="kn">from</span> <span class="nn">.rank_filter</span> <span class="kn">import</span> <span class="n">RankFilter</span>
-<span class="kn">from</span> <span class="nn">.state</span> <span class="kn">import</span> <span class="n">State</span>
-<span class="kn">from</span> <span class="nn">.state</span> <span class="kn">import</span> <span class="n">Status</span>
-<span class="kn">from</span> <span class="nn">.store</span> <span class="kn">import</span> <span class="n">PrefixStore</span>
-<span class="kn">from</span> <span class="nn">.store</span> <span class="kn">import</span> <span class="n">StoreMixin</span>
-<span class="kn">from</span> <span class="nn">.store</span> <span class="kn">import</span> <span class="n">TCPStore</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">param_utils</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.abort</span><span class="w"> </span><span class="kn">import</span> <span class="n">Abort</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.abort</span><span class="w"> </span><span class="kn">import</span> <span class="n">AbortTorchDistributed</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.attribution</span><span class="w"> </span><span class="kn">import</span> <span class="n">Interruption</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.attribution</span><span class="w"> </span><span class="kn">import</span> <span class="n">InterruptionRecord</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheckError</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">InternalError</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">RestartError</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.finalize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Finalize</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheck</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.initialize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Initialize</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">Logging</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">log_exc</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_process</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorProcess</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorThread</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankShouldRestart</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">reraise_if_unraisable</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.param_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">enforce_subclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.param_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">enforce_type</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.param_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">enforce_value</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.progress_watchdog</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProgressWatchdog</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_assignment</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankAssignment</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_assignment</span><span class="w"> </span><span class="kn">import</span> <span class="n">ShiftRanks</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_filter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankFilter</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">State</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">Status</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">PrefixStore</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">StoreMixin</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">TCPStore</span>
 
 
-<span class="k">class</span> <span class="nc">HealthCheckPassed</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HealthCheckPassed</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
     <span class="k">pass</span>
 
 
-<span class="k">def</span> <span class="nf">spare_fn</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">progress_watchdog</span><span class="p">,</span> <span class="n">progress_watchdog_interval</span><span class="p">):</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">spare_fn</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">progress_watchdog</span><span class="p">,</span> <span class="n">progress_watchdog_interval</span><span class="p">):</span>
     <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
     <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
     <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> starting spare_fn&#39;</span><span class="p">)</span>
@@ -154,7 +154,7 @@
 
 <div class="viewcode-block" id="Wrapper">
 <a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper">[docs]</a>
-<span class="k">class</span> <span class="nc">Wrapper</span><span class="p">:</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Wrapper</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">    Python function wrapper that adds restart capabilities to an existing</span>
 <span class="sd">    Python function implementing distributed PyTorch workload.</span>
@@ -206,7 +206,7 @@
 <span class="sd">        Inactive ranks return :py:obj:`None`.</span>
 <span class="sd">    &#39;&#39;&#39;</span>
 
-    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="o">*</span><span class="p">,</span>
         <span class="n">store_factory</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">StoreMixin</span><span class="p">]</span> <span class="o">=</span> <span class="n">TCPStore</span><span class="p">,</span>
@@ -286,12 +286,12 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process_logfile</span> <span class="o">=</span> <span class="n">monitor_process_logfile</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">enabled</span> <span class="o">=</span> <span class="n">enabled</span>
 
-    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">enabled</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">fn</span>
 
         <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
-        <span class="k">def</span> <span class="nf">wrapped</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">wrapped</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
             <span class="k">with</span> <span class="n">CallWrapper</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="k">as</span> <span class="n">call_wrapper</span><span class="p">:</span>
                 <span class="k">return</span> <span class="n">call_wrapper</span><span class="p">(</span><span class="n">fn</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span>
 
@@ -301,7 +301,7 @@
 
 <div class="viewcode-block" id="CallWrapper">
 <a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper">[docs]</a>
-<span class="k">class</span> <span class="nc">CallWrapper</span><span class="p">:</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">CallWrapper</span><span class="p">:</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">    The :py:class:`CallWrapper` encapsulates the state and execution flow of</span>
 <span class="sd">    the restart capabilities of the :py:class:`Wrapper` for a single invocation</span>
@@ -319,7 +319,7 @@
 <span class="sd">    execution.</span>
 <span class="sd">    &#39;&#39;&#39;</span>
 
-    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">wrapper</span><span class="p">:</span> <span class="n">Wrapper</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">wrapper</span><span class="p">:</span> <span class="n">Wrapper</span><span class="p">):</span>
         <span class="n">monitor_process</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="n">progress_watchdog</span> <span class="o">=</span> <span class="kc">None</span>
 
@@ -383,16 +383,16 @@
             <span class="n">Logging</span><span class="o">.</span><span class="n">deinitialize</span><span class="p">()</span>
             <span class="k">raise</span>
 
-    <span class="k">def</span> <span class="fm">__enter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__enter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">return</span> <span class="bp">self</span>
 
-    <span class="k">def</span> <span class="fm">__exit__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">exc_type</span><span class="p">,</span> <span class="n">exc_value</span><span class="p">,</span> <span class="n">traceback</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__exit__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">exc_type</span><span class="p">,</span> <span class="n">exc_value</span><span class="p">,</span> <span class="n">traceback</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
         <span class="n">Logging</span><span class="o">.</span><span class="n">deinitialize</span><span class="p">()</span>
 
     <span class="nd">@property</span>
-    <span class="k">def</span> <span class="nf">iteration</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">iteration</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">        Returns integer index of the current restart iteration.</span>
 <span class="sd">        &#39;&#39;&#39;</span>
@@ -400,7 +400,7 @@
 
 <div class="viewcode-block" id="CallWrapper.ping">
 <a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper.ping">[docs]</a>
-    <span class="k">def</span> <span class="nf">ping</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">ping</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">        Sends a heartbeat to indicate that the workload is making meaningful</span>
 <span class="sd">        forward progress.</span>
@@ -420,7 +420,7 @@
 <div class="viewcode-block" id="CallWrapper.atomic">
 <a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper.atomic">[docs]</a>
     <span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
-    <span class="k">def</span> <span class="nf">atomic</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">atomic</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
 <span class="sd">        A context manager to wrap a section of the workload that must not be</span>
 <span class="sd">        executed while the termination procedure is in progress.</span>
@@ -442,7 +442,7 @@
 
 
     <span class="nd">@reraise_if_unraisable</span><span class="p">(</span><span class="n">RankShouldRestart</span><span class="p">)</span>
-    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
         <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
         <span class="n">store</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span>
@@ -524,7 +524,7 @@
                                 <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
                                     <span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">health_ex</span><span class="p">,</span> <span class="s1">&#39;health_ex&#39;</span><span class="p">)</span>
                                 <span class="p">)</span>
-                                <span class="k">raise</span> <span class="n">HealthCheckError</span> <span class="kn">from</span> <span class="nn">health_ex</span>
+                                <span class="k">raise</span> <span class="n">HealthCheckError</span> <span class="kn">from</span><span class="w"> </span><span class="nn">health_ex</span>
 
                             <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="n">Status</span><span class="o">.</span><span class="n">ACTIVE</span><span class="p">:</span>
                                 <span class="n">ret</span> <span class="o">=</span> <span class="n">fn</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
@@ -562,14 +562,14 @@
                             <span class="k">except</span> <span class="n">RankShouldRestart</span> <span class="k">as</span> <span class="n">async_ex</span><span class="p">:</span>
                                 <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">async_ex</span><span class="p">,</span> <span class="s1">&#39;async_ex&#39;</span><span class="p">))</span>
                                 <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-                                <span class="k">raise</span> <span class="n">async_ex</span> <span class="kn">from</span> <span class="nn">train_ex</span>
+                                <span class="k">raise</span> <span class="n">async_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">train_ex</span>
                             <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">other_ex</span><span class="p">:</span>
                                 <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span>
                                     <span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">other_ex</span><span class="p">,</span> <span class="s1">&#39;other_ex&#39;</span><span class="p">)</span>
                                 <span class="p">)</span>
-                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span> <span class="nn">other_ex</span>
+                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">other_ex</span>
                             <span class="k">else</span><span class="p">:</span>
-                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span> <span class="nn">train_ex</span>
+                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">train_ex</span>
                         <span class="k">else</span><span class="p">:</span>
                             <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
                     <span class="k">except</span> <span class="n">RankShouldRestart</span> <span class="k">as</span> <span class="n">term_ex</span><span class="p">:</span>
@@ -584,7 +584,7 @@
                             <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
                                 <span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">finalize_ex</span><span class="p">,</span> <span class="s1">&#39;finalize_ex&#39;</span><span class="p">)</span>
                             <span class="p">)</span>
-                            <span class="k">raise</span> <span class="n">finalize_ex</span> <span class="kn">from</span> <span class="nn">term_ex</span>
+                            <span class="k">raise</span> <span class="n">finalize_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
 
                         <span class="k">try</span><span class="p">:</span>
                             <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
@@ -592,15 +592,15 @@
                         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">health_ex</span><span class="p">:</span>
                             <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">health_ex</span><span class="p">,</span> <span class="s1">&#39;health_ex&#39;</span><span class="p">))</span>
                             <span class="k">try</span><span class="p">:</span>
-                                <span class="k">raise</span> <span class="n">health_ex</span> <span class="kn">from</span> <span class="nn">term_ex</span>
+                                <span class="k">raise</span> <span class="n">health_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
                             <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
-                                <span class="k">raise</span> <span class="n">HealthCheckError</span> <span class="kn">from</span> <span class="nn">health_ex</span>
+                                <span class="k">raise</span> <span class="n">HealthCheckError</span> <span class="kn">from</span><span class="w"> </span><span class="nn">health_ex</span>
                         <span class="k">else</span><span class="p">:</span>
-                            <span class="k">raise</span> <span class="n">HealthCheckPassed</span> <span class="kn">from</span> <span class="nn">term_ex</span>
+                            <span class="k">raise</span> <span class="n">HealthCheckPassed</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
 
                     <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">term_ex</span><span class="p">:</span>
                         <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">term_ex</span><span class="p">,</span> <span class="s1">&#39;term_ex&#39;</span><span class="p">))</span>
-                        <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span> <span class="nn">term_ex</span>
+                        <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
                 <span class="k">except</span> <span class="n">HealthCheckPassed</span> <span class="k">as</span> <span class="n">restart_ex</span><span class="p">:</span>
                     <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">restart_ex</span><span class="p">,</span> <span class="s1">&#39;restart_ex&#39;</span><span class="p">))</span>
                     <span class="n">store</span><span class="o">.</span><span class="n">termination_barrier</span><span class="p">(</span>

@@ -7,7 +7,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Basic usage example &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
 
@@ -123,23 +123,23 @@
 <span class="linenos"> 30</span><span class="c1"># can only recover from transient faults that don&#39;t terminate any of the</span>
 <span class="linenos"> 31</span><span class="c1"># training processes</span>
 <span class="linenos"> 32</span>
-<span class="linenos"> 33</span><span class="kn">import</span> <span class="nn">argparse</span>
-<span class="linenos"> 34</span><span class="kn">import</span> <span class="nn">datetime</span>
-<span class="linenos"> 35</span><span class="kn">import</span> <span class="nn">logging</span>
-<span class="linenos"> 36</span><span class="kn">import</span> <span class="nn">os</span>
-<span class="linenos"> 37</span><span class="kn">import</span> <span class="nn">pathlib</span>
-<span class="linenos"> 38</span><span class="kn">import</span> <span class="nn">random</span>
-<span class="linenos"> 39</span><span class="kn">import</span> <span class="nn">time</span>
-<span class="linenos"> 40</span><span class="kn">from</span> <span class="nn">typing</span> <span class="kn">import</span> <span class="n">Optional</span>
+<span class="linenos"> 33</span><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
+<span class="linenos"> 34</span><span class="kn">import</span><span class="w"> </span><span class="nn">datetime</span>
+<span class="linenos"> 35</span><span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="linenos"> 36</span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="linenos"> 37</span><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<span class="linenos"> 38</span><span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
+<span class="linenos"> 39</span><span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="linenos"> 40</span><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Optional</span>
 <span class="linenos"> 41</span>
-<span class="linenos"> 42</span><span class="kn">import</span> <span class="nn">torch</span>
+<span class="linenos"> 42</span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="linenos"> 43</span>
-<span class="linenos"> 44</span><span class="kn">import</span> <span class="nn">nvidia_resiliency_ext.inprocess</span> <span class="k">as</span> <span class="nn">inprocess</span>
+<span class="linenos"> 44</span><span class="kn">import</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.inprocess</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inprocess</span>
 <span class="linenos"> 45</span>
 <span class="linenos"> 46</span><span class="n">raise_timestamp</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="linenos"> 47</span>
 <span class="linenos"> 48</span>
-<span class="linenos"> 49</span><span class="k">def</span> <span class="nf">parse_args</span><span class="p">():</span>
+<span class="linenos"> 49</span><span class="k">def</span><span class="w"> </span><span class="nf">parse_args</span><span class="p">():</span>
 <span class="linenos"> 50</span>    <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">(</span>
 <span class="linenos"> 51</span>        <span class="n">description</span><span class="o">=</span><span class="s1">&#39;Inprocess Restart Basic Example&#39;</span><span class="p">,</span>
 <span class="linenos"> 52</span>        <span class="n">formatter_class</span><span class="o">=</span><span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentDefaultsHelpFormatter</span><span class="p">,</span>
@@ -217,7 +217,7 @@
 <span class="linenos">124</span>    <span class="n">store_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;port&#39;</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s1">&#39;MASTER_PORT&#39;</span><span class="p">,</span> <span class="mi">29500</span><span class="p">))</span> <span class="o">+</span> <span class="mi">2</span><span class="p">},</span>
 <span class="linenos">125</span>    <span class="n">health_check</span><span class="o">=</span><span class="n">inprocess</span><span class="o">.</span><span class="n">health_check</span><span class="o">.</span><span class="n">CudaHealthCheck</span><span class="p">(),</span>
 <span class="linenos">126</span><span class="p">)</span>
-<span class="linenos">127</span><span class="k">def</span> <span class="nf">main</span><span class="p">(</span><span class="n">call_wrapper</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">inprocess</span><span class="o">.</span><span class="n">CallWrapper</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">):</span>
+<span class="linenos">127</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span><span class="n">call_wrapper</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">inprocess</span><span class="o">.</span><span class="n">CallWrapper</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">):</span>
 <span class="linenos">128</span>    <span class="k">global</span> <span class="n">raise_timestamp</span>
 <span class="linenos">129</span>    <span class="k">if</span> <span class="n">raise_timestamp</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
 <span class="linenos">130</span>        <span class="n">restart_latency</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter</span><span class="p">()</span> <span class="o">-</span> <span class="n">raise_timestamp</span>

@@ -6,7 +6,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt &mdash; nvidia-resiliency-ext 0.1 documentation</title>
-      <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../../../_static/copybutton.css?v=76b2166b" />
 
@@ -97,26 +97,26 @@
 <span class="sd">&quot;&quot;&quot;</span>
 
 
-<span class="kn">import</span> <span class="nn">logging</span>
-<span class="kn">import</span> <span class="nn">torch</span>
-<span class="kn">from</span> <span class="nn">..utils</span> <span class="kn">import</span> <span class="n">wrap_for_async</span><span class="p">,</span> <span class="n">preload_tensors</span>
-<span class="kn">from</span> <span class="nn">.core</span> <span class="kn">import</span> <span class="n">AsyncCallsQueue</span><span class="p">,</span> <span class="n">AsyncRequest</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">..utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">wrap_for_async</span><span class="p">,</span> <span class="n">preload_tensors</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncCallsQueue</span><span class="p">,</span> <span class="n">AsyncRequest</span>
 
 <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
 <div class="viewcode-block" id="TorchAsyncCheckpoint">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/torch_ckpt.html#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint">[docs]</a>
-<span class="k">class</span> <span class="nc">TorchAsyncCheckpoint</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TorchAsyncCheckpoint</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
     <span class="n">async_fn</span> <span class="o">=</span> <span class="kc">None</span>
 
-    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">save</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">save</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_async_calls_queue</span> <span class="o">=</span> <span class="n">AsyncCallsQueue</span><span class="p">()</span>
         <span class="n">TorchAsyncCheckpoint</span><span class="o">.</span><span class="n">async_fn</span> <span class="o">=</span> <span class="n">wrap_for_async</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">)</span>
 
 <div class="viewcode-block" id="TorchAsyncCheckpoint.async_save">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/torch_ckpt.html#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.async_save">[docs]</a>
-    <span class="k">def</span> <span class="nf">async_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">async_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Keeps the original interface of `torch.save`</span>
 <span class="sd">        Schedules a `AsyncReuqest` with preloading tensors to CPU with pinned memcpy</span>
@@ -130,7 +130,7 @@
 
 <div class="viewcode-block" id="TorchAsyncCheckpoint.finalize_async_save">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/torch_ckpt.html#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.finalize_async_save">[docs]</a>
-    <span class="k">def</span> <span class="nf">finalize_async_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="p">:</span> <span class="nb">bool</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">finalize_async_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="p">:</span> <span class="nb">bool</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot; Finalizes active async save calls.</span>
 
 <span class="sd">        Args:</span>
