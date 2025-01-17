@@ -24,7 +24,7 @@ exclude = [
 ]
 
 [tool.poetry.build]
-script = "build.py"
+script = "cupti_build.py"
 generate-setup-file = true
 
 [build-system]
@@ -44,7 +44,7 @@ ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
 profile = "black"  # black-compatible
 line_length = 100  # should match black parameters
 py_version = 310  # python 3.10 as a target version
-extend_skip = ["setup.py", "build.py"]
+extend_skip = ["setup.py", "cupti_build.py"]
 
 [tool.black]
 line_length = 100
