@@ -95,7 +95,37 @@
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">API documentation</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="api/straggler.html">Straggler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/straggler.html">Straggler</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.CallableId"><code class="docutils literal notranslate"><span class="pre">CallableId</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.CallableId.obj"><code class="docutils literal notranslate"><span class="pre">CallableId.obj</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.CallableId.name"><code class="docutils literal notranslate"><span class="pre">CallableId.name</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.CallableId.__str__"><code class="docutils literal notranslate"><span class="pre">CallableId.__str__()</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.CustomSection"><code class="docutils literal notranslate"><span class="pre">CustomSection</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector"><code class="docutils literal notranslate"><span class="pre">Detector</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.initialized"><code class="docutils literal notranslate"><span class="pre">Detector.initialized</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.scores_to_compute"><code class="docutils literal notranslate"><span class="pre">Detector.scores_to_compute</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.gather_on_rank0"><code class="docutils literal notranslate"><span class="pre">Detector.gather_on_rank0</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.profiling_interval"><code class="docutils literal notranslate"><span class="pre">Detector.profiling_interval</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.report_time_interval"><code class="docutils literal notranslate"><span class="pre">Detector.report_time_interval</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.custom_sections"><code class="docutils literal notranslate"><span class="pre">Detector.custom_sections</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.cupti_manager"><code class="docutils literal notranslate"><span class="pre">Detector.cupti_manager</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.reporter"><code class="docutils literal notranslate"><span class="pre">Detector.reporter</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.report_interval_tracker"><code class="docutils literal notranslate"><span class="pre">Detector.report_interval_tracker</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.original_callables"><code class="docutils literal notranslate"><span class="pre">Detector.original_callables</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.detection_section"><code class="docutils literal notranslate"><span class="pre">Detector.detection_section()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.generate_report"><code class="docutils literal notranslate"><span class="pre">Detector.generate_report()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.generate_report_if_interval_elapsed"><code class="docutils literal notranslate"><span class="pre">Detector.generate_report_if_interval_elapsed()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.initialize"><code class="docutils literal notranslate"><span class="pre">Detector.initialize()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.is_interval_elapsed"><code class="docutils literal notranslate"><span class="pre">Detector.is_interval_elapsed()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.restore_original_callables"><code class="docutils literal notranslate"><span class="pre">Detector.restore_original_callables()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.shutdown"><code class="docutils literal notranslate"><span class="pre">Detector.shutdown()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.wrap_callables"><code class="docutils literal notranslate"><span class="pre">Detector.wrap_callables()</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="api/reporting.html">Reporting</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="api/reporting.html#nvidia_resiliency_ext.straggler.reporting.Report"><code class="docutils literal notranslate"><span class="pre">Report</span></code></a><ul>
 <li class="toctree-l3"><a class="reference internal" href="api/reporting.html#nvidia_resiliency_ext.straggler.reporting.Report.identify_stragglers"><code class="docutils literal notranslate"><span class="pre">Report.identify_stragglers()</span></code></a></li>
@@ -112,7 +142,15 @@
 <li class="toctree-l2"><a class="reference internal" href="api/statistics.html#nvidia_resiliency_ext.straggler.statistics.Statistic"><code class="docutils literal notranslate"><span class="pre">Statistic</span></code></a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="api/callback.html">Callback</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/callback.html">Callback</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback"><code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.on_train_batch_end"><code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback.on_train_batch_end()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.setup"><code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback.setup()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.teardown"><code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback.teardown()</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
 </ul>
 </div>
 </section>

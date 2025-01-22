@@ -54,7 +54,12 @@
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">Straggler Detection</a><ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Straggler</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Straggler</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.straggler.straggler.CallableId"><code class="docutils literal notranslate"><span class="pre">CallableId</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.straggler.straggler.CustomSection"><code class="docutils literal notranslate"><span class="pre">CustomSection</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.straggler.straggler.Detector"><code class="docutils literal notranslate"><span class="pre">Detector</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="reporting.html">Reporting</a></li>
 <li class="toctree-l3"><a class="reference internal" href="statistics.html">Statistics</a></li>
 <li class="toctree-l3"><a class="reference internal" href="callback.html">Callback</a></li>
@@ -91,8 +96,294 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="straggler">
-<h1>Straggler<a class="headerlink" href="#straggler" title="Link to this heading"></a></h1>
+  <section id="module-nvidia_resiliency_ext.straggler.straggler">
+<span id="straggler"></span><h1>Straggler<a class="headerlink" href="#module-nvidia_resiliency_ext.straggler.straggler" title="Link to this heading"></a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.CallableId">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.straggler.straggler.</span></span><span class="sig-name descname"><span class="pre">CallableId</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">arg_filter_fn</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">extra_args_fn</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignored_args</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#CallableId"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.CallableId" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Represents a unique identifier for a callable object.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>obj</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><em>object</em></a>)</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>arg_filter_fn</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/inspect.html#inspect.BoundArguments" title="(in Python v3.13)"><em>BoundArguments</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>] </em><em>| </em><em>None</em>)</p></li>
+<li><p><strong>extra_args_fn</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/inspect.html#inspect.BoundArguments" title="(in Python v3.13)"><em>BoundArguments</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)"><em>dict</em></a><em>] </em><em>| </em><em>None</em>)</p></li>
+<li><p><strong>ignored_args</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>...</em><em>] </em><em>| </em><em>None</em>)</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.CallableId.obj">
+<span class="sig-name descname"><span class="pre">obj</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.CallableId.obj" title="Link to this definition"></a></dt>
+<dd><p>The object that contains the callable</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)">object</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.CallableId.name">
+<span class="sig-name descname"><span class="pre">name</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.CallableId.name" title="Link to this definition"></a></dt>
+<dd><p>The name of the callable</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.CallableId.__str__">
+<span class="sig-name descname"><span class="pre">__str__</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#CallableId.__str__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.CallableId.__str__" title="Link to this definition"></a></dt>
+<dd><p>Returns a string representation of the CallableId,
+which includes the name of the object and the name of the callable</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.CustomSection">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.straggler.straggler.</span></span><span class="sig-name descname"><span class="pre">CustomSection</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">location</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_entry_cnt=0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_elapseds_len=8192</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cpu_elapsed_times=&lt;factory&gt;</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#CustomSection"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.CustomSection" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p><cite>CustomSection</cite> represents user defined section of code
+(<cite>Detector.detection_section</cite>).</p>
+<p>Each section has CPU execution time computed.</p>
+<p>If CUDA profiling is enabled for the section, kernels launched in
+the section will be profiled with CUPTI. All kernel profiling
+results are collected by the CUPTI extension.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>location</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>total_entry_cnt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>max_elapseds_len</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>cpu_elapsed_times</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Deque" title="(in Python v3.13)"><em>Deque</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>]</em>)</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.straggler.straggler.</span></span><span class="sig-name descname"><span class="pre">Detector</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Main class for straggler detection. The Detector class uses class
+methods and is not intended to be instantiated.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.initialized">
+<span class="sig-name descname"><span class="pre">initialized</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.initialized" title="Link to this definition"></a></dt>
+<dd><p>Class-level attribute to track initialization.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.scores_to_compute">
+<span class="sig-name descname"><span class="pre">scores_to_compute</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.scores_to_compute" title="Link to this definition"></a></dt>
+<dd><p>List of scores to compute, can include ‘relative_perf_scores’, ‘individual_perf_scores’.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)">list</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.gather_on_rank0">
+<span class="sig-name descname"><span class="pre">gather_on_rank0</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.gather_on_rank0" title="Link to this definition"></a></dt>
+<dd><p>If True, when .generate_report is called report on rank 0 includes results for all ranks, reports on other ranks are empty
+If False, .generate_report is called report on any rank contains just the results for that particular rank</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.profiling_interval">
+<span class="sig-name descname"><span class="pre">profiling_interval</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.profiling_interval" title="Link to this definition"></a></dt>
+<dd><p>Profile each <cite>profiling_interval</cite>-th section entry. Defaults to 1.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)">int</a>, optional</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.report_time_interval">
+<span class="sig-name descname"><span class="pre">report_time_interval</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.report_time_interval" title="Link to this definition"></a></dt>
+<dd><p>Interval in seconds for generate_report_if_interval_elapsed. Defaults to 60.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)">float</a>, optional</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.custom_sections">
+<span class="sig-name descname"><span class="pre">custom_sections</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.custom_sections" title="Link to this definition"></a></dt>
+<dd><p>Dict for recording CustomSection objects.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)">dict</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.cupti_manager">
+<span class="sig-name descname"><span class="pre">cupti_manager</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.cupti_manager" title="Link to this definition"></a></dt>
+<dd><p>CuptiManager is used for usage and managing of CUPTI methods, timing statistics calculation.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>CuptiManager</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.reporter">
+<span class="sig-name descname"><span class="pre">reporter</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.reporter" title="Link to this definition"></a></dt>
+<dd><p>ReportGenerator is used with result parsing and performance scoring algorithms.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="reporting.html#nvidia_resiliency_ext.straggler.reporting.ReportGenerator" title="nvidia_resiliency_ext.straggler.reporting.ReportGenerator">ReportGenerator</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.report_interval_tracker">
+<span class="sig-name descname"><span class="pre">report_interval_tracker</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.report_interval_tracker" title="Link to this definition"></a></dt>
+<dd><p>ReportIntervalTracker is used to synchronize report_time_interval between ranks.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>ReportIntervalTracker</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.original_callables">
+<span class="sig-name descname"><span class="pre">original_callables</span></span><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.original_callables" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)">dict</a>, optional</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.detection_section">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">detection_section</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">profile_cuda</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.detection_section"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.detection_section" title="Link to this definition"></a></dt>
+<dd><p>Context manager for monitoring user defined sections of code.</p>
+<dl class="simple">
+<dt>NOTE: <cite>profiling_interval</cite> <cite>Detector</cite> constructor parameter determines how frequently</dt><dd><p>sections are monitored. If can be &gt; 1 to reduce the profiling overhead.</p>
+</dd>
+</dl>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>optional</em>) – Section name used for the reporting. Must be unique per user code.
+Defaults to None, in which case the <cite>detection_section</cite> entry location (<cite>with …</cite>)
+(file path and line) is used as a section name.</p></li>
+<li><p><strong>profile_cuda</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – If true, CUDA kernels launched under this section will
+be captured and used to compute rank “GPU performance score”. Defaults to True.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.generate_report">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">generate_report</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.generate_report"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.generate_report" title="Link to this definition"></a></dt>
+<dd><p>Calls ReportGenerator.generate_report method, resets recorded
+results.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.generate_report_if_interval_elapsed">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">generate_report_if_interval_elapsed</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.generate_report_if_interval_elapsed"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.generate_report_if_interval_elapsed" title="Link to this definition"></a></dt>
+<dd><p>Calls ReportGenerator.generate_report method, if reporting interval elapsed.
+Supposed to be called during each training iteration on every rank.
+Reporting interval elapsed is synchronized beetween ranks through ReportIntervalTracker.
+Returns None if interval has not elapsed. Othewise <cite>generate_report</cite> return value is returned.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.initialize">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">initialize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">scores_to_compute</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'all'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gather_on_rank0</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">profiling_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">report_time_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">60</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.initialize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.initialize" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>scores_to_compute</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>|</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>optional</em>) – List of scores to compute, can include ‘relative_perf_scores’, ‘individual_perf_scores’. or string “all” meaning: “all scores should be computed”.</p></li>
+<li><p><strong>gather_on_rank0</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – If True, when .generate_report is called report on rank 0 includes results for all ranks, reports on other ranks are empty
+If False, .generate_report is called report on any rank contains just the results for that particular rank</p></li>
+<li><p><strong>profiling_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – Profile each <cite>profiling_interval</cite>-th section entry. Defaults to 1.</p></li>
+<li><p><strong>report_time_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em>, </em><em>optional</em>) – Interval in seconds for generate_report_if_interval_elapsed. Defaults to 60.</p></li>
+<li><p><strong>node_name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>) – (str, optional): User-friendly name of the current node to be used in reports. If <cite>None</cite> <cite>socket.gethostname</cite> will be used.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.is_interval_elapsed">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">is_interval_elapsed</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.is_interval_elapsed"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.is_interval_elapsed" title="Link to this definition"></a></dt>
+<dd><p>Returns boolean flag that is True if interval elapsed during previous
+<cite>generate_report_if_interval_elapsed</cite> call. False otherwise.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.restore_original_callables">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">restore_original_callables</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.restore_original_callables"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.restore_original_callables" title="Link to this definition"></a></dt>
+<dd><p>Restore callable objects after cls._build_wrapper method was called
+for wrapping profiled callables.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.shutdown">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">shutdown</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.shutdown"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.shutdown" title="Link to this definition"></a></dt>
+<dd><p>Shutdown Detector.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.wrap_callables">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">wrap_callables</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">callable_ids</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">profile_cuda</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.wrap_callables"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.wrap_callables" title="Link to this definition"></a></dt>
+<dd><p>Each time fn (fn = getattr(callable_id.obj, callable_id.name)) is
+called, it will do the following:
+with straggler.Detector.detection_section(str(callable_id)):</p>
+<blockquote>
+<div><p>fn(<a href="#id1"><span class="problematic" id="id2">*</span></a>args,**kwargs)</p>
+</div></blockquote>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>callable_ids</strong> (<em>List</em><em>[</em><a class="reference internal" href="#nvidia_resiliency_ext.straggler.straggler.CallableId" title="nvidia_resiliency_ext.straggler.straggler.CallableId"><em>CallableId</em></a><em>]</em>) – list of callables to wrap with detection context</p></li>
+<li><p><strong>profile_cuda</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – If true, CUDA kernels launched under this section will be captured and used to compute rank “GPU performance score”. Defaults to True.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
 </section>
 
 

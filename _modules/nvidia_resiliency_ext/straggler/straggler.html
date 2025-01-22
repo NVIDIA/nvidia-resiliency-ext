@@ -1,0 +1,543 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.straggler.straggler &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.straggler.straggler</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.straggler.straggler</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">collections</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">socket</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">contextmanager</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Deque</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Sequence</span><span class="p">,</span> <span class="n">Union</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.cupti</span><span class="w"> </span><span class="kn">import</span> <span class="n">CuptiManager</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.interval_tracker</span><span class="w"> </span><span class="kn">import</span> <span class="n">ReportIntervalTracker</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.reporting</span><span class="w"> </span><span class="kn">import</span> <span class="n">ReportGenerator</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.statistics</span><span class="w"> </span><span class="kn">import</span> <span class="n">Statistic</span>
+
+
+<div class="viewcode-block" id="CallableId">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.CallableId">[docs]</a>
+<span class="nd">@dataclasses</span><span class="o">.</span><span class="n">dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">CallableId</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Represents a unique identifier for a callable object.</span>
+
+<span class="sd">    Attributes:</span>
+<span class="sd">        obj (object): The object that contains the callable</span>
+<span class="sd">        name (str): The name of the callable</span>
+
+<span class="sd">    Methods:</span>
+<span class="sd">        __str__(): Returns a string representation of the CallableId,</span>
+<span class="sd">            which includes the name of the object and the name of the callable</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">obj</span><span class="p">:</span> <span class="nb">object</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">arg_filter_fn</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">inspect</span><span class="o">.</span><span class="n">BoundArguments</span><span class="p">],</span> <span class="nb">bool</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">extra_args_fn</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="n">inspect</span><span class="o">.</span><span class="n">BoundArguments</span><span class="p">],</span> <span class="nb">dict</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">ignored_args</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="o">...</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
+
+<div class="viewcode-block" id="CallableId.__str__">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.CallableId.__str__">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">inspect</span><span class="o">.</span><span class="n">ismodule</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="p">):</span>
+            <span class="n">obj_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="o">.</span><span class="vm">__name__</span>
+        <span class="k">elif</span> <span class="n">inspect</span><span class="o">.</span><span class="n">isclass</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="p">):</span>
+            <span class="n">obj_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="o">.</span><span class="vm">__module__</span><span class="si">}</span><span class="s1">.</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s1">&#39;</span>
+        <span class="k">elif</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="p">,</span> <span class="s1">&#39;__class__&#39;</span><span class="p">):</span>
+            <span class="n">obj_name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="o">.</span><span class="vm">__class__</span><span class="p">,</span> <span class="s1">&#39;__name__&#39;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">obj_name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="p">,</span> <span class="s1">&#39;__name__&#39;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">obj</span><span class="p">)</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">obj_name</span><span class="si">}</span><span class="s1">.</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s1">&#39;</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="CustomSection">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.CustomSection">[docs]</a>
+<span class="nd">@dataclasses</span><span class="o">.</span><span class="n">dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">CustomSection</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;`CustomSection` represents user defined section of code</span>
+<span class="sd">    (`Detector.detection_section`).</span>
+
+<span class="sd">    Each section has CPU execution time computed.</span>
+
+<span class="sd">    If CUDA profiling is enabled for the section, kernels launched in</span>
+<span class="sd">    the section will be profiled with CUPTI. All kernel profiling</span>
+<span class="sd">    results are collected by the CUPTI extension.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">location</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">total_entry_cnt</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">max_elapseds_len</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">8</span> <span class="o">*</span> <span class="mi">1024</span>
+    <span class="n">cpu_elapsed_times</span><span class="p">:</span> <span class="n">Deque</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">field</span><span class="p">(</span>
+        <span class="n">default_factory</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">collections</span><span class="o">.</span><span class="n">deque</span><span class="p">(</span><span class="n">maxlen</span><span class="o">=</span><span class="n">CustomSection</span><span class="o">.</span><span class="n">max_elapseds_len</span><span class="p">)</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="Detector">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">Detector</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Main class for straggler detection. The Detector class uses class</span>
+<span class="sd">    methods and is not intended to be instantiated.</span>
+
+<span class="sd">    Attributes:</span>
+<span class="sd">        initialized (bool): Class-level attribute to track initialization.</span>
+<span class="sd">        scores_to_compute (list): List of scores to compute, can include &#39;relative_perf_scores&#39;, &#39;individual_perf_scores&#39;.</span>
+<span class="sd">        gather_on_rank0 (bool): If True, when .generate_report is called report on rank 0 includes results for all ranks, reports on other ranks are empty</span>
+<span class="sd">            If False, .generate_report is called report on any rank contains just the results for that particular rank</span>
+<span class="sd">        profiling_interval (int, optional): Profile each `profiling_interval`-th section entry. Defaults to 1.</span>
+<span class="sd">        report_time_interval(float, optional): Interval in seconds for generate_report_if_interval_elapsed. Defaults to 60.</span>
+<span class="sd">        custom_sections (dict): Dict for recording CustomSection objects.</span>
+<span class="sd">        cupti_manager (CuptiManager): CuptiManager is used for usage and managing of CUPTI methods, timing statistics calculation.</span>
+<span class="sd">        reporter (ReportGenerator): ReportGenerator is used with result parsing and performance scoring algorithms.</span>
+<span class="sd">        report_interval_tracker (ReportIntervalTracker): ReportIntervalTracker is used to synchronize report_time_interval between ranks.</span>
+<span class="sd">        original_callables (dict, optional) Dict for restoring callable objects after wrapping them for profiling.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">initialized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="n">scores_to_compute</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">gather_on_rank0</span><span class="p">:</span> <span class="nb">bool</span>
+    <span class="n">profiling_interval</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">report_time_interval</span><span class="p">:</span> <span class="nb">float</span>
+    <span class="n">custom_sections</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">CustomSection</span><span class="p">]</span>
+    <span class="n">cupti_manager</span><span class="p">:</span> <span class="n">CuptiManager</span>
+    <span class="n">reporter</span><span class="p">:</span> <span class="n">ReportGenerator</span>
+    <span class="n">report_interval_tracker</span><span class="p">:</span> <span class="n">ReportIntervalTracker</span>
+    <span class="n">original_callables</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="n">CallableId</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__new__</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;class </span><span class="si">{</span><span class="bp">cls</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2"> should not be instantiated&quot;</span>
+        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Detector.initialize">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.initialize">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">initialize</span><span class="p">(</span>
+        <span class="bp">cls</span><span class="p">,</span>
+        <span class="n">scores_to_compute</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">Sequence</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;all&quot;</span><span class="p">,</span>
+        <span class="n">gather_on_rank0</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">profiling_interval</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
+        <span class="n">report_time_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mi">60</span><span class="p">,</span>
+        <span class="n">node_name</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Args:</span>
+<span class="sd">            scores_to_compute (list|str, optional): List of scores to compute, can include &#39;relative_perf_scores&#39;, &#39;individual_perf_scores&#39;. or string &quot;all&quot; meaning: &quot;all scores should be computed&quot;.</span>
+<span class="sd">            gather_on_rank0 (bool, optional): If True, when .generate_report is called report on rank 0 includes results for all ranks, reports on other ranks are empty</span>
+<span class="sd">                                    If False, .generate_report is called report on any rank contains just the results for that particular rank</span>
+<span class="sd">            profiling_interval (int, optional): Profile each `profiling_interval`-th section entry. Defaults to 1.</span>
+<span class="sd">            report_time_interval (float, optional): Interval in seconds for generate_report_if_interval_elapsed. Defaults to 60.</span>
+<span class="sd">            node_name: (str, optional): User-friendly name of the current node to be used in reports. If `None` `socket.gethostname` will be used.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="ow">not</span> <span class="bp">cls</span><span class="o">.</span><span class="n">initialized</span>
+
+        <span class="bp">cls</span><span class="o">.</span><span class="n">scores_to_compute</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="p">[</span><span class="s1">&#39;relative_perf_scores&#39;</span><span class="p">,</span> <span class="s1">&#39;individual_perf_scores&#39;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="nb">str</span><span class="p">(</span><span class="n">scores_to_compute</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;all&quot;</span>
+            <span class="k">else</span> <span class="n">scores_to_compute</span>
+        <span class="p">)</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">gather_on_rank0</span> <span class="o">=</span> <span class="n">gather_on_rank0</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">profiling_interval</span> <span class="o">=</span> <span class="n">profiling_interval</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">custom_sections</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span> <span class="o">=</span> <span class="n">CuptiManager</span><span class="p">(</span><span class="n">statsMaxLenPerKernel</span><span class="o">=</span><span class="mi">8</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">)</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">reporter</span> <span class="o">=</span> <span class="n">ReportGenerator</span><span class="p">(</span>
+            <span class="n">scores_to_compute</span><span class="o">=</span><span class="bp">cls</span><span class="o">.</span><span class="n">scores_to_compute</span><span class="p">,</span>
+            <span class="n">gather_on_rank0</span><span class="o">=</span><span class="n">gather_on_rank0</span><span class="p">,</span>
+            <span class="n">node_name</span><span class="o">=</span><span class="p">(</span><span class="n">node_name</span> <span class="k">if</span> <span class="n">node_name</span> <span class="k">else</span> <span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span><span class="p">()),</span>
+        <span class="p">)</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">report_interval_tracker</span> <span class="o">=</span> <span class="n">ReportIntervalTracker</span><span class="p">(</span>
+            <span class="n">time_interval</span><span class="o">=</span><span class="n">report_time_interval</span><span class="p">,</span>
+            <span class="n">profiling_interval</span><span class="o">=</span><span class="n">profiling_interval</span><span class="p">,</span>
+        <span class="p">)</span>
+
+        <span class="bp">cls</span><span class="o">.</span><span class="n">initialized</span> <span class="o">=</span> <span class="kc">True</span>
+
+        <span class="bp">cls</span><span class="o">.</span><span class="n">original_callables</span> <span class="o">=</span> <span class="p">{}</span></div>
+
+
+<div class="viewcode-block" id="Detector.shutdown">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.shutdown">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">shutdown</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Shutdown Detector.&quot;&quot;&quot;</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">restore_original_callables</span><span class="p">()</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">initialized</span> <span class="o">=</span> <span class="kc">False</span></div>
+
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_get_section_summaries</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Compute statistics related to each user defined section.</span>
+
+<span class="sd">        Currently, only CPU elapsed times are collected and summarized for the sections.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Section name to statistics mapping</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">section_summaries</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">section</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">custom_sections</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="k">assert</span> <span class="n">key</span> <span class="o">==</span> <span class="n">section</span><span class="o">.</span><span class="n">name</span>
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">section</span><span class="o">.</span><span class="n">cpu_elapsed_times</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="k">continue</span>  <span class="c1"># TODO log a warning</span>
+            <span class="n">cpu_elapseds</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="n">section</span><span class="o">.</span><span class="n">cpu_elapsed_times</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+            <span class="n">cpu_stats</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">MIN</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="n">cpu_elapseds</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(),</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">MAX</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">cpu_elapseds</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(),</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">MED</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">cpu_elapseds</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(),</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">AVG</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">cpu_elapseds</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(),</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">STD</span><span class="p">:</span> <span class="p">(</span>
+                    <span class="n">torch</span><span class="o">.</span><span class="n">std</span><span class="p">(</span><span class="n">cpu_elapseds</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">()</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">cpu_elapseds</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s2">&quot;nan&quot;</span><span class="p">)</span>
+                <span class="p">),</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">NUM</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">cpu_elapseds</span><span class="p">),</span>
+            <span class="p">}</span>
+            <span class="n">section_summaries</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">cpu_stats</span>
+        <span class="k">return</span> <span class="n">section_summaries</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_get_kernel_summaries</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Get statistics related to captured CUDA kernels.</span>
+
+<span class="sd">        These are actually computed by the CUPTI extension.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Composite kernel name (with grid and block size included) to the statistics mapping</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">kernel_summaries</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">prof_results</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span><span class="o">.</span><span class="n">get_results</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">kernel_stats</span> <span class="ow">in</span> <span class="n">prof_results</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">stats</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">MIN</span><span class="p">:</span> <span class="n">kernel_stats</span><span class="o">.</span><span class="n">min</span><span class="p">,</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">MAX</span><span class="p">:</span> <span class="n">kernel_stats</span><span class="o">.</span><span class="n">max</span><span class="p">,</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">MED</span><span class="p">:</span> <span class="n">kernel_stats</span><span class="o">.</span><span class="n">median</span><span class="p">,</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">AVG</span><span class="p">:</span> <span class="n">kernel_stats</span><span class="o">.</span><span class="n">avg</span><span class="p">,</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">STD</span><span class="p">:</span> <span class="n">kernel_stats</span><span class="o">.</span><span class="n">stddev</span><span class="p">,</span>
+                <span class="n">Statistic</span><span class="o">.</span><span class="n">NUM</span><span class="p">:</span> <span class="n">kernel_stats</span><span class="o">.</span><span class="n">num_calls</span><span class="p">,</span>
+            <span class="p">}</span>
+            <span class="n">kernel_summaries</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">stats</span>
+        <span class="k">return</span> <span class="n">kernel_summaries</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_reset_sections_elapseds</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">section</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">custom_sections</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
+            <span class="n">section</span><span class="o">.</span><span class="n">cpu_elapsed_times</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+
+<div class="viewcode-block" id="Detector.generate_report">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.generate_report">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">generate_report</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Calls ReportGenerator.generate_report method, resets recorded</span>
+<span class="sd">        results.&quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="bp">cls</span><span class="o">.</span><span class="n">initialized</span>
+
+        <span class="c1"># ensure all CUDA kernels are completed</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+
+        <span class="n">section_summaries</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_get_section_summaries</span><span class="p">()</span>
+        <span class="n">kernel_summaries</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_get_kernel_summaries</span><span class="p">()</span>
+
+        <span class="n">report</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">reporter</span><span class="o">.</span><span class="n">generate_report</span><span class="p">(</span><span class="n">section_summaries</span><span class="p">,</span> <span class="n">kernel_summaries</span><span class="p">)</span>
+
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_reset_sections_elapseds</span><span class="p">()</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span><span class="o">.</span><span class="n">reset_results</span><span class="p">()</span>
+
+        <span class="k">return</span> <span class="n">report</span></div>
+
+
+<div class="viewcode-block" id="Detector.generate_report_if_interval_elapsed">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.generate_report_if_interval_elapsed">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">generate_report_if_interval_elapsed</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Calls ReportGenerator.generate_report method, if reporting interval elapsed.</span>
+<span class="sd">        Supposed to be called during each training iteration on every rank.</span>
+<span class="sd">        Reporting interval elapsed is synchronized beetween ranks through ReportIntervalTracker.</span>
+<span class="sd">        Returns None if interval has not elapsed. Othewise `generate_report` return value is returned.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="bp">cls</span><span class="o">.</span><span class="n">initialized</span>
+
+        <span class="bp">cls</span><span class="o">.</span><span class="n">report_interval_tracker</span><span class="o">.</span><span class="n">iter_increase</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">report_interval_tracker</span><span class="o">.</span><span class="n">is_interval_elapsed</span><span class="p">():</span>
+            <span class="n">report</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">generate_report</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">report</span> <span class="o">=</span> <span class="kc">None</span>
+
+        <span class="k">return</span> <span class="n">report</span></div>
+
+
+<div class="viewcode-block" id="Detector.is_interval_elapsed">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.is_interval_elapsed">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_interval_elapsed</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Returns boolean flag that is True if interval elapsed during previous</span>
+<span class="sd">        `generate_report_if_interval_elapsed` call. False otherwise.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">report_interval_tracker</span><span class="o">.</span><span class="n">is_interval_elapsed</span><span class="p">()</span></div>
+
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_get_this_context_block_location</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="c1"># back to &quot;@contextmanager&quot; decorated func, then back to the &quot;__enter__&quot;, finally</span>
+        <span class="c1"># we get the frame in the user code. TODO: verify this works with various Python versions</span>
+        <span class="n">caller_frame</span> <span class="o">=</span> <span class="n">inspect</span><span class="o">.</span><span class="n">currentframe</span><span class="p">()</span><span class="o">.</span><span class="n">f_back</span><span class="o">.</span><span class="n">f_back</span><span class="o">.</span><span class="n">f_back</span>  <span class="c1"># type: ignore</span>
+        <span class="n">file_name</span> <span class="o">=</span> <span class="n">caller_frame</span><span class="o">.</span><span class="n">f_code</span><span class="o">.</span><span class="n">co_filename</span>  <span class="c1"># type: ignore</span>
+        <span class="n">line_number</span> <span class="o">=</span> <span class="n">caller_frame</span><span class="o">.</span><span class="n">f_lineno</span>  <span class="c1"># type: ignore</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">file_name</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">line_number</span><span class="si">}</span><span class="s2">&quot;</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_ensure_section_name_is_valid</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">location</span><span class="p">):</span>
+        <span class="c1"># Enforce that section names are unique in the user code</span>
+        <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">custom_sections</span><span class="p">:</span>
+            <span class="n">section</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">custom_sections</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+            <span class="k">if</span> <span class="n">location</span> <span class="o">!=</span> <span class="n">section</span><span class="o">.</span><span class="n">location</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Section name &#39;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">&#39; is already used at: </span><span class="si">{</span><span class="n">section</span><span class="o">.</span><span class="n">location</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Detector.detection_section">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.detection_section">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="nd">@contextmanager</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">detection_section</span><span class="p">(</span>
+        <span class="bp">cls</span><span class="p">,</span>
+        <span class="n">name</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">profile_cuda</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Context manager for monitoring user defined sections of code.</span>
+
+<span class="sd">        NOTE: `profiling_interval` `Detector` constructor parameter determines how frequently</span>
+<span class="sd">            sections are monitored. If can be &gt; 1 to reduce the profiling overhead.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            name (str, optional): Section name used for the reporting. Must be unique per user code.</span>
+<span class="sd">                Defaults to None, in which case the `detection_section` entry location (`with ...`)</span>
+<span class="sd">                (file path and line) is used as a section name.</span>
+<span class="sd">            profile_cuda (bool, optional): If true, CUDA kernels launched under this section will</span>
+<span class="sd">                be captured and used to compute rank &quot;GPU performance score&quot;. Defaults to True.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">cls</span><span class="o">.</span><span class="n">initialized</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Detector is not initialized.&quot;</span><span class="p">)</span>
+
+        <span class="n">section_location</span> <span class="o">=</span> <span class="n">Detector</span><span class="o">.</span><span class="n">_get_this_context_block_location</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">name</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">name</span> <span class="o">=</span> <span class="n">section_location</span>
+
+        <span class="c1"># TODO: uncomment after Cython issue is resolved and</span>
+        <span class="c1"># - test_unique_name_is_enforced,</span>
+        <span class="c1"># - test_default_names_are_unique</span>
+        <span class="c1"># test cases passes.</span>
+        <span class="c1"># cls._ensure_section_name_is_valid(name, section_location)</span>
+
+        <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">custom_sections</span><span class="p">:</span>
+            <span class="n">section</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">custom_sections</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">section</span> <span class="o">=</span> <span class="n">CustomSection</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="n">name</span><span class="p">,</span> <span class="n">location</span><span class="o">=</span><span class="n">section_location</span><span class="p">)</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">custom_sections</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">section</span>
+
+        <span class="n">profile_this_entry</span> <span class="o">=</span> <span class="p">(</span><span class="n">section</span><span class="o">.</span><span class="n">total_entry_cnt</span> <span class="o">%</span> <span class="bp">cls</span><span class="o">.</span><span class="n">profiling_interval</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span>
+        <span class="n">section</span><span class="o">.</span><span class="n">total_entry_cnt</span> <span class="o">+=</span> <span class="mi">1</span>
+
+        <span class="k">if</span> <span class="n">profile_this_entry</span><span class="p">:</span>
+
+            <span class="k">if</span> <span class="n">profile_cuda</span><span class="p">:</span>
+                <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span><span class="o">.</span><span class="n">start_profiling</span><span class="p">()</span>
+            <span class="n">cpu_time_start</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter_ns</span><span class="p">()</span>
+
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">yield</span>
+            <span class="k">except</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">profile_cuda</span><span class="p">:</span>
+                    <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span><span class="o">.</span><span class="n">stop_profiling</span><span class="p">()</span>
+                <span class="k">raise</span>
+            <span class="n">cpu_time_stop</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter_ns</span><span class="p">()</span>
+            <span class="n">cpu_elapsed_time</span> <span class="o">=</span> <span class="p">(</span><span class="n">cpu_time_stop</span> <span class="o">-</span> <span class="n">cpu_time_start</span><span class="p">)</span> <span class="o">*</span> <span class="mf">1e-6</span>
+            <span class="n">section</span><span class="o">.</span><span class="n">cpu_elapsed_times</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cpu_elapsed_time</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">profile_cuda</span><span class="p">:</span>
+                <span class="bp">cls</span><span class="o">.</span><span class="n">cupti_manager</span><span class="o">.</span><span class="n">stop_profiling</span><span class="p">()</span>
+                <span class="c1"># CUPTI resuls are collected by the C++ extension</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">yield</span>  <span class="c1"># if no need to profile this entry</span></div>
+
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_build_wrapper</span><span class="p">(</span>
+        <span class="bp">cls</span><span class="p">,</span>
+        <span class="n">fn</span><span class="p">,</span>
+        <span class="n">callable_id</span><span class="p">,</span>
+        <span class="n">profile_cuda</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="p">):</span>
+        <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+            <span class="k">with</span> <span class="bp">cls</span><span class="o">.</span><span class="n">detection_section</span><span class="p">(</span>
+                <span class="n">name</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">callable_id</span><span class="p">),</span>
+                <span class="n">profile_cuda</span><span class="o">=</span><span class="n">profile_cuda</span><span class="p">,</span>
+            <span class="p">):</span>
+                <span class="k">return</span> <span class="n">fn</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">wrapper</span>
+
+<div class="viewcode-block" id="Detector.wrap_callables">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.wrap_callables">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">wrap_callables</span><span class="p">(</span>
+        <span class="bp">cls</span><span class="p">,</span>
+        <span class="n">callable_ids</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">CallableId</span><span class="p">],</span>
+        <span class="n">profile_cuda</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Each time fn (fn = getattr(callable_id.obj, callable_id.name)) is</span>
+<span class="sd">        called, it will do the following:</span>
+<span class="sd">        with straggler.Detector.detection_section(str(callable_id)):</span>
+<span class="sd">            fn(*args,**kwargs)</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            callable_ids (List[CallableId]) : list of callables to wrap with detection context</span>
+<span class="sd">            profile_cuda (bool, optional): If true, CUDA kernels launched under this section will be captured and used to compute rank &quot;GPU performance score&quot;. Defaults to True.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">original_callables</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">callable_id</span> <span class="ow">in</span> <span class="n">callable_ids</span><span class="p">:</span>
+            <span class="n">original</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">callable_id</span><span class="o">.</span><span class="n">obj</span><span class="p">,</span> <span class="n">callable_id</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">original_callables</span><span class="p">[</span><span class="n">callable_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">original</span>
+            <span class="n">wrapped</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_build_wrapper</span><span class="p">(</span>
+                <span class="n">original</span><span class="p">,</span>
+                <span class="n">callable_id</span><span class="p">,</span>
+                <span class="n">profile_cuda</span><span class="o">=</span><span class="n">profile_cuda</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="nb">setattr</span><span class="p">(</span><span class="n">callable_id</span><span class="o">.</span><span class="n">obj</span><span class="p">,</span> <span class="n">callable_id</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">wrapped</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Detector.restore_original_callables">
+<a class="viewcode-back" href="../../../straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.restore_original_callables">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">restore_original_callables</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Restore callable objects after cls._build_wrapper method was called</span>
+<span class="sd">        for wrapping profiled callables.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">original_callables</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">callable_id</span><span class="p">,</span> <span class="n">original</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">original_callables</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="nb">setattr</span><span class="p">(</span><span class="n">callable_id</span><span class="o">.</span><span class="n">obj</span><span class="p">,</span> <span class="n">callable_id</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">original</span><span class="p">)</span></div>
+</div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
