@@ -15,8 +15,6 @@
 
 import threading
 
-from . import cupti_module  # type: ignore
-
 
 class CuptiManager:
     """Provide thread safe access to the CUPTI extension.
@@ -32,6 +30,9 @@ class CuptiManager:
             statsMaxLenPerKernel (int, optional): Max number of timing entries per kernel.
                 (when this limit is rached, oldest timing entries are discarded). Defaults to 4096.
         """
+        # lazy load to avoid circular import
+        from . import cupti_module  # type: ignore
+
         self.cupti_ext = cupti_module.CuptiProfiler(
             bufferSize=bufferSize,
             numBuffers=numBuffers,
