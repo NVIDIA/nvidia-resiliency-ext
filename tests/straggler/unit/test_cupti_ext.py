@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import pytest
 import torch
 import torch.nn as nn
@@ -22,14 +23,16 @@ from nvidia_resiliency_ext.straggler import cupti_module
 
 def test_basic_kernel_tracking():
     cupti_ext = cupti_module.CuptiProfiler()
-    a = torch.randn(1000, 1000, device="cuda")
-    b = torch.randn(1000, 1000, device="cuda")
-    torch.cuda.synchronize()
+    a = torch.randn(1000, 1000, device=get_current_device())
+    b = torch.randn(1000, 1000, device=get_current_device())
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     cupti_ext.initialize()
     # start profiling
     cupti_ext.start()
     torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # should capture the matmul,
     # NOTE: `get_stats`` invokes CUPTI buffers flushing
     stats = cupti_ext.get_stats()
@@ -50,23 +53,27 @@ def test_basic_kernel_tracking():
 
 def test_tracking_start_stop():
     cupti_ext = cupti_module.CuptiProfiler()
-    a = torch.randn(1000, 1000, device="cuda")
-    b = torch.randn(1000, 1000, device="cuda")
-    torch.cuda.synchronize()
+    a = torch.randn(1000, 1000, device=get_current_device())
+    b = torch.randn(1000, 1000, device=get_current_device())
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     cupti_ext.initialize()
     # start profiling
     cupti_ext.start()
     torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # CUPTI should capture the matmul
     cupti_ext.stop()
     # should not be captured as the profiler is stopped
     torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # restart profiling
     cupti_ext.start()
     torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # CUPTI should capture second matmul
     cupti_ext.stop()
     # there should be 2 matmuls captured,
@@ -79,14 +86,16 @@ def test_tracking_start_stop():
 
 def test_reset():
     cupti_ext = cupti_module.CuptiProfiler()
-    a = torch.randn(1000, 1000, device="cuda")
-    b = torch.randn(1000, 1000, device="cuda")
-    torch.cuda.synchronize()
+    a = torch.randn(1000, 1000, device=get_current_device())
+    b = torch.randn(1000, 1000, device=get_current_device())
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     cupti_ext.initialize()
     # start profiling
     cupti_ext.start()
     torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # CUPTI should capture the matmul
     cupti_ext.stop()
     # explicit results reset
@@ -99,15 +108,17 @@ def test_reset():
 def test_max_stats_per_kernel():
     MAX_STATS_LEN_PER_KERNEL = 7
     cupti_ext = cupti_module.CuptiProfiler(statsMaxLenPerKernel=MAX_STATS_LEN_PER_KERNEL)
-    a = torch.randn(1000, 1000, device="cuda")
-    b = torch.randn(1000, 1000, device="cuda")
-    torch.cuda.synchronize()
+    a = torch.randn(1000, 1000, device=get_current_device())
+    b = torch.randn(1000, 1000, device=get_current_device())
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     cupti_ext.initialize()
     # start profiling
     cupti_ext.start()
     for _ in range(3 * MAX_STATS_LEN_PER_KERNEL):
         _ = torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # CUPTI should capture the matmul
     cupti_ext.stop()
     # explicit results reset
@@ -133,16 +144,17 @@ def test_with_cuda_graph():
         nn.ReLU(),
         nn.Linear(256, 64, bias=False),
         nn.Sigmoid(),
-    ).to("cuda", torch.float32)
+    ).to(get_current_device(), torch.float32)
 
-    x = torch.randn(256, 256, device="cuda")
+    x = torch.randn(256, 256, device=get_current_device())
 
     # capture fwd pass with graph
     g = torch.cuda.CUDAGraph()
     with torch.cuda.graph(g):
         _ = model(x)
 
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
     cupti_ext = cupti_module.CuptiProfiler()
 
@@ -152,14 +164,16 @@ def test_with_cuda_graph():
 
     # replay graph
     g.replay()
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
     stats_with_graph = cupti_ext.get_stats()
     cupti_ext.reset()
 
     # run fwd pass without a graph
     _ = model(x)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
     stats_no_graph = cupti_ext.get_stats()
     cupti_ext.reset()

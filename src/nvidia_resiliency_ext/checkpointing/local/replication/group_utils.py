@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import Dict, List, Optional, Tuple, TypeVar, Union
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import torch
 import torch.distributed as dist
 
@@ -441,7 +442,7 @@ class GroupWrapper:
         hollow_ckpt.init_tensors()
         for ten in hollow_ckpt.tensors:
             if ten.device.type == 'cpu':
-                cuda_tensor = torch.empty_like(ten, device='cuda')
+                cuda_tensor = torch.empty_like(ten, device=get_current_device())
                 dist.recv(cuda_tensor, src, group=self.group)
                 ten.copy_(cuda_tensor.cpu())
             else:

@@ -12,7 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from nvidia_resiliency_ext.device_utils import get_current_device
 import torch
+import pytest
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 
@@ -43,7 +45,7 @@ class TestAsyncSave:
             ckpt_impl.finalize_async_save(blocking=True)
 
             # load and compare
-            device = torch.device(f"cuda:{torch.cuda.current_device()}")
+            device = get_current_device()
             loaded_async_state_dict = torch.load(async_ckpt_dir/'test', map_location=device)
             loaded_sync_state_dict = torch.load(sync_ckpt_dir/'test', map_location=device)
             for k in loaded_sync_state_dict.keys():

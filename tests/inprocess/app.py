@@ -30,6 +30,7 @@ import warnings
 from datetime import timedelta
 from typing import Optional
 
+from nvidia_resiliency_ext.device_utils import get_current_device, get_distributed_init_method
 import torch
 import torch.nn as nn
 from packaging import version
@@ -385,10 +386,10 @@ def train(
 
     if args.backend == 'gloo':
         device = torch.device('cpu')
-    elif args.backend == 'nccl':
-        device = torch.device('cuda')
-        local_rank = int(os.environ['LOCAL_RANK'])
-        torch.cuda.set_device(local_rank)
+    elif args.backend == 'nccl' or args.backend == 'xla':
+        device = get_current_device()
+    else:
+        raise RuntimeError(f"Unsupported backend: {args.backend}")
 
     if args.distributed:
         if base_store is not None:
@@ -402,8 +403,14 @@ def train(
                 timeout=datetime.timedelta(seconds=args.process_group_timeout),
             )
         else:
+            init_method = None
+            if args.backend == 'nccl' or args.backend == 'xla':
+                init_method=get_distributed_init_method(),
             torch.distributed.init_process_group(
                 backend=args.backend,
+                rank=int(os.environ['RANK']),
+                world_size=int(os.environ['WORLD_SIZE']),
+                init_method=init_method,
                 timeout=datetime.timedelta(seconds=args.process_group_timeout),
             )
 

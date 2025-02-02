@@ -106,7 +106,8 @@ class DistributedAsyncCaller:
         if async_fn is None:
             return  # nothing to do
         start_sync = time()
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         end_sync = time()
         logger.debug(
             f"rank: {torch.distributed.get_rank()}, takes {end_sync - start_sync} to finish D2H "

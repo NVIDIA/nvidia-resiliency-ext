@@ -28,6 +28,10 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
+from nvidia_resiliency_ext.device_utils import (
+    get_local_device_count, 
+    get_xla_model
+)
 import torch
 from torch.distributed.argparse_util import check_env, env
 
@@ -1448,10 +1452,13 @@ def determine_local_world_size(nproc_per_node: str):
             num_proc = os.cpu_count()
             device_type = "cpu"
         elif nproc_per_node == "gpu":
-            if not torch.cuda.is_available():
-                raise ValueError("Cuda is not available.") from e
+            assert torch.cuda.is_available(), "Cuda is not available."
             device_type = "gpu"
-            num_proc = torch.cuda.device_count()
+            num_proc = get_local_device_count()
+        elif nproc_per_node == "xla":
+            assert get_xla_model(), "XLA is not available"
+            device_type = "xla"
+            num_proc = get_local_device_count()
         else:
             raise ValueError(f"Unsupported nproc_per_node value: {nproc_per_node}") from e
 

@@ -18,6 +18,7 @@ import sys
 import time
 from typing import Optional
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import torch
 
 from ._utils import is_module_available
@@ -222,7 +223,7 @@ class StragglerDetectionCallback(Callback):
 
     def _gather_flag_from_rank0(self, flag):
         flag = torch.tensor(
-            [1.0 if flag else 0], device=torch.cuda.current_device(), dtype=torch.float32
+            [1.0 if flag else 0], device=get_current_device(), dtype=torch.float32
         )
         torch.distributed.broadcast(flag, 0)
         flag = bool(flag.item() > 0)

@@ -286,8 +286,9 @@ class BaseCheckpointManager(ABC):
 
         if is_async:
             # we must wait for D2H to complete before returning control to the training
-            with debug_time("ckpt_D2H_synchronize", logger):
-                torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                with debug_time("ckpt_D2H_synchronize", logger):
+                    torch.cuda.synchronize()
             return AsyncRequest(save_fn, save_args, [finalize_fn])
 
         assert not is_async

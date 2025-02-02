@@ -71,11 +71,13 @@ class TestAbort(unittest.TestCase):
                 torch.distributed.distributed_c10d._get_default_group()
             )
             torch.distributed.all_reduce(t1, group=default_group)
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             new_group = torch.distributed.new_group([0])
             if rank == 0:
                 torch.distributed.all_reduce(t2, group=new_group)
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
             for i in range(3):
                 if rank == 0:
@@ -87,7 +89,8 @@ class TestAbort(unittest.TestCase):
                 if i == 2 and rank == 0:
                     abort(None)
                     break
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
         exitcodes = self.launch(run)
         self.assertTrue(all(ec == 0 for ec in exitcodes), exitcodes)

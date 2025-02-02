@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Union
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import torch
 
 from ._utils import is_module_available
@@ -443,7 +444,7 @@ class FaultToleranceCallback(Callback):
         rank = torch.distributed.get_rank()
         rand_rank = rng.randint(0, torch.distributed.get_world_size() - 1)
         rank_to_fail = fault_desc.rank_to_fail if fault_desc.rank_to_fail is not None else rand_rank
-        rank_to_fail = torch.tensor([rank_to_fail], device=torch.cuda.current_device())
+        rank_to_fail = torch.tensor([rank_to_fail], device=get_current_device())
         torch.distributed.broadcast(rank_to_fail, 0)
         rank_to_fail = int(rank_to_fail.item())
 

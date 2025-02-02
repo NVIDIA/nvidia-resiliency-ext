@@ -19,6 +19,7 @@ import random
 import sys
 from unittest.mock import patch
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import pytest
 import torch
 import torch.nn as nn
@@ -96,8 +97,7 @@ def test_reporting_options(test_scenario, monkeypatch):
     else:
         rank = 0
 
-    torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = get_current_device()
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]

@@ -26,6 +26,7 @@ for state dict management in distributed training scenarios.
 
 from typing import Union
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import torch
 
 from .base_state_dict import TensorAwareStateDict
@@ -182,6 +183,6 @@ class BasicTensorAwareStateDict(TensorAwareStateDict):
         """
         assert not self.is_hollow
         dict_list_map_inplace(
-            lambda x: x.to("cuda", non_blocking=non_blocking) if isinstance(x, torch.Tensor) else x,
+            lambda x: x.to(device=get_current_device(), non_blocking=non_blocking) if isinstance(x, torch.Tensor) else x,
             self.state_dict,
         )

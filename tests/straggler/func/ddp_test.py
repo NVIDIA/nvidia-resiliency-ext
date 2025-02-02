@@ -19,6 +19,7 @@ import random
 import time
 from typing import Dict
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import torch
 import torch.nn as nn
 
@@ -158,7 +159,7 @@ def print_stragglers(stragglers):
 
 
 def _all_reduce_bool_flag(flag):
-    flag = torch.tensor([flag], dtype=torch.float, device='cuda')
+    flag = torch.tensor([flag], dtype=torch.float, device=get_current_device())
     torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MAX)
     return bool(flag.item() > 0)
 

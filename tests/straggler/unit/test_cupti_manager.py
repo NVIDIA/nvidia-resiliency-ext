@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import pytest
 import torch
 
@@ -21,9 +22,10 @@ from nvidia_resiliency_ext.straggler.cupti import CuptiManager
 
 def test_cupti_manager_start_stop():
     cupti_mgr = CuptiManager()
-    a = torch.randn(1000, 1000, device="cuda")
-    b = torch.randn(1000, 1000, device="cuda")
-    torch.cuda.synchronize()
+    a = torch.randn(1000, 1000, device=get_current_device())
+    b = torch.randn(1000, 1000, device=get_current_device())
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     cupti_mgr.initialize()
     with pytest.raises(Exception):
         cupti_mgr.stop_profiling()
@@ -34,12 +36,14 @@ def test_cupti_manager_start_stop():
     cupti_mgr.stop_profiling()
     # do the matmul, that should be captured
     torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # stop again, profiling should be stopped
     cupti_mgr.stop_profiling()
     # do the matmul, should not be captured
     torch.matmul(a, b)
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # ensure that just one matmul was captured
     stats = cupti_mgr.get_results()
     cupti_mgr.shutdown()
@@ -51,10 +55,11 @@ def test_cupti_manager_start_stop():
 def test_cupti_manager_captures_all_started_kernels():
     cupti_mgr = CuptiManager()
     cupti_mgr.initialize()
-    a = torch.randn(1000, 1000, device="cuda")
-    b = torch.randn(1000, 1000, device="cuda")
+    a = torch.randn(1000, 1000, device=get_current_device())
+    b = torch.randn(1000, 1000, device=get_current_device())
     # do not not capture randn
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     # some CUDA activity that should NOT be captured, as profiling is not started
     for _ in range(100):
         _ = torch.matmul(a, b)
@@ -73,7 +78,8 @@ def test_cupti_manager_captures_all_started_kernels():
     for _ in range(100):
         _ = torch.matmul(a, b)
     # ensure that just matmul OP was captured
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     stats = cupti_mgr.get_results()
     cupti_mgr.shutdown()
     assert len(stats) == 1

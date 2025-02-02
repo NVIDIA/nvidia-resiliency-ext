@@ -18,6 +18,7 @@ import os
 import random
 import sys
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import pytest
 import torch
 import torch.nn as nn
@@ -82,8 +83,7 @@ def test_report_elapsed_wrap_callables(test_scenario):
     else:
         rank = 0
 
-    torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = get_current_device()
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]
@@ -160,8 +160,7 @@ def test_report_elapsed_det_section(test_scenario):
     else:
         rank = 0
 
-    torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = get_current_device()
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]
@@ -217,8 +216,7 @@ def test_report_min_interval_is_profiling_interval():
     args = parse_args()
     world_size = int(os.getenv('WORLD_SIZE', '1'))
 
-    torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = get_current_device()
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]

@@ -41,7 +41,8 @@ class TorchAsyncCheckpoint(object):
         """
 
         preloaded_sd = preload_tensors(state_dict)
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         async_request = AsyncRequest(TorchAsyncCheckpoint.async_fn, (preloaded_sd, *args), [], kwargs)
         self._async_calls_queue.schedule_async_request(async_request)
 

@@ -20,6 +20,7 @@ import socket
 import sys
 import tempfile
 
+from nvidia_resiliency_ext.device_utils import get_distributed_init_method
 import torch
 
 
@@ -60,7 +61,8 @@ def setup_distributed_worker_tcp_store(
     assert not port_open, (host, port)
     barrier.wait()
 
-    torch.distributed.init_process_group(backend, init_method="env://")
+    torch.distributed.init_process_group(backend, 
+                                         init_method=get_distributed_init_method())
 
 
 def setup_distributed_worker_file_store(

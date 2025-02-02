@@ -15,6 +15,7 @@
 
 import inspect
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import pytest
 import torch
 
@@ -82,9 +83,10 @@ def test_with_block_location_is_used(_straggler_init_shutdown):
 def test_periodic_capture(_straggler_shutdown_at_exit):
     # check that fraction of section entries is monitored with profiling_interval>1
     straggler.Detector.initialize(profiling_interval=2)
-    a = torch.randn(1000, 1000, device="cuda")
-    b = torch.randn(1000, 1000, device="cuda")
-    torch.cuda.synchronize()
+    a = torch.randn(1000, 1000, device=get_current_device())
+    b = torch.randn(1000, 1000, device=get_current_device())
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     for _ in range(4):
         with straggler.Detector.detection_section(name="one"):
             _ = torch.matmul(a, b)
@@ -103,9 +105,10 @@ def test_periodic_capture(_straggler_shutdown_at_exit):
 def test_cuda_profiling_disabled(_straggler_shutdown_at_exit):
     # check that CUDA kernels are not captured when profile_cuda=False
     straggler.Detector.initialize(profiling_interval=1)
-    a = torch.randn(1000, 1000, device="cuda")
-    b = torch.randn(1000, 1000, device="cuda")
-    torch.cuda.synchronize()
+    a = torch.randn(1000, 1000, device=get_current_device())
+    b = torch.randn(1000, 1000, device=get_current_device())
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     for _ in range(4):
         with straggler.Detector.detection_section(name="one", profile_cuda=False):
             _ = torch.matmul(a, b)

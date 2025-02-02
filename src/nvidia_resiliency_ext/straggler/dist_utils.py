@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import torch
 
 
@@ -71,8 +72,8 @@ def get_device_for_backend(group):
     """Find the device that should be used with given distributed group backend."""
     dist_device = torch.device("cpu")
     if torch.distributed.is_available() and torch.distributed.is_initialized():
-        if torch.distributed.get_backend(group) == torch.distributed.Backend.NCCL:
-            dist_device = torch.device("cuda")
+        if torch.distributed.get_backend(group) != torch.distributed.Backend.GLOO:
+            dist_device = get_current_device()
     return dist_device
 
 

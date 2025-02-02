@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import torch
 
 
@@ -21,10 +22,10 @@ def get_default_device_from_type(device_type: str) -> torch.device:
     """Returns the default PyTorch device based on the specified device type.
 
     This function maps a device type string to the corresponding PyTorch device.
-    It supports both "cpu" and "cuda" types, raising an error for unsupported types.
+    It supports both "cpu", "cuda" and "xla" types
 
     Args:
-        device_type (str): The type of device to retrieve. Should be either "cpu" or "cuda".
+        device_type (str): The type of device to retrieve. Should be either "cpu", "cuda", or "xla".
 
     Returns:
         torch.device: The default device corresponding to the provided device type.
@@ -34,8 +35,8 @@ def get_default_device_from_type(device_type: str) -> torch.device:
     """
     if device_type == "cpu":
         return torch.device("cpu")
-    elif device_type == "cuda":
-        return torch.device(f"cuda:{torch.cuda.current_device()}")
+    elif device_type == "cuda" or device_type == "xla":
+        return get_current_device()
     else:
         raise ValueError(f"Device type {device_type} unsupported!")
 

@@ -17,6 +17,7 @@ import os
 import sys
 from pathlib import Path
 
+from nvidia_resiliency_ext.device_utils import get_current_device
 import pytest
 import torch
 import torch.distributed as dist
@@ -35,7 +36,7 @@ from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager impor
 
 class SimpleTensorAwareStateDict(TensorAwareStateDict):
     def __init__(self, iteration):
-        self._tensors = [torch.empty((1000, 1000), device='cuda').random_() for _ in range(100)]
+        self._tensors = [torch.empty((1000, 1000), device=get_current_device()).random_() for _ in range(100)]
         self.iteration = iteration
 
     def pop_tensors(self):
@@ -63,7 +64,7 @@ class SimpleTensorAwareStateDict(TensorAwareStateDict):
 
     def restore_tensor_device(self, non_blocking=False):
         for i, ten in enumerate(self._tensors):
-            self._tensors[i] = ten.to("cuda")
+            self._tensors[i] = ten.to(device=get_current_device())
 
     def to_state_dict(self):
         raise NotImplementedError

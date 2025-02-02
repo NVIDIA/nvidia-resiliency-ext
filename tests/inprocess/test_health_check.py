@@ -52,7 +52,8 @@ class TestCudaHealthCheck(unittest.TestCase):
         def run():
             check = inprocess.health_check.CudaHealthCheck()
             check(None, None)
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
         exitcode, _ = self.launch(run)
         self.assertEqual(exitcode, 0)
