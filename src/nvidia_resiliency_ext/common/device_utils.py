@@ -92,3 +92,5 @@ def get_default_gloo_group() -> torch.distributed.ProcessGroup:
         return __default_gloo_group
     except NameError:
         __default_gloo_group = torch.distributed.new_group(backend="gloo")
+
+    return __default_gloo_group
