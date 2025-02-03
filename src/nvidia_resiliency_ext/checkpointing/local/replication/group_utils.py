@@ -21,7 +21,12 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import Dict, List, Optional, Tuple, TypeVar, Union
 
-from nvidia_resiliency_ext.common.device_utils import get_current_device
+from nvidia_resiliency_ext.common.device_utils import (
+    get_current_device,
+    get_default_gloo_group, 
+    get_xla_model
+)
+
 import torch
 import torch.distributed as dist
 
@@ -33,6 +38,8 @@ from .utils import debug_time, debug_msg
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
+
+xm = get_xla_model()
 
 @dataclass(frozen=True)
 class ExchangePlanEntry:
@@ -333,7 +340,8 @@ class GroupWrapper:
             List[T]: A list of gathered objects from all ranks.
         """
         result: List[Optional[T]] = [None] * self.world_size
-        dist.all_gather_object(result, my_obj, group=self.group)
+        group = self.group if xm is None else get_default_gloo_group()
+        dist.all_gather_object(result, my_obj, group=group)
         return typing.cast(List[T], result)
 
     def broadcast(self, *args, **kwargs):
