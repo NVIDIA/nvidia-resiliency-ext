@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from itertools import islice
 from typing import Dict, List, Optional, Tuple, TypeVar, Union
 
-from nvidia_resiliency_ext.device_utils import get_current_device
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 import torch.distributed as dist
 

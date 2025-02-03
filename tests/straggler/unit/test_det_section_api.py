@@ -15,7 +15,7 @@
 
 import inspect
 
-from nvidia_resiliency_ext.device_utils import get_current_device
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import pytest
 import torch
 

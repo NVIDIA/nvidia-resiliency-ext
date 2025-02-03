@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
-from nvidia_resiliency_ext.device_utils import (
+from nvidia_resiliency_ext.common.device_utils import (
     get_local_device_count, 
     get_xla_model
 )

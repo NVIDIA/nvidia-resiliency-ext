@@ -15,7 +15,7 @@
 
 import os
 
-from nvidia_resiliency_ext.device_utils import (
+from nvidia_resiliency_ext.common.device_utils import (
     get_current_device, 
     get_distributed_backend, 
     get_distributed_init_method

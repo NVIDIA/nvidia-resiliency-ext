@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nvidia_resiliency_ext.device_utils import get_current_device
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import pytest
 import torch
 

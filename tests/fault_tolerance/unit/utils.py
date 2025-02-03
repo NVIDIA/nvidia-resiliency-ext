@@ -20,7 +20,7 @@ import socket
 import sys
 import tempfile
 
-from nvidia_resiliency_ext.device_utils import get_distributed_init_method
+from nvidia_resiliency_ext.common.device_utils import get_distributed_init_method
 import torch
 
 

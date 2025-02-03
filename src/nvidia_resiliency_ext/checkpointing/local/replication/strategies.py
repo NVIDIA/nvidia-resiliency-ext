@@ -18,7 +18,7 @@ import random
 from abc import ABC, abstractmethod
 from typing import List, Mapping, Sequence, Tuple, TypeVar, Generic, Optional
 
-from nvidia_resiliency_ext.device_utils import get_local_device_count
+from nvidia_resiliency_ext.common.device_utils import get_local_device_count
 import torch
 
 from ..base_state_dict import TensorAwareStateDict
@@ -190,7 +190,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
     @classmethod
     @debug_time('CliqueReplicationStrategy.from_replication_params', logger)
     def from_replication_params(
-        cls, replication_jump: int = get_local_device_count(), replication_factor: int = 2
+        cls, replication_jump: int = 0, replication_factor: int = 2
     ) -> 'CliqueReplicationStrategy':
         """Instantiates process groups necessary for checkpoint replication.
 
@@ -225,6 +225,9 @@ class CliqueReplicationStrategy(ReplicationStrategy):
             replication_factor (int, optional): `F` in the formula above. Denotes the number of
                 ranks storing replicas of a given rank's data.
         """
+        if replication_jump == 0:
+            replication_jump = get_local_device_count()
+
         logger.debug(f'Initializing {cls.__name__}')
         repl_process_groups_ranks: List[List[int]] = parse_group_sequence(
             replication_jump=replication_jump,
@@ -320,9 +323,12 @@ class LazyCliqueReplicationStrategy(LazyReplicationStrategyBuilder[CliqueReplica
             ranks storing replicas of a given rank's data.
     """
     def __init__(
-        self, replication_jump: int = get_local_device_count(), replication_factor: int = 2
+        self, replication_jump: int = 0, replication_factor: int = 2
     ):
         super().__init__()
+        if replication_jump == 0:
+            replication_jump = get_local_device_count()
+
         self.replication_jump = replication_jump
         self.replication_factor = replication_factor
 
