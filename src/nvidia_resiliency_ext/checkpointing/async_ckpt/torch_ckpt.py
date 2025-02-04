@@ -20,18 +20,24 @@ an additional method to synchronize async saving requests
 
 
 import logging
+from typing import Optional
+from nvidia_resiliency_ext.common.device_utils import get_xla_model
 import torch
 from ..utils import wrap_for_async, preload_tensors
 from .core import AsyncCallsQueue, AsyncRequest
 
 logger = logging.getLogger(__name__)
 
+xm = get_xla_model()
+
 class TorchAsyncCheckpoint(object):
     async_fn = None
 
-    def __init__(self):
+    def __init__(self, group:Optional[torch.distributed.ProcessGroup]=None):
+        self.group = group
+        assert xm is None or torch.distributed.backend(group=self.group) == "gloo"
         self.save = torch.save
-        self._async_calls_queue = AsyncCallsQueue()
+        self._async_calls_queue = AsyncCallsQueue(group=self.group)
         TorchAsyncCheckpoint.async_fn = wrap_for_async(torch.save)
 
     def async_save(self, state_dict, *args, **kwargs):
@@ -43,7 +49,7 @@ class TorchAsyncCheckpoint(object):
         preloaded_sd = preload_tensors(state_dict)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        async_request = AsyncRequest(TorchAsyncCheckpoint.async_fn, (preloaded_sd, *args), [], kwargs)
+        async_request = AsyncRequest(TorchAsyncCheckpoint.async_fn, (preloaded_sd, *args), [], kwargs, group=self.group)
         self._async_calls_queue.schedule_async_request(async_request)
 
     def finalize_async_save(self, blocking: bool=False, no_dist=True):

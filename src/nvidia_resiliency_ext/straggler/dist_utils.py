@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 
@@ -77,13 +78,13 @@ def get_device_for_backend(group):
     return dist_device
 
 
-def all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, group=None, async_op=False):
+def all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, group:Optional[torch.distributed.ProcessGroup]=None, async_op:bool=False):
     """All reduce or no-op if the world size is 1."""
     if get_world_size(group) > 1:
         torch.distributed.all_reduce(tensor=tensor, op=op, group=group, async_op=async_op)
 
 
-def gather_on_rank0(tensor, group=None):
+def gather_on_rank0(tensor, group:Optional[torch.distributed.ProcessGroup]=None):
     """Gather tensors on rank0,
     returns a list of gathered tensors existing on the same device as the input tensor.
     """
@@ -105,7 +106,7 @@ def gather_on_rank0(tensor, group=None):
     return gather_list
 
 
-def is_all_true(flag: bool, group=None) -> bool:
+def is_all_true(flag: bool, group:Optional[torch.distributed.ProcessGroup]=None) -> bool:
     """Check if a boolean flag is true on all processes in the group."""
     ret = flag
     if get_world_size(group) > 1:

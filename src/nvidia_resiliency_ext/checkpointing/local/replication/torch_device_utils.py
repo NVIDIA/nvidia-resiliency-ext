@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+from typing import Optional
 from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 
@@ -56,7 +57,7 @@ class TensorPlaceholder:
         self.hollow_tensor = torch.empty_like(tensor, device="meta")
         self.orig_device_type = tensor.device.type
 
-    def empty_like(self, device=None):
+    def empty_like(self, device:Optional[torch.device]=None):
         """Creates an empty tensor with the same shape as the hollow tensor.
 
         Args:
@@ -71,7 +72,7 @@ class TensorPlaceholder:
         return torch.empty_like(self.hollow_tensor, device=device)
 
     @property
-    def device(self):
+    def device(self) -> torch.device:
         """Returns the default device based on the original device type.
 
         Returns:

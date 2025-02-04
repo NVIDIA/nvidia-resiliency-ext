@@ -22,6 +22,7 @@ import os
 import threading
 from typing import Optional
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 
 from . import exception
@@ -81,10 +82,7 @@ class CudaHealthCheck(HealthCheck):
     ) -> (State, Optional[Exception]):
         log = logging.getLogger(__name__)
         if torch.cuda.is_available() and torch.cuda.is_initialized():
-            if (local_rank := os.getenv('LOCAL_RANK', None)) is not None:
-                device = torch.device(int(local_rank))
-            else:
-                device = torch.device(torch.cuda.current_device())
+            device = get_current_device()
 
             # sync waits for completion of all issued CUDA kernels, this could
             # take very long if CPU app code ran far ahead of CUDA code, but

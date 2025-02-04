@@ -1,5 +1,5 @@
 import os
-from typing import Union
+from typing import Optional, Union
 import torch
 
 try:
@@ -77,8 +77,8 @@ def get_distributed_backend(backend=None) -> str:
     return backend
 
 
-def get_distributed_init_method() -> str:
-    if xm is not None:
+def get_distributed_init_method(backend: Optional[str]=None) -> str:
+    if xm is not None and (backend is None or backend == "xla"):
         init_method = 'xla://'
     else:
         init_method =  "env://"

@@ -30,13 +30,20 @@ import warnings
 from datetime import timedelta
 from typing import Optional
 
-from nvidia_resiliency_ext.common.device_utils import get_current_device, get_distributed_init_method
+from nvidia_resiliency_ext.common.device_utils import (
+    get_current_device, 
+    get_distributed_init_method, 
+    get_xla_model
+)
+
 import torch
 import torch.nn as nn
 from packaging import version
 
 import nvidia_resiliency_ext.inprocess as inprocess
 import nvidia_resiliency_ext.inprocess.tools as tools
+
+xm = get_xla_model()
 
 os.environ['MASTER_ADDR'] = 'localhost'
 os.environ['MASTER_PORT'] = '29500'
@@ -159,7 +166,7 @@ class Mode(enum.Enum):
     TRAIN = enum.auto()
 
 
-def maybe_trigger_fault(rank, world_size, args):
+def maybe_trigger_fault(rank, world_size, args, group:Optional[torch.distributed.ProcessGroup]=None):
     log = logging.getLogger()
     num_ranks_to_trigger = min(
         random.randint(args.min_faults, args.max_faults),
@@ -179,7 +186,7 @@ def maybe_trigger_fault(rank, world_size, args):
     ):
         all_ranks_to_trigger = [None] * world_size
         torch.distributed.all_gather_object(
-            all_ranks_to_trigger, ranks_to_trigger
+            all_ranks_to_trigger, ranks_to_trigger, group=group
         )
 
         for other_ranks_to_trigger in all_ranks_to_trigger:
@@ -300,7 +307,7 @@ def training_main():
         multi_tenant=True,
         wait_for_workers=True,
         use_libuv=True,
-    )
+    ) if torch.cuda.is_available() else None
 
     wrapped = inprocess.Wrapper(
         store_kwargs={
@@ -390,6 +397,7 @@ def train(
         device = get_current_device()
     else:
         raise RuntimeError(f"Unsupported backend: {args.backend}")
+    assert torch.cuda.is_available() or (args.backend == "xla" or args.backend == "gloo")
 
     if args.distributed:
         if base_store is not None:
@@ -403,9 +411,7 @@ def train(
                 timeout=datetime.timedelta(seconds=args.process_group_timeout),
             )
         else:
-            init_method = None
-            if args.backend == 'nccl' or args.backend == 'xla':
-                init_method=get_distributed_init_method(),
+            init_method = get_distributed_init_method(args.backend),
             torch.distributed.init_process_group(
                 backend=args.backend,
                 rank=int(os.environ['RANK']),
@@ -415,13 +421,13 @@ def train(
             )
 
         tensor = torch.ones(args.size, dtype=torch.int64, device=device)
-        torch.distributed.all_reduce(tensor)
+        torch.distributed.all_reduce(tensor, group=torch.distributed.WORLD)
         assert (tensor == world_size).all()
         if device.type == 'cuda':
             torch.cuda.synchronize()
 
         for _ in range(args.all_reduce):
-            torch.distributed.all_reduce(tensor)
+            torch.distributed.all_reduce(tensor, group=torch.distributed.WORLD)
 
     if call_wrapper is not None:
         call_wrapper.ping()
@@ -446,7 +452,7 @@ def train(
 
     if args.distributed:
         for _ in range(args.all_reduce):
-            torch.distributed.all_reduce(tensor)
+            torch.distributed.all_reduce(tensor, group=torch.distributed.WORLD)
 
     if world_size == args.keep_alive:
         logging.critical(f'{rank=} world_size == keep_alive, returning')

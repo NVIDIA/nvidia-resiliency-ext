@@ -14,8 +14,9 @@
 # limitations under the License.
 
 import time
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 import torch.distributed as dist
 
@@ -47,7 +48,8 @@ class TimeoutsCalc:
     If needed, `start_time` can be reset to the current time with `.reset_start_time`.
     """
 
-    def __init__(self, start_time=None, safety_factor=5.0):
+    def __init__(self, start_time=None, safety_factor=5.0, group:Optional[dist.ProcessGroup]=None):
+        self.group = group
         self.start_time = time.monotonic() if start_time is None else start_time
         self.prev_hb_time = None
         self.count = 0
@@ -61,13 +63,11 @@ class TimeoutsCalc:
     @property
     def _device(self):
         device = None
-        backend = dist.get_backend()
-        if backend == dist.Backend.NCCL:
-            device = torch.device('cuda')
-        elif backend == dist.Backend.GLOO:
+        backend = dist.get_backend(group=self.group)
+        if backend == dist.Backend.GLOO:
             device = torch.device('cpu')
         else:
-            raise RuntimeError('Unsupported distributed backend')
+            device = get_current_device()
         return device
 
     def synchronize_all(self):
@@ -81,7 +81,7 @@ class TimeoutsCalc:
             dtype=torch.float32,
             device=self._device,
         )
-        dist.all_reduce(as_tensor, op=dist.ReduceOp.MAX)
+        dist.all_reduce(as_tensor, op=dist.ReduceOp.MAX, group=self.group)
         self.initial_max_time = float(as_tensor[0].item())
         self.subsequent_max_time = float(as_tensor[1].item())
 

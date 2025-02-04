@@ -14,6 +14,7 @@
 # Since send_object_list and recv_object_list are only available from 2.4.0 onwards.
 # File can be removed once 2.4.0 becomes minimal supported version.
 
+from typing import Optional
 import torch
 from torch.distributed.distributed_c10d import (
     _get_pg_default_device,
@@ -32,7 +33,7 @@ def call_with_only_valid_kwargs(fn, **kwargs):
     return fn(**{k: v for k, v in kwargs.items() if k in fn.__code__.co_varnames})
 
 
-def object_to_tensor(obj, current_device=None, group=None):
+def object_to_tensor(obj, current_device:Optional[torch.device]=None, group: Optional[torch.distributed.ProcessGroup]=None):
     """Converts an object to a tensor for PyTorch 2.3."""
     if current_device is None:
         current_device = _get_pg_default_device(group)
@@ -45,14 +46,14 @@ def object_to_tensor(obj, current_device=None, group=None):
     )
 
 
-def tensor_to_object(tensor, tensor_size, group=None):
+def tensor_to_object(tensor, tensor_size, group:Optional[torch.distributed.ProcessGroup]=None):
     """Converts a tensor back to its object form for PyTorch 2.3."""
     return call_with_only_valid_kwargs(
         _tensor_to_object, tensor=tensor, tensor_size=tensor_size, group=group
     )
 
 
-def send_object_list(object_list, dst, group=None, device=None):
+def send_object_list(object_list, dst, group:Optional[torch.distributed.ProcessGroup]=None, device:Optional[torch.device]=None):
     """
     Sends picklable objects in ``object_list`` synchronously.
 
@@ -145,7 +146,7 @@ def send_object_list(object_list, dst, group=None, device=None):
     send(object_tensor, dst=dst, group=group)
 
 
-def recv_object_list(object_list, src=None, group=None, device=None):
+def recv_object_list(object_list, src=None, group:Optional[torch.distributed.ProcessGroup]=None, device:Optional[torch.device]=None):
     """
     Receives picklable objects in ``object_list`` synchronously.
 

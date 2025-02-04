@@ -31,6 +31,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from typing import Any, Iterable, Optional, Tuple
 
+from nvidia_resiliency_ext.common.device_utils import get_xla_model
 import torch
 
 from ..base_state_dict import TensorAwareStateDict
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 CkptID = Tuple[int, int, Any]
 
+xm = get_xla_model()
 
 class CheckpointingException(Exception):
     """Base checkpointing related exception"""
@@ -69,17 +71,19 @@ class BaseCheckpointManager(ABC):
     abstracting replication mechanisms from the underlying implementations.
     """
 
-    def __init__(self, session_id, repl_strategy: ReplicationStrategy = None):
+    def __init__(self, session_id, repl_strategy: ReplicationStrategy = None, group:Optional[torch.distributed.ProcessGroup]=None):
         self.latest_iteration = -1
         self.repl_strategy = repl_strategy
         self.session_id = session_id
         self._rank = None
+        self.group = group
+        assert xm is None or torch.distributed.backend(group=group) == "gloo"
 
     @property
     def rank(self):
         if self._rank is None:
             if torch.distributed.is_initialized():
-                self._rank = torch.distributed.get_rank()
+                self._rank = torch.distributed.get_rank(group=self.group)
             else:
                 logger.warning("Torch distributed backend has not been initialized.")
                 self._rank = 0
@@ -170,7 +174,7 @@ class BaseCheckpointManager(ABC):
             # as no other operations should invalidate the most recent iteration.
             logger.debug(f'Using cached latest_iteration: {self.latest_iteration} in find_latest')
             return self.latest_iteration
-        group_wrapper = GroupWrapper()
+        group_wrapper = GroupWrapper(group=self.group)
         self.globally_available_ids = group_wrapper.all_gather_object(self._my_ckpt_ids())
 
         # Maps each iteration to a corresponding set of ranks
@@ -289,11 +293,11 @@ class BaseCheckpointManager(ABC):
             if torch.cuda.is_available():
                 with debug_time("ckpt_D2H_synchronize", logger):
                     torch.cuda.synchronize()
-            return AsyncRequest(save_fn, save_args, [finalize_fn])
+            return AsyncRequest(save_fn, save_args, [finalize_fn], group=self.group)
 
         assert not is_async
         save_fn(*save_args)
         # Wait so everyone is done (necessary)
         if torch.distributed.is_initialized():
-            torch.distributed.barrier()
+            torch.distributed.barrier(group=self.group)
         finalize_fn()

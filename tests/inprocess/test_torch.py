@@ -23,6 +23,7 @@ import threading
 import unittest
 import weakref
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 import torch.distributed as c10d
 
@@ -338,8 +339,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
     def test_destroy_reinit(self, pass_device):
         size = 10
 
-        device = torch.device(self.rank)
-        torch.cuda.set_device(device)
+        device = get_current_device()
 
         if pass_device:
             init_process_group_device = device
@@ -481,7 +481,6 @@ class ProcessGroupGLOOTest(common.MultiProcessTestCase):
     ):
         if world_size is None:
             world_size = self.world_size
-        # create nccl processgroup with opts
         c10d.init_process_group(
             "gloo",
             world_size=world_size,

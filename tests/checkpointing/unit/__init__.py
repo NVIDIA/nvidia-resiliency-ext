@@ -39,15 +39,14 @@ def empty_dir(path: Path):
 class TempNamedDir(TemporaryDirectory):
     """TemporaryDirectory with a fully named directory. Empties the dir if not empty."""
 
-    def __init__(self, name: Union[str, Path], sync=True, ignore_cleanup_errors=False) -> None:
+    def __init__(self, name: Union[str, Path], sync=True, ignore_cleanup_errors=False, group: Optional[dist.ProcessGroup] = None) -> None:
         self.name = str(name)
+        self.group = group
         if Utils.rank == 0:
             os.makedirs(name, exist_ok=True)
             empty_dir(Path(name))
         if sync:
-            import torch
-
-            torch.distributed.barrier()
+            dist.barrier(group=self.group)
         else:
             os.makedirs(name, exist_ok=True)
 
@@ -60,9 +59,7 @@ class TempNamedDir(TemporaryDirectory):
     def cleanup(self, override_sync: Optional[bool] = None) -> None:
         sync = self.sync if override_sync is None else override_sync
         if sync:
-            import torch
-
-            torch.distributed.barrier()
+            dist.barrier(group=self.group)
 
         if Utils.rank == 0:
             super().cleanup()
@@ -70,9 +67,7 @@ class TempNamedDir(TemporaryDirectory):
     def __enter__(self):
         path = Path(super().__enter__())
         if self.sync:
-            import torch
-
-            torch.distributed.barrier()
+            dist.barrier(group=self.group)
         return path
 
     def __exit__(self, exc_type, exc_val, exc_tb):

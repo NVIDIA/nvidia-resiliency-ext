@@ -72,7 +72,7 @@ def main():
 
     ckpt_impl.async_save(model.state_dict(), ckpt_dir + "ckpt.pt")
 
-    finalize_async_save(blocking=True, no_dist=True)
+    ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
 
     torch.load(ckpt_dir, ckpt_dir)
 

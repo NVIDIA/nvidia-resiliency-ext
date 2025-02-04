@@ -14,7 +14,6 @@
 # limitations under the License.
 from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
-import pytest
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 
