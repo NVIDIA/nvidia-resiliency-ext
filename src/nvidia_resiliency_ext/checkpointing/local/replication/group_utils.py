@@ -165,7 +165,14 @@ class GroupWrapper:
     def __init__(self, group: Optional[ProcessGroupLike]=None):
         """Initializes the GroupWrapper with an optional process group."""
         self._group = group
+        if self._group is None and xm:
+            self._group = dist.new_group(ranks=self.ranks, backend="gloo")
+            self._destroy_group = True
         assert xm is None or self.backend == "gloo"
+
+    def __del__(self):
+        if self._destroy_group:
+            dist.destroy_group(self._group)
 
     @staticmethod
     def wrap(group: ProcessGroupLike) -> GroupWrapper:
