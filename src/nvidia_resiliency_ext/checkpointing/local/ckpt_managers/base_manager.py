@@ -77,7 +77,7 @@ class BaseCheckpointManager(ABC):
         self.session_id = session_id
         self._rank = None
         self.group = group
-        assert xm is None or torch.distributed.backend(group=group) == "gloo"
+        assert xm is None or torch.distributed.get_backend(group=group) == "gloo"
 
     @property
     def rank(self):

@@ -91,7 +91,7 @@ class DistributedAsyncCaller:
 
     def __init__(self, group:Optional[torch.distributed.ProcessGroup]=None):
         self.group = group
-        assert xm is None or torch.distributed.backend(group=self.group) == "gloo"
+        assert xm is None or torch.distributed.get_backend(group=self.group) == "gloo"
         self.process: Optional[mp.Process] = None
         self.start_time: Optional[float] = None
 
@@ -195,7 +195,7 @@ class AsyncCallsQueue:
 
     def __init__(self, group:Optional[torch.distributed.ProcessGroup]=None):
         self.group = group
-        assert xm is None or torch.distributed.backend(group=self.group) == "gloo"
+        assert xm is None or torch.distributed.get_backend(group=self.group) == "gloo"
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
 

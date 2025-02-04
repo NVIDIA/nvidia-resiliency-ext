@@ -35,7 +35,7 @@ class TorchAsyncCheckpoint(object):
 
     def __init__(self, group:Optional[torch.distributed.ProcessGroup]=None):
         self.group = group
-        assert xm is None or torch.distributed.backend(group=self.group) == "gloo"
+        assert xm is None or torch.distributed.get_backend(group=self.group) == "gloo"
         self.save = torch.save
         self._async_calls_queue = AsyncCallsQueue(group=self.group)
         TorchAsyncCheckpoint.async_fn = wrap_for_async(torch.save)
