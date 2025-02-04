@@ -168,11 +168,14 @@ class GroupWrapper:
         if self._group is None and xm:
             self._group = dist.new_group(ranks=self.ranks, backend="gloo")
             self._destroy_group = True
+        else:
+            self._destroy_group = False
+
         assert xm is None or self.backend == "gloo"
 
     def __del__(self):
         if self._destroy_group:
-            dist.destroy_group(self._group)
+            dist.destroy_process_group(self._group)
 
     @staticmethod
     def wrap(group: ProcessGroupLike) -> GroupWrapper:
