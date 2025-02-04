@@ -84,13 +84,3 @@ def get_distributed_init_method() -> str:
         init_method =  "env://"
 
     return init_method
-
-def get_default_gloo_group() -> torch.distributed.ProcessGroup:
-    global __default_gloo_group
-
-    try:
-        return __default_gloo_group
-    except NameError:
-        __default_gloo_group = torch.distributed.new_group(backend="gloo")
-
-    return __default_gloo_group

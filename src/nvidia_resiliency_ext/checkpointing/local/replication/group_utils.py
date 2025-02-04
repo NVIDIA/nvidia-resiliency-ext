@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import typing
 from dataclasses import dataclass, field
 from itertools import islice
@@ -23,7 +24,6 @@ from typing import Dict, List, Optional, Tuple, TypeVar, Union
 
 from nvidia_resiliency_ext.common.device_utils import (
     get_current_device,
-    get_default_gloo_group, 
     get_xla_model
 )
 
@@ -67,7 +67,7 @@ class ExchangePlan:
         _entries (List[ExchangePlanEntry]): List of exchange entries with sender-receiver pairs.
     """
 
-    group: "GroupWrapper"
+    group: GroupWrapper
     _entries: List[ExchangePlanEntry] = field(default_factory=list)
 
     def plan(self, *args, **kwargs):
@@ -162,12 +162,18 @@ class GroupWrapper:
         _group (ProcessGroupLike): The underlying process group object.
     """
 
-    def __init__(self, group=None):
+    def __init__(self, group: Optional[ProcessGroupLike]=None):
         """Initializes the GroupWrapper with an optional process group."""
         self._group = group
 
+        # For XLA create a corresponding gloo group
+        if xm:
+            self.__group_gloo = dist.new_group(ranks=self.ranks, backend="gloo") 
+        else:
+            self.__group_gloo = None
+
     @staticmethod
-    def wrap(group: ProcessGroupLike):
+    def wrap(group: ProcessGroupLike) -> GroupWrapper:
         """Wraps a given process group into a GroupWrapper.
 
         Args:
@@ -176,22 +182,18 @@ class GroupWrapper:
         Returns:
             GroupWrapper: A wrapped process group.
 
-        Raises:
-            ValueError: If the group is of an unsupported type.
         """
-        if isinstance(group, dist.ProcessGroup):
-            return GroupWrapper(group)
-        elif isinstance(group, GroupWrapper):  # type: ignore
+        if isinstance(group, GroupWrapper):
             return group
         else:
-            raise ValueError(f"Unsupported type: {type(group)}!")
+            return GroupWrapper(group)
 
     @staticmethod
     def from_list_of_groups(list_of_groups: List[dist.ProcessGroup]) -> GroupWrapper:
         """Creates a GroupWrapper from a list of process groups, identifying the current group.
 
         Args:
-            list_of_groups (List[dist.ProcessGroup]): A list of process groups.
+            list_of_groups Union[List[dist.ProcessGroup], List[List[List[int]]]]: A list of process groups.
 
         Returns:
             GroupWrapper: A GroupWrapper for the current process group.
@@ -201,7 +203,7 @@ class GroupWrapper:
         """
         my_rank = dist.get_rank()
         my_process_group = [
-            g for g in list_of_groups if my_rank in dist.get_process_group_ranks(g)  # type: ignore
+            g for g in list_of_groups if my_rank in dist.get_process_group_ranks(g)
         ]
         assert (
             len(my_process_group) <= 1
@@ -210,16 +212,25 @@ class GroupWrapper:
         return GroupWrapper(my_process_group[0])
 
     @property
-    def group(self):
+    def group(self) -> ProcessGroupLike:
         """Returns the underlying process group.
 
         Returns:
             ProcessGroupLike: The underlying process group.
         """
         return self._group
+    
+    @property
+    def group_gloo(self) -> ProcessGroupLike:
+        """Returns the underlying process group for gloo backend
+
+        Returns:
+            ProcessGroupLike: The underlying process group.
+        """
+        return self.__group_gloo
 
     @property
-    def backend(self):
+    def backend(self) -> str:
         """Returns the backend of the process group.
 
         Returns:
@@ -228,18 +239,19 @@ class GroupWrapper:
         return dist.get_backend(self.group)
 
     @property
-    def supported_devices(self):
+    def supported_devices(self) -> List[torch.device]:
         """Lists the devices supported by the backend.
 
         Returns:
             List[torch.device]: A list of supported devices.
         """
         return [
-            torch.device(device)
-            for device in dist.Backend.backend_capability[self.backend]  # type: ignore
-        ]
+                torch.device(device) if device == "cpu" else get_current_device()
+                for device in dist.Backend.backend_capability[self.backend]
+            ]
+        
 
-    def get_device(self, wanted_device=None):
+    def get_device(self, wanted_device:Optional[str]=None) -> torch.device:
         """Gets the appropriate device for operations.
 
         Args:
@@ -251,14 +263,17 @@ class GroupWrapper:
         Raises:
             AssertionError: If the desired device is not supported.
         """
-        if wanted_device is None:
-            wanted_device = self.supported_devices[0]
+        if wanted_device == "cpu":
+            wanted_device = torch.device(wanted_device)
+        else:
+            wanted_device = get_current_device()
+
         assert (
-            torch.device(wanted_device) in self.supported_devices
+            wanted_device in self.supported_devices
         ), f"Selected backend {self.backend} does not support the selected device {wanted_device}!"
         return wanted_device
 
-    def get_group_rank(self, global_rank=None):
+    def get_group_rank(self, global_rank:Optional[int]=None) -> int:
         """Gets the local group rank corresponding to a global rank.
 
         Args:
@@ -267,6 +282,7 @@ class GroupWrapper:
         Returns:
             int: The local group rank.
         """
+  
         if global_rank is None:
             return dist.get_rank(self.group)
         if self.group is None:
@@ -274,7 +290,7 @@ class GroupWrapper:
         return dist.get_group_rank(self.group, global_rank)  # type: ignore
 
     @property
-    def my_group_rank(self):
+    def my_group_rank(self) -> int:
         """Gets the local rank of the current process in its group.
 
         Returns:
@@ -282,7 +298,7 @@ class GroupWrapper:
         """
         return self.get_group_rank(None)
 
-    def get_global_rank(self, group_rank=None):
+    def get_global_rank(self, group_rank:Optional[int]=None) -> int:
         """Converts a local group rank to a global rank.
 
         Args:
@@ -296,7 +312,7 @@ class GroupWrapper:
         return dist.get_global_rank(self.group, group_rank)  # type: ignore
 
     @property
-    def my_global_rank(self):
+    def my_global_rank(self) -> int:
         """Gets the global rank of the current process.
 
         Returns:
@@ -305,23 +321,42 @@ class GroupWrapper:
         return self.get_global_rank(None)
 
     @property
-    def ranks(self):
+    def ranks(self) -> List[int]:
         """Gets the ranks of all processes in the group.
 
         Returns:
-            range: A range of ranks in the process group.
+            range: A List[int] of ranks in the process group.
         """
         if self.group is None:
             return range(dist.get_world_size())
-        return dist.get_process_group_ranks(self.group)  # type: ignore
+        
+        return dist.get_process_group_ranks(self.group)  
+        
 
     @property
-    def world_size(self):
+    def all_ranks(self) -> List[List[int]]:
+        """Gets all the ranks of all processes in the group.
+
+        Returns:
+            range: A List[List[int]] of ranks in the process group.
+        """
+        world_size = dist.get_world_size()
+        if self.group is None:
+            return [range(world_size)]
+        
+        ranks = dist.get_process_group_ranks(self.group)
+        num_sub_groups = world_size // len(ranks)
+        all_ranks = [ [ int(lr + len(ranks)*sg) for lr in range(len(ranks)) ] for sg in range(num_sub_groups)]
+        assert ranks in all_ranks, f"{ranks} not in {all_ranks}"
+        return all_ranks
+    
+    @property
+    def world_size(self) -> int:
         """Gets the total number of processes in the group.
 
         Returns:
             int: The total number of processes in the group.
-        """
+        """  
         return dist.get_world_size(self.group)
 
     def __repr__(self):
@@ -340,16 +375,20 @@ class GroupWrapper:
             List[T]: A list of gathered objects from all ranks.
         """
         result: List[Optional[T]] = [None] * self.world_size
-        group = self.group if xm is None else get_default_gloo_group()
+        group = self.group if xm is None else self.group_gloo
         dist.all_gather_object(result, my_obj, group=group)
         return typing.cast(List[T], result)
 
-    def broadcast(self, *args, **kwargs):
+    def broadcast(self, tensor:torch.Tensor, src:int):
         """Broadcasts data from the current process to all processes in the group."""
-        return dist.broadcast(*args, **kwargs, group=self.group)
+        
+        if xm:
+            xm.collective_broadcast([tensor],src, groups=self.all_ranks, pin_layout=False)
+        else:
+           return dist.broadcast(tensor, src=src, group=self.group)
 
     def all_gather_batch(
-        self, my_tensors: List[torch.Tensor], target_device=None
+        self, my_tensors: List[torch.Tensor], target_device:Optional[torch.device]=None
     ) -> List[List[torch.Tensor]]:
         """
         Perform an all-gather on a list of tensors.
@@ -357,6 +396,7 @@ class GroupWrapper:
         If not specified, use any supported device for the given group.
         """
         tensor_devices = list(set([ten.device for ten in my_tensors]))
+
         debug_msg(f"{tensor_devices=}")
         debug_msg(f"{target_device=}")
 
@@ -399,9 +439,11 @@ class GroupWrapper:
         log_data = {"data_sent": sum(ten.nbytes for ten in tensor_data)}
         # TODO: count object size without repickling
         self.send_object(state_dict, dst)
+        comm_device = get_current_device() if xm is None else torch.device("cpu")
+        comm_group = self.group if xm is None else self.group_gloo
         for ten in tensor_data:
-            ten = ten.cuda()
-            dist.send(ten, dst, group=self.group)
+            ten = ten.to(device=comm_device)
+            dist.send(ten, dst, group=comm_group)
         state_dict.insert_tensors(tensor_data)
         return log_data
 
@@ -449,12 +491,12 @@ class GroupWrapper:
         hollow_ckpt: TensorAwareStateDict = self.recv_object(src)
         hollow_ckpt.init_tensors()
         for ten in hollow_ckpt.tensors:
-            if ten.device.type == 'cpu':
-                cuda_tensor = torch.empty_like(ten, device=get_current_device())
-                dist.recv(cuda_tensor, src, group=self.group)
-                ten.copy_(cuda_tensor.cpu())
-            else:
-                dist.recv(ten, src, group=self.group)
+            ten_device = ten.device
+            comm_device = get_current_device() if xm is None else torch.device("cpu")
+            comm_group = self.group if xm is None else self.group_gloo
+            comm_tensor = torch.empty_like(ten, device=comm_device)
+            dist.recv(comm_tensor, src, group=comm_group)
+            ten.copy_(comm_tensor.to(device=ten_device))
         log_data = {"data_recv": sum(ten.nbytes for ten in hollow_ckpt.tensors)}
         return hollow_ckpt, log_data
 

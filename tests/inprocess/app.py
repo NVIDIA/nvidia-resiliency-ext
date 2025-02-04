@@ -198,8 +198,8 @@ def maybe_trigger_fault(rank, world_size, args):
         log.info(f'{rank=} triggers {fault=}')
 
         if fault == Fault.GPU:
-            b = torch.ones(1, dtype=torch.int64).cuda()
-            a = torch.ones(1, dtype=torch.int64).cuda()
+            b = torch.ones(1, dtype=torch.int64).to(device=get_current_device())
+            a = torch.ones(1, dtype=torch.int64).to(device=get_current_device())
             a[b] = 0
 
         elif fault == Fault.CPU:
