@@ -334,23 +334,6 @@ class GroupWrapper:
         
 
     @property
-    def all_ranks(self) -> List[List[int]]:
-        """Gets all the ranks of all processes in the group.
-
-        Returns:
-            range: A List[List[int]] of ranks in the process group.
-        """
-        world_size = dist.get_world_size()
-        if self.group is None:
-            return [range(world_size)]
-        
-        ranks = dist.get_process_group_ranks(self.group)
-        num_sub_groups = world_size // len(ranks)
-        all_ranks = [ [ int(lr + len(ranks)*sg) for lr in range(len(ranks)) ] for sg in range(num_sub_groups)]
-        assert ranks in all_ranks, f"{ranks} not in {all_ranks}"
-        return all_ranks
-    
-    @property
     def world_size(self) -> int:
         """Gets the total number of processes in the group.
 
@@ -382,10 +365,12 @@ class GroupWrapper:
     def broadcast(self, tensor:torch.Tensor, src:int):
         """Broadcasts data from the current process to all processes in the group."""
         
-        if xm:
-            xm.collective_broadcast([tensor],src, groups=self.all_ranks, pin_layout=False)
-        else:
-           return dist.broadcast(tensor, src=src, group=self.group)
+        tensor_device = tensor.device
+        comm_device = get_current_device() if xm is None else torch.device("cpu")
+        comm_group = self.group if xm is None else self.group_gloo
+        tensor.to(device=comm_device)
+        dist.broadcast(tensor, src=src, group=comm_group)
+        tensor.to(device=tensor_device)
 
     def all_gather_batch(
         self, my_tensors: List[torch.Tensor], target_device:Optional[torch.device]=None
@@ -546,6 +531,10 @@ class GroupWrapper:
         debug_msg(f"{sent_bytes=}")
         debug_msg(f"{recv_bytes=}")
         return recv_buf
+    
+    def __del__(self):
+        if xm:
+            dist.destroy_process_group(self.group_gloo)
 
 
 ProcessGroupLike = Union[GroupWrapper, dist.ProcessGroup]
