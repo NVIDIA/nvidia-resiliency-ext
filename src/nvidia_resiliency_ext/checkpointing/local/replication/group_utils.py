@@ -165,12 +165,7 @@ class GroupWrapper:
     def __init__(self, group: Optional[ProcessGroupLike]=None):
         """Initializes the GroupWrapper with an optional process group."""
         self._group = group
-
-        # For XLA create a corresponding gloo group
-        if xm:
-            self.__group_gloo = dist.new_group(ranks=self.ranks, backend="gloo") 
-        else:
-            self.__group_gloo = None
+        assert xm is None or self.backend == "gloo"
 
     @staticmethod
     def wrap(group: ProcessGroupLike) -> GroupWrapper:
@@ -219,15 +214,6 @@ class GroupWrapper:
             ProcessGroupLike: The underlying process group.
         """
         return self._group
-    
-    @property
-    def group_gloo(self) -> ProcessGroupLike:
-        """Returns the underlying process group for gloo backend
-
-        Returns:
-            ProcessGroupLike: The underlying process group.
-        """
-        return self.__group_gloo
 
     @property
     def backend(self) -> str:
@@ -358,8 +344,7 @@ class GroupWrapper:
             List[T]: A list of gathered objects from all ranks.
         """
         result: List[Optional[T]] = [None] * self.world_size
-        group = self.group if xm is None else self.group_gloo
-        dist.all_gather_object(result, my_obj, group=group)
+        dist.all_gather_object(result, my_obj, group=self.group)
         return typing.cast(List[T], result)
 
     def broadcast(self, tensor:torch.Tensor, src:int):
@@ -367,9 +352,8 @@ class GroupWrapper:
         
         tensor_device = tensor.device
         comm_device = get_current_device() if xm is None else torch.device("cpu")
-        comm_group = self.group if xm is None else self.group_gloo
         tensor.to(device=comm_device)
-        dist.broadcast(tensor, src=src, group=comm_group)
+        dist.broadcast(tensor, src=src, group=self.group)
         tensor.to(device=tensor_device)
 
     def all_gather_batch(
@@ -425,10 +409,9 @@ class GroupWrapper:
         # TODO: count object size without repickling
         self.send_object(state_dict, dst)
         comm_device = get_current_device() if xm is None else torch.device("cpu")
-        comm_group = self.group if xm is None else self.group_gloo
         for ten in tensor_data:
             ten = ten.to(device=comm_device)
-            dist.send(ten, dst, group=comm_group)
+            dist.send(ten, dst, group=self.group)
         state_dict.insert_tensors(tensor_data)
         return log_data
 
@@ -478,9 +461,8 @@ class GroupWrapper:
         for ten in hollow_ckpt.tensors:
             ten_device = ten.device
             comm_device = get_current_device() if xm is None else torch.device("cpu")
-            comm_group = self.group if xm is None else self.group_gloo
             comm_tensor = torch.empty_like(ten, device=comm_device)
-            dist.recv(comm_tensor, src, group=comm_group)
+            dist.recv(comm_tensor, src, group=self.group)
             ten.copy_(comm_tensor.to(device=ten_device))
         log_data = {"data_recv": sum(ten.nbytes for ten in hollow_ckpt.tensors)}
         return hollow_ckpt, log_data
@@ -531,10 +513,6 @@ class GroupWrapper:
         debug_msg(f"{sent_bytes=}")
         debug_msg(f"{recv_bytes=}")
         return recv_buf
-    
-    def __del__(self):
-        if xm:
-            dist.destroy_process_group(self.group_gloo)
 
 
 ProcessGroupLike = Union[GroupWrapper, dist.ProcessGroup]

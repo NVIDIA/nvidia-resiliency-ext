@@ -18,7 +18,7 @@ import random
 from abc import ABC, abstractmethod
 from typing import List, Mapping, Sequence, Tuple, TypeVar, Generic, Optional
 
-from nvidia_resiliency_ext.common.device_utils import get_local_device_count
+from nvidia_resiliency_ext.common.device_utils import get_local_device_count, get_xla_model
 import torch
 
 from ..base_state_dict import TensorAwareStateDict
@@ -27,6 +27,7 @@ from .utils import debug_time, debug_msg, zip_strict
 
 logger = logging.getLogger(__name__)
 
+xm = get_xla_model()
 
 class NoReplicasAvailableError(Exception):
     """Exception raised when no replicas are available for a requested ID."""
@@ -234,8 +235,9 @@ class CliqueReplicationStrategy(ReplicationStrategy):
             replication_factor=replication_factor,
             world_size=torch.distributed.get_world_size(),
         )
+        backend = None if xm is None else "gloo"
         repl_process_groups: List[torch.distributed.ProcessGroup] = [
-            torch.distributed.new_group(g) for g in repl_process_groups_ranks
+            torch.distributed.new_group(ranks=g, backend=backend) for g in repl_process_groups_ranks
         ]
         my_process_group = GroupWrapper.from_list_of_groups(repl_process_groups)
         return cls(my_process_group, target_device="cpu")
