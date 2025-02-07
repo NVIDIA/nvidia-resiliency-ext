@@ -158,7 +158,7 @@ terminated ranks will not rejoin the distributed job upon restart.</p></li>
 function catches a <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a>, it must re-raise it to ensure it
 propagates to the outer scope.</p></li>
 <li><p>The function is responsible for initialization of PyTorch distributed backend
-(<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group" title="(in PyTorch v2.5)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.init_process_group()</span></code></a>); the initialization needs
+(<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group" title="(in PyTorch v2.6)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.init_process_group()</span></code></a>); the initialization needs
 to read <a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#environment-variable-initialization">standard PyTorch distributed variables</a>
 (<code class="docutils literal notranslate"><span class="pre">RANK</span></code>, <code class="docutils literal notranslate"><span class="pre">WORLD_SIZE</span></code>, <code class="docutils literal notranslate"><span class="pre">MASTER_ADDR</span></code>, <code class="docutils literal notranslate"><span class="pre">MASTER_PORT</span></code> and
 <code class="docutils literal notranslate"><span class="pre">LOCAL_RANK</span></code>) from the environment.</p></li>
@@ -177,7 +177,7 @@ timeout longer than the <code class="docutils literal notranslate"><span class="
 <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a>. If the NCCL watchdog is triggered, it forcibly
 terminates the process, preventing a restart. To adjust the NCCL watchdog
 timeout, use the <code class="docutils literal notranslate"><span class="pre">timeout</span></code> argument when calling
-<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group" title="(in PyTorch v2.5)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.init_process_group()</span></code></a> with the <code class="docutils literal notranslate"><span class="pre">backend</span></code>
+<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group" title="(in PyTorch v2.6)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.init_process_group()</span></code></a> with the <code class="docutils literal notranslate"><span class="pre">backend</span></code>
 parameter set to <code class="docutils literal notranslate"><span class="pre">&quot;nccl&quot;</span></code></p></li>
 <li><p>The job scheduler must not terminate the entire job if a faulty rank exits
 early or if the main process is terminated; instead, it should wait until all
@@ -189,7 +189,7 @@ user-launched processes have fully exited before ending the distributed job.</p>
 <h2>Restrictions<a class="headerlink" href="#restrictions" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p>node failure on rank 0 causes termination of the entire job; by default, rank
-0 hosts internal <a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.TCPStore" title="(in PyTorch v2.5)"><code class="xref py py-class docutils literal notranslate"><span class="pre">torch.distributed.TCPStore</span></code></a> to allow
+0 hosts internal <a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.TCPStore" title="(in PyTorch v2.6)"><code class="xref py py-class docutils literal notranslate"><span class="pre">torch.distributed.TCPStore</span></code></a> to allow
 communication between ranks, users may specify a different implementation of
 a distributed store by subclassing from
 <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.store.StoreMixin</span></code> and passing the subclass as
@@ -480,7 +480,7 @@ asynchronous Python exception within the wrapped function.</p>
 <p>The execution interval of the monitoring loop is governed by the
 <code class="docutils literal notranslate"><span class="pre">monitor_thread_interval</span></code> parameter of the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>. During each
 loop iteration, the thread queries the distributed store by invoking
-<code class="xref py py-meth docutils literal notranslate"><span class="pre">torch.distributed.Store.get()</span></code>. For workloads with a large number of
+<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.Store.get" title="(in PyTorch v2.6)"><code class="xref py py-meth docutils literal notranslate"><span class="pre">torch.distributed.Store.get()</span></code></a>. For workloads with a large number of
 distributed workers, it may be necessary to increase the
 <code class="docutils literal notranslate"><span class="pre">monitor_thread_interval</span></code> to avoid creating a communication bottleneck in the
 distributed store caused by concurrent queries from multiple workers.</p>
