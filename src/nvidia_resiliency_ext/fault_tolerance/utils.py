@@ -23,9 +23,9 @@ import time
 
 import psutil
 import torch
-import torch.multiprocessing as mp
+import multiprocessing as mp
 
-_IPC_PICKLER = mp.reductions.ForkingPickler(open(os.devnull, mode='wb'))
+_IPC_PICKLER = mp.reduction.ForkingPickler(open(os.devnull, mode='wb'))
 
 
 def is_process_alive(pid):
