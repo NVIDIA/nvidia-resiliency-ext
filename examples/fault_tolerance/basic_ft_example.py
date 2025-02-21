@@ -87,7 +87,6 @@ class SimpleModel(nn.Module):
         x = self.fc2(x)
         return x
 
-
 def print_on_rank0(msg):
     if dist.get_rank() == 0:
         print(msg)
