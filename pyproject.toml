@@ -4,7 +4,7 @@
 [tool.poetry]
 name = "nvidia-resiliency-ext"
 repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
-version = "v0.2.0"
+version = "v0.2.1"
 description = "NVIDIA Resiliency Package"
 authors = ["NVIDIA Corporation"]
 readme = "README.md"
