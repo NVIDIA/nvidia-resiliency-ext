@@ -1,0 +1,28 @@
+name: Update PR Status from GitLab CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit SHA to update'
+        required: true
+      state:
+        description: 'Status state: pending, success, failure'
+        required: true
+      job_url:
+        description: 'GitLab CI job URL'
+        required: true
+
+jobs:
+  update-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post Commit Status
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "{\"state\":\"${{ inputs.state }}\",\"target_url\":\"${{ inputs.job_url }}\",\"description\":\"GitLab CI tests ${{ inputs.state }}\",\"context\":\"gitlab-ci\"}" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ inputs.sha }}"
