@@ -91,7 +91,6 @@ def print_on_rank0(msg):
     if dist.get_rank() == 0:
         print(msg)
 
-
 def main(rank, world_size):
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
     print_on_rank0(f"Starting new training run... World size={dist.get_world_size()}")
