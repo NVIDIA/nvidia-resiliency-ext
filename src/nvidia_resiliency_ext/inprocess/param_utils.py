@@ -22,24 +22,18 @@ import typing
 def check_type(annotation, cls):
     if annotation == cls:
         return True
-    if (
-        getattr(annotation, '__origin__', None) == typing.Union
-        and cls in annotation.__args__
-    ):
+    if getattr(annotation, "__origin__", None) == typing.Union and cls in annotation.__args__:
         return True
-    if getattr(annotation, '__origin__', None) == typing.Optional:
+    if getattr(annotation, "__origin__", None) == typing.Optional:
         return check_type(annotation.__args__[0], cls)
-    if getattr(cls, '__origin__', None) == typing.Union:
+    if getattr(cls, "__origin__", None) == typing.Union:
         return any(check_type(annotation, cls_arg) for cls_arg in cls.__args__)
     return issubclass(cls, annotation)
 
 
 def count_type_in_params(fn, cls):
     signature = inspect.signature(fn)
-    res = sum(
-        check_type(param.annotation, cls)
-        for param in signature.parameters.values()
-    )
+    res = sum(check_type(param.annotation, cls) for param in signature.parameters.values())
     return res
 
 
@@ -64,8 +58,8 @@ def enforce_subclass(argument, class_or_tuple):
     value_type = type(value)
     if not issubclass(value, class_or_tuple):
         msg = (
-            f'{argument=} needs to be a subclass of {class_or_tuple}, '
-            f'but got {argument}={value} of type={value_type}'
+            f"{argument=} needs to be a subclass of {class_or_tuple}, "
+            f"but got {argument}={value} of type={value_type}"
         )
         raise TypeError(msg)
 
@@ -78,8 +72,8 @@ def enforce_type(argument, class_or_tuple):
     value_type = type(value)
     if not isinstance(value, class_or_tuple):
         msg = (
-            f'{argument=} needs to be an instance of {class_or_tuple}, '
-            f'but got {argument}={value} of type={value_type}'
+            f"{argument=} needs to be an instance of {class_or_tuple}, "
+            f"but got {argument}={value} of type={value_type}"
         )
         raise TypeError(msg)
 
@@ -96,12 +90,10 @@ def enforce_value(condition):
             # Parse the line to an Abstract Syntax Tree (AST)
             tree = ast.parse(line)
             # Navigate the AST to find the condition expression
-            if isinstance(tree.body[0], ast.Expr) and isinstance(
-                tree.body[0].value, ast.Call
-            ):
+            if isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Call):
                 call = tree.body[0].value
                 co_name = inspect.currentframe().f_code.co_name
-                if hasattr(call.func, 'id') and call.func.id == co_name:
+                if hasattr(call.func, "id") and call.func.id == co_name:
                     # Get the condition argument
                     arg = call.args[0]
                     # Reconstruct the source code of the condition
@@ -130,25 +122,21 @@ def enforce_value(condition):
                         elif name in frame.f_globals:
                             values[name] = frame.f_globals[name]
                         else:
-                            values[name] = '<undefined>'
+                            values[name] = "<undefined>"
                     # Prepare values string
-                    values_str = ', '.join(
-                        f'{name}={values[name]!r}' for name in sorted(values)
-                    )
+                    values_str = ", ".join(f"{name}={values[name]!r}" for name in sorted(values))
                 else:
-                    condition_str = '<unknown condition>'
-                    values_str = ''
+                    condition_str = "<unknown condition>"
+                    values_str = ""
             else:
-                condition_str = '<unknown condition>'
-                values_str = ''
+                condition_str = "<unknown condition>"
+                values_str = ""
         else:
-            condition_str = '<unknown condition>'
-            values_str = ''
+            condition_str = "<unknown condition>"
+            values_str = ""
         # Raise an exception with the condition and variable values
         if values_str:
-            message = (
-                f'Condition "{condition_str}" failed. Variables: {values_str}'
-            )
+            message = f'Condition "{condition_str}" failed. Variables: {values_str}'
         else:
             message = f'Condition "{condition_str}" failed.'
         raise ValueError(message)

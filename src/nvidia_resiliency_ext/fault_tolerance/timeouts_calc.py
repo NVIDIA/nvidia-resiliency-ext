@@ -63,11 +63,11 @@ class TimeoutsCalc:
         device = None
         backend = dist.get_backend()
         if backend == dist.Backend.NCCL:
-            device = torch.device('cuda')
+            device = torch.device("cuda")
         elif backend == dist.Backend.GLOO:
-            device = torch.device('cpu')
+            device = torch.device("cpu")
         else:
-            raise RuntimeError('Unsupported distributed backend')
+            raise RuntimeError("Unsupported distributed backend")
         return device
 
     def synchronize_all(self):

@@ -39,7 +39,7 @@ class CallableModule:
 
     @classmethod
     def callable3(cls, test_scenario=None):
-        sleep_time = test_scenario['sleep_time']
+        sleep_time = test_scenario["sleep_time"]
         time.sleep(sleep_time)
 
     def callable4(self, test_scenario=None):
@@ -47,7 +47,6 @@ class CallableModule:
 
 
 def _rank_main(*args, test_scenario, ret_queue, **kwargs):
-
     rank = torch.distributed.get_rank()
     random.seed(rank)
 
@@ -63,7 +62,7 @@ def _rank_main(*args, test_scenario, ret_queue, **kwargs):
         ]
     )
 
-    for i in range(test_scenario['iters']):
+    for i in range(test_scenario["iters"]):
         callable_module_instance.callable1()
         CallableModule.callable2()
         CallableModule.callable3(test_scenario)
@@ -72,7 +71,7 @@ def _rank_main(*args, test_scenario, ret_queue, **kwargs):
     # test that after restore_original_callables call callables are not recorded
     straggler.Detector.restore_original_callables()
 
-    for i in range(test_scenario['unrecorded_iters']):
+    for i in range(test_scenario["unrecorded_iters"]):
         callable_module_instance.callable1()
         CallableModule.callable2()
         CallableModule.callable3(test_scenario)
@@ -102,7 +101,6 @@ test_scenarios = [
 
 @pytest.mark.parametrize("test_scenario", test_scenarios)
 def test_straggler_sections_detected(test_scenario):
-
     mp_ctx = mp.get_context("spawn")
     ret_queue = mp_ctx.Queue()
 

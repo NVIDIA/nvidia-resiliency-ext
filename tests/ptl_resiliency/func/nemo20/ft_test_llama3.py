@@ -114,27 +114,27 @@ def get_parser():
         default=8,
         help="Specify the number of GPUs per node",
     )
-    parser.add_argument('--max-runtime', type=int, default=900)  # in seconds
+    parser.add_argument("--max-runtime", type=int, default=900)  # in seconds
     parser.add_argument(
-        '--max-steps',
+        "--max-steps",
         type=int,
         default=1_000_000,
         help="Number of steps to run the training for",
     )
     parser.add_argument(
-        '--checkpoint-interval',
+        "--checkpoint-interval",
         type=int,
         default=80,
         help="Checkpoint saving interval in steps",
     )
     parser.add_argument(
-        '--val-check-interval',
+        "--val-check-interval",
         type=int,
         default=40,
         help="Validation check interval in steps",
     )
     parser.add_argument(
-        '--limit_val_batches',
+        "--limit_val_batches",
         type=int,
         default=10,
         help="How many batches to use for validation",
@@ -178,7 +178,7 @@ def main():
         every_n_train_steps=args.checkpoint_interval,
         save_on_train_epoch_end=True,
         save_optim_on_train_end=True,
-        filename='{step}-{epoch}',
+        filename="{step}-{epoch}",
     )
 
     trainer = get_trainer(args, callbacks=[checkpoint_callback, get_ft_callback(args)])
@@ -192,7 +192,7 @@ def main():
     )
 
     opt_config = OptimizerConfig(
-        optimizer='adam',
+        optimizer="adam",
         lr=1e-2,
         weight_decay=0.1,
         adam_beta1=0.9,

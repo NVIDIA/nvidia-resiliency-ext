@@ -15,7 +15,6 @@
 # limitations under the License.
 
 import abc
-import ctypes
 import datetime
 import logging
 import os
@@ -29,7 +28,7 @@ from .state import State
 
 
 class HealthCheck(abc.ABC):
-    r'''
+    r"""
     Abstract base class for ``health_check`` argument for
     :py:class:`inprocess.Wrapper`.
 
@@ -52,7 +51,7 @@ class HealthCheck(abc.ABC):
 
     Multiple instances of :py:class:`HealthCheck` could be composed with
     :py:class:`inprocess.Compose` to achieve the desired behavior.
-    '''
+    """
 
     @abc.abstractmethod
     def __call__(
@@ -62,7 +61,7 @@ class HealthCheck(abc.ABC):
 
 
 class CudaHealthCheck(HealthCheck):
-    r'''
+    r"""
     Ensures that CUDA context for the current process is in a healthy state.
 
     Synchronizes with the GPU. Uses the device corresponding to ``LOCAL_RANK``
@@ -71,7 +70,7 @@ class CudaHealthCheck(HealthCheck):
 
     Args:
         timeout: timeout for synchronization with the GPU
-    '''
+    """
 
     def __init__(self, timeout=datetime.timedelta(seconds=30)):
         self.timeout = timeout
@@ -81,7 +80,7 @@ class CudaHealthCheck(HealthCheck):
     ) -> (State, Optional[Exception]):
         log = logging.getLogger(__name__)
         if torch.cuda.is_available() and torch.cuda.is_initialized():
-            if (local_rank := os.getenv('LOCAL_RANK', None)) is not None:
+            if (local_rank := os.getenv("LOCAL_RANK", None)) is not None:
                 device = torch.device(int(local_rank))
             else:
                 device = torch.device(torch.cuda.current_device())
@@ -93,40 +92,40 @@ class CudaHealthCheck(HealthCheck):
             thread = threading.Thread(
                 target=torch.cuda.synchronize,
                 args=(device,),
-                name=f'{type(self).__name__}Sync',
+                name=f"{type(self).__name__}Sync",
                 daemon=True,
             )
-            log.debug(f'1st torch.cuda.synchronize({device=})')
+            log.debug(f"1st torch.cuda.synchronize({device=})")
             thread.start()
             thread.join(self.timeout.total_seconds())
             if thread.is_alive():
-                log.debug('torch.cuda.synchronize() timed out')
+                log.debug("torch.cuda.synchronize() timed out")
                 raise exception.TimeoutError
 
             # 2nd sync to check if CUDA context is healthy
-            log.debug(f'2nd torch.cuda.synchronize({device=})')
+            log.debug(f"2nd torch.cuda.synchronize({device=})")
             torch.cuda.synchronize(device)
         return state, train_ex
 
 
 class FaultCounterExceeded(exception.RestartError):
-    r'''
+    r"""
     Exception raised by :py:class:`FaultCounter` when number of faults on the
     current rank exceeds the threshold.
-    '''
+    """
 
     pass
 
 
 class FaultCounter(HealthCheck):
-    r'''
+    r"""
     :py:class:`FaultCounter` counts faults caused by the current process. The
     process is terminated if total number of faults exceeds the
     ``max_rank_faults`` threshold.
 
     Args:
         max_rank_faults: maximum number of faults cause by the process
-    '''
+    """
 
     def __init__(self, max_rank_faults=None):
         self.max_rank_faults = max_rank_faults
@@ -138,11 +137,11 @@ class FaultCounter(HealthCheck):
         if train_ex is None:
             return state, train_ex
 
-        log = logging.getLogger(__name__)
+        logging.getLogger(__name__)
         self.faults_count += 1
         max_rank_faults = self.max_rank_faults
         faults_count = self.faults_count
 
         if max_rank_faults is not None and faults_count > max_rank_faults:
-            raise FaultCounterExceeded(f'{faults_count=} / {max_rank_faults=}')
+            raise FaultCounterExceeded(f"{faults_count=} / {max_rank_faults=}")
         return state, train_ex

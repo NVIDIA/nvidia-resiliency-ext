@@ -105,11 +105,11 @@ def _get_restart_cnt(tmp_dir, update=False):
     return restart_cnt
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", type=str)
     parser.add_argument("--which_rank", type=int, default=0)
-    parser.add_argument("--term_handler", type=str, default='default')
+    parser.add_argument("--term_handler", type=str, default="default")
     parser.add_argument("--tmp_dir", type=str, default=None)
 
     args = parser.parse_args()

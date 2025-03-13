@@ -124,7 +124,6 @@ def test_profiler_is_singleton():
 
 
 def test_with_cuda_graph():
-
     # Check if profiling of a CUDA graph yields the same results
     # as profiling individual kernels run sequentially.
 

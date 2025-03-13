@@ -20,14 +20,11 @@ import threading
 import time
 
 from . import exception
-from .attribution import Interruption
-from .attribution import InterruptionRecord
+from .attribution import Interruption, InterruptionRecord
 
 
-def terminate_unresponsive_ranks(
-    store, ranks, world_size, barrier_timeout, interval
-):
-    log = logging.getLogger(__name__)
+def terminate_unresponsive_ranks(store, ranks, world_size, barrier_timeout, interval):
+    logging.getLogger(__name__)
 
     store.record_interrupted(
         [InterruptionRecord(rank, Interruption.UNRESPONSIVE) for rank in ranks]
@@ -56,20 +53,20 @@ class Heartbeat(threading.Thread):
 
         self.should_stop = threading.Event()
 
-        super().__init__(name=f'{type(self).__name__}-{rank}', daemon=True)
+        super().__init__(name=f"{type(self).__name__}-{rank}", daemon=True)
 
     def run(self):
         log = logging.getLogger(__name__)
         rank = self.rank
 
         while not self.should_stop.is_set():
-            log.debug(f'Sending heartbeat from {rank=}')
+            log.debug(f"Sending heartbeat from {rank=}")
             self.store.send_heartbeat(rank)
             time.sleep(self.interval.total_seconds())
 
     def shutdown(self, timeout=None):
         log = logging.getLogger(__name__)
-        log.debug(f'Shutting down heartbeat {timeout=}')
+        log.debug(f"Shutting down heartbeat {timeout=}")
 
         if timeout is None:
             timeout = self.timeout.total_seconds()
@@ -106,9 +103,7 @@ class SiblingMonitor:
         log = logging.getLogger(__name__)
 
         sibling_heartbeat = self.store.get_heartbeat(self.sibling_rank)
-        sibling_delta = datetime.timedelta(
-            microseconds=(time.time_ns() - sibling_heartbeat) / 1e3
-        )
+        sibling_delta = datetime.timedelta(microseconds=(time.time_ns() - sibling_heartbeat) / 1e3)
 
         if sibling_delta > self.heartbeat_timeout:
             heartbeats = self.store.get_all_heartbeats(self.world_size)
@@ -121,12 +116,10 @@ class SiblingMonitor:
                 > self.heartbeat_timeout
             )
 
-            new_unresponsive_ranks = (
-                current_unresponsive_ranks - self.seen_unresponsive_ranks
-            )
+            new_unresponsive_ranks = current_unresponsive_ranks - self.seen_unresponsive_ranks
 
             if new_unresponsive_ranks:
-                log.debug(f'{new_unresponsive_ranks=}')
+                log.debug(f"{new_unresponsive_ranks=}")
                 termination_thread = threading.Thread(
                     target=terminate_unresponsive_ranks,
                     args=(

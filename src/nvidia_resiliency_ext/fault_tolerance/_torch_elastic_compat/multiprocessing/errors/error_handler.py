@@ -92,13 +92,13 @@ class ErrorHandler:
             log.warning(
                 "child error file (%s) does not have field `message`. \n"
                 "cannot override error code: %s",
-                rootcause_error_file, error_code
+                rootcause_error_file,
+                error_code,
             )
         elif isinstance(rootcause_error["message"], str):
             log.warning(
-                "child error file (%s) has a new message format. \n"
-                "skipping error code override",
-                rootcause_error_file
+                "child error file (%s) has a new message format. \n" "skipping error code override",
+                rootcause_error_file,
             )
         else:
             rootcause_error["message"]["errorCode"] = error_code
@@ -110,11 +110,13 @@ class ErrorHandler:
             # Override error code since the child process cannot capture the error code if it
             # is terminated by signals like SIGSEGV.
             if error_code:
-                self.override_error_code_in_rootcause_data(rootcause_error_file, rootcause_error, error_code)
+                self.override_error_code_in_rootcause_data(
+                    rootcause_error_file, rootcause_error, error_code
+                )
             log.debug(
-                "child error file (%s) contents:\n"
-                "%s",
-                rootcause_error_file, json.dumps(rootcause_error, indent=2)
+                "child error file (%s) contents:\n" "%s",
+                rootcause_error_file,
+                json.dumps(rootcause_error, indent=2),
             )
 
         my_error_file = self._get_error_file_path()
@@ -134,7 +136,8 @@ class ErrorHandler:
             log.info("dumped error file to parent's %s", my_error_file)
         else:
             log.error(
-                "no error file defined for parent, to copy child error file (%s)", rootcause_error_file
+                "no error file defined for parent, to copy child error file (%s)",
+                rootcause_error_file,
             )
 
     def _rm(self, my_error_file):
@@ -144,16 +147,15 @@ class ErrorHandler:
                 try:
                     original = json.dumps(json.load(fp), indent=2)
                     log.warning(
-                        "%s already exists"
-                        " and will be overwritten."
-                        " Original contents:\n%s",
-                        my_error_file, original
+                        "%s already exists" " and will be overwritten." " Original contents:\n%s",
+                        my_error_file,
+                        original,
                     )
                 except json.decoder.JSONDecodeError as err:
                     log.warning(
                         "%s already exists"
                         " and will be overwritten."
                         " Unable to load original contents:\n",
-                        my_error_file
+                        my_error_file,
                     )
             os.remove(my_error_file)

@@ -20,10 +20,9 @@ from shutil import rmtree
 from tempfile import TemporaryDirectory
 from typing import Optional, Union
 
-import torch.distributed as dist
 from .test_utilities import Utils
 
-rank = int(os.environ['LOCAL_RANK'])
+rank = int(os.environ["LOCAL_RANK"])
 
 
 def empty_dir(path: Path):
@@ -53,7 +52,10 @@ class TempNamedDir(TemporaryDirectory):
 
         self._ignore_cleanup_errors = ignore_cleanup_errors
         self._finalizer = weakref.finalize(
-            self, self._cleanup, self.name, warn_message="Implicitly cleaning up {!r}".format(self)
+            self,
+            self._cleanup,
+            self.name,
+            warn_message="Implicitly cleaning up {!r}".format(self),
         )
         self.sync = sync
 

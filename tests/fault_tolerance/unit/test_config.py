@@ -58,7 +58,7 @@ def test_signal_field_with_valid_values():
     )
     assert (
         fault_tolerance.FaultToleranceConfig(
-            rank_termination_signal='SIGKILL'
+            rank_termination_signal="SIGKILL"
         ).rank_termination_signal
         is signal.SIGKILL
     )
@@ -104,8 +104,8 @@ def test_log_level_field_with_invalid_values():
 
 @contextmanager
 def tmp_yaml_file(lines):
-    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
-    temp_file.write('\n'.join(lines))
+    temp_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
+    temp_file.write("\n".join(lines))
     temp_file.close()
     try:
         yield temp_file.name

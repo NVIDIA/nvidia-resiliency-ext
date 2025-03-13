@@ -11,12 +11,18 @@
 # All occurences of 'torch.distributed.elastic' were replaced with 'nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat'
 import datetime
 import logging
-from typing import Tuple, cast, Optional
+from typing import Optional, Tuple, cast
 
 # pyre-ignore[21]: Could not find name `Store` in `torch.distributed`.
-from torch.distributed import Store, TCPStore, PrefixStore
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import RendezvousHandler, RendezvousParameters
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous.utils import parse_rendezvous_endpoint
+from torch.distributed import PrefixStore, Store, TCPStore
+
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import (
+    RendezvousHandler,
+    RendezvousParameters,
+)
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous.utils import (
+    parse_rendezvous_endpoint,
+)
 
 log = logging.getLogger(__name__)
 
@@ -85,8 +91,7 @@ class StaticTCPRendezvous(RendezvousHandler):
 def create_rdzv_handler(params: RendezvousParameters) -> RendezvousHandler:
     if "rank" not in params.config:
         raise ValueError(
-            "rank is absent in RendezvousParameters."
-            "Try add --node-rank to the cmd request"
+            "rank is absent in RendezvousParameters." "Try add --node-rank to the cmd request"
         )
     endpoint = params.endpoint.strip()
     if not endpoint:
@@ -106,6 +111,4 @@ def create_rdzv_handler(params: RendezvousParameters) -> RendezvousHandler:
         timeout = int(params.config["timeout"])
     else:
         timeout = _default_timeout_seconds
-    return StaticTCPRendezvous(
-        master_addr, master_port, rank, world_size, run_id, timeout
-    )
+    return StaticTCPRendezvous(master_addr, master_port, rank, world_size, run_id, timeout)

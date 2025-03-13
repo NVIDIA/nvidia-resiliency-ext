@@ -37,13 +37,13 @@ class Layer(nn.Module):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--layers', type=int, default=10)
-    parser.add_argument('--batch', type=int, default=16)
-    parser.add_argument('--hidden', type=int, default=128)
-    parser.add_argument('--iters', type=int, default=1000)
-    parser.add_argument('--ddp', action='store_true')
-    parser.add_argument('--report_interval', type=int, default=100)
-    parser.add_argument('--local-rank', default=int(os.getenv('LOCAL_RANK', 0)), type=int)
+    parser.add_argument("--layers", type=int, default=10)
+    parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--hidden", type=int, default=128)
+    parser.add_argument("--iters", type=int, default=1000)
+    parser.add_argument("--ddp", action="store_true")
+    parser.add_argument("--report_interval", type=int, default=100)
+    parser.add_argument("--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int)
 
     # Filter out pytest arguments
     args, _ = parser.parse_known_args(sys.argv[1:])
@@ -51,12 +51,12 @@ def parse_args():
 
 
 def setup_distributed():
-    if int(os.getenv('WORLD_SIZE', '1')) > 1:
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    if int(os.getenv("WORLD_SIZE", "1")) > 1:
+        torch.distributed.init_process_group(backend="nccl", init_method="env://")
 
 
 def skip_if_condition(test_scenario):
-    return int(os.getenv('WORLD_SIZE', '1')) == 1 and test_scenario["gather_on_rank0"] is True
+    return int(os.getenv("WORLD_SIZE", "1")) == 1 and test_scenario["gather_on_rank0"] is True
 
 
 @pytest.mark.parametrize(
@@ -75,7 +75,7 @@ def test_report_elapsed_wrap_callables(test_scenario):
         )
 
     args = parse_args()
-    world_size = int(os.getenv('WORLD_SIZE', '1'))
+    world_size = int(os.getenv("WORLD_SIZE", "1"))
 
     if world_size > 1:
         rank = torch.distributed.get_rank()
@@ -83,7 +83,7 @@ def test_report_elapsed_wrap_callables(test_scenario):
         rank = 0
 
     torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]
@@ -153,7 +153,7 @@ def test_report_elapsed_det_section(test_scenario):
         )
 
     args = parse_args()
-    world_size = int(os.getenv('WORLD_SIZE', '1'))
+    world_size = int(os.getenv("WORLD_SIZE", "1"))
 
     if world_size > 1:
         rank = torch.distributed.get_rank()
@@ -161,7 +161,7 @@ def test_report_elapsed_det_section(test_scenario):
         rank = 0
 
     torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]
@@ -210,15 +210,14 @@ def test_report_elapsed_det_section(test_scenario):
 
 
 def test_report_min_interval_is_profiling_interval():
-
     # Ensure that estimated reporting interval is at least as large as the profiling interval.
     # It makes no sense to report more frequently than the profiling interval (some reports would be empty).
 
     args = parse_args()
-    world_size = int(os.getenv('WORLD_SIZE', '1'))
+    world_size = int(os.getenv("WORLD_SIZE", "1"))
 
     torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]
@@ -255,7 +254,7 @@ def test_report_min_interval_is_profiling_interval():
         torch.distributed.barrier()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     setup_distributed()
     if torch.distributed.get_rank() == 0:
         pytest.main(["tests/unit/test_reporting_elapsed.py"])

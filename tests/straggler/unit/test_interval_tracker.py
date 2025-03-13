@@ -19,7 +19,6 @@ from nvidia_resiliency_ext.straggler import interval_tracker
 
 
 def test_estimate():
-
     tracker = interval_tracker.ReportIntervalTracker()
     tracker.time_interval = 0.5
 

@@ -25,17 +25,12 @@ import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
 
-from . import common
 
-
-@unittest.skipIf(
-    not torch.distributed.is_nccl_available(), 'nccl not available'
-)
+@unittest.skipIf(not torch.distributed.is_nccl_available(), "nccl not available")
 class TestCudaHealthCheck(unittest.TestCase):
     @staticmethod
     def launch(fn, timeout=datetime.timedelta(seconds=10)):
-        procs = []
-        ctx = multiprocessing.get_context('fork')
+        ctx = multiprocessing.get_context("fork")
         proc = ctx.Process(target=fn)
         start_time = time.perf_counter()
         proc.start()
@@ -60,9 +55,7 @@ class TestCudaHealthCheck(unittest.TestCase):
     def test_timeout(self):
         def run():
             torch.ones(1).cuda()
-            check = inprocess.health_check.CudaHealthCheck(
-                datetime.timedelta(seconds=1)
-            )
+            check = inprocess.health_check.CudaHealthCheck(datetime.timedelta(seconds=1))
             torch.cuda._sleep(1 << 40)
             try:
                 check(None, None)
@@ -74,12 +67,10 @@ class TestCudaHealthCheck(unittest.TestCase):
         self.assertEqual(exitcode, 0)
         self.assertLess(elapsed, 2)
 
-    @unittest.mock.patch.object(threading, 'excepthook', new=lambda _: None)
+    @unittest.mock.patch.object(threading, "excepthook", new=lambda _: None)
     def test_raises(self):
         def run():
-            check = inprocess.health_check.CudaHealthCheck(
-                datetime.timedelta(seconds=5)
-            )
+            check = inprocess.health_check.CudaHealthCheck(datetime.timedelta(seconds=5))
             b = torch.ones(1, dtype=torch.int64).cuda()
             a = torch.ones(1, dtype=torch.int64).cuda()
             a[b] = 0
@@ -87,7 +78,7 @@ class TestCudaHealthCheck(unittest.TestCase):
                 check(None, None)
                 sys.exit(1)
             except RuntimeError as ex:
-                if 'CUDA' in str(ex):
+                if "CUDA" in str(ex):
                     sys.exit(0)
                 sys.exit(1)
 

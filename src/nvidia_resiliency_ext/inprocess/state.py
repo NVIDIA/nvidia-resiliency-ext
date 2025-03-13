@@ -50,12 +50,12 @@ class State:
         self.status = Status.INITIALIZED
 
     def get_distributed_vars(self):
-        self.rank = int(os.getenv('RANK', 0))
-        self.world_size = int(os.getenv('WORLD_SIZE', 1))
+        self.rank = int(os.getenv("RANK", 0))
+        self.world_size = int(os.getenv("WORLD_SIZE", 1))
 
     def set_distributed_vars(self):
-        os.environ['RANK'] = str(self.rank)
-        os.environ['WORLD_SIZE'] = str(self.active_world_size)
+        os.environ["RANK"] = str(self.rank)
+        os.environ["WORLD_SIZE"] = str(self.active_world_size)
 
     def activate_all_ranks(self):
         self.status = Status.ACTIVE

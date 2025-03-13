@@ -22,17 +22,13 @@ import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
 
-from . import common
 
-
-@unittest.skipIf(
-    not torch.distributed.is_nccl_available(), 'nccl not available'
-)
+@unittest.skipIf(not torch.distributed.is_nccl_available(), "nccl not available")
 class TestAbort(unittest.TestCase):
     @staticmethod
     def launch(fn, world_size=2, timeout=datetime.timedelta(seconds=10)):
         procs = []
-        ctx = multiprocessing.get_context('fork')
+        ctx = multiprocessing.get_context("fork")
         barrier = ctx.Barrier(world_size)
         for rank in range(world_size):
             p = ctx.Process(target=fn, args=(rank, world_size, barrier))
@@ -48,28 +44,25 @@ class TestAbort(unittest.TestCase):
         return exitcodes
 
     def test_multi_group(self):
-
         def run(rank, world_size, barrier):
             abort = inprocess.abort.AbortTorchDistributed()
 
             store = torch.distributed.TCPStore(
-                host_name='localhost',
+                host_name="localhost",
                 port=29500,
                 is_master=(rank == 0),
                 timeout=datetime.timedelta(seconds=5),
             )
             torch.cuda.set_device(rank)
-            device = torch.device('cuda')
+            device = torch.device("cuda")
             torch.distributed.init_process_group(
-                backend='nccl', store=store, rank=rank, world_size=world_size
+                backend="nccl", store=store, rank=rank, world_size=world_size
             )
             barrier.wait()
             size = 128
             t1 = torch.ones(size, device=device)
             t2 = torch.ones(size, device=device)
-            default_group = (
-                torch.distributed.distributed_c10d._get_default_group()
-            )
+            default_group = torch.distributed.distributed_c10d._get_default_group()
             torch.distributed.all_reduce(t1, group=default_group)
             torch.cuda.synchronize()
             new_group = torch.distributed.new_group([0])

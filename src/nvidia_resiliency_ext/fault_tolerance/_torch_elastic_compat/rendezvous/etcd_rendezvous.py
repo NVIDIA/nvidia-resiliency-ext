@@ -18,6 +18,7 @@ import time
 from typing import Optional
 
 import etcd  # type: ignore[import]
+
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import (
     RendezvousClosedError,
     RendezvousError,
@@ -26,9 +27,8 @@ from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous impo
     RendezvousTimeoutError,
 )
 
-from .utils import parse_rendezvous_endpoint
 from .etcd_store import EtcdStore, cas_delay
-
+from .utils import parse_rendezvous_endpoint
 
 _log_fmt = logging.Formatter("%(levelname)s %(asctime)s %(message)s")
 _log_handler = logging.StreamHandler(sys.stderr)
@@ -298,9 +298,7 @@ class EtcdRendezvous:
                 raise
 
             except RendezvousClosedError:
-                log.info(
-                    "Rendezvous for run_id=%s was observed to be closed", self._run_id
-                )
+                log.info("Rendezvous for run_id=%s was observed to be closed", self._run_id)
                 raise
 
             except RendezvousError:
@@ -366,7 +364,9 @@ class EtcdRendezvous:
         state = json.loads(active_version.value)
         log.info(
             "Joined rendezvous version %s as rank %s. Full state: %s",
-            state["version"], this_rank, state
+            state["version"],
+            this_rank,
+            state,
         )
 
         # If this worker was first to reach num_min_workers requirement,
@@ -409,10 +409,7 @@ class EtcdRendezvous:
         active_version = self.wait_for_final(expected_version)
         state = json.loads(active_version.value)
 
-        log.info(
-            "Rendezvous version %s is complete. Final state: %s",
-            state["version"], state
-        )
+        log.info("Rendezvous version %s is complete. Final state: %s", state["version"], state)
 
         # Rendezvous version number; our rank in it; world size
         return state["version"], this_rank, len(state["participants"])
@@ -428,10 +425,7 @@ class EtcdRendezvous:
         #   1. if it's no longer final -> bail out and re-try
         #   2. if keep alives are missing, destroy it and bail out.
         active_state = self.announce_self_waiting(expected_version)
-        log.info(
-            "Added self to waiting list. Rendezvous full state: %s",
-            active_state.value
-        )
+        log.info("Added self to waiting list. Rendezvous full state: %s", active_state.value)
 
         self.wait_for_rendezvous_to_free(expected_version)
         log.info("Previously existing rendezvous state changed. Will re-try joining.")
@@ -567,17 +561,14 @@ class EtcdRendezvous:
 
             if state["status"] != "frozen":
                 raise EtcdRendezvousRetryImmediately(
-                    "Rendezvous no longer frozen, before we confirmed. "
-                    "Must join next one"
+                    "Rendezvous no longer frozen, before we confirmed. " "Must join next one"
                 )
             if state["version"] != expected_version:
                 raise EtcdRendezvousRetryImmediately(
                     "Rendezvous version changed. Must try join the new one."
                 )
 
-            this_lease_key = self.get_path(
-                f"/rdzv/v_{expected_version}/rank_{this_rank}"
-            )
+            this_lease_key = self.get_path(f"/rdzv/v_{expected_version}/rank_{this_rank}")
             self.client.set(this_lease_key, value=None, ttl=CONST_WORKER_KEEPALIVE_TTL)
 
             state["keep_alives"].append(this_lease_key)
@@ -670,9 +661,7 @@ class EtcdRendezvous:
             # Check if current rendezvous state is valid, in the sense that all
             # its members are alive (renewing their lease).
             # If not, try destroy this rendezvous, so a new one can be created.
-            alive_members = self.client.get(
-                self.get_path(f"/rdzv/v_{expected_version}")
-            )
+            alive_members = self.client.get(self.get_path(f"/rdzv/v_{expected_version}"))
             keep_alive_keys = [ch.key for ch in alive_members.children]
 
             for key in state["keep_alives"]:
@@ -680,10 +669,7 @@ class EtcdRendezvous:
                     # This participant didn't renew their lease. We'll declare this
                     # rendezvous version as dead (but only if it hadn't changed)
                     log.info("Keep-alive key %s is not renewed.", key)
-                    log.info(
-                        "Rendezvous version %s is incomplete. ",
-                        expected_version
-                    )
+                    log.info("Rendezvous version %s is incomplete. ", expected_version)
                     log.info("Attempting to destroy it.")
 
                     # Compare-and-delete operation. Throws if compare failed,
@@ -694,10 +680,7 @@ class EtcdRendezvous:
                         prevValue=active_version.value,
                     )
 
-                    log.info(
-                        "Destroyed rendezvous version %s successfully.",
-                        expected_version
-                    )
+                    log.info("Destroyed rendezvous version %s successfully.", expected_version)
 
                     # We can return (and retry) immediately
                     return
@@ -705,9 +688,7 @@ class EtcdRendezvous:
             # Existing rendezvous seems valid, no reason to destroy it.
             # We just have to wait until something changes and re-check.
             try:
-                overall_timeout = (
-                    max(self._rendezvous_deadline - time.time(), 0.0) + 1.0
-                )
+                overall_timeout = max(self._rendezvous_deadline - time.time(), 0.0) + 1.0
                 self.client.watch(
                     key=self.get_path("/rdzv"),
                     index=active_version.etcd_index + 1,
@@ -849,9 +830,7 @@ class EtcdRendezvous:
 
     def create_path_if_not_exists(self, full_path, ttl=None):
         try:
-            self.client.write(
-                key=full_path, value=None, dir=True, prevExist=False, ttl=ttl
-            )
+            self.client.write(key=full_path, value=None, dir=True, prevExist=False, ttl=ttl)
         except etcd.EtcdAlreadyExist:
             pass
 

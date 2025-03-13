@@ -15,12 +15,8 @@
 # limitations under the License.
 
 import multiprocessing
-import os
 import tempfile
-import time
 import unittest
-
-import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
 
@@ -38,21 +34,15 @@ class TestShiftRanks(unittest.TestCase):
                 (
                     state,
                     new_terminated_ranks,
-                ) = inprocess.rank_assignment.ShiftRanks()(
-                    state, terminated_ranks
-                )
+                ) = inprocess.rank_assignment.ShiftRanks()(state, terminated_ranks)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(rank in terminated_ranks)
                 ranks[rank] = None
                 continue
-            self.assertEqual(
-                state.world_size, world_size - len(terminated_ranks)
-            )
+            self.assertEqual(state.world_size, world_size - len(terminated_ranks))
             self.assertEqual(new_terminated_ranks, set())
             ranks[rank] = state.rank
-        self.assertEqual(
-            ranks, {0: 0, 1: None, 2: 1, 3: 2, 4: None, 5: None, 6: 3, 7: 4}
-        )
+        self.assertEqual(ranks, {0: 0, 1: None, 2: 1, 3: 2, 4: None, 5: None, 6: 3, 7: 4})
 
     def test_empty(self):
         world_size = 8
@@ -62,8 +52,8 @@ class TestShiftRanks(unittest.TestCase):
             state = inprocess.state.State()
             state.rank = rank
             state.world_size = world_size
-            state, new_terminated_ranks = (
-                inprocess.rank_assignment.ShiftRanks()(state, terminated_ranks)
+            state, new_terminated_ranks = inprocess.rank_assignment.ShiftRanks()(
+                state, terminated_ranks
             )
             self.assertEqual(state.world_size, world_size)
             self.assertEqual(new_terminated_ranks, set())
@@ -82,9 +72,7 @@ class TestShiftRanks(unittest.TestCase):
                 (
                     state,
                     new_terminated_ranks,
-                ) = inprocess.rank_assignment.ShiftRanks()(
-                    state, terminated_ranks
-                )
+                ) = inprocess.rank_assignment.ShiftRanks()(state, terminated_ranks)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(rank in terminated_ranks)
                 ranks[rank] = None
@@ -106,9 +94,7 @@ class TestShiftRanks(unittest.TestCase):
                 (
                     state,
                     terminated_ranks_1,
-                ) = inprocess.rank_assignment.ShiftRanks()(
-                    state, terminated_ranks
-                )
+                ) = inprocess.rank_assignment.ShiftRanks()(state, terminated_ranks)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(rank in terminated_ranks)
                 ranks[rank] = None
@@ -122,9 +108,7 @@ class TestShiftRanks(unittest.TestCase):
                 (
                     state,
                     terminated_ranks_2,
-                ) = inprocess.rank_assignment.ShiftRanks()(
-                    state, terminated_ranks_1
-                )
+                ) = inprocess.rank_assignment.ShiftRanks()(state, terminated_ranks_1)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(new_rank_1 in terminated_ranks_1)
                 ranks[new_rank_1] = None
@@ -134,9 +118,7 @@ class TestShiftRanks(unittest.TestCase):
             self.assertEqual(terminated_ranks_2, set())
             ranks[rank] = state.rank
 
-        self.assertEqual(
-            ranks, {0: 0, 1: None, 2: None, 3: 1, 4: 2, 5: 3, 6: 4, 7: None}
-        )
+        self.assertEqual(ranks, {0: 0, 1: None, 2: None, 3: 1, 4: 2, 5: 3, 6: 4, 7: None})
 
 
 class TestFillGaps(unittest.TestCase):
@@ -152,21 +134,15 @@ class TestFillGaps(unittest.TestCase):
                 (
                     state,
                     new_terminated_ranks,
-                ) = inprocess.rank_assignment.FillGaps()(
-                    state, terminated_ranks
-                )
+                ) = inprocess.rank_assignment.FillGaps()(state, terminated_ranks)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(rank in terminated_ranks)
                 ranks[rank] = None
                 continue
-            self.assertEqual(
-                state.world_size, world_size - len(terminated_ranks)
-            )
+            self.assertEqual(state.world_size, world_size - len(terminated_ranks))
             self.assertEqual(new_terminated_ranks, set())
             ranks[rank] = state.rank
-        self.assertEqual(
-            ranks, {0: 0, 1: None, 2: 2, 3: 3, 4: None, 5: None, 6: 4, 7: 5}
-        )
+        self.assertEqual(ranks, {0: 0, 1: None, 2: 2, 3: 3, 4: None, 5: None, 6: 4, 7: 5})
 
     def test_empty(self):
         world_size = 8
@@ -180,9 +156,7 @@ class TestFillGaps(unittest.TestCase):
                 (
                     state,
                     new_terminated_ranks,
-                ) = inprocess.rank_assignment.FillGaps()(
-                    state, terminated_ranks
-                )
+                ) = inprocess.rank_assignment.FillGaps()(state, terminated_ranks)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(rank in terminated_ranks)
                 ranks[rank] = None
@@ -204,9 +178,7 @@ class TestFillGaps(unittest.TestCase):
                 (
                     state,
                     new_terminated_ranks,
-                ) = inprocess.rank_assignment.FillGaps()(
-                    state, terminated_ranks
-                )
+                ) = inprocess.rank_assignment.FillGaps()(state, terminated_ranks)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(rank in terminated_ranks)
                 ranks[rank] = None
@@ -228,9 +200,7 @@ class TestFillGaps(unittest.TestCase):
                 (
                     state,
                     terminated_ranks_1,
-                ) = inprocess.rank_assignment.FillGaps()(
-                    state, terminated_ranks
-                )
+                ) = inprocess.rank_assignment.FillGaps()(state, terminated_ranks)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(rank in terminated_ranks)
                 ranks[rank] = None
@@ -244,9 +214,7 @@ class TestFillGaps(unittest.TestCase):
                 (
                     state,
                     terminated_ranks_2,
-                ) = inprocess.rank_assignment.FillGaps()(
-                    state, terminated_ranks_1
-                )
+                ) = inprocess.rank_assignment.FillGaps()(state, terminated_ranks_1)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(new_rank_1 in terminated_ranks_1)
                 ranks[new_rank_1] = None
@@ -256,9 +224,7 @@ class TestFillGaps(unittest.TestCase):
             self.assertEqual(terminated_ranks_2, set())
             ranks[rank] = state.rank
 
-        self.assertEqual(
-            ranks, {0: 0, 1: None, 2: None, 3: 3, 4: 4, 5: 1, 6: 2, 7: None}
-        )
+        self.assertEqual(ranks, {0: 0, 1: None, 2: None, 3: 3, 4: 4, 5: 1, 6: 2, 7: None})
 
 
 class TestFilterGroupedByKey(unittest.TestCase):
@@ -270,22 +236,18 @@ class TestFilterGroupedByKey(unittest.TestCase):
         def run(state, terminated_ranks):
             rank = state.rank
             world_size = state.world_size
-            filter_grouped_by_key = (
-                inprocess.rank_assignment.FilterGroupedByKey(
-                    key_or_fn=state.rank // 2,
-                    condition=lambda count: count == 2,
-                )
+            filter_grouped_by_key = inprocess.rank_assignment.FilterGroupedByKey(
+                key_or_fn=state.rank // 2,
+                condition=lambda count: count == 2,
             )
-            state, terminated_ranks = filter_grouped_by_key(
-                state, terminated_ranks
-            )
+            state, terminated_ranks = filter_grouped_by_key(state, terminated_ranks)
             assert state.rank == rank
             assert state.world_size == world_size
             assert terminated_ranks == {0, 1, 4, 5, 6, 7}
 
         world_size = 8
         terminated_ranks = {1, 4, 5, 6}
-        ctx = multiprocessing.get_context('fork')
+        ctx = multiprocessing.get_context("fork")
         procs = []
         for rank in range(world_size):
             state = inprocess.state.State()
@@ -309,24 +271,18 @@ class TestFilterGroupedByKey(unittest.TestCase):
 
     def test_composed(self):
         def run(state, terminated_ranks):
-            filter_grouped_by_key_div2 = (
-                inprocess.rank_assignment.FilterGroupedByKey(
-                    key_or_fn=lambda rank, _: rank // 2,
-                    condition=lambda count: count == 2,
-                )
+            filter_grouped_by_key_div2 = inprocess.rank_assignment.FilterGroupedByKey(
+                key_or_fn=lambda rank, _: rank // 2,
+                condition=lambda count: count == 2,
             )
-            filter_grouped_by_key_div3 = (
-                inprocess.rank_assignment.FilterGroupedByKey(
-                    key_or_fn=lambda rank, _: rank // 3,
-                    condition=lambda count: count == 3,
-                )
+            filter_grouped_by_key_div3 = inprocess.rank_assignment.FilterGroupedByKey(
+                key_or_fn=lambda rank, _: rank // 3,
+                condition=lambda count: count == 3,
             )
 
             rank = state.rank
             world_size = state.world_size
-            state, terminated_ranks_div2 = filter_grouped_by_key_div2(
-                state, terminated_ranks
-            )
+            state, terminated_ranks_div2 = filter_grouped_by_key_div2(state, terminated_ranks)
             assert state.rank == rank
             assert state.world_size == world_size
             assert terminated_ranks_div2 == {0, 1, 6, 7}
@@ -334,9 +290,7 @@ class TestFilterGroupedByKey(unittest.TestCase):
                 (
                     state,
                     terminated_ranks_shift,
-                ) = inprocess.rank_assignment.ShiftRanks()(
-                    state, terminated_ranks_div2
-                )
+                ) = inprocess.rank_assignment.ShiftRanks()(state, terminated_ranks_div2)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(state.rank in terminated_ranks_div2)
                 return
@@ -347,9 +301,7 @@ class TestFilterGroupedByKey(unittest.TestCase):
             rank_shift = state.rank
             world_size_shift = state.world_size
 
-            state, terminated_ranks_div3 = filter_grouped_by_key_div3(
-                state, terminated_ranks_shift
-            )
+            state, terminated_ranks_div3 = filter_grouped_by_key_div3(state, terminated_ranks_shift)
             assert state.rank == rank_shift
             assert state.world_size == world_size_shift
             assert terminated_ranks_div3 == {3}
@@ -359,9 +311,7 @@ class TestFilterGroupedByKey(unittest.TestCase):
                 (
                     state,
                     terminated_ranks_shift_2,
-                ) = inprocess.rank_assignment.ShiftRanks()(
-                    state, terminated_ranks_div3
-                )
+                ) = inprocess.rank_assignment.ShiftRanks()(state, terminated_ranks_div3)
             except inprocess.rank_assignment.RankDiscarded:
                 self.assertTrue(rank_div3 in terminated_ranks_div3)
                 return
@@ -375,7 +325,7 @@ class TestFilterGroupedByKey(unittest.TestCase):
 
         world_size = 8
         terminated_ranks = {1, 6}
-        ctx = multiprocessing.get_context('fork')
+        ctx = multiprocessing.get_context("fork")
         procs = []
         for rank in range(world_size):
             state = inprocess.state.State()

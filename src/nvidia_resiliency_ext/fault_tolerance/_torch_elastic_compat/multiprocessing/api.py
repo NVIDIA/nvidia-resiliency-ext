@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import signal
+
 # Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
 # Severity: Low   Confidence: High
 # CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
@@ -25,23 +26,31 @@ import subprocess  # nosec
 import sys
 import tempfile
 import time
+from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import IntFlag
 from multiprocessing import synchronize
 from types import FrameType
 from typing import Any, Callable, Dict, Optional, Set, Tuple, Union
-from abc import ABC, abstractmethod
 
 import torch.multiprocessing as mp
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.errors import ProcessFailure, record
+
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.errors import (
+    ProcessFailure,
+    record,
+)
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.redirects import (
     redirect_stderr,
     redirect_stdout,
 )
-
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.subprocess_handler import SubprocessHandler, get_subprocess_handler
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.tail_log import TailLog
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.subprocess_handler import (
+    SubprocessHandler,
+    get_subprocess_handler,
+)
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.tail_log import (
+    TailLog,
+)
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -60,6 +69,7 @@ __all__ = [
     "MultiprocessContext",
     "SubprocessContext",
 ]
+
 
 class SignalException(Exception):
     """
@@ -150,14 +160,10 @@ class Std(IntFlag):
                 d[int(i)] = to_std(v)
             return d
         else:
-            raise ValueError(
-                f"{vm} does not match: <{_VALUE_REGEX}> or <{_MAPPING_REGEX}>"
-            )
+            raise ValueError(f"{vm} does not match: <{_VALUE_REGEX}> or <{_MAPPING_REGEX}>")
 
 
-def to_map(
-    val_or_map: Union[Std, Dict[int, Std]], local_world_size: int
-) -> Dict[int, Std]:
+def to_map(val_or_map: Union[Std, Dict[int, Std]], local_world_size: int) -> Dict[int, Std]:
     """
     Certain APIs take redirect settings either as a single value (e.g. apply to all
     local ranks) or as an explicit user-provided mapping. This method is a convenience
@@ -184,6 +190,7 @@ class LogsDest:
     """
     For each log type, holds mapping of local rank ids to file paths.
     """
+
     stdouts: Dict[int, str] = field(default_factory=dict)
     stderrs: Dict[int, str] = field(default_factory=dict)
     tee_stdouts: Dict[int, str] = field(default_factory=dict)
@@ -221,7 +228,10 @@ class LogsSpecs(ABC):
         self._local_ranks_filter = local_ranks_filter
 
     @abstractmethod
-    def reify(self, envs: Dict[int, Dict[str, str]],) -> LogsDest:
+    def reify(
+        self,
+        envs: Dict[int, Dict[str, str]],
+    ) -> LogsDest:
         """
         Given the environment variables, builds destination of log files for each of the local ranks.
 
@@ -235,6 +245,7 @@ class LogsSpecs(ABC):
     def root_log_dir(self) -> str:
         pass
 
+
 class DefaultLogsSpecs(LogsSpecs):
     """
     Default LogsSpecs implementation:
@@ -242,6 +253,7 @@ class DefaultLogsSpecs(LogsSpecs):
     - `log_dir` will be created if it doesn't exist
     - Generates nested folders for each attempt and rank.
     """
+
     def __init__(
         self,
         log_dir: Optional[str] = None,
@@ -272,7 +284,10 @@ class DefaultLogsSpecs(LogsSpecs):
         log.info("log directory set to: %s", dir)
         return dir
 
-    def reify(self, envs: Dict[int, Dict[str, str]],) -> LogsDest:
+    def reify(
+        self,
+        envs: Dict[int, Dict[str, str]],
+    ) -> LogsDest:
         """
         Uses following scheme to build log destination paths:
 
@@ -429,7 +444,6 @@ class PContext(abc.ABC):
         envs: Dict[int, Dict[str, str]],
         logs_specs: LogsSpecs,
         log_line_prefixes: Optional[Dict[int, str]] = None,
-
     ):
         self.name = name
         # validate that all mappings have the same number of keys and
@@ -533,9 +547,7 @@ class PContext(abc.ABC):
         """
         raise NotImplementedError()
 
-    def close(
-        self, death_sig: Optional[signal.Signals] = None, timeout: int = 30
-    ) -> None:
+    def close(self, death_sig: Optional[signal.Signals] = None, timeout: int = 30) -> None:
         r"""
         Terminates all processes managed by this context and cleans up any
         meta resources (e.g. redirect, error_file files).
@@ -682,9 +694,7 @@ class MultiprocessContext(PContext):
                 # Wait untill all processes are finished. At this point workers finished executing
                 # user function
                 self._pc.join()
-                _validate_full_rank(
-                    self._return_values, self.nprocs, "return_value queue"
-                )
+                _validate_full_rank(self._return_values, self.nprocs, "return_value queue")
                 self.close()
                 return RunProcsResult(
                     return_values=self._return_values,
@@ -702,12 +712,12 @@ class MultiprocessContext(PContext):
             error_filepath = self.error_files[failed_local_rank]
 
             log.exception(
-                "failed (exitcode: %s)"
-                " local_rank: %s (pid: %s)"
-                " of fn: %s (start_method: %s)",
+                "failed (exitcode: %s)" " local_rank: %s (pid: %s)" " of fn: %s (start_method: %s)",
                 failed_proc.exitcode,
-                failed_local_rank, e.pid,
-                fn_name, self.start_method,
+                failed_local_rank,
+                e.pid,
+                fn_name,
+                self.start_method,
             )
 
             self.close()
@@ -750,7 +760,9 @@ class MultiprocessContext(PContext):
             if proc.is_alive():
                 log.warning(
                     "Unable to shutdown process %s via %s, forcefully exiting via %s",
-                    proc.pid, death_sig, _get_kill_signal()
+                    proc.pid,
+                    death_sig,
+                    _get_kill_signal(),
                 )
                 try:
                     os.kill(proc.pid, _get_kill_signal())
@@ -759,6 +771,7 @@ class MultiprocessContext(PContext):
                     # `ProcessLookupError` will be raised, it is safe to ignore it.
                     pass
             proc.join()
+
 
 class SubprocessContext(PContext):
     """``PContext`` holding worker processes invoked as a binary."""
@@ -771,7 +784,6 @@ class SubprocessContext(PContext):
         envs: Dict[int, Dict[str, str]],
         logs_specs: LogsSpecs,
         log_line_prefixes: Optional[Dict[int, str]] = None,
-
     ):
         super().__init__(
             name,
@@ -833,10 +845,11 @@ class SubprocessContext(PContext):
             if result.is_failed():
                 first_failure = min(result.failures.values(), key=lambda f: f.timestamp)
                 log.error(
-                    "failed (exitcode: %s)"
-                    " local_rank: %s (pid: %s)"
-                    " of binary: %s",
-                    first_failure.exitcode, first_failure.local_rank, first_failure.pid, self.entrypoint
+                    "failed (exitcode: %s)" " local_rank: %s (pid: %s)" " of binary: %s",
+                    first_failure.exitcode,
+                    first_failure.local_rank,
+                    first_failure.pid,
+                    self.entrypoint,
                 )
             else:
                 # Populate return with dummy values. This provides consistency with MultiprocessingHandler
@@ -847,10 +860,7 @@ class SubprocessContext(PContext):
             return None
 
     def pids(self) -> Dict[int, int]:
-        return {
-            local_rank: sh.proc.pid
-            for local_rank, sh in self.subprocess_handlers.items()
-        }
+        return {local_rank: sh.proc.pid for local_rank, sh in self.subprocess_handlers.items()}
 
     def _close(self, death_sig: signal.Signals, timeout: int = 30) -> None:
         if not self.subprocess_handlers:
@@ -876,7 +886,9 @@ class SubprocessContext(PContext):
             if handler.proc.poll() is None:
                 log.warning(
                     "Unable to shutdown process %s via %s, forcefully exiting via %s",
-                    handler.proc.pid, death_sig, _get_kill_signal()
+                    handler.proc.pid,
+                    death_sig,
+                    _get_kill_signal(),
                 )
                 handler.close(death_sig=_get_kill_signal())
                 handler.proc.wait()

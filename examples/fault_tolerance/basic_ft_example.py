@@ -70,8 +70,8 @@ class SimpleDataset(torch.utils.data.Dataset):
         return self.size
 
     def __getitem__(self, idx):
-        x = torch.rand((FEAT_SIZE,), dtype=torch.float32, device='cpu')
-        y = torch.rand((DNN_OUT_SIZE,), dtype=torch.float32, device='cpu')
+        x = torch.rand((FEAT_SIZE,), dtype=torch.float32, device="cpu")
+        y = torch.rand((DNN_OUT_SIZE,), dtype=torch.float32, device="cpu")
         return x, y
 
 
@@ -86,6 +86,7 @@ class SimpleModel(nn.Module):
         x = nn.functional.relu(x)
         x = self.fc2(x)
         return x
+
 
 def print_on_rank0(msg):
     if dist.get_rank() == 0:

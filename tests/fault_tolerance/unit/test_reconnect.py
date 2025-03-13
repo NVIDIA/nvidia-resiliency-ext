@@ -56,7 +56,7 @@ def rank_monitors_fixture():
             os.environ["RANK"] = str(rank)
             p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
             rank_monitors.append(p)
-            os.environ["RANK"] = ''
+            os.environ["RANK"] = ""
 
         yield rank_monitors
 
@@ -68,7 +68,6 @@ def rank_monitors_fixture():
 
 
 def _rank_main(*args, rank_ready_events, **kwargs):
-
     rank_mon_cli = fault_tolerance.RankMonitorClient()
     rank_mon_cli.init_workload_monitoring()
 

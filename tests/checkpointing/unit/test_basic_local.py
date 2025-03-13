@@ -14,28 +14,26 @@
 # limitations under the license.
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
 import torch
 import torch.distributed as dist
 
-from .test_utilities import Utils
-from . import TempNamedDir
-
 from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager import (
     LocalCheckpointManager,
 )
 
+from . import TempNamedDir
+from .test_utilities import Utils
 
 # from typing import Any, Callable, Tuple, Union
 
 
 class SimpleTensorAwareStateDict(TensorAwareStateDict):
     def __init__(self, iteration):
-        self._tensors = [torch.empty((1000, 1000), device='cuda').random_() for _ in range(100)]
+        self._tensors = [torch.empty((1000, 1000), device="cuda").random_() for _ in range(100)]
         self.iteration = iteration
 
     def pop_tensors(self):
@@ -88,10 +86,10 @@ class TestLocalCheckpointing:
         if async_save:
             async_save_request.execute_sync()
         else:
-            assert async_save_request == None
+            assert async_save_request is None
 
-    @pytest.mark.parametrize(('use_ramdisk'), [True, False])
-    @pytest.mark.parametrize(('async_save'), [True, False])
+    @pytest.mark.parametrize(("use_ramdisk"), [True, False])
+    @pytest.mark.parametrize(("async_save"), [True, False])
     def test_basic_save_load_scenarios(self, tmp_path_dist_ckpt, use_ramdisk, async_save):
         if use_ramdisk:
             tmp_path_dist_ckpt = Path("/dev/shm")
@@ -110,7 +108,7 @@ class TestLocalCheckpointing:
             loaded_state_dict, ckpt_id = checkpoint_manager.load()
             intermediete_state_dict.restore_tensor_device()
             assert loaded_state_dict == intermediete_state_dict
-            assert ckpt_id == (1, dist.get_rank(), '')
+            assert ckpt_id == (1, dist.get_rank(), "")
 
             # "Succesfull load after restart"
             checkpoint_manager = LocalCheckpointManager(local_ckpt_dir)
@@ -119,7 +117,7 @@ class TestLocalCheckpointing:
             assert iteration == 1
             loaded_state_dict, ckpt_id = checkpoint_manager.load()
             assert loaded_state_dict == intermediete_state_dict
-            assert ckpt_id == (1, dist.get_rank(), '')
+            assert ckpt_id == (1, dist.get_rank(), "")
 
             # "Failed load after restart"
             checkpoint_manager = LocalCheckpointManager(local_ckpt_dir)

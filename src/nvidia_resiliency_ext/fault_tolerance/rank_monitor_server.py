@@ -271,7 +271,7 @@ class RankMonitorServer:
     @staticmethod
     def get_ipc_socket_path(parent_rank=None):
         parent_rank = parent_rank if parent_rank is not None else os.environ["RANK"]
-        return f'{tempfile.gettempdir()}/fault_tol_rmon_{parent_rank}.sock'
+        return f"{tempfile.gettempdir()}/fault_tol_rmon_{parent_rank}.sock"
 
     @staticmethod
     def run_in_subprocess(cfg, parent_rank: Optional[int] = None, mp_ctx=torch.multiprocessing):

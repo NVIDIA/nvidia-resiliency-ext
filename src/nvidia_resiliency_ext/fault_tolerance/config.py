@@ -49,7 +49,7 @@ class FaultToleranceConfig:
     log_level: int = logging.INFO
 
     @staticmethod
-    def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
+    def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> "FaultToleranceConfig":
         """
         Create a FaultToleranceConfig object from keyword arguments.
 
@@ -71,7 +71,7 @@ class FaultToleranceConfig:
         return FaultToleranceConfig(**matching_args)
 
     @staticmethod
-    def from_yaml_file(cfg_path: str, ignore_not_recognized: bool = True) -> 'FaultToleranceConfig':
+    def from_yaml_file(cfg_path: str, ignore_not_recognized: bool = True) -> "FaultToleranceConfig":
         """
         Load the fault tolerance configuration from a YAML file.
 
@@ -89,7 +89,7 @@ class FaultToleranceConfig:
         Raises:
             ValueError: If the 'fault_tolerance' section is not found in the config file.
         """
-        with open(cfg_path, 'r') as file:
+        with open(cfg_path, "r") as file:
             yaml_data = yaml.safe_load(file)
             ft_cfg = FaultToleranceConfig._find_fault_tol_section(yaml_data)
             if ft_cfg:
@@ -103,7 +103,7 @@ class FaultToleranceConfig:
     def from_args(
         args: argparse.Namespace,
         cfg_file_arg: str = None,
-        ft_args_prefix: str = '',
+        ft_args_prefix: str = "",
     ):
         """
         Init FT config object from parsed CLI args.
@@ -165,11 +165,11 @@ class FaultToleranceConfig:
         # this might not be the case, if the object was modified after creation
         self._fix_rank_termination_signal_type()
         self._fix_log_level_type()
-        with open(cfg_path, 'w') as file:
+        with open(cfg_path, "w") as file:
             ft_cfg_dict = dataclasses.asdict(self)
-            ft_cfg_dict['rank_termination_signal'] = self.rank_termination_signal.name
-            ft_cfg_dict['log_level'] = self.log_level
-            ft_cfg_dict = {'fault_tolerance': ft_cfg_dict}
+            ft_cfg_dict["rank_termination_signal"] = self.rank_termination_signal.name
+            ft_cfg_dict["log_level"] = self.log_level
+            ft_cfg_dict = {"fault_tolerance": ft_cfg_dict}
             yaml.dump(ft_cfg_dict, file)
 
     @staticmethod
@@ -214,15 +214,15 @@ class FaultToleranceConfig:
                 )
         elif isinstance(self.log_level, str):
             log_level_str = self.log_level.upper()
-            if log_level_str in ['DEBUG', 'DBG']:
+            if log_level_str in ["DEBUG", "DBG"]:
                 self.log_level = logging.DEBUG
-            elif log_level_str == 'INFO':
+            elif log_level_str == "INFO":
                 self.log_level = logging.INFO
-            elif log_level_str in ['WARNING', 'WARN']:
+            elif log_level_str in ["WARNING", "WARN"]:
                 self.log_level = logging.WARNING
-            elif log_level_str == 'ERROR':
+            elif log_level_str == "ERROR":
                 self.log_level = logging.ERROR
-            elif log_level_str == 'CRITICAL':
+            elif log_level_str == "CRITICAL":
                 self.log_level = logging.CRITICAL
             else:
                 raise ValueError(f"Invalid log level string: {self.log_level}")

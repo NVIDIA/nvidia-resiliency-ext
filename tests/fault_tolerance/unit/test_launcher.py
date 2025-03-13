@@ -195,7 +195,7 @@ def test_ranks_restart(tmp_dir):
 def test_missing_cfg(tmp_dir):
     # Empty config file, cant be parsed
     empty_ft_cfg_path = os.path.join(tmp_dir, "_empty_ft_cfg.yaml")
-    with open(empty_ft_cfg_path, 'a'):
+    with open(empty_ft_cfg_path, "a"):
         pass  # touch file
     # By default, launcher should raise an error if FT config cant be read
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"

@@ -58,7 +58,7 @@ def _run_rank_monitors_fixture():
             os.environ["RANK"] = str(rank)
             p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
             rank_monitors.append(p)
-            os.environ["RANK"] = ''
+            os.environ["RANK"] = ""
 
         yield
 
@@ -70,7 +70,6 @@ def _run_rank_monitors_fixture():
 
 
 def _rank_main(*args, rank_ready_events, **kwargs):
-
     rank_mon_cli = fault_tolerance.RankMonitorClient()
     rank_mon_cli.init_workload_monitoring()
 
@@ -195,7 +194,7 @@ def test_shutdown(test_scenario):
 
     ret_codes = multiprocessing_execute_join(rank_processes, timeout=60)
 
-    assert ret_codes == test_scenario['expected_ret_codes']
+    assert ret_codes == test_scenario["expected_ret_codes"]
 
 
 def _rank_main_explicit_shutdown(*args, rank_ready_events, **kwargs):

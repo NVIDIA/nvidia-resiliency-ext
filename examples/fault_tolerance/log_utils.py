@@ -20,7 +20,7 @@ import sys
 import dist_utils
 
 
-def setup_logging(log_all_ranks=True, filename=os.devnull, filemode='w'):
+def setup_logging(log_all_ranks=True, filename=os.devnull, filemode="w"):
     """
     Configures logging.
     By default logs from all workers are printed to the stderr, entries are
@@ -64,9 +64,9 @@ def setup_logging(log_all_ranks=True, filename=os.devnull, filemode='w'):
     stderr = logging.StreamHandler(sys.stderr)
     stderr.setLevel(logging.DEBUG)
     if log_all_ranks:
-        formatter = logging.Formatter(f'{rank}: %(message)s')
+        formatter = logging.Formatter(f"{rank}: %(message)s")
     else:
-        formatter = logging.Formatter('%(message)s')
+        formatter = logging.Formatter("%(message)s")
     stderr.setFormatter(formatter)
-    logging.getLogger('').addHandler(stderr)
-    logging.getLogger('').addFilter(rank_filter)
+    logging.getLogger("").addHandler(stderr)
+    logging.getLogger("").addFilter(rank_filter)

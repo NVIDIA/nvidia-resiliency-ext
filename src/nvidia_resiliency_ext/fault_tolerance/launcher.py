@@ -221,13 +221,13 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._rank_to_rmon:
             # Ensure we get the same ranks range after redezvous
             # otherwise we wont be able to use local CPU checkpoints
-            new_ranks = {int(worker_env['RANK']) for worker_env in envs.values()}
+            new_ranks = {int(worker_env["RANK"]) for worker_env in envs.values()}
             old_ranks = {rank for rank in self._rank_to_rmon.keys()}
             assert new_ranks == old_ranks, "Ranks should not change"
         for worker_env in envs.values():
             # Start rank monitors if not already started
             # Each rank (re)connects to its rank monitor when it starts
-            rank = int(worker_env['RANK'])
+            rank = int(worker_env["RANK"])
             if rank not in self._rank_to_rmon:
                 self._rank_to_rmon[rank] = RankMonitorServer.run_in_subprocess(
                     self._ft_cfg, rank, spawn_mp_ctx
@@ -668,7 +668,7 @@ def launch_agent(
     master_addr, master_port = _get_addr_and_port(rdzv_parameters)
 
     orig_rdzv_handler = rdzv_registry.get_rendezvous_handler(rdzv_parameters)
-    wrapped_rdzv_handler = RankCachingRdzvHandlerWrapper(orig_rdzv_handler)
+    RankCachingRdzvHandlerWrapper(orig_rdzv_handler)
 
     spec = WorkerSpec(
         role=config.role,
@@ -1351,7 +1351,7 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ignore-missing-fault-tol-cfg",
         "--ignore-missing-fault-tol-cfg",
-        action='store_true',
+        action="store_true",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
     )
 

@@ -12,6 +12,7 @@
 import inspect
 import logging
 import os
+
 # Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
 # Severity: Low   Confidence: High
 # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
@@ -25,10 +26,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, cast, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 
 from torch.distributed import PrefixStore, Store
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events import construct_and_record_rdzv_event, NodeState
+
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events import (
+    NodeState,
+    construct_and_record_rdzv_event,
+)
 
 from .api import (
     RendezvousClosedError,
@@ -41,7 +46,13 @@ from .api import (
 )
 from .utils import _delay, _PeriodicTimer
 
-__all__ = ['RendezvousBackend', 'RendezvousTimeout', 'RendezvousSettings', 'DynamicRendezvousHandler', 'create_handler']
+__all__ = [
+    'RendezvousBackend',
+    'RendezvousTimeout',
+    'RendezvousSettings',
+    'DynamicRendezvousHandler',
+    'create_handler',
+]
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +65,7 @@ def get_method_name(depth=2):
 
 Token = Any
 """Represent an opaque fencing token used by the rendezvous backend."""
+
 
 class RendezvousBackend(ABC):
     """Represent a backend that holds the rendezvous state."""
@@ -925,8 +937,10 @@ class _RendezvousJoinOp:
             # If the rendezvous has enough number of participants including us,
             # check whether we have passed the rendezvous deadline. If yes,
             # complete it.
-            if len(state.participants) >= ctx.settings.min_nodes and \
-                    len(state.participants) <= ctx.settings.max_nodes:
+            if (
+                len(state.participants) >= ctx.settings.min_nodes
+                and len(state.participants) <= ctx.settings.max_nodes
+            ):
                 if cast(datetime, state.deadline) < datetime.utcnow():
                     msg = (
                         f"The node '{ctx.node}' marking the rendezvous complete, "
@@ -1126,10 +1140,7 @@ class DynamicRendezvousHandler(RendezvousHandler):
 
             deadline = self._get_deadline(self._settings.timeout.join)
             self._op_executor.run(exit_op, deadline)
-            self._op_executor.run(
-                join_op,
-                deadline,
-                self._get_deadline)
+            self._op_executor.run(join_op, deadline, self._get_deadline)
 
             self._start_heartbeats()
 

@@ -27,7 +27,7 @@ import torch.distributed as dist
 from ..base_state_dict import TensorAwareStateDict
 from ._torch_future import recv_object_list, send_object_list
 from .torch_device_utils import TensorPlaceholder
-from .utils import debug_time, debug_msg
+from .utils import debug_msg, debug_time
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ def batched(iterable, n):
     # Source: https://docs.python.org/3/library/itertools.html#itertools.batched
     # batched('ABCDEFG', 3) → ABC DEF G
     if n < 1:
-        raise ValueError('n must be at least one')
+        raise ValueError("n must be at least one")
     iterator = iter(iterable)
     while batch := tuple(islice(iterator, n)):
         yield batch
@@ -440,8 +440,8 @@ class GroupWrapper:
         hollow_ckpt: TensorAwareStateDict = self.recv_object(src)
         hollow_ckpt.init_tensors()
         for ten in hollow_ckpt.tensors:
-            if ten.device.type == 'cpu':
-                cuda_tensor = torch.empty_like(ten, device='cuda')
+            if ten.device.type == "cpu":
+                cuda_tensor = torch.empty_like(ten, device="cuda")
                 dist.recv(cuda_tensor, src, group=self.group)
                 ten.copy_(cuda_tensor.cpu())
             else:

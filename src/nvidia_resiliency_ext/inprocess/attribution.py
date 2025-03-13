@@ -36,8 +36,8 @@ class InterruptionRecord:
 
     @classmethod
     def from_str(cls, string: str):
-        rank_match = re.search(r'rank=(\d+)', string)
-        interruption_match = re.search(r'Interruption\.(\w+)', string)
+        rank_match = re.search(r"rank=(\d+)", string)
+        interruption_match = re.search(r"Interruption\.(\w+)", string)
 
         if not rank_match or not interruption_match:
             raise ValueError("Invalid State string format")
@@ -50,12 +50,10 @@ class InterruptionRecord:
 
 
 def format_interruption_records(records):
-    msg = ', '.join(
+    msg = ", ".join(
         (
-            f'{interruption} on {ranks=}'
-            for interruption, group in itertools.groupby(
-                records, key=lambda r: r.interruption
-            )
+            f"{interruption} on {ranks=}"
+            for interruption, group in itertools.groupby(records, key=lambda r: r.interruption)
             for ranks in [[elem.rank for elem in group]]
         )
     )

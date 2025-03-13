@@ -49,69 +49,69 @@ raise_timestamp = None
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Inprocess Restart Optimal Example',
+        description="Inprocess Restart Optimal Example",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     parser.add_argument(
-        '--size',
+        "--size",
         default=64,
         type=int,
-        help='model hidden size',
+        help="model hidden size",
     )
     parser.add_argument(
-        '--layers',
+        "--layers",
         default=4,
         type=int,
-        help='number of layers',
+        help="number of layers",
     )
     parser.add_argument(
-        '--log-interval',
+        "--log-interval",
         default=100,
         type=int,
-        help='logging interval',
+        help="logging interval",
     )
     parser.add_argument(
-        '--chkpt-interval',
+        "--chkpt-interval",
         default=100,
         type=int,
-        help='checkpointing interval',
+        help="checkpointing interval",
     )
     parser.add_argument(
-        '--total-iterations',
+        "--total-iterations",
         default=1000000,
         type=int,
-        help='total training iterations',
+        help="total training iterations",
     )
     parser.add_argument(
-        '--seed',
+        "--seed",
         default=None,
         type=int,
-        help='random seed, time-based if None',
+        help="random seed, time-based if None",
     )
     parser.add_argument(
-        '--path',
-        default='/tmp/',
+        "--path",
+        default="/tmp/",
         type=str,
-        help='directory for the checkpoint file',
+        help="directory for the checkpoint file",
     )
     parser.add_argument(
-        '--fault-prob',
+        "--fault-prob",
         default=0.001,
         type=float,
-        help='fault injection probability',
+        help="fault injection probability",
     )
     parser.add_argument(
-        '--device',
-        default='cpu',
-        choices=['cpu', 'cuda'],
-        help='device',
+        "--device",
+        default="cpu",
+        choices=["cpu", "cuda"],
+        help="device",
     )
     parser.add_argument(
-        '--log-level',
+        "--log-level",
         type=lambda s: logging._nameToLevel[s.upper()],
         default=logging.INFO,
-        help='logging level',
+        help="logging level",
     )
 
     return parser.parse_args()
@@ -125,7 +125,7 @@ def parse_args():
 # An instance of ``inprocess.CallWrapper` is automatically injected into
 # wrapped function arguments when Wrapper is invoked.
 @inprocess.Wrapper(
-    store_kwargs={'port': int(os.getenv('MASTER_PORT', 29500)) + 2},
+    store_kwargs={"port": int(os.getenv("MASTER_PORT", 29500)) + 2},
     health_check=inprocess.health_check.CudaHealthCheck(),
 )
 def train(
@@ -141,21 +141,19 @@ def train(
     global raise_timestamp
     if raise_timestamp is not None:
         restart_latency = time.perf_counter() - raise_timestamp
-        logging.info(f'restart latency: {restart_latency:.3f}s')
+        logging.info(f"restart latency: {restart_latency:.3f}s")
     raise_timestamp = None
 
     log_interval = args.log_interval
     chkpt_interval = args.chkpt_interval
 
-    rank = int(os.environ['RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
 
     # Create a new Store by adding a prefix based on the current inprocess
     # restart iteration. PrefixStore wraps the baseline TCPStore which is
     # reused for all restart iterations
-    store = torch.distributed.PrefixStore(
-        str(call_wrapper.iteration), base_store
-    )
+    store = torch.distributed.PrefixStore(str(call_wrapper.iteration), base_store)
 
     torch.distributed.init_process_group(
         backend,
@@ -167,17 +165,17 @@ def train(
     model_ddp = torch.nn.parallel.DistributedDataParallel(model)
 
     iteration = 0
-    loss = torch.tensor(float('nan'))
-    checkpoint_path = pathlib.Path(args.path) / 'checkpoint.pt'
+    loss = torch.tensor(float("nan"))
+    checkpoint_path = pathlib.Path(args.path) / "checkpoint.pt"
 
     # Application loads state from the latest checkpoint on every restart
     # iteration of the wrapped function.
     if checkpoint_path.exists():
         checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model'])
-        opt.load_state_dict(checkpoint['opt'])
-        torch.set_rng_state(checkpoint['rng'])
-        iteration = checkpoint['iteration']
+        model.load_state_dict(checkpoint["model"])
+        opt.load_state_dict(checkpoint["opt"])
+        torch.set_rng_state(checkpoint["rng"])
+        iteration = checkpoint["iteration"]
 
     if args.seed is not None:
         random.seed(args.seed + iteration * world_size + rank)
@@ -185,17 +183,16 @@ def train(
         random.seed(time.perf_counter_ns())
 
     for iteration in range(iteration, args.total_iterations):
-
         # Application periodically saves a checkpoint. The checkpoint allows
         # the application to continue from previous state after a restart.
         if iteration % chkpt_interval == chkpt_interval - 1:
             torch.distributed.barrier()
             if rank == 0:
                 checkpoint = {
-                    'model': model.state_dict(),
-                    'opt': opt.state_dict(),
-                    'rng': torch.get_rng_state(),
-                    'iteration': iteration,
+                    "model": model.state_dict(),
+                    "opt": opt.state_dict(),
+                    "rng": torch.get_rng_state(),
+                    "iteration": iteration,
                 }
                 # Saving the checkpoint is performed within atomic() context
                 # manager to ensure that the main thread won't execute
@@ -206,7 +203,7 @@ def train(
         # Randomly trigger an example fault
         if random.random() < args.fault_prob:
             raise_timestamp = time.perf_counter()
-            raise RuntimeError(f'example fault at {iteration=} from {rank=}')
+            raise RuntimeError(f"example fault at {iteration=} from {rank=}")
 
         inp = torch.rand(args.size, args.size).to(device)
         model.zero_grad()
@@ -217,7 +214,7 @@ def train(
         loss.item()
 
         if rank == 0 and iteration % log_interval == log_interval - 1:
-            logging.info(f'{rank=} {iteration=} {loss.item()=}')
+            logging.info(f"{rank=} {iteration=} {loss.item()=}")
 
 
 def main():
@@ -226,19 +223,19 @@ def main():
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         level=args.log_level,
     )
-    logging.info(f'{args}')
+    logging.info(f"{args}")
 
-    rank = int(os.environ['RANK'])
-    local_rank = int(os.environ['LOCAL_RANK'])
+    int(os.environ["RANK"])
+    local_rank = int(os.environ["LOCAL_RANK"])
 
-    if args.device == 'cuda':
+    if args.device == "cuda":
         torch.cuda.set_device(local_rank)
-        device = torch.device('cuda')
-        backend = 'nccl'
+        device = torch.device("cuda")
+        backend = "nccl"
         timeout = datetime.timedelta(seconds=150)
-    elif args.device == 'cpu':
-        device = torch.device('cpu')
-        backend = 'gloo'
+    elif args.device == "cpu":
+        device = torch.device("cpu")
+        backend = "gloo"
         timeout = datetime.timedelta(seconds=10)
     else:
         raise RuntimeError
@@ -255,10 +252,10 @@ def main():
     # TCPStore uses ``(MASTER_PORT + 1)`` to avoid conflicts with TCPStore
     # created by ``torch.distributed.run`` and listening on ``MASTER_PORT``.
     store = torch.distributed.TCPStore(
-        host_name=os.environ['MASTER_ADDR'],
-        port=int(os.environ['MASTER_PORT']) + 1,
-        world_size=int(os.environ['WORLD_SIZE']),
-        is_master=(int(os.environ['RANK']) == 0),
+        host_name=os.environ["MASTER_ADDR"],
+        port=int(os.environ["MASTER_PORT"]) + 1,
+        world_size=int(os.environ["WORLD_SIZE"]),
+        is_master=(int(os.environ["RANK"]) == 0),
         multi_tenant=True,
         wait_for_workers=True,
         use_libuv=True,
@@ -269,5 +266,5 @@ def main():
     train(store, model, opt, backend, device, timeout, args)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
