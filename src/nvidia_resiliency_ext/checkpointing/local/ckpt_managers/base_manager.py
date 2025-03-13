@@ -176,7 +176,7 @@ class BaseCheckpointManager(ABC):
         for ids in self.globally_available_ids:
             for ckpt_id in ids:
                 iteration, rank, session_id = ckpt_id
-                assert type(iteration) == int
+                assert isinstance(iteration, int)
                 assert session_id == self.session_id
                 checkpoint_coverage_map[iteration].add(rank)
 

@@ -20,8 +20,6 @@ from shutil import rmtree
 from tempfile import TemporaryDirectory
 from typing import Optional, Union
 
-import torch.distributed as dist
-
 from .test_utilities import Utils
 
 rank = int(os.environ["LOCAL_RANK"])

@@ -530,7 +530,7 @@ def main():
         for rank, p in enumerate(procs):
             p.join()
         log.info("all processes joined")
-    except:
+    except Exception:
         log.info("killing processes")
         for rank, p in enumerate(procs):
             p.kill()

@@ -116,7 +116,7 @@ class MonitorProcess:
                 logging.FileHandler,
             )
             log_format = nearest_file_handler.formatter._fmt
-        except:
+        except Exception:
             log_format = "%(asctime)s | %(levelname)-5s | %(name)s | %(message)s"
 
         logging.basicConfig(
