@@ -24,7 +24,7 @@ from .state import State
 
 
 class Abort(abc.ABC):
-    r'''
+    r"""
     Abstract base class for ``abort`` argument for
     :py:class:`inprocess.Wrapper`.
 
@@ -38,7 +38,7 @@ class Abort(abc.ABC):
 
     Multiple instances of :py:class:`Abort` could be composed with
     :py:class:`inprocess.Compose` to achieve the desired behavior.
-    '''
+    """
 
     @abc.abstractmethod
     def __call__(self, state: State) -> State:
@@ -46,21 +46,19 @@ class Abort(abc.ABC):
 
 
 class AbortTorchDistributed(Abort):
-    r'''
+    r"""
     Aborts PyTorch distributed collectives, and destroys all PyTorch
     distributed process groups.
 
     This functionality is implemented by invoking
     :py:func:`torch.distributed.destroy_process_group` in a separate Python
     thread for each distributed group that has been created.
-    '''
+    """
 
     @staticmethod
     def shutdown_all_process_group_backends():
-        device = torch.device('cuda')
-        process_groups = list(
-            torch.distributed.distributed_c10d._world.pg_names
-        )
+        device = torch.device("cuda")
+        process_groups = list(torch.distributed.distributed_c10d._world.pg_names)
 
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=len(process_groups)
@@ -91,10 +89,7 @@ class AbortTorchDistributed(Abort):
 
     @log_exec
     def __call__(self, state: State) -> State:
-        if (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-        ):
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
         return state

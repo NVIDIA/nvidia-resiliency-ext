@@ -54,12 +54,12 @@ class CallableId:
         if inspect.ismodule(self.obj):
             obj_name = self.obj.__name__
         elif inspect.isclass(self.obj):
-            obj_name = f'{self.obj.__module__}.{self.obj.__name__}'
-        elif hasattr(self.obj, '__class__'):
-            obj_name = getattr(self.obj.__class__, '__name__', self.obj)
+            obj_name = f"{self.obj.__module__}.{self.obj.__name__}"
+        elif hasattr(self.obj, "__class__"):
+            obj_name = getattr(self.obj.__class__, "__name__", self.obj)
         else:
-            obj_name = getattr(self.obj, '__name__', self.obj)
-        return f'{obj_name}.{self.name}'
+            obj_name = getattr(self.obj, "__name__", self.obj)
+        return f"{obj_name}.{self.name}"
 
 
 @dataclasses.dataclass
@@ -137,7 +137,7 @@ class Detector:
         assert not cls.initialized
 
         cls.scores_to_compute = (
-            ['relative_perf_scores', 'individual_perf_scores']
+            ["relative_perf_scores", "individual_perf_scores"]
             if str(scores_to_compute) == "all"
             else scores_to_compute
         )
@@ -189,7 +189,9 @@ class Detector:
                 Statistic.MED: torch.median(cpu_elapseds).item(),
                 Statistic.AVG: torch.mean(cpu_elapseds).item(),
                 Statistic.STD: (
-                    torch.std(cpu_elapseds).item() if len(cpu_elapseds) > 1 else float("nan")
+                    torch.std(cpu_elapseds).item()
+                    if len(cpu_elapseds) > 1
+                    else float("nan")
                 ),
                 Statistic.NUM: len(cpu_elapseds),
             }
@@ -282,7 +284,9 @@ class Detector:
         if name in cls.custom_sections:
             section = cls.custom_sections[name]
             if location != section.location:
-                raise ValueError(f"Section name '{name}' is already used at: {section.location}")
+                raise ValueError(
+                    f"Section name '{name}' is already used at: {section.location}"
+                )
 
     @classmethod
     @contextmanager
@@ -327,7 +331,6 @@ class Detector:
         section.total_entry_cnt += 1
 
         if profile_this_entry:
-
             if profile_cuda:
                 cls.cupti_manager.start_profiling()
             cpu_time_start = time.perf_counter_ns()

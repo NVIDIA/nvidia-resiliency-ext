@@ -16,13 +16,18 @@
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import List, Mapping, Sequence, Tuple, TypeVar, Generic, Optional
+from typing import Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar
 
 import torch
 
 from ..base_state_dict import TensorAwareStateDict
-from .group_utils import ExchangePlan, GroupWrapper, ProcessGroupLike, parse_group_sequence
-from .utils import debug_time, debug_msg, zip_strict
+from .group_utils import (
+    ExchangePlan,
+    GroupWrapper,
+    ProcessGroupLike,
+    parse_group_sequence,
+)
+from .utils import debug_msg, debug_time, zip_strict
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +88,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
         self.local_group: GroupWrapper = GroupWrapper.wrap(local_group)
         self.target_device = target_device
 
-    @debug_time('CliqueReplicationStrategy.replicate', logger)
+    @debug_time("CliqueReplicationStrategy.replicate", logger)
     def replicate(
         self, local_ckpt: TensorAwareStateDict, id_: str
     ) -> Tuple[List[TensorAwareStateDict], List[str]]:
@@ -120,7 +125,10 @@ class CliqueReplicationStrategy(ReplicationStrategy):
             )
 
         others_tensor_data_nbytes = sum(
-            [sum(ten.nbytes for ten in tensor_list) for tensor_list in others_tensor_data]
+            [
+                sum(ten.nbytes for ten in tensor_list)
+                for tensor_list in others_tensor_data
+            ]
         )
         sent_bytes += my_tensor_data_nbytes
         recv_bytes += others_tensor_data_nbytes - my_tensor_data_nbytes
@@ -138,7 +146,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
         assert local_ckpt.is_hollow
         return others_local_ckpts, other_ids
 
-    @debug_time('CliqueReplicationStrategy.retrieve_plan', logger)
+    @debug_time("CliqueReplicationStrategy.retrieve_plan", logger)
     def retrieve_plan(
         self, globally_available_ids: Mapping[int, List[str]], wanted: Sequence[str]
     ) -> ExchangePlan:
@@ -177,7 +185,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
                 result.plan(sender=sender, receiver=receiver, id_=wanted_id)
         return result
 
-    @debug_time('CliqueReplicationStrategy.retrieve_execute', logger)
+    @debug_time("CliqueReplicationStrategy.retrieve_execute", logger)
     def retrieve_execute(self, *args, **kwargs):
         """Executes the retrieval plan using the local group.
 
@@ -187,10 +195,12 @@ class CliqueReplicationStrategy(ReplicationStrategy):
         return self.local_group.execute_plan(*args, **kwargs)
 
     @classmethod
-    @debug_time('CliqueReplicationStrategy.from_replication_params', logger)
+    @debug_time("CliqueReplicationStrategy.from_replication_params", logger)
     def from_replication_params(
-        cls, replication_jump: int = torch.cuda.device_count(), replication_factor: int = 2
-    ) -> 'CliqueReplicationStrategy':
+        cls,
+        replication_jump: int = torch.cuda.device_count(),
+        replication_factor: int = 2,
+    ) -> "CliqueReplicationStrategy":
         """Instantiates process groups necessary for checkpoint replication.
 
         Training ranks are divided into `W // F` distinct groups of size `F`, where
@@ -224,7 +234,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
             replication_factor (int, optional): `F` in the formula above. Denotes the number of
                 ranks storing replicas of a given rank's data.
         """
-        logger.debug(f'Initializing {cls.__name__}')
+        logger.debug(f"Initializing {cls.__name__}")
         repl_process_groups_ranks: List[List[int]] = parse_group_sequence(
             replication_jump=replication_jump,
             replication_factor=replication_factor,
@@ -237,7 +247,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
         return cls(my_process_group, target_device="cpu")
 
 
-EagerT = TypeVar('EagerT')
+EagerT = TypeVar("EagerT")
 
 
 class LazyReplicationStrategyBuilder(ReplicationStrategy, ABC, Generic[EagerT]):
@@ -284,7 +294,9 @@ class LazyReplicationStrategyBuilder(ReplicationStrategy, ABC, Generic[EagerT]):
         """Instantiates the eager class."""
 
 
-class LazyCliqueReplicationStrategy(LazyReplicationStrategyBuilder[CliqueReplicationStrategy]):
+class LazyCliqueReplicationStrategy(
+    LazyReplicationStrategyBuilder[CliqueReplicationStrategy]
+):
     """Lazy version of CliqueReplicationStrategy allowing to delay process group formation.
 
     Training ranks are divided into `W // F` distinct groups of size `F`, where
@@ -318,8 +330,11 @@ class LazyCliqueReplicationStrategy(LazyReplicationStrategyBuilder[CliqueReplica
         replication_factor (int, optional): `F` in the formula above. Denotes the number of
             ranks storing replicas of a given rank's data.
     """
+
     def __init__(
-        self, replication_jump: int = torch.cuda.device_count(), replication_factor: int = 2
+        self,
+        replication_jump: int = torch.cuda.device_count(),
+        replication_factor: int = 2,
     ):
         super().__init__()
         self.replication_jump = replication_jump

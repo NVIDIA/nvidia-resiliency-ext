@@ -233,7 +233,9 @@ class FaultToleranceCallback(Callback):
         self.fault_tol_client = None
         self.autoresume = autoresume
         self.calculate_timeouts = calculate_timeouts
-        self.simulated_fault_params = self._parse_simulated_fault_params(simulated_fault_params)
+        self.simulated_fault_params = self._parse_simulated_fault_params(
+            simulated_fault_params
+        )
         self.state_machine = None
         self.provided_exp_dir = exp_dir
         self.timeouts_file_path = None
@@ -254,7 +256,9 @@ class FaultToleranceCallback(Callback):
         if stage == "fit" and self.is_initialized:
             self.state_machine.on_teardown()
             if self._is_rank0():
-                if self.autoresume and self.state_machine.is_training_completed(trainer):
+                if self.autoresume and self.state_machine.is_training_completed(
+                    trainer
+                ):
                     self._create_finished_flag_file()
             self._send_ft_heartbeat()
             self._maybe_update_ft_timeouts()
@@ -320,7 +324,7 @@ class FaultToleranceCallback(Callback):
             self.logger.info("[FaultToleranceCallback@rank0] " + str(msg))
 
     def _verify_env(self):
-        if self.autoresume and not os.environ.get('FAULT_TOL_FINISHED_FLAG_FILE', ''):
+        if self.autoresume and not os.environ.get("FAULT_TOL_FINISHED_FLAG_FILE", ""):
             raise RuntimeError(
                 "'FAULT_TOL_FINISHED_FLAG_FILE' env variable is not set. Was this job launched with FT launcher?"
             )
@@ -334,11 +338,11 @@ class FaultToleranceCallback(Callback):
             self.fault_tol_client.calculate_and_set_timeouts()
             self.state_machine.on_ft_timeouts_updated()
             self._log_info_on_rank0(
-                f'Updated FT timeouts. New values: {self.fault_tol_client.timeouts}'
+                f"Updated FT timeouts. New values: {self.fault_tol_client.timeouts}"
             )
             if self._is_rank0():
                 # FT state is the same on all ranks, so we can save it only on rank 0
-                with open(self.timeouts_file_path, mode='w') as f:
+                with open(self.timeouts_file_path, mode="w") as f:
                     json.dump(self.fault_tol_client.state_dict(), f)
 
     def _maybe_load_ft_timeouts(self):
@@ -346,15 +350,16 @@ class FaultToleranceCallback(Callback):
             # we load the timeouts only when calculate_timeouts=True
             loaded_ft_state_dict = {}
             if self.timeouts_file_path.exists():
-                with open(self.timeouts_file_path, mode='r') as f:
+                with open(self.timeouts_file_path, mode="r") as f:
                     loaded_ft_state_dict = json.load(f)
             if loaded_ft_state_dict:
                 self.fault_tol_client.load_state_dict(loaded_ft_state_dict)
                 ft_timeouts = self.fault_tol_client.timeouts
-                self._log_info_on_rank0(f"Fault tolerance timeouts loaded: {ft_timeouts}")
+                self._log_info_on_rank0(
+                    f"Fault tolerance timeouts loaded: {ft_timeouts}"
+                )
 
     def _setup_fault_tolerance(self, trainer):
-
         assert not self.is_initialized, "Fault tolerance client already initialized."
 
         self.fault_tol_client = ft.RankMonitorClient()
@@ -379,7 +384,9 @@ class FaultToleranceCallback(Callback):
 
         ft_timeouts = self.fault_tol_client.timeouts
         if ft_timeouts.are_valid:
-            self._log_info_on_rank0(f"Fault tolerance client initialized. Timeouts: {ft_timeouts}")
+            self._log_info_on_rank0(
+                f"Fault tolerance client initialized. Timeouts: {ft_timeouts}"
+            )
         else:
             if self.calculate_timeouts:
                 self._log_info_on_rank0(
@@ -411,7 +418,6 @@ class FaultToleranceCallback(Callback):
     def _parse_simulated_fault_params(
         self, simulated_fault_params
     ) -> Optional[SimulatedFaultParams]:
-
         # TODO: this if for testing only, should be removed in release version
 
         if simulated_fault_params is None:
@@ -429,7 +435,6 @@ class FaultToleranceCallback(Callback):
             ) from e
 
     def _setup_simulated_fault(self):
-
         # TODO: this if for testing only, should be removed in release version
 
         rng = random.Random()
@@ -442,7 +447,11 @@ class FaultToleranceCallback(Callback):
         # if not specified, it just picks a random rank
         rank = torch.distributed.get_rank()
         rand_rank = rng.randint(0, torch.distributed.get_world_size() - 1)
-        rank_to_fail = fault_desc.rank_to_fail if fault_desc.rank_to_fail is not None else rand_rank
+        rank_to_fail = (
+            fault_desc.rank_to_fail
+            if fault_desc.rank_to_fail is not None
+            else rand_rank
+        )
         rank_to_fail = torch.tensor([rank_to_fail], device=torch.cuda.current_device())
         torch.distributed.broadcast(rank_to_fail, 0)
         rank_to_fail = int(rank_to_fail.item())
@@ -452,12 +461,12 @@ class FaultToleranceCallback(Callback):
             return
 
         fault_type = fault_desc.fault_type
-        if fault_type == 'random':
-            fault_type = rng.choice(['rank_killed', 'rank_hung'])
+        if fault_type == "random":
+            fault_type = rng.choice(["rank_killed", "rank_hung"])
 
-        if fault_type == 'rank_killed':
+        if fault_type == "rank_killed":
             target_pid = os.getpid()
-        elif fault_type == 'rank_hung':
+        elif fault_type == "rank_hung":
             target_pid = os.getpid()
         else:
             raise Exception(f"Unknown fault type {fault_type}")
@@ -476,7 +485,7 @@ class FaultToleranceCallback(Callback):
                     file=of,
                     flush=True,
                 )
-            if fault_type == 'rank_hung':
+            if fault_type == "rank_hung":
                 os.kill(target_pid, signal.SIGSTOP)
             else:
                 os.kill(target_pid, signal.SIGKILL)

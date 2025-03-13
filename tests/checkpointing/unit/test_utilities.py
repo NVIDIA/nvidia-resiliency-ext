@@ -15,30 +15,34 @@
 
 import os
 from datetime import timedelta
-
-import torch
-import torch.nn as nn
-from torch._C._distributed_c10d import PrefixStore
-from torch.distributed import rendezvous
 from typing import Tuple
 
-class Utils:
+import torch
+from torch._C._distributed_c10d import PrefixStore
+from torch.distributed import rendezvous
 
+
+class Utils:
     world_size = torch.cuda.device_count()
-    rank = int(os.environ['LOCAL_RANK'])
+    rank = int(os.environ["LOCAL_RANK"])
     inited = False
     store = None
 
     @staticmethod
     def initialize_distributed():
         if not torch.distributed.is_initialized() and Utils.rank >= 0:
-            print(f'Initializing torch.distributed with rank: {Utils.rank}, ' f'world_size: {Utils.world_size}')
+            print(
+                f"Initializing torch.distributed with rank: {Utils.rank}, "
+                f"world_size: {Utils.world_size}"
+            )
             torch.cuda.set_device(Utils.rank % torch.cuda.device_count())
-            init_method = 'tcp://'
-            master_ip = os.getenv('MASTER_ADDR', 'localhost')
-            master_port = os.getenv('MASTER_PORT', '6000')
-            init_method += master_ip + ':' + master_port
-            rendezvous_iterator = rendezvous(init_method, Utils.rank, Utils.world_size, timeout=timedelta(minutes=1))
+            init_method = "tcp://"
+            master_ip = os.getenv("MASTER_ADDR", "localhost")
+            master_port = os.getenv("MASTER_PORT", "6000")
+            init_method += master_ip + ":" + master_port
+            rendezvous_iterator = rendezvous(
+                init_method, Utils.rank, Utils.world_size, timeout=timedelta(minutes=1)
+            )
             store, rank, world_size = next(rendezvous_iterator)
             store.set_timeout(timedelta(minutes=1))
 
@@ -48,7 +52,10 @@ class Utils:
             Utils.store = store
 
             torch.distributed.init_process_group(
-                backend='nccl', world_size=Utils.world_size, rank=Utils.rank, store=store
+                backend="nccl",
+                world_size=Utils.world_size,
+                rank=Utils.rank,
+                store=store,
             )
 
             torch.distributed.barrier()
@@ -56,20 +63,32 @@ class Utils:
 
     @staticmethod
     def set_world_size(world_size=None, rank=None):
-        Utils.world_size = torch.cuda.device_count() if world_size is None else world_size
-        if torch.distributed.is_initialized() and Utils.world_size != torch.distributed.get_world_size():
+        Utils.world_size = (
+            torch.cuda.device_count() if world_size is None else world_size
+        )
+        if (
+            torch.distributed.is_initialized()
+            and Utils.world_size != torch.distributed.get_world_size()
+        ):
             torch.distributed.destroy_process_group()
 
         if rank is None:
-            Utils.rank = int(os.environ['LOCAL_RANK'])
+            Utils.rank = int(os.environ["LOCAL_RANK"])
             if Utils.rank >= Utils.world_size:
                 Utils.rank = -1
         else:
             Utils.rank = rank
 
+
 class TestModel(torch.nn.Module):
     def __init__(self, size: Tuple, ntensor: int) -> None:
         super().__init__()
         for i in range(ntensor):
-            self.register_parameter(f"param_{i}",
-                                    torch.nn.Parameter(torch.rand(size, device=torch.device(f'cuda:{torch.cuda.current_device()}'))))
+            self.register_parameter(
+                f"param_{i}",
+                torch.nn.Parameter(
+                    torch.rand(
+                        size, device=torch.device(f"cuda:{torch.cuda.current_device()}")
+                    )
+                ),
+            )

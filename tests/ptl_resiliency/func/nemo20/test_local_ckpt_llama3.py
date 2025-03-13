@@ -22,16 +22,17 @@ The key parts is the implementation of MCore specific HierarchicalCheckpointIO
 import argparse
 import logging
 import socket
-
 from dataclasses import dataclass
-from typing import Iterable, Dict, Any, Optional, Callable
+from typing import Any, Callable, Dict, Optional
 
 import torch
 from lightning_fabric.plugins import CheckpointIO
 from lightning_fabric.utilities.types import _PATH
+from megatron.core.dist_checkpointing.tensor_aware_state_dict import (
+    MCoreTensorAwareStateDict,
+)
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
-from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 from nemo import lightning as nl
 from nemo.collections import llm
 from nemo.collections.common.tokenizers import SentencePieceTokenizer
@@ -40,11 +41,13 @@ from nemo.collections.llm.gpt.model.llama import Llama3Config, LlamaModel
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils.callbacks.dist_ckpt_io import (
-    AsyncFinalizableCheckpointIO,
     AsyncCompatibleCheckpointIO,
+    AsyncFinalizableCheckpointIO,
 )
 
-from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
+from nvidia_resiliency_ext.checkpointing.local.base_state_dict import (
+    TensorAwareStateDict,
+)
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager import (
     BaseCheckpointManager,
 )
@@ -56,14 +59,16 @@ from nvidia_resiliency_ext.checkpointing.local.replication.strategies import (
 )
 from nvidia_resiliency_ext.fault_tolerance.dict_utils import dict_list_map_inplace
 from nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback import (
-    LocalCheckpointCallback,
     HierarchicalCheckpointIO,
+    LocalCheckpointCallback,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleCheckpointIO):
+class MCoreHierarchicalCheckpointIO(
+    HierarchicalCheckpointIO, AsyncCompatibleCheckpointIO
+):
     """HierarchicalCheckpointIO implementation compatible with MCore distributed checkpointing.
 
     Args:
@@ -83,34 +88,40 @@ class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleChe
         wrapped_checkpoint_io: CheckpointIO,
         local_ckpt_manager: BaseCheckpointManager,
         get_global_ckpt_iteration_fn: Callable[[_PATH], int],
-        local_ckpt_algo: str = 'fully_parallel',
+        local_ckpt_algo: str = "fully_parallel",
         parallelization_group: Optional[torch.distributed.ProcessGroup] = None,
         allow_cache: bool = False,
     ):
-        super().__init__(wrapped_checkpoint_io, local_ckpt_manager, get_global_ckpt_iteration_fn)
+        super().__init__(
+            wrapped_checkpoint_io, local_ckpt_manager, get_global_ckpt_iteration_fn
+        )
         self.local_ckpt_algo = local_ckpt_algo
         self.parallelization_group = parallelization_group
         self.cached_metadata = None
         self.allow_cache = allow_cache
 
-    def to_tensor_aware_state_dict(self, checkpoint: Dict[str, Any]) -> TensorAwareStateDict:
+    def to_tensor_aware_state_dict(
+        self, checkpoint: Dict[str, Any]
+    ) -> TensorAwareStateDict:
         """Specialized implementation using MCoreTensorAwareStateDict.
 
         Wraps the state dict in MCoreTensorAwareStateDict and makes sure
         that "common" state dict doesn't have any CUDA tensors (this is an
         NVRx v0.2 limitation).
         """
-        state_dict_for_save, cached_metadata = MCoreTensorAwareStateDict.from_state_dict(
-            checkpoint,
-            algo=self.local_ckpt_algo,
-            parallelization_group=self.parallelization_group,
-            cached_metadata=self.cached_metadata,
+        state_dict_for_save, cached_metadata = (
+            MCoreTensorAwareStateDict.from_state_dict(
+                checkpoint,
+                algo=self.local_ckpt_algo,
+                parallelization_group=self.parallelization_group,
+                cached_metadata=self.cached_metadata,
+            )
         )
 
         def to_cpu(x):
-            if isinstance(x, torch.Tensor) and x.device.type != 'cpu':
-                logger.debug(f'Moving CUDA tensor to CPU')
-                x = x.to('cpu', non_blocking=True)
+            if isinstance(x, torch.Tensor) and x.device.type != "cpu":
+                logger.debug("Moving CUDA tensor to CPU")
+                x = x.to("cpu", non_blocking=True)
             return x
 
         dict_list_map_inplace(to_cpu, state_dict_for_save.common)
@@ -124,7 +135,7 @@ class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleChe
         """Unwraps MCoreTensorAwareStateDict to a plain state dict."""
         assert isinstance(
             tensor_aware_checkpoint, MCoreTensorAwareStateDict
-        ), f'Unexpected tensor aware state dict type: {type(tensor_aware_checkpoint)}'
+        ), f"Unexpected tensor aware state dict type: {type(tensor_aware_checkpoint)}"
         return tensor_aware_checkpoint.to_state_dict(
             sharded_state_dict,
             algo=self.local_ckpt_algo,
@@ -196,33 +207,33 @@ def get_parser():
         default=8,
         help="Specify the number of GPUs per node",
     )
-    parser.add_argument('--max-runtime', type=int, default=900)  # in seconds
+    parser.add_argument("--max-runtime", type=int, default=900)  # in seconds
     parser.add_argument(
-        '--max-steps',
+        "--max-steps",
         type=int,
         default=1_000_000,
         help="Number of steps to run the training for",
     )
     parser.add_argument(
-        '--checkpoint-interval',
+        "--checkpoint-interval",
         type=int,
         default=80,
         help="Checkpoint saving interval in steps",
     )
     parser.add_argument(
-        '--local-checkpoint-interval',
+        "--local-checkpoint-interval",
         type=int,
         default=None,
         help="Local checkpoint saving interval in steps",
     )
     parser.add_argument(
-        '--val-check-interval',
+        "--val-check-interval",
         type=int,
         default=40,
         help="Validation check interval in steps",
     )
     parser.add_argument(
-        '--limit_val_batches',
+        "--limit_val_batches",
         type=int,
         default=10,
         help="How many batches to use for validation",
@@ -271,7 +282,7 @@ def main():
         every_n_train_steps=args.checkpoint_interval,
         save_on_train_epoch_end=True,
         save_optim_on_train_end=True,
-        filename='{step}-{epoch}',
+        filename="{step}-{epoch}",
     )
     callbacks = [checkpoint_callback]
 
@@ -290,19 +301,19 @@ def main():
         checkpoint_io = trainer.strategy.checkpoint_io
 
         if args.async_save:
-            assert isinstance(trainer.strategy.checkpoint_io, AsyncFinalizableCheckpointIO), type(
-                trainer.strategy.checkpoint_io
-            )
+            assert isinstance(
+                trainer.strategy.checkpoint_io, AsyncFinalizableCheckpointIO
+            ), type(trainer.strategy.checkpoint_io)
             checkpoint_io = checkpoint_io.checkpoint_io
 
         if args.num_nodes > 1:
             repl_strategy = LazyCliqueReplicationStrategy()
         else:
-            print_rank0('Single node run - replication wil be disabled.')
+            print_rank0("Single node run - replication wil be disabled.")
             repl_strategy = None
 
         local_ckpt_manager = LocalCheckpointManager(
-            f'{args.log_dir}/local_ckpt/{socket.gethostname()}',
+            f"{args.log_dir}/local_ckpt/{socket.gethostname()}",
             repl_strategy=repl_strategy,
         )
         # NOTE: in this example we always assume that local ckpt is newer than a global checkpoint
@@ -328,7 +339,7 @@ def main():
     )
 
     opt_config = OptimizerConfig(
-        optimizer='adam',
+        optimizer="adam",
         lr=1e-2,
         weight_decay=0.1,
         adam_beta1=0.9,

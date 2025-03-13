@@ -13,9 +13,21 @@ from collections import namedtuple
 from functools import wraps
 from typing import Dict, Optional
 
-__all__ = ['MetricsConfig', 'MetricHandler', 'ConsoleMetricHandler', 'NullMetricHandler', 'MetricStream',
-           'configure', 'getStream', 'prof', 'profile', 'put_metric', 'publish_metric', 'get_elapsed_time_ms',
-           'MetricData']
+__all__ = [
+    'MetricsConfig',
+    'MetricHandler',
+    'ConsoleMetricHandler',
+    'NullMetricHandler',
+    'MetricStream',
+    'configure',
+    'getStream',
+    'prof',
+    'profile',
+    'put_metric',
+    'publish_metric',
+    'get_elapsed_time_ms',
+    'MetricData',
+]
 
 MetricData = namedtuple("MetricData", ["timestamp", "group_name", "name", "value"])
 
@@ -53,9 +65,7 @@ class MetricStream:
         self.handler = handler
 
     def add_value(self, metric_name: str, metric_value: int):
-        self.handler.emit(
-            MetricData(time.time(), self.group_name, metric_name, metric_value)
-        )
+        self.handler.emit(MetricData(time.time(), self.group_name, metric_name, metric_value))
 
 
 _metrics_map: Dict[str, MetricHandler] = {}
@@ -188,9 +198,7 @@ def put_metric(metric_name: str, metric_value: int, metric_group: str = "torchel
 
 
 def publish_metric(metric_group: str, metric_name: str, metric_value: int):
-    warnings.warn(
-        "Deprecated, use put_metric(metric_group)(metric_name, metric_value) instead"
-    )
+    warnings.warn("Deprecated, use put_metric(metric_group)(metric_name, metric_value) instead")
     metric_stream = getStream(metric_group)
     metric_stream.add_value(metric_name, metric_value)
 

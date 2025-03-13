@@ -17,9 +17,9 @@
 import inspect
 import warnings
 from collections.abc import Callable
-from typing import Any, Iterable, TypeVar
+from typing import Any, TypeVar
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 def find_common_ancestor(*instances):
@@ -37,7 +37,7 @@ def find_common_ancestor(*instances):
 
 
 class Compose:
-    r'''
+    r"""
     Performs functional composition (chaining) of multiple callable class
     instances.
 
@@ -56,17 +56,16 @@ class Compose:
 
         composed = Compose(a, b, c)
         ret = composed(arg)  # is equivalent to ret = a(b(c(arg)))
-    '''
+    """
 
     def __new__(cls, *instances: Callable[[T], T]):
-
         common_ancestor = find_common_ancestor(*instances)
         DynamicCompose = type(
-            'DynamicCompose',
+            "DynamicCompose",
             (Compose, common_ancestor),
             {
-                'instances': instances,
-                '__new__': object.__new__,
+                "instances": instances,
+                "__new__": object.__new__,
             },
         )
         return DynamicCompose()
@@ -76,8 +75,8 @@ class Compose:
             ret = instance(*args or ())
             if ret is None and args and args != (None,):
                 msg = (
-                    f'{type(self).__name__} didn\'t chain arguments after '
-                    f'calling {instance=} with {args=}'
+                    f"{type(self).__name__} didn't chain arguments after "
+                    f"calling {instance=} with {args=}"
                 )
                 warnings.warn(msg)
             if (

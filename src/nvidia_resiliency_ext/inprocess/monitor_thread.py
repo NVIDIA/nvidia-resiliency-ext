@@ -24,23 +24,20 @@ import sys
 import threading
 import time
 
-import torch
 
-from . import attribution
-from . import exception
-from .attribution import Interruption
-from .attribution import InterruptionRecord
+from . import attribution, exception
+from .attribution import Interruption, InterruptionRecord
 from .logging import log_exc
 from .progress_watchdog import ProgressWatchdog
 from .state import Status
 
 
 class RankShouldRestart(BaseException):
-    r'''
+    r"""
     :py:exc:`BaseException` asynchronously raised in the main thread to
     interrupt the execution of the function wrapped with
     :py:class:`inprocess.Wrapper`.
-    '''
+    """
 
     def __del__(self):
         log = logging.getLogger(__name__)
@@ -51,11 +48,11 @@ class RankShouldRestart(BaseException):
 
             if len(stack) > 1 and stack[1].filename != wrap.__file__:
                 locations = [
-                    f'{info.frame.f_code.co_filename}:{info.frame.f_lineno}'
+                    f"{info.frame.f_code.co_filename}:{info.frame.f_lineno}"
                     for info in stack[1:]
                 ]
-                traceback = ' <- '.join(locations)
-                log.debug(f'{type(self).__name__} suppressed at {traceback}')
+                traceback = " <- ".join(locations)
+                log.debug(f"{type(self).__name__} suppressed at {traceback}")
             del stack
 
 
@@ -105,7 +102,7 @@ def reraise_if_unraisable(exc_type):
             and not sys.is_finalizing()
         ):
             log = logging.getLogger(__name__)
-            log.debug(f'sys.unraisablehook raises {exc_type}')
+            log.debug(f"sys.unraisablehook raises {exc_type}")
             delayed_async_raise(threading.main_thread().ident, exc_type)
 
     original_unraisablehook = sys.unraisablehook
@@ -118,10 +115,10 @@ def async_abort_main_thread(abort_signal=None, msg=None):
     if abort_signal is None:
         if msg is not None:
             DynamicRankShouldRestart = type(
-                'RankShouldRestart',
+                "RankShouldRestart",
                 (RankShouldRestart,),
                 {
-                    '__init__': lambda self: super(
+                    "__init__": lambda self: super(
                         DynamicRankShouldRestart, self
                     ).__init__(msg)
                 },
@@ -173,7 +170,7 @@ class MonitorThread(threading.Thread):
             signal.signal(abort_signal, abort_signal_handler)
 
         super().__init__(
-            name=f'{type(self).__name__}-{state.rank}',
+            name=f"{type(self).__name__}-{state.rank}",
             daemon=daemon,
         )
 
@@ -208,28 +205,24 @@ class MonitorThread(threading.Thread):
                 time.sleep(self.last_call_wait.total_seconds())
                 store.lock_interruption_records()
                 interruption_records = store.get_interruption_records()
-                msg = attribution.format_interruption_records(
-                    interruption_records
-                )
+                msg = attribution.format_interruption_records(interruption_records)
 
                 with self.atomic_lock:
                     try:
                         if self.abort is not None:
                             state = self.abort(state)
                     except Exception as abort_ex:
-                        log.critical(log_exc(state, abort_ex, 'abort_ex'))
+                        log.critical(log_exc(state, abort_ex, "abort_ex"))
 
                     self.progress_watchdog.pause_and_drain()
 
-                    log.debug(f'{rank=} async_abort_main_thread')
+                    log.debug(f"{rank=} async_abort_main_thread")
                     async_abort_main_thread(self.abort_signal, msg)
 
-                    if self.stop_raising.wait(
-                        self.soft_timeout.total_seconds()
-                    ):
+                    if self.stop_raising.wait(self.soft_timeout.total_seconds()):
                         break
 
-                    log.debug(f'{rank=} spin async_abort_main_thread')
+                    log.debug(f"{rank=} spin async_abort_main_thread")
                     while not self.stop_raising.is_set():
                         async_abort_main_thread(self.abort_signal)
                     self.state.status = Status.ABORTED
@@ -257,4 +250,4 @@ class MonitorThread(threading.Thread):
             self.join(self.monitor_timeout.total_seconds())
             if self.is_alive():
                 raise exception.TimeoutError
-            log.debug('terminated')
+            log.debug("terminated")

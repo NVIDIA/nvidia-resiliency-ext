@@ -24,9 +24,7 @@ logger = logging.getLogger(__name__)
 
 def get_libc():
     if IS_WINDOWS or IS_MACOS:
-        logger.warning(
-            "NOTE: Redirects are currently not supported in Windows or MacOs."
-        )
+        logger.warning("NOTE: Redirects are currently not supported in Windows or MacOs.")
         return None
     else:
         return ctypes.CDLL("libc.so.6")
@@ -77,9 +75,7 @@ def redirect(std: str, to_file: str):
 
     """
     if std not in _VALID_STD:
-        raise ValueError(
-            f"unknown standard stream <{std}>, must be one of {_VALID_STD}"
-        )
+        raise ValueError(f"unknown standard stream <{std}>, must be one of {_VALID_STD}")
 
     c_std = _c_std(std)
     python_std = _python_std(std)

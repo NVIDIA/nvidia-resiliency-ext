@@ -1,15 +1,15 @@
 import argparse
 import logging
-import os
 import shutil
-from typing import Union
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue
-from nvidia_resiliency_ext.checkpointing.local.basic_state_dict import BasicTensorAwareStateDict
+from nvidia_resiliency_ext.checkpointing.local.basic_state_dict import (
+    BasicTensorAwareStateDict,
+)
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager import (
     LocalCheckpointManager,
 )
@@ -23,28 +23,28 @@ logging.basicConfig(level=logging.INFO)
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Local Checkpointing Basic Example',
+        description="Local Checkpointing Basic Example",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     parser.add_argument(
-        '--ckpt_dir',
+        "--ckpt_dir",
         default="/tmp/test_local_checkpointing/",
         help="Checkpoint directory for local checkpoints",
     )
     parser.add_argument(
-        '--async_save',
-        action='store_true',
+        "--async_save",
+        action="store_true",
         help="Enable asynchronous saving of checkpoints.",
     )
     parser.add_argument(
-        '--replication',
-        action='store_true',
+        "--replication",
+        action="store_true",
         help="If set, replication of local checkpoints is enabled"
-        "Needs to be enabled on all ranks."
+        "Needs to be enabled on all ranks.",
     )
     parser.add_argument(
-        '--replication_jump',
+        "--replication_jump",
         default=4,
         type=int,
         help=(
@@ -56,7 +56,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        '--replication_factor',
+        "--replication_factor",
         default=2,
         type=int,
         help="Number of machines storing the replica of a given rank's data",
@@ -138,7 +138,7 @@ def load(args, ckpt_manager):
 
 def main():
     args = parse_args()
-    logging.info(f'{args}')
+    logging.info(f"{args}")
 
     # Initialize the distributed backend
     init_distributed_backend(backend="nccl")

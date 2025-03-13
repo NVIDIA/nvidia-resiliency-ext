@@ -19,7 +19,7 @@ import re
 
 def cmd_check_status(log_file_lines, args):
     expected_status = "FAILED" if args.expect_failed else "SUCCEEDED"
-    pattern = re.compile(r'Status: (SUCCEEDED|FAILED)')
+    pattern = re.compile(r"Status: (SUCCEEDED|FAILED)")
     for ln in log_file_lines:
         match = pattern.search(ln)
         if match:
@@ -32,7 +32,7 @@ def cmd_check_status(log_file_lines, args):
 
 
 def cmd_num_reports(log_file_lines, args):
-    report_lines = [ln for ln in log_file_lines if 'GPU relative performance' in ln]
+    report_lines = [ln for ln in log_file_lines if "GPU relative performance" in ln]
     num_reports = len(report_lines)
     if not (args.min <= num_reports <= args.max):
         raise ValueError(
@@ -41,7 +41,7 @@ def cmd_num_reports(log_file_lines, args):
 
 
 def _check_gpu_stragglers(log_file_lines, pattern, expected_stragglers):
-    rank_pattern = re.compile(r'StragglerId\(rank=(\d+),')
+    rank_pattern = re.compile(r"StragglerId\(rank=(\d+),")
     found_stragglers = set()
 
     for ln in log_file_lines:
@@ -63,7 +63,7 @@ def _check_gpu_stragglers(log_file_lines, pattern, expected_stragglers):
 
 def cmd_relative_gpu_stragglers(log_file_lines, args):
     pattern = re.compile(
-        r'STRAGGLER DETECTION WARNING: Some GPUs have worse relative performance. Affected ranks: \{(.*?)\}'
+        r"STRAGGLER DETECTION WARNING: Some GPUs have worse relative performance. Affected ranks: \{(.*?)\}"
     )
     expected_stragglers = set(args.ranks)
     _check_gpu_stragglers(log_file_lines, pattern, expected_stragglers)
@@ -71,18 +71,18 @@ def cmd_relative_gpu_stragglers(log_file_lines, args):
 
 def cmd_individual_gpu_stragglers(log_file_lines, args):
     pattern = re.compile(
-        r'STRAGGLER DETECTION WARNING: Some GPUs performance dropped. Affected ranks: \{(.*?)\}'
+        r"STRAGGLER DETECTION WARNING: Some GPUs performance dropped. Affected ranks: \{(.*?)\}"
     )
     expected_stragglers = set(args.ranks)
     _check_gpu_stragglers(log_file_lines, pattern, expected_stragglers)
 
 
 def cmd_check_terminating(log_file_lines, args):
-    terminate_pattern = re.compile(r'Detected stragglers. Terminating training...')
+    terminate_pattern = re.compile(r"Detected stragglers. Terminating training...")
     last_ckpt_pattern = re.compile(
-        r'Async checkpoint save for step \d+.*last.ckpt.*finalized successfully'
+        r"Async checkpoint save for step \d+.*last.ckpt.*finalized successfully"
     )
-    failed_pattern = re.compile(r'failed \(exitcode: 1\)')
+    failed_pattern = re.compile(r"failed \(exitcode: 1\)")
 
     detected_stragglers = False
     last_ckpt_finalized = False
@@ -112,10 +112,10 @@ def cmd_check_terminating(log_file_lines, args):
 def read_log_file(log_file):
     lines = []
     contains_done_entry = False
-    with open(log_file, 'r') as f:
+    with open(log_file, "r") as f:
         for ln in f.readlines():
             lines.append(ln.strip())
-            if 'Status:' in ln:
+            if "Status:" in ln:
                 contains_done_entry = True
     if not contains_done_entry:
         raise ValueError("Log file does not contain a 'Status:' entry.")
@@ -124,34 +124,41 @@ def read_log_file(log_file):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Verify a log file created by test_llama3.py.")
-    parser.add_argument('--log', required=True, help='Path to the log file.')
+    parser = argparse.ArgumentParser(
+        description="Verify a log file created by test_llama3.py."
+    )
+    parser.add_argument("--log", required=True, help="Path to the log file.")
 
-    subparsers = parser.add_subparsers(dest='command', help='Sub-commands')
+    subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
 
-    subp1 = subparsers.add_parser('num_reports', help='Number of straggler reports.')
-    subp1.add_argument('--min', type=int)
-    subp1.add_argument('--max', type=int)
+    subp1 = subparsers.add_parser("num_reports", help="Number of straggler reports.")
+    subp1.add_argument("--min", type=int)
+    subp1.add_argument("--max", type=int)
     subp1.set_defaults(func=cmd_num_reports)
 
-    subp2 = subparsers.add_parser('relative_gpu_stragglers', help='Relative GPU stragglers.')
-    subp2.add_argument('--ranks', type=int, nargs='*', default=set())
+    subp2 = subparsers.add_parser(
+        "relative_gpu_stragglers", help="Relative GPU stragglers."
+    )
+    subp2.add_argument("--ranks", type=int, nargs="*", default=set())
     subp2.set_defaults(func=cmd_relative_gpu_stragglers)
 
-    subp3 = subparsers.add_parser('individual_gpu_stragglers', help='Individual GPU stragglers.')
-    subp3.add_argument('--ranks', type=int, nargs='*', default=set())
+    subp3 = subparsers.add_parser(
+        "individual_gpu_stragglers", help="Individual GPU stragglers."
+    )
+    subp3.add_argument("--ranks", type=int, nargs="*", default=set())
     subp3.set_defaults(func=cmd_individual_gpu_stragglers)
 
     subp4 = subparsers.add_parser(
-        'check_terminating', help='Check if stragglers were terminated and last.ckpt was saved.'
+        "check_terminating",
+        help="Check if stragglers were terminated and last.ckpt was saved.",
     )
     subp4.set_defaults(func=cmd_check_terminating)
 
     subp5 = subparsers.add_parser(
-        'check_status', help='Check if the status is failed or succeeded.'
+        "check_status", help="Check if the status is failed or succeeded."
     )
     subp5.add_argument(
-        '--expect-failed', action='store_true', help='Expect the status to be FAILED.'
+        "--expect-failed", action="store_true", help="Expect the status to be FAILED."
     )
     subp5.set_defaults(func=cmd_check_status)
 

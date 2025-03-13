@@ -24,7 +24,10 @@ import torch
 import torch.multiprocessing as mp
 
 import nvidia_resiliency_ext.fault_tolerance as fault_tolerance
-from nvidia_resiliency_ext.fault_tolerance.utils import is_process_alive, wait_for_mp_events
+from nvidia_resiliency_ext.fault_tolerance.utils import (
+    is_process_alive,
+    wait_for_mp_events,
+)
 
 from .utils import multiprocessing_execute_join, multiprocessing_execute_start
 
@@ -56,9 +59,11 @@ def _run_rank_monitors_fixture():
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
+                ft_cfg, rank, mp_ctx_spawn
+            )
             rank_monitors.append(p)
-            os.environ["RANK"] = ''
+            os.environ["RANK"] = ""
 
         yield
 
@@ -70,7 +75,6 @@ def _run_rank_monitors_fixture():
 
 
 def _rank_main(*args, rank_ready_events, **kwargs):
-
     rank_mon_cli = fault_tolerance.RankMonitorClient()
     rank_mon_cli.init_workload_monitoring()
 
@@ -128,7 +132,8 @@ test_scenarios = [
         "sig": signal.SIGTERM,
         "target_ranks": [0],
         "should_write_chkpt": True,
-        "expected_ret_codes": [-signal.SIGTERM] + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE],
+        "expected_ret_codes": [-signal.SIGTERM]
+        + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE],
     },
     # When rank 0 get SIGKILL,
     # remaning ranks should be terminated due to missing heartbeats
@@ -138,7 +143,8 @@ test_scenarios = [
         "sig": signal.SIGKILL,
         "target_ranks": [0],
         "should_write_chkpt": True,
-        "expected_ret_codes": [-signal.SIGKILL] + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE],
+        "expected_ret_codes": [-signal.SIGKILL]
+        + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE],
     },
     # Ranks 1,2 killed, other should be terminated due to missing heartbeats
     {
@@ -195,7 +201,7 @@ def test_shutdown(test_scenario):
 
     ret_codes = multiprocessing_execute_join(rank_processes, timeout=60)
 
-    assert ret_codes == test_scenario['expected_ret_codes']
+    assert ret_codes == test_scenario["expected_ret_codes"]
 
 
 def _rank_main_explicit_shutdown(*args, rank_ready_events, **kwargs):

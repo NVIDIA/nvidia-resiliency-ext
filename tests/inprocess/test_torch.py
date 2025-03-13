@@ -18,7 +18,6 @@ import datetime
 import os
 import signal
 import sys
-import tempfile
 import threading
 import unittest
 import weakref
@@ -31,27 +30,24 @@ from . import common
 
 class TestTCPStore(unittest.TestCase):
     def tearDown(self):
-        if (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-        ):
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
 
     @unittest.mock.patch.dict(
         os.environ,
         {
-            'RANK': '0',
-            'WORLD_SIZE': '1',
-            'MASTER_ADDR': 'localhost',
-            'MASTER_PORT': str(common.find_free_port()),
+            "RANK": "0",
+            "WORLD_SIZE": "1",
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": str(common.find_free_port()),
         },
     )
     def test_fn_reinit_clears_keys(self):
         def fn():
-            torch.distributed.init_process_group(backend='gloo')
+            torch.distributed.init_process_group(backend="gloo")
 
             store = torch.distributed.distributed_c10d._get_default_store()
-            once = store.add('key', 1)
+            once = store.add("key", 1)
             self.assertEqual(once, 1)
 
             torch.distributed.destroy_process_group()
@@ -62,18 +58,18 @@ class TestTCPStore(unittest.TestCase):
     @unittest.mock.patch.dict(
         os.environ,
         {
-            'RANK': '0',
-            'WORLD_SIZE': '1',
-            'MASTER_ADDR': 'localhost',
-            'MASTER_PORT': str(common.find_free_port()),
+            "RANK": "0",
+            "WORLD_SIZE": "1",
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": str(common.find_free_port()),
         },
     )
     def test_fn_exc_reinit_clears_keys(self):
         def fn():
-            torch.distributed.init_process_group(backend='gloo')
+            torch.distributed.init_process_group(backend="gloo")
 
             store = torch.distributed.distributed_c10d._get_default_store()
-            once = store.add('key', 1)
+            once = store.add("key", 1)
             self.assertEqual(once, 1)
 
             torch.distributed.destroy_process_group()
@@ -82,26 +78,26 @@ class TestTCPStore(unittest.TestCase):
         for _ in range(5):
             try:
                 fn()
-            except ZeroDivisionError as ex:
+            except ZeroDivisionError:
                 pass
 
     @unittest.mock.patch.dict(
         os.environ,
         {
-            'RANK': '0',
-            'WORLD_SIZE': '1',
-            'MASTER_ADDR': 'localhost',
-            'MASTER_PORT': str(common.find_free_port()),
+            "RANK": "0",
+            "WORLD_SIZE": "1",
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": str(common.find_free_port()),
         },
     )
     def test_ref_reinit_clears_keys(self):
         for _ in range(5):
-            torch.distributed.init_process_group(backend='gloo')
+            torch.distributed.init_process_group(backend="gloo")
 
             store_ref = weakref.ref(
                 torch.distributed.distributed_c10d._get_default_store()
             )
-            once = store_ref().add('key', 1)
+            once = store_ref().add("key", 1)
             self.assertEqual(once, 1)
 
             torch.distributed.destroy_process_group()
@@ -110,22 +106,22 @@ class TestTCPStore(unittest.TestCase):
     @unittest.mock.patch.dict(
         os.environ,
         {
-            'RANK': '0',
-            'WORLD_SIZE': '1',
-            'MASTER_ADDR': 'localhost',
-            'MASTER_PORT': str(common.find_free_port()),
+            "RANK": "0",
+            "WORLD_SIZE": "1",
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": str(common.find_free_port()),
         },
     )
     def test_ref_ddp_reinit_clears_keys(self):
         for _ in range(5):
-            torch.distributed.init_process_group(backend='gloo')
+            torch.distributed.init_process_group(backend="gloo")
             model = torch.nn.Linear(1, 1)
             model = torch.nn.parallel.DistributedDataParallel(model)
 
             store_ref = weakref.ref(
                 torch.distributed.distributed_c10d._get_default_store()
             )
-            once = store_ref().add('key', 1)
+            once = store_ref().add("key", 1)
             self.assertEqual(once, 1)
 
             torch.distributed.destroy_process_group()
@@ -133,18 +129,18 @@ class TestTCPStore(unittest.TestCase):
     @unittest.mock.patch.dict(
         os.environ,
         {
-            'RANK': '0',
-            'WORLD_SIZE': '1',
-            'MASTER_ADDR': 'localhost',
-            'MASTER_PORT': str(common.find_free_port()),
+            "RANK": "0",
+            "WORLD_SIZE": "1",
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": str(common.find_free_port()),
         },
     )
     def test_del_ref_reinit_clears_keys(self):
         for _ in range(5):
-            torch.distributed.init_process_group(backend='gloo')
+            torch.distributed.init_process_group(backend="gloo")
 
             store = torch.distributed.distributed_c10d._get_default_store()
-            once = store.add('key', 1)
+            once = store.add("key", 1)
             self.assertEqual(once, 1)
 
             torch.distributed.destroy_process_group()
@@ -152,18 +148,16 @@ class TestTCPStore(unittest.TestCase):
 
     def test_double_host_raises(self):
         port = common.find_free_port()
-        store1 = torch.distributed.TCPStore(
-            host_name='localhost', port=port, world_size=1, is_master=True
+        torch.distributed.TCPStore(
+            host_name="localhost", port=port, world_size=1, is_master=True
         )
         with self.assertRaises(RuntimeError):
-            store2 = torch.distributed.TCPStore(
-                host_name='localhost', port=port, world_size=1, is_master=True
+            torch.distributed.TCPStore(
+                host_name="localhost", port=port, world_size=1, is_master=True
             )
 
 
-@unittest.skipIf(
-    not torch.distributed.is_nccl_available(), 'nccl not available'
-)
+@unittest.skipIf(not torch.distributed.is_nccl_available(), "nccl not available")
 class ProcessGroupNCCLTest(common.MultiProcessTestCase):
     def setUp(self):
         super().setUp()
@@ -179,9 +173,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             self.test_saturated_queue_killed.__wrapped__,
         ]
 
-    def _create_process_group_nccl(
-        self, store, opts, world_size=None, device_id=None
-    ):
+    def _create_process_group_nccl(self, store, opts, world_size=None, device_id=None):
         if world_size is None:
             world_size = self.world_size
         # create nccl processgroup with opts
@@ -207,11 +199,8 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
         # programmatically abort the process group.
         os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "0"
 
-        self.assertNotEqual(
-            os.getenv('TORCH_NCCL_ABORT_IN_DESTROY_PG', '0'), '1'
-        )
+        self.assertNotEqual(os.getenv("TORCH_NCCL_ABORT_IN_DESTROY_PG", "0"), "1")
 
-        size = 1024
         device = torch.device(self.rank)
         torch.cuda.set_device(device)
 
@@ -230,14 +219,12 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
         del pg
 
     # test borrowed from PyTorch tessuite
-    @unittest.mock.patch.dict(
-        os.environ, {'TORCH_NCCL_ABORT_IN_DESTROY_PG': '1'}
-    )
+    @unittest.mock.patch.dict(os.environ, {"TORCH_NCCL_ABORT_IN_DESTROY_PG": "1"})
     def test_destruct_before_terminate_pg(self):
         # Disable ASYNC_ERROR_HANDLING for this test to ensure we can
         # programmatically abort the process group.
         os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "0"
-        self.assertEqual(os.getenv('TORCH_NCCL_ABORT_IN_DESTROY_PG', '0'), '1')
+        self.assertEqual(os.getenv("TORCH_NCCL_ABORT_IN_DESTROY_PG", "0"), "1")
 
         size = 1024
         device = torch.device(self.rank)
@@ -253,14 +240,12 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
         del pg
 
     # test borrowed from PyTorch tessuite
-    @unittest.mock.patch.dict(
-        os.environ, {'TORCH_NCCL_ABORT_IN_DESTROY_PG': '1'}
-    )
+    @unittest.mock.patch.dict(os.environ, {"TORCH_NCCL_ABORT_IN_DESTROY_PG": "1"})
     def test_abort_in_destroy_pg(self):
         # Disable ASYNC_ERROR_HANDLING for this test to ensure we can
         # programmatically abort the process group.
         os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "0"
-        self.assertEqual(os.getenv('TORCH_NCCL_ABORT_IN_DESTROY_PG', '0'), '1')
+        self.assertEqual(os.getenv("TORCH_NCCL_ABORT_IN_DESTROY_PG", "0"), "1")
 
         size = 1024
         device = torch.device(self.rank)
@@ -281,11 +266,9 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             pg.allreduce([t])
 
     # test borrowed from PyTorch tessuite
-    @unittest.mock.patch.dict(
-        os.environ, {'TORCH_NCCL_ABORT_IN_DESTROY_PG': '1'}
-    )
+    @unittest.mock.patch.dict(os.environ, {"TORCH_NCCL_ABORT_IN_DESTROY_PG": "1"})
     def test_abort_in_destroy_multi_pgs(self):
-        self.assertEqual(os.getenv('TORCH_NCCL_ABORT_IN_DESTROY_PG', '0'), '1')
+        self.assertEqual(os.getenv("TORCH_NCCL_ABORT_IN_DESTROY_PG", "0"), "1")
         size = 1024
         device = torch.device(self.rank)
         torch.cuda.set_device(device)
@@ -307,11 +290,9 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
         torch.distributed.destroy_process_group()
 
     # test borrowed from PyTorch tessuite
-    @unittest.mock.patch.dict(
-        os.environ, {'TORCH_NCCL_ABORT_IN_DESTROY_PG': '1'}
-    )
+    @unittest.mock.patch.dict(os.environ, {"TORCH_NCCL_ABORT_IN_DESTROY_PG": "1"})
     def test_abort_in_destroy_mixed_empty_pgs(self):
-        self.assertEqual(os.getenv('TORCH_NCCL_ABORT_IN_DESTROY_PG', '0'), '1')
+        self.assertEqual(os.getenv("TORCH_NCCL_ABORT_IN_DESTROY_PG", "0"), "1")
         size = 1024
         device = torch.device(self.rank)
         torch.cuda.set_device(device)
@@ -323,7 +304,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
         pg.allreduce(t).wait()
         # PG1 is an PG without comms initialized, since we don't call
         # collective on it
-        new_pg1 = c10d.new_group([0, 1])
+        c10d.new_group([0, 1])
         new_pg2 = c10d.new_group([0, 1])
         t2 = torch.ones(size, dtype=torch.int64, device=device)
 
@@ -334,7 +315,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
         # shutdown all NCCL PGs in one shot
         torch.distributed.destroy_process_group()
 
-    @common.subtests([{'pass_device': pd} for pd in [True, False]])
+    @common.subtests([{"pass_device": pd} for pd in [True, False]])
     def test_destroy_reinit(self, pass_device):
         size = 10
 
@@ -352,7 +333,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             store = common.wrap_store(
                 c10d.FileStore(self.file_name, self.world_size), pass_device, i
             )
-            pg = self._create_process_group_nccl(
+            self._create_process_group_nccl(
                 store, self.opts(), device_id=init_process_group_device
             )
             self.assertTrue(torch.distributed.is_initialized())
@@ -364,7 +345,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             torch.distributed.destroy_process_group()
             self.assertFalse(torch.distributed.is_initialized())
 
-    @common.subtests([{'pass_device': pd} for pd in [True, False]])
+    @common.subtests([{"pass_device": pd} for pd in [True, False]])
     def test_unmatched_collective(self, pass_device):
         size = 10
 
@@ -382,7 +363,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             store = common.wrap_store(
                 c10d.FileStore(self.file_name, self.world_size), pass_device, i
             )
-            pg = self._create_process_group_nccl(
+            self._create_process_group_nccl(
                 store, self.opts(), device_id=init_process_group_device
             )
             self.assertTrue(torch.distributed.is_initialized())
@@ -397,12 +378,10 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             torch.distributed.destroy_process_group()
             self.assertFalse(torch.distributed.is_initialized())
 
-    @unittest.mock.patch.dict(
-        os.environ, {'TORCH_NCCL_ABORT_IN_DESTROY_PG': 'dummy'}
-    )
-    @common.subtests([{'nccl_abort': na} for na in ['0', '1']])
+    @unittest.mock.patch.dict(os.environ, {"TORCH_NCCL_ABORT_IN_DESTROY_PG": "dummy"})
+    @common.subtests([{"nccl_abort": na} for na in ["0", "1"]])
     def test_saturated_queue(self, nccl_abort, pass_device=True):
-        os.environ['TORCH_NCCL_ABORT_IN_DESTROY_PG'] = nccl_abort
+        os.environ["TORCH_NCCL_ABORT_IN_DESTROY_PG"] = nccl_abort
         size = 2**26
         iters = 30
 
@@ -420,7 +399,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             store = common.wrap_store(
                 c10d.FileStore(self.file_name, self.world_size), nccl_abort, i
             )
-            pg = self._create_process_group_nccl(
+            self._create_process_group_nccl(
                 store, self.opts(), device_id=init_process_group_device
             )
             self.assertTrue(torch.distributed.is_initialized())
@@ -434,11 +413,9 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
 
             self.assertTrue((t == 2**iters).all())
 
-    @unittest.mock.patch.dict(
-        os.environ, {'TORCH_NCCL_ABORT_IN_DESTROY_PG': '1'}
-    )
+    @unittest.mock.patch.dict(os.environ, {"TORCH_NCCL_ABORT_IN_DESTROY_PG": "1"})
     def test_saturated_queue_killed(self, rank_to_kill=0, pass_device=True):
-        self.assertEqual(os.environ['TORCH_NCCL_ABORT_IN_DESTROY_PG'], '1')
+        self.assertEqual(os.environ["TORCH_NCCL_ABORT_IN_DESTROY_PG"], "1")
         size = 2**26
         iters = 30
 
@@ -454,7 +431,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
         store = common.wrap_store(
             c10d.FileStore(self.file_name, self.world_size), rank_to_kill
         )
-        pg = self._create_process_group_nccl(
+        self._create_process_group_nccl(
             store, self.opts(), device_id=init_process_group_device
         )
         self.assertTrue(torch.distributed.is_initialized())
@@ -495,9 +472,7 @@ class ProcessGroupGLOOTest(common.MultiProcessTestCase):
     @unittest.expectedFailure
     def test_destroy_process_group(self):
         store = c10d.FileStore(self.file_name, self.world_size)
-        pg = self._create_process_group_gloo(
-            store, datetime.timedelta(seconds=2)
-        )
+        self._create_process_group_gloo(store, datetime.timedelta(seconds=2))
 
         size = 1024 * 1024
         tensor = torch.tensor(size)

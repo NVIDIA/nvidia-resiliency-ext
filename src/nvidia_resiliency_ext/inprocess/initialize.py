@@ -22,7 +22,7 @@ from .state import State
 
 
 class Initialize(abc.ABC):
-    r'''
+    r"""
     Abstract base class for ``initialize`` argument for
     :py:class:`inprocess.Wrapper`.
 
@@ -34,7 +34,7 @@ class Initialize(abc.ABC):
 
     Multiple instances of :py:class:`Initialize` could be composed with
     :py:class:`inprocess.Compose` to achieve the desired behavior.
-    '''
+    """
 
     @abc.abstractmethod
     def __call__(self, state: State) -> State:
@@ -42,7 +42,7 @@ class Initialize(abc.ABC):
 
 
 class RetryController(Initialize):
-    r'''
+    r"""
     Controls retry logic for distributed training based on specified iteration
     and world size limits.
 
@@ -57,7 +57,7 @@ class RetryController(Initialize):
             execution
         min_active_world_size: The minimum required active world size to
             proceed with execution
-    '''
+    """
 
     def __init__(
         self,
@@ -79,9 +79,9 @@ class RetryController(Initialize):
             )
         ):
             msg = (
-                f'{state.iteration=} {self.max_iterations=} '
-                f'{state.world_size=} {self.min_world_size=} '
-                f'{state.active_world_size=} {self.min_active_world_size=} '
+                f"{state.iteration=} {self.max_iterations=} "
+                f"{state.world_size=} {self.min_world_size=} "
+                f"{state.active_world_size=} {self.min_active_world_size=} "
             )
             raise exception.RestartAbort(msg)
         return state

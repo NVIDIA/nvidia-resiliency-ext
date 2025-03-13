@@ -32,7 +32,9 @@ def broadcast(tensor, src, group=torch.distributed.group.WORLD, async_op=False):
         return torch.distributed.broadcast(tensor, src, group, async_op)
 
 
-def all_gather(tensor_list, tensor, group=torch.distributed.group.WORLD, async_op=False):
+def all_gather(
+    tensor_list, tensor, group=torch.distributed.group.WORLD, async_op=False
+):
     """
     Call torch.distributed.all_gather() if distributed is in use
     """
@@ -72,33 +74,33 @@ def get_rank():
     return rank
 
 
-def all_reduce_item(value, op='sum'):
+def all_reduce_item(value, op="sum"):
     """
     All-reduces single scalar value if distributed is in use
     """
     if torch.distributed.is_available() and torch.distributed.is_initialized():
-        if op == 'sum' or op == 'mean':
+        if op == "sum" or op == "mean":
             dop = torch.distributed.ReduceOp.SUM
-        elif op == 'min':
+        elif op == "min":
             dop = torch.distributed.ReduceOp.MIN
-        elif op == 'max':
+        elif op == "max":
             dop = torch.distributed.ReduceOp.MAX
-        elif op == 'product':
+        elif op == "product":
             dop = torch.distributed.ReduceOp.PRODUCT
         else:
-            raise RuntimeError('Unsupported reduce op')
+            raise RuntimeError("Unsupported reduce op")
 
         backend = torch.distributed.get_backend()
         if backend == torch.distributed.Backend.NCCL:
-            device = torch.device('cuda')
+            device = torch.device("cuda")
         elif backend == torch.distributed.Backend.GLOO:
-            device = torch.device('cpu')
+            device = torch.device("cpu")
         else:
-            raise RuntimeError('Unsupported distributed backend')
+            raise RuntimeError("Unsupported distributed backend")
 
         tensor = torch.as_tensor(value).to(device)
         torch.distributed.all_reduce(tensor, dop)
-        if op == 'mean':
+        if op == "mean":
             tensor /= get_world_size()
         ret = tensor.item()
     else:
@@ -122,16 +124,16 @@ def init_distributed_with_tcp_store(device):
     """
     Initializes distributed backend.
     """
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
     distributed = world_size > 1
     if distributed:
-        if device.type == 'cuda':
-            backend = 'nccl'
-        elif device.type == 'cpu':
-            backend = 'gloo'
+        if device.type == "cuda":
+            backend = "nccl"
+        elif device.type == "cpu":
+            backend = "gloo"
         else:
-            raise RuntimeError('Unknown device')
-        torch.distributed.init_process_group(backend=backend, init_method='env://')
+            raise RuntimeError("Unknown device")
+        torch.distributed.init_process_group(backend=backend, init_method="env://")
         assert torch.distributed.is_initialized()
     return distributed
 
@@ -140,24 +142,26 @@ def init_distributed_with_file_store(device, store_file_dir="/tmp"):
     """
     Initializes distributed backend.
     """
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
     distributed = world_size > 1
     if distributed:
-        if device.type == 'cuda':
-            backend = 'nccl'
-        elif device.type == 'cpu':
-            backend = 'gloo'
+        if device.type == "cuda":
+            backend = "nccl"
+        elif device.type == "cpu":
+            backend = "gloo"
         else:
-            raise RuntimeError('Unknown device')
+            raise RuntimeError("Unknown device")
         # store file should be deleted by PyTorch
-        store_filename = f'dist_store_slurm_job_id_{os.getenv("SLURM_JOB_ID","none")}.bin'
+        store_filename = (
+            f'dist_store_slurm_job_id_{os.getenv("SLURM_JOB_ID","none")}.bin'
+        )
         store_file_path = os.path.join(store_file_dir, store_filename)
         store_file_path = os.path.abspath(store_file_path)
         torch.distributed.init_process_group(
             backend,
-            init_method=f'file://{store_file_path}',
+            init_method=f"file://{store_file_path}",
             world_size=world_size,
-            rank=int(os.environ['RANK']),
+            rank=int(os.environ["RANK"]),
         )
         assert torch.distributed.is_initialized()
     return distributed
@@ -172,7 +176,7 @@ def gather_tensors(tensor, device):
         tensors = [torch.empty_like(tensor) for _ in range(world_size)]
         torch.distributed.all_gather(tensors, tensor)
 
-    tensors = [tensor.to(torch.device('cpu')) for tensor in tensors]
+    tensors = [tensor.to(torch.device("cpu")) for tensor in tensors]
     return tensors
 
 
@@ -200,8 +204,12 @@ def is_true_on_any_rank(flag: bool, group=None) -> bool:
     ret = flag
     if get_world_size(group) > 1:
         device = get_device_for_backend(group)
-        flag_tensor = torch.tensor([1.0 if flag else 0], dtype=torch.float32, device=device)
-        torch.distributed.all_reduce(flag_tensor, op=torch.distributed.ReduceOp.MAX, group=group)
+        flag_tensor = torch.tensor(
+            [1.0 if flag else 0], dtype=torch.float32, device=device
+        )
+        torch.distributed.all_reduce(
+            flag_tensor, op=torch.distributed.ReduceOp.MAX, group=group
+        )
         ret = bool(flag_tensor.item() > 0)
     return ret
 

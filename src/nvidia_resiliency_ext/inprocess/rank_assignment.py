@@ -23,16 +23,16 @@ from .state import State
 
 
 class RankDiscarded(exception.RestartError):
-    r'''
+    r"""
     Exception raised when unhealthy distributed rank is discarded by
     :py:class:`inprocess.rank_assignment.RankAssignment`.
-    '''
+    """
 
     pass
 
 
 class RankAssignment(abc.ABC):
-    r'''
+    r"""
     Abstract base class for ``rank_assignment`` argument for
     :py:class:`inprocess.Wrapper`.
 
@@ -43,17 +43,15 @@ class RankAssignment(abc.ABC):
 
     Multiple instances of :py:class:`RankAssignment` could be composed with
     :py:class:`inprocess.Compose` to achieve the desired behavior.
-    '''
+    """
 
     @abc.abstractmethod
-    def __call__(
-        self, state: State, terminated_ranks: set[int]
-    ) -> (State, set[int]):
+    def __call__(self, state: State, terminated_ranks: set[int]) -> (State, set[int]):
         raise NotImplementedError
 
 
 class FillGaps(RankAssignment):
-    r'''
+    r"""
     A class for reassigning distributed ranks, filling in gaps caused by
     terminated or unhealthy ranks.
 
@@ -77,11 +75,9 @@ class FillGaps(RankAssignment):
               ---------------------   |
                           |           |
                           -------------
-    '''
+    """
 
-    def __call__(
-        self, state: State, terminated_ranks: set[int]
-    ) -> (State, set[int]):
+    def __call__(self, state: State, terminated_ranks: set[int]) -> (State, set[int]):
         rank = state.rank
         world_size = state.world_size
 
@@ -89,7 +85,7 @@ class FillGaps(RankAssignment):
         world_size = world_size - len(terminated_ranks)
 
         if rank in terminated_ranks:
-            raise RankDiscarded(f'{rank=} {terminated_ranks=}')
+            raise RankDiscarded(f"{rank=} {terminated_ranks=}")
         elif rank >= world_size:
             rank = ordered_terminated_ranks[rank - world_size]
 
@@ -100,7 +96,7 @@ class FillGaps(RankAssignment):
 
 
 class ShiftRanks(RankAssignment):
-    r'''
+    r"""
     A class for reassigning distributed ranks, filling in gaps caused by
     terminated or unhealthy ranks.
 
@@ -127,17 +123,15 @@ class ShiftRanks(RankAssignment):
                           |           |
                           ------------
 
-    '''
+    """
 
-    def __call__(
-        self, state: State, terminated_ranks: set[int]
-    ) -> (State, set[int]):
+    def __call__(self, state: State, terminated_ranks: set[int]) -> (State, set[int]):
         rank = state.rank
         world_size = state.world_size
 
         world_size = world_size - len(terminated_ranks)
         if rank in terminated_ranks:
-            raise RankDiscarded(f'{rank=} {terminated_ranks=}')
+            raise RankDiscarded(f"{rank=} {terminated_ranks=}")
         else:
             rank = rank - sum(
                 rank > terminated_rank for terminated_rank in terminated_ranks
@@ -150,7 +144,7 @@ class ShiftRanks(RankAssignment):
 
 
 class FilterGroupedByKey(RankAssignment):
-    r'''
+    r"""
     A class for filtering distributed ranks by grouping by a key.
 
     :py:class:`FilterGroupedByKey` organizes ranks into groups based on a
@@ -206,7 +200,7 @@ class FilterGroupedByKey(RankAssignment):
             if ``False`` the rank is terminated
         timeout: timeout for distributed barrier
 
-    '''
+    """
 
     instance_count = 0
 
@@ -220,15 +214,13 @@ class FilterGroupedByKey(RankAssignment):
         self.condition = condition
         self.timeout = timeout
 
-        self.name = f'{type(self).__name__}_{type(self).instance_count}'
+        self.name = f"{type(self).__name__}_{type(self).instance_count}"
         type(self).instance_count += 1
 
-    def __call__(
-        self, state: State, terminated_ranks: set[int]
-    ) -> (State, set[int]):
-        COUNT_ALIVE_BARRIER = f'count_alive_barrier_{self.name}'
-        SUBMIT_MISMATCHING_BARRIER = f'submit_mismatching_barrier_{self.name}'
-        RANKS_TO_TERMINATE = f'ranks_to_terminate_{self.name}'
+    def __call__(self, state: State, terminated_ranks: set[int]) -> (State, set[int]):
+        COUNT_ALIVE_BARRIER = f"count_alive_barrier_{self.name}"
+        SUBMIT_MISMATCHING_BARRIER = f"submit_mismatching_barrier_{self.name}"
+        RANKS_TO_TERMINATE = f"ranks_to_terminate_{self.name}"
 
         rank = state.rank
         world_size = state.world_size
@@ -242,7 +234,7 @@ class FilterGroupedByKey(RankAssignment):
                 if callable(self.key_or_fn)
                 else self.key_or_fn
             )
-            key = f'filter_grouped_by_key_{self.name}_{key}'
+            key = f"filter_grouped_by_key_{self.name}_{key}"
             store.add(key, 1)
             store.barrier(
                 rank=rank,
@@ -252,7 +244,7 @@ class FilterGroupedByKey(RankAssignment):
             )
 
             if not self.condition(int(store.get(key))):
-                store.append(RANKS_TO_TERMINATE, f'{rank},')
+                store.append(RANKS_TO_TERMINATE, f"{rank},")
 
             store.barrier(
                 rank=rank,
@@ -267,8 +259,8 @@ class FilterGroupedByKey(RankAssignment):
                     int(r)
                     for r in store.get(RANKS_TO_TERMINATE)
                     .decode()
-                    .rstrip(',')
-                    .split(',')
+                    .rstrip(",")
+                    .split(",")
                 )
             else:
                 ranks_to_terminate = set()

@@ -19,9 +19,7 @@ __all__ = ["tail_logfile", "TailLog"]
 log = logging.getLogger(__name__)
 
 
-def tail_logfile(
-    header: str, file: str, dst: TextIO, finished: Event, interval_sec: float
-):
+def tail_logfile(header: str, file: str, dst: TextIO, finished: Event, interval_sec: float):
 
     while not os.path.exists(file):
         if finished.is_set():
@@ -140,8 +138,10 @@ class TailLog:
             except Exception as e:
                 log.error(
                     "error in log tailor for %s%s. %s: %s",
-                    self._name, local_rank,
-                    e.__class__.__qualname__, e,
+                    self._name,
+                    local_rank,
+                    e.__class__.__qualname__,
+                    e,
                 )
 
         if self._threadpool:

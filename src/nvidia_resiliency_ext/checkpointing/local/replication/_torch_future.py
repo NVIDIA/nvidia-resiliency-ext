@@ -211,7 +211,9 @@ def recv_object_list(object_list, src=None, group=None, device=None):
     # case it is not ``None`` we move the size and object tensors to be
     # received to this device.
     current_device = device or _get_pg_default_device(group)
-    object_sizes_tensor = torch.empty(len(object_list), dtype=torch.long, device=current_device)
+    object_sizes_tensor = torch.empty(
+        len(object_list), dtype=torch.long, device=current_device
+    )
 
     # Receive object sizes
     rank_sizes = recv(object_sizes_tensor, src=src, group=group)
@@ -224,7 +226,9 @@ def recv_object_list(object_list, src=None, group=None, device=None):
     )
 
     rank_objects = recv(object_tensor, src=src, group=group)
-    assert rank_sizes == rank_objects, "Mismatch in return ranks for object sizes and objects."
+    assert (
+        rank_sizes == rank_objects
+    ), "Mismatch in return ranks for object sizes and objects."
     # Deserialize objects using their stored sizes.
     offset = 0
     for i, obj_size in enumerate(object_sizes_tensor):

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" A basic manager for local checkpoints."""
+"""A basic manager for local checkpoints."""
 
 import logging
 import os
@@ -56,7 +56,7 @@ class LocalCheckpointManager(BaseCheckpointManager):
     def __init__(
         self,
         root_local_ckpt_dir: Union[str, Path],
-        session_id: str = '',
+        session_id: str = "",
         repl_strategy: Optional[ReplicationStrategy] = None,
     ):
         super().__init__(session_id, repl_strategy)
@@ -67,7 +67,9 @@ class LocalCheckpointManager(BaseCheckpointManager):
     @property
     def local_ckpt_dir(self):
         if self._local_ckpt_dir is None:
-            self._local_ckpt_dir = Path(self.root_local_ckpt_dir) / self.session_id / str(self.rank)
+            self._local_ckpt_dir = (
+                Path(self.root_local_ckpt_dir) / self.session_id / str(self.rank)
+            )
         return self._local_ckpt_dir
 
     def _ensure_dir(self):
@@ -80,14 +82,14 @@ class LocalCheckpointManager(BaseCheckpointManager):
         """Collect all locally available checkpoint IDs."""
         self._ensure_dir()
         my_files = [f.name for f in self.local_ckpt_dir.iterdir() if f.is_file()]
-        pattern = self._filename_from_template('\\d+', '\\d+', '\\')
+        pattern = self._filename_from_template("\\d+", "\\d+", "\\")
         return [
             self._filename_to_id(filename)
             for filename in my_files
             if re.fullmatch(pattern, filename)
         ]
 
-    @debug_time('LocalCheckpointManager._load', logger)
+    @debug_time("LocalCheckpointManager._load", logger)
     def _load(self, ckpt_id: CkptID) -> Tuple[TensorAwareStateDict, str]:
         """Load of the checkpoint identified by ckpt_id."""
         local_ckpt_path = self._local_ckpt_path_from_id(ckpt_id)
@@ -101,10 +103,10 @@ class LocalCheckpointManager(BaseCheckpointManager):
             err_msg = f"File {local_ckpt_path} does not exist!"
             logging.info(err_msg)
             ckpt_files = [f.name for f in self.local_ckpt_dir.iterdir()]
-            logger.debug(f'{err_msg}. Checkpoint directory content: {ckpt_files}')
+            logger.debug(f"{err_msg}. Checkpoint directory content: {ckpt_files}")
             raise CheckpointingException(err_msg) from e
 
-    @debug_time('LocalCheckpointManager._save', logger)
+    @debug_time("LocalCheckpointManager._save", logger)
     def _save(self, state_dict: TensorAwareStateDict, ckpt_id: CkptID):
         """Save of the tensor_aware_state_dict identified by ckpt_id."""
         self._ensure_dir()
@@ -126,10 +128,10 @@ class LocalCheckpointManager(BaseCheckpointManager):
 
         except FileExistsError as e:
             ckpt_files = [f.name for f in self.local_ckpt_dir.iterdir()]
-            logger.debug(f'Checkpoint directory content: {ckpt_files}')
+            logger.debug(f"Checkpoint directory content: {ckpt_files}")
             raise SameMachineReplicationException(ckpt_id) from e
 
-    @debug_time('LocalCheckpointManager._cleanup', logger)
+    @debug_time("LocalCheckpointManager._cleanup", logger)
     def _cleanup(self, iteration):
         """Removes outdated or invalid checkpoints after successfully saving the checkpoint
         for the specified iteration.
@@ -137,20 +139,24 @@ class LocalCheckpointManager(BaseCheckpointManager):
         Args:
             iteration : The iteration number for which the checkpoint was successfully saved.
         """
-        ckpts = self.local_ckpt_dir.glob(self._filename_from_template('*', '*', '*'))
-        rm_ckpts = [ckpt for ckpt in ckpts if self._filename_to_id(ckpt.name)[0] < iteration]
+        ckpts = self.local_ckpt_dir.glob(self._filename_from_template("*", "*", "*"))
+        rm_ckpts = [
+            ckpt for ckpt in ckpts if self._filename_to_id(ckpt.name)[0] < iteration
+        ]
         for ckpt in rm_ckpts:
             logging.info(f"Removing {ckpt}")
             ckpt.unlink()
 
-    @debug_time('LocalCheckpointManager._cleanup_failed_save', logger)
+    @debug_time("LocalCheckpointManager._cleanup_failed_save", logger)
     def _cleanup_failed_save(self, iteration):
         """Removes invalid checkpoints that could not be saved due to a failure.
 
         Args:
             iteration : The iteration number for which the checkpoint failed to save.
         """
-        rm_ckpts = self.local_ckpt_dir.glob(self._filename_from_template(iteration, '*', '*'))
+        rm_ckpts = self.local_ckpt_dir.glob(
+            self._filename_from_template(iteration, "*", "*")
+        )
         for ckpt in rm_ckpts:
             logging.info(f"Removing {ckpt}")
             ckpt.unlink()
@@ -159,7 +165,9 @@ class LocalCheckpointManager(BaseCheckpointManager):
         self, iteration: Union[int, str], rank: Union[int, str], extra_suffix: str = ""
     ):
         digits = 7
-        iteration_string = str(iteration).zfill(digits) if isinstance(iteration, int) else iteration
+        iteration_string = (
+            str(iteration).zfill(digits) if isinstance(iteration, int) else iteration
+        )
         if iteration_string.isdigit():
             assert len(iteration_string) == digits
         file_name = f"iter_{iteration_string}_{rank}_local{extra_suffix}.pt"
@@ -173,5 +181,5 @@ class LocalCheckpointManager(BaseCheckpointManager):
         return self.local_ckpt_dir / file_name
 
     def _filename_to_id(self, filename):
-        _, iteration, rank, _ = filename.split('_', 3)
+        _, iteration, rank, _ = filename.split("_", 3)
         return (int(iteration), int(rank), self.session_id)

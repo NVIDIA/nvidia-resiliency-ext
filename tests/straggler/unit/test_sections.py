@@ -37,36 +37,35 @@ RANK_DONE_TIMEOUT = 30
 
 
 def _dummy_section_work(section_name, rank, test_scenario, is_slow_iter=False):
-    is_straggler = ('stragglers' in test_scenario.keys()) and (
-        (section_name, rank) in test_scenario['stragglers']
+    is_straggler = ("stragglers" in test_scenario.keys()) and (
+        (section_name, rank) in test_scenario["stragglers"]
     )
-    is_indiv_straggler = ('indiv_stragglers' in test_scenario.keys()) and (
-        (section_name, rank) in test_scenario['indiv_stragglers']
+    is_indiv_straggler = ("indiv_stragglers" in test_scenario.keys()) and (
+        (section_name, rank) in test_scenario["indiv_stragglers"]
     )
     if is_straggler:
-        mu = test_scenario['avg_section_time_straggler']
-        sigma = test_scenario['stdev_section_time_straggler']
+        mu = test_scenario["avg_section_time_straggler"]
+        sigma = test_scenario["stdev_section_time_straggler"]
     else:
-        mu = test_scenario['avg_section_time']
-        sigma = test_scenario['stdev_section_time']
+        mu = test_scenario["avg_section_time"]
+        sigma = test_scenario["stdev_section_time"]
 
     if is_indiv_straggler and is_slow_iter:
-        mu = test_scenario['avg_section_time_straggler']
-        sigma = test_scenario['stdev_section_time_straggler']
+        mu = test_scenario["avg_section_time_straggler"]
+        sigma = test_scenario["stdev_section_time_straggler"]
     sleep_time = max(0.0, random.gauss(mu=mu, sigma=sigma))
     time.sleep(sleep_time)
 
 
 def _rank_main(*args, test_scenario, ret_queue, **kwargs):
-
     rank = torch.distributed.get_rank()
     random.seed(rank)
 
-    training_half = test_scenario['iters'] // 2
+    training_half = test_scenario["iters"] // 2
 
-    straggler.Detector.initialize(node_name='dummy_node_name')
+    straggler.Detector.initialize(node_name="dummy_node_name")
 
-    for i in range(test_scenario['iters']):
+    for i in range(test_scenario["iters"]):
         for section in ["section00", "section01", "section02"]:
             with straggler.Detector.detection_section(section):
                 _dummy_section_work(
@@ -153,7 +152,6 @@ test_scenarios = [
 
 @pytest.mark.parametrize("test_scenario", test_scenarios)
 def test_straggler_sections_detected(test_scenario):
-
     mp_ctx = mp.get_context("spawn")
     ret_queue = mp_ctx.Queue()
 
@@ -174,31 +172,45 @@ def test_straggler_sections_detected(test_scenario):
 
     found_stragglers = report.identify_stragglers()
 
-    assert not found_stragglers['straggler_gpus_relative']
-    assert not found_stragglers['straggler_gpus_individual']
+    assert not found_stragglers["straggler_gpus_relative"]
+    assert not found_stragglers["straggler_gpus_individual"]
 
-    if 'stragglers' in test_scenario.keys():
-        if test_scenario['stragglers']:
+    if "stragglers" in test_scenario.keys():
+        if test_scenario["stragglers"]:
             # verify that all stragglers are detected
-            for test_straggler_section, test_straggler_rank in test_scenario['stragglers']:
-                assert test_straggler_section in found_stragglers['straggler_sections_relative']
+            for test_straggler_section, test_straggler_rank in test_scenario[
+                "stragglers"
+            ]:
                 assert (
-                    straggler.StragglerId(test_straggler_rank, 'dummy_node_name')
-                    in found_stragglers['straggler_sections_relative'][test_straggler_section]
+                    test_straggler_section
+                    in found_stragglers["straggler_sections_relative"]
+                )
+                assert (
+                    straggler.StragglerId(test_straggler_rank, "dummy_node_name")
+                    in found_stragglers["straggler_sections_relative"][
+                        test_straggler_section
+                    ]
                 )
         else:
             # there should be no stragglers detected if there were no stragglers in the test
-            assert not found_stragglers['straggler_sections_relative']
+            assert not found_stragglers["straggler_sections_relative"]
 
-    if 'indiv_stragglers' in test_scenario.keys():
-        if test_scenario['indiv_stragglers']:
+    if "indiv_stragglers" in test_scenario.keys():
+        if test_scenario["indiv_stragglers"]:
             # verify that all stragglers are detected
-            for test_straggler_section, test_straggler_rank in test_scenario['indiv_stragglers']:
-                assert test_straggler_section in found_stragglers['straggler_sections_individual']
+            for test_straggler_section, test_straggler_rank in test_scenario[
+                "indiv_stragglers"
+            ]:
                 assert (
-                    straggler.StragglerId(test_straggler_rank, 'dummy_node_name')
-                    in found_stragglers['straggler_sections_individual'][test_straggler_section]
+                    test_straggler_section
+                    in found_stragglers["straggler_sections_individual"]
+                )
+                assert (
+                    straggler.StragglerId(test_straggler_rank, "dummy_node_name")
+                    in found_stragglers["straggler_sections_individual"][
+                        test_straggler_section
+                    ]
                 )
         else:
             # there should be no stragglers detected if there were no stragglers in the test
-            assert not found_stragglers['straggler_sections_individual']
+            assert not found_stragglers["straggler_sections_individual"]

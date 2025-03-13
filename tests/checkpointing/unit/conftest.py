@@ -13,13 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 from pathlib import Path
 
 import pytest
-from .test_utilities import Utils
 
 from . import TempNamedDir
+from .test_utilities import Utils
 
 
 @pytest.fixture(scope="session")
@@ -29,8 +28,8 @@ def tmp_path_dist_ckpt(tmp_path_factory) -> Path:
     Can't use pytest `tmp_path_factory` directly because directory must be shared between processes.
     """
 
-    tmp_dir = tmp_path_factory.mktemp('ignored', numbered=False)
-    tmp_dir = tmp_dir.parent.parent / 'tmp_dist_ckpt'
+    tmp_dir = tmp_path_factory.mktemp("ignored", numbered=False)
+    tmp_dir = tmp_dir.parent.parent / "tmp_dist_ckpt"
 
     if Utils.rank == 0:
         with TempNamedDir(tmp_dir, sync=False):

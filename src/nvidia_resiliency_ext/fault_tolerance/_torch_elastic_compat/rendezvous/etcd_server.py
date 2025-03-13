@@ -17,6 +17,7 @@ import os
 import shlex
 import shutil
 import socket
+
 # Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
 # Severity: Low   Confidence: High
 # CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
@@ -121,9 +122,7 @@ class EtcdServer:
 
         root = os.path.dirname(__file__)
         default_etcd_bin = os.path.join(root, "bin/etcd")
-        self._etcd_binary_path = os.environ.get(
-            "TORCHELASTIC_ETCD_BINARY_PATH", default_etcd_bin
-        )
+        self._etcd_binary_path = os.environ.get("TORCHELASTIC_ETCD_BINARY_PATH", default_etcd_bin)
         if not os.path.isfile(self._etcd_binary_path):
             self._etcd_binary_path = "etcd"
 
@@ -135,9 +134,7 @@ class EtcdServer:
 
     def _get_etcd_server_process(self) -> subprocess.Popen:
         if not self._etcd_proc:
-            raise RuntimeError(
-                "No etcd server process started. Call etcd_server.start() first"
-            )
+            raise RuntimeError("No etcd server process started. Call etcd_server.start() first")
         else:
             return self._etcd_proc
 
@@ -184,9 +181,7 @@ class EtcdServer:
             except Exception as e:
                 curr_retries += 1
                 stop_etcd(self._etcd_proc)
-                log.warning(
-                    "Failed to start etcd server, got error: %s, retrying", str(e)
-                )
+                log.warning("Failed to start etcd server, got error: %s, retrying", str(e))
                 if curr_retries >= num_retries:
                     shutil.rmtree(self._base_data_dir, ignore_errors=True)
                     raise
@@ -232,9 +227,7 @@ class EtcdServer:
 
     def get_client(self):
         """Return an etcd client object that can be used to make requests to this server."""
-        return etcd.Client(
-            host=self._host, port=self._port, version_prefix="/v2", read_timeout=10
-        )
+        return etcd.Client(host=self._host, port=self._port, version_prefix="/v2", read_timeout=10)
 
     def _wait_for_ready(self, timeout: int = 60) -> None:
         client = etcd.Client(
@@ -246,9 +239,7 @@ class EtcdServer:
             if self._get_etcd_server_process().poll() is not None:
                 # etcd server process finished
                 exitcode = self._get_etcd_server_process().returncode
-                raise RuntimeError(
-                    f"Etcd server process exited with the code: {exitcode}"
-                )
+                raise RuntimeError(f"Etcd server process exited with the code: {exitcode}")
             try:
                 log.info("etcd server ready. version: %s", client.version)
                 return

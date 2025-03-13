@@ -11,9 +11,12 @@
 # Modifications made by NVIDIA
 # All occurences of 'torch.distributed.elastic' were replaced with 'nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat'
 
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.errors.error_handler import ErrorHandler
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.errors.error_handler import (
+    ErrorHandler,
+)
 
 __all__ = ['get_error_handler']
+
 
 def get_error_handler():
     return ErrorHandler()

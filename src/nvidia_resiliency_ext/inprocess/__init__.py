@@ -14,12 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import exception
-from . import finalize
-from . import health_check
-from . import initialize
-from . import monitor_thread
-from . import rank_assignment
+from . import (
+    exception,
+    finalize,
+    health_check,
+    initialize,
+    monitor_thread,
+    rank_assignment,
+)
 from .compose import Compose
-from .wrap import CallWrapper
-from .wrap import Wrapper
+from .wrap import CallWrapper, Wrapper

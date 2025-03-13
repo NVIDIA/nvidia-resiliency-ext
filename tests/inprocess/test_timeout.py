@@ -19,9 +19,7 @@ import multiprocessing
 import os
 import time
 import unittest
-from typing import Optional
 
-import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
 
@@ -30,20 +28,20 @@ from . import common
 
 def kwargs():
     return {
-        'store_kwargs': {'port': common.find_free_port()},
-        'progress_watchdog_interval': datetime.timedelta(seconds=1e-3),
-        'monitor_process_interval': datetime.timedelta(seconds=1e-3),
-        'monitor_thread_interval': datetime.timedelta(seconds=1e-3),
-        'last_call_wait': datetime.timedelta(seconds=1e-3),
+        "store_kwargs": {"port": common.find_free_port()},
+        "progress_watchdog_interval": datetime.timedelta(seconds=1e-3),
+        "monitor_process_interval": datetime.timedelta(seconds=1e-3),
+        "monitor_thread_interval": datetime.timedelta(seconds=1e-3),
+        "last_call_wait": datetime.timedelta(seconds=1e-3),
     }
 
 
 @unittest.mock.patch.dict(
     os.environ,
     {
-        'RANK': '0',
-        'WORLD_SIZE': '1',
-        'MASTER_ADDR': 'localhost',
+        "RANK": "0",
+        "WORLD_SIZE": "1",
+        "MASTER_ADDR": "localhost",
     },
 )
 class TestSoft(unittest.TestCase):
@@ -101,15 +99,15 @@ class TestSoft(unittest.TestCase):
 @unittest.mock.patch.dict(
     os.environ,
     {
-        'RANK': '0',
-        'WORLD_SIZE': '1',
-        'MASTER_ADDR': 'localhost',
+        "RANK": "0",
+        "WORLD_SIZE": "1",
+        "MASTER_ADDR": "localhost",
     },
 )
 class TestHard(unittest.TestCase):
     @staticmethod
     def launch(fn, timeout=datetime.timedelta(seconds=10)):
-        ctx = multiprocessing.get_context('fork')
+        ctx = multiprocessing.get_context("fork")
         proc = ctx.Process(target=fn)
         start = time.perf_counter()
         proc.start()

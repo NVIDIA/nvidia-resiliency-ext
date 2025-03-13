@@ -38,14 +38,16 @@ class Layer(nn.Module):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--layers', type=int, default=10)
-    parser.add_argument('--batch', type=int, default=16)
-    parser.add_argument('--hidden', type=int, default=128)
-    parser.add_argument('--iters', type=int, default=1000)
-    parser.add_argument('--backward', action='store_true')
-    parser.add_argument('--ddp', action='store_true')
-    parser.add_argument('--report_interval', type=int, default=100)
-    parser.add_argument('--local-rank', default=int(os.getenv('LOCAL_RANK', 0)), type=int)
+    parser.add_argument("--layers", type=int, default=10)
+    parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--hidden", type=int, default=128)
+    parser.add_argument("--iters", type=int, default=1000)
+    parser.add_argument("--backward", action="store_true")
+    parser.add_argument("--ddp", action="store_true")
+    parser.add_argument("--report_interval", type=int, default=100)
+    parser.add_argument(
+        "--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int
+    )
 
     # Filter out pytest arguments
     args, _ = parser.parse_known_args(sys.argv[1:])
@@ -53,12 +55,15 @@ def parse_args():
 
 
 def setup_distributed():
-    if int(os.getenv('WORLD_SIZE', '1')) > 1:
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    if int(os.getenv("WORLD_SIZE", "1")) > 1:
+        torch.distributed.init_process_group(backend="nccl", init_method="env://")
 
 
 def skip_if_condition(test_scenario):
-    return int(os.getenv('WORLD_SIZE', '1')) == 1 and test_scenario["gather_on_rank0"] is True
+    return (
+        int(os.getenv("WORLD_SIZE", "1")) == 1
+        and test_scenario["gather_on_rank0"] is True
+    )
 
 
 @pytest.mark.parametrize(
@@ -86,10 +91,12 @@ def skip_if_condition(test_scenario):
 )
 def test_reporting_options(test_scenario, monkeypatch):
     if skip_if_condition(test_scenario):
-        pytest.skip("Testing gather_on_rank0 option on multi GPU, but only 1 GPU is available")
+        pytest.skip(
+            "Testing gather_on_rank0 option on multi GPU, but only 1 GPU is available"
+        )
 
     args = parse_args()
-    world_size = int(os.getenv('WORLD_SIZE', '1'))
+    world_size = int(os.getenv("WORLD_SIZE", "1"))
 
     if world_size > 1:
         rank = torch.distributed.get_rank()
@@ -97,7 +104,7 @@ def test_reporting_options(test_scenario, monkeypatch):
         rank = 0
 
     torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]
@@ -115,7 +122,9 @@ def test_reporting_options(test_scenario, monkeypatch):
         scores_to_compute=scores_to_compute, gather_on_rank0=gather_on_rank0
     )
 
-    straggler.Detector.wrap_callables(callable_ids=[straggler.CallableId(model, "forward")])
+    straggler.Detector.wrap_callables(
+        callable_ids=[straggler.CallableId(model, "forward")]
+    )
 
     for i in range(args.iters):
         data = torch.rand(args.batch, args.hidden, device=device)
@@ -186,12 +195,14 @@ def test_reporting_options(test_scenario, monkeypatch):
 
 
 @pytest.mark.skipif(
-    int(os.getenv('WORLD_SIZE', '1')) == 1,
+    int(os.getenv("WORLD_SIZE", "1")) == 1,
     reason="Testing no gather happens with individual_perf_scores and gather_on_rank0=False on multi GPU, only 1 GPU is available",
 )
 def test_no_gather_called(monkeypatch):
-    with patch('torch.distributed.all_gather_object') as mock_all_gather:
-        mock_all_gather.side_effect = RuntimeError("Distributed communication should not be used")
+    with patch("torch.distributed.all_gather_object") as mock_all_gather:
+        mock_all_gather.side_effect = RuntimeError(
+            "Distributed communication should not be used"
+        )
         test_scenario = {
             "scores_to_compute": "individual_perf_scores",
             "gather_on_rank0": False,
@@ -200,7 +211,7 @@ def test_no_gather_called(monkeypatch):
         mock_all_gather.assert_not_called()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     setup_distributed()
     if torch.distributed.get_rank() == 0:
         pytest.main(["tests/unit/test_reporting.py"])

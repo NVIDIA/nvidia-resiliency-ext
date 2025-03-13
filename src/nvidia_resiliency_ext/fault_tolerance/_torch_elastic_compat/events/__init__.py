@@ -31,17 +31,14 @@ import traceback
 from enum import Enum
 from typing import Dict, Optional
 
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.handlers import get_logging_handler
-
-from .api import (  # noqa: F401
-    Event,
-    EventMetadataValue,
-    EventSource,
-    NodeState,
-    RdzvEvent,
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.handlers import (
+    get_logging_handler,
 )
 
+from .api import Event, EventMetadataValue, EventSource, NodeState, RdzvEvent  # noqa: F401
+
 _events_loggers: Dict[str, logging.Logger] = {}
+
 
 def _get_or_create_logger(destination: str = "null") -> logging.Logger:
     """
@@ -74,6 +71,7 @@ def _get_or_create_logger(destination: str = "null") -> logging.Logger:
 
 def record(event: Event, destination: str = "null") -> None:
     _get_or_create_logger(destination).info(event.serialize())
+
 
 def record_rdzv_event(event: RdzvEvent) -> None:
     _get_or_create_logger("dynamic_rendezvous").info(event.serialize())

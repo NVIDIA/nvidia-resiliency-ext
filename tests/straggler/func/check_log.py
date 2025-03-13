@@ -18,7 +18,7 @@ import re
 
 
 def cmd_num_reports(log_file_lines, args):
-    report_lines = [ln for ln in log_file_lines if 'STRAGGLER REPORT' in ln]
+    report_lines = [ln for ln in log_file_lines if "STRAGGLER REPORT" in ln]
     num_reports = len(report_lines)
     if not (args.min <= num_reports <= args.max):
         raise ValueError(
@@ -40,13 +40,13 @@ def _check_gpu_stragglers(log_file_lines, pattern, expected_stragglers):
 
 
 def cmd_relative_gpu_stragglers(log_file_lines, args):
-    pattern = re.compile(r'DETECTED RELATIVE STRAGGLER GPU RANK=(\d+)')
+    pattern = re.compile(r"DETECTED RELATIVE STRAGGLER GPU RANK=(\d+)")
     expected_stragglers = set(args.ranks)
     _check_gpu_stragglers(log_file_lines, pattern, expected_stragglers)
 
 
 def cmd_individual_gpu_stragglers(log_file_lines, args):
-    pattern = re.compile(r'DETECTED INDIVIDUAL STRAGGLER GPU RANK=(\d+)')
+    pattern = re.compile(r"DETECTED INDIVIDUAL STRAGGLER GPU RANK=(\d+)")
     expected_stragglers = set(args.ranks)
     _check_gpu_stragglers(log_file_lines, pattern, expected_stragglers)
 
@@ -54,10 +54,10 @@ def cmd_individual_gpu_stragglers(log_file_lines, args):
 def read_log_file(log_file):
     lines = []
     contains_done_entry = False
-    with open(log_file, 'r') as f:
+    with open(log_file, "r") as f:
         for ln in f.readlines():
             lines.append(ln.strip())
-            if 'DONE' in ln:
+            if "DONE" in ln:
                 contains_done_entry = True
     if not contains_done_entry:
         raise ValueError("Log file does not contain a 'DONE' entry.")
@@ -65,22 +65,28 @@ def read_log_file(log_file):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Verify a log file created by ddp_test.py.")
-    parser.add_argument('--log', required=True, help='Path to the log file')
+    parser = argparse.ArgumentParser(
+        description="Verify a log file created by ddp_test.py."
+    )
+    parser.add_argument("--log", required=True, help="Path to the log file")
 
-    subparsers = parser.add_subparsers(dest='command', help='Sub-commands')
+    subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
 
-    subp1 = subparsers.add_parser('num_reports', help='Number of straggler reports.')
-    subp1.add_argument('--min', type=int)
-    subp1.add_argument('--max', type=int)
+    subp1 = subparsers.add_parser("num_reports", help="Number of straggler reports.")
+    subp1.add_argument("--min", type=int)
+    subp1.add_argument("--max", type=int)
     subp1.set_defaults(func=cmd_num_reports)
 
-    subp2 = subparsers.add_parser('relative_gpu_stragglers', help='Relative GPU stragglers.')
-    subp2.add_argument('--ranks', type=int, nargs='*', default=set())
+    subp2 = subparsers.add_parser(
+        "relative_gpu_stragglers", help="Relative GPU stragglers."
+    )
+    subp2.add_argument("--ranks", type=int, nargs="*", default=set())
     subp2.set_defaults(func=cmd_relative_gpu_stragglers)
 
-    subp3 = subparsers.add_parser('individual_gpu_stragglers', help='Individual GPU stragglers.')
-    subp3.add_argument('--ranks', type=int, nargs='*', default=set())
+    subp3 = subparsers.add_parser(
+        "individual_gpu_stragglers", help="Individual GPU stragglers."
+    )
+    subp3.add_argument("--ranks", type=int, nargs="*", default=set())
     subp3.set_defaults(func=cmd_individual_gpu_stragglers)
 
     args = parser.parse_args()

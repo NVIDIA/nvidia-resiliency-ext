@@ -24,15 +24,22 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from torch.distributed import Store
+
 import nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous as rdzv
 import nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.utils.store as store_util
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import RendezvousGracefulExitError
-from torch.distributed import Store
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events import Event, EventSource, record
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events import (
+    Event,
+    EventSource,
+    record,
+)
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.metrics import prof, put_metric
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing import (
     ProcessFailure,
     SignalException,
+)
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import (
+    RendezvousGracefulExitError,
 )
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.utils.logging import get_logger
 
@@ -100,8 +107,7 @@ class WorkerSpec:
 
         if self.fn:
             warnings.warn(
-                "WorkerSpec.fn will be deprecated,"
-                " please use WorkerSpec.entrypoint instead",
+                "WorkerSpec.fn will be deprecated," " please use WorkerSpec.entrypoint instead",
                 category=DeprecationWarning,
             )
             self.entrypoint = self.fn
@@ -592,8 +598,8 @@ class SimpleElasticAgent(ElasticAgent):
                 "role_ranks": [worker.role_rank for worker in workers],
                 "global_ranks": [worker.global_rank for worker in workers],
                 "role_world_sizes": [worker.role_world_size for worker in workers],
-                "global_world_sizes": [worker.world_size for worker in workers]
-            }
+                "global_world_sizes": [worker.world_size for worker in workers],
+            },
         )
 
     def _get_ranks(
@@ -642,9 +648,7 @@ class SimpleElasticAgent(ElasticAgent):
         role_infos = self._share_and_gather(store, group_rank, group_world_size, spec)
         my_role_info = role_infos[group_rank]
         worker_world_size, worker_global_ranks = self._get_ranks(role_infos, group_rank)
-        role_infos = sorted(
-            role_infos, key=functools.cmp_to_key(_RoleInstanceInfo.compare)
-        )
+        role_infos = sorted(role_infos, key=functools.cmp_to_key(_RoleInstanceInfo.compare))
         role_start_idx, role_end_idx = _RoleInstanceInfo.find_role_boundaries(
             role_infos, my_role_info.role
         )
@@ -671,17 +675,14 @@ class SimpleElasticAgent(ElasticAgent):
     def _share_and_gather(
         self, store, group_rank: int, group_world_size: int, spec: WorkerSpec
     ) -> List:
-        agent_role_info = _RoleInstanceInfo(
-            spec.role, group_rank, spec.local_world_size
-        )
+        agent_role_info = _RoleInstanceInfo(spec.role, group_rank, spec.local_world_size)
         key_prefix = "torchelastic/role_info"
         agent_config_enc = agent_role_info.serialize()
         role_infos_bytes = store_util.synchronize(
             store, agent_config_enc, group_rank, group_world_size, key_prefix
         )
         role_infos = [
-            _RoleInstanceInfo.deserialize(role_info_bytes)
-            for role_info_bytes in role_infos_bytes
+            _RoleInstanceInfo.deserialize(role_info_bytes) for role_info_bytes in role_infos_bytes
         ]
         return role_infos
 
@@ -819,9 +820,7 @@ class SimpleElasticAgent(ElasticAgent):
             "metadata": md_str,
             "agent_restarts": spec.max_restarts - self._remaining_restarts,
         }
-        return Event(
-            f"torchelastic.worker.status.{state}", source=source, metadata=metadata
-        )
+        return Event(f"torchelastic.worker.status.{state}", source=source, metadata=metadata)
 
     def _record_metrics(self, group_results: RunResult):
         is_failed = group_results.is_failed()
@@ -854,9 +853,7 @@ class SimpleElasticAgent(ElasticAgent):
             flakiness = 100.0
         else:
             spec = self._worker_group.spec
-            flakiness = 100.0 - 100.0 * (self._remaining_restarts + 1) / (
-                spec.max_restarts + 1
-            )
+            flakiness = 100.0 - 100.0 * (self._remaining_restarts + 1) / (spec.max_restarts + 1)
         spec = self._worker_group.spec
 
         put_metric(f"workers.{spec.role}.flakiness", int(flakiness))
@@ -867,9 +864,7 @@ class SimpleElasticAgent(ElasticAgent):
         spec = self._worker_group.spec
         role = spec.role
 
-        log.info(
-            "[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name()
-        )
+        log.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
 
         self._initialize_workers(self._worker_group)
         monitor_interval = spec.monitor_interval
@@ -889,7 +884,8 @@ class SimpleElasticAgent(ElasticAgent):
                 log.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
-                    role, self._exit_barrier_timeout
+                    role,
+                    self._exit_barrier_timeout,
                 )
                 self._exit_barrier()
                 return run_result
@@ -899,7 +895,10 @@ class SimpleElasticAgent(ElasticAgent):
                         "[%s] Worker group %s. "
                         "%s/%s attempts left;"
                         " will restart worker group",
-                        role, state.name, self._remaining_restarts, spec.max_restarts
+                        role,
+                        state.name,
+                        self._remaining_restarts,
+                        spec.max_restarts,
                     )
                     self._remaining_restarts -= 1
                     self._restart_workers(self._worker_group)
@@ -916,7 +915,9 @@ class SimpleElasticAgent(ElasticAgent):
                         "[%s] Detected %s "
                         "new nodes from group_rank=%s; "
                         "will restart worker group",
-                        role, num_nodes_waiting, group_rank
+                        role,
+                        num_nodes_waiting,
+                        group_rank,
                     )
                     self._restart_workers(self._worker_group)
             else:
@@ -932,9 +933,9 @@ class SimpleElasticAgent(ElasticAgent):
         times.
         """
         log.info(
-            "Local worker group finished (%s). "
-            "Waiting %s seconds for other agents to finish",
-            self._worker_group.state, self._exit_barrier_timeout
+            "Local worker group finished (%s). " "Waiting %s seconds for other agents to finish",
+            self._worker_group.state,
+            self._exit_barrier_timeout,
         )
         start = time.time()
         try:
@@ -945,14 +946,9 @@ class SimpleElasticAgent(ElasticAgent):
                 key_prefix=_TERMINAL_STATE_SYNC_ID,
                 barrier_timeout=self._exit_barrier_timeout,
             )
-            log.info(
-                "Done waiting for other agents. Elapsed: %s seconds", time.time() - start
-            )
+            log.info("Done waiting for other agents. Elapsed: %s seconds", time.time() - start)
         except SignalException as e:
             log.warning("Got termination signal: %s", e.sigval)
             raise
         except Exception:
-            log.exception(
-                "Error waiting on exit barrier. Elapsed: %s seconds",
-                time.time() - start
-            )
+            log.exception("Error waiting on exit barrier. Elapsed: %s seconds", time.time() - start)

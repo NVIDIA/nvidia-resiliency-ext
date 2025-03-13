@@ -31,7 +31,10 @@ def test_from_kwargs():
         rank_heartbeat_timeout=ref_conf.rank_heartbeat_timeout + 1,
         ignore_not_recognized=False,
     )
-    assert conf_with_item_modified.rank_heartbeat_timeout == ref_conf.rank_heartbeat_timeout + 1
+    assert (
+        conf_with_item_modified.rank_heartbeat_timeout
+        == ref_conf.rank_heartbeat_timeout + 1
+    )
 
     not_modified_conf = fault_tolerance.FaultToleranceConfig.from_kwargs(
         ignore_not_recognized=False
@@ -53,12 +56,14 @@ def test_signal_field_with_valid_values():
     ref_conf = fault_tolerance.FaultToleranceConfig()
     assert isinstance(ref_conf.rank_termination_signal, signal.Signals)
     assert (
-        fault_tolerance.FaultToleranceConfig(rank_termination_signal=9).rank_termination_signal
+        fault_tolerance.FaultToleranceConfig(
+            rank_termination_signal=9
+        ).rank_termination_signal
         is signal.SIGKILL
     )
     assert (
         fault_tolerance.FaultToleranceConfig(
-            rank_termination_signal='SIGKILL'
+            rank_termination_signal="SIGKILL"
         ).rank_termination_signal
         is signal.SIGKILL
     )
@@ -76,7 +81,9 @@ def test_signal_field_with_invalid_values():
     with pytest.raises(ValueError):
         fault_tolerance.FaultToleranceConfig(rank_termination_signal=-999)
     with pytest.raises(ValueError):
-        fault_tolerance.FaultToleranceConfig(rank_termination_signal="not a signal name")
+        fault_tolerance.FaultToleranceConfig(
+            rank_termination_signal="not a signal name"
+        )
 
 
 @pytest.mark.parametrize(
@@ -90,7 +97,10 @@ def test_signal_field_with_invalid_values():
     ],
 )
 def test_log_level_field_with_valid_values(level_to_set, expected_level):
-    assert fault_tolerance.FaultToleranceConfig(log_level=level_to_set).log_level == expected_level
+    assert (
+        fault_tolerance.FaultToleranceConfig(log_level=level_to_set).log_level
+        == expected_level
+    )
 
 
 def test_log_level_field_with_invalid_values():
@@ -104,8 +114,8 @@ def test_log_level_field_with_invalid_values():
 
 @contextmanager
 def tmp_yaml_file(lines):
-    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
-    temp_file.write('\n'.join(lines))
+    temp_file = tempfile.NamedTemporaryFile(mode="w", delete=False)
+    temp_file.write("\n".join(lines))
     temp_file.close()
     try:
         yield temp_file.name
@@ -176,5 +186,7 @@ def test_to_yaml_file():
     ref_conf.rank_heartbeat_timeout = 123.0
     with tempfile.NamedTemporaryFile() as temp_file:
         ref_conf.to_yaml_file(temp_file.name)
-        restored_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file.name)
+        restored_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(
+            temp_file.name
+        )
     assert restored_conf == ref_conf

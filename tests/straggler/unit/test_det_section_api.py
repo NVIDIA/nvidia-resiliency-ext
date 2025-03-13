@@ -97,7 +97,9 @@ def test_periodic_capture(_straggler_shutdown_at_exit):
     # check stats for section "one"
     assert len(report.local_section_summaries) == 1  # one section on rank0
     section_stats = report.local_section_summaries["one"]
-    assert section_stats[straggler.Statistic.NUM] == 2  # 2/4 section runs were benchmarked
+    assert (
+        section_stats[straggler.Statistic.NUM] == 2
+    )  # 2/4 section runs were benchmarked
 
 
 def test_cuda_profiling_disabled(_straggler_shutdown_at_exit):
@@ -116,7 +118,9 @@ def test_cuda_profiling_disabled(_straggler_shutdown_at_exit):
     # check stats for section "one"
     assert len(report.local_section_summaries) == 1  # one section on rank0
     section_stats = report.local_section_summaries["one"]
-    assert section_stats[straggler.Statistic.NUM] == 4  # 4/4 section runs were benchmarked
+    assert (
+        section_stats[straggler.Statistic.NUM] == 4
+    )  # 4/4 section runs were benchmarked
 
 
 def test_can_handle_empty_elapseds(_straggler_init_shutdown):

@@ -27,70 +27,72 @@ from nvidia_resiliency_ext import straggler
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--layers', type=int, default=8)
-    parser.add_argument('--batch', type=int, default=16)
-    parser.add_argument('--hidden', type=int, default=512)
-    parser.add_argument('--iters', type=int, default=1000000)
-    parser.add_argument('--max_runtime', type=int, default=300)
-    parser.add_argument('--local-rank', default=int(os.getenv('LOCAL_RANK', 0)), type=int)
+    parser.add_argument("--layers", type=int, default=8)
+    parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--hidden", type=int, default=512)
+    parser.add_argument("--iters", type=int, default=1000000)
+    parser.add_argument("--max_runtime", type=int, default=300)
+    parser.add_argument(
+        "--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int
+    )
 
     # Straggler detection arguments
     parser.add_argument(
-        '--no_rel_scores',
-        action='store_true',
-        help='Do not compute relative performance scores',
+        "--no_rel_scores",
+        action="store_true",
+        help="Do not compute relative performance scores",
     )
     parser.add_argument(
-        '--no_indiv_scores',
-        action='store_true',
-        help='Do not compute individual performance scores',
+        "--no_indiv_scores",
+        action="store_true",
+        help="Do not compute individual performance scores",
     )
     parser.add_argument(
-        '--no_gather_on_rank0',
-        action='store_true',
-        help='Set gather_on_rank0 to False',
+        "--no_gather_on_rank0",
+        action="store_true",
+        help="Set gather_on_rank0 to False",
     )
     parser.add_argument(
-        '--report_iter_interval',
+        "--report_iter_interval",
         type=int,
         default=1000,
-        help='Interval for .generate_report in iterations',
+        help="Interval for .generate_report in iterations",
     )
     parser.add_argument(
-        '--generate_if_elapsed',
-        action='store_true',
+        "--generate_if_elapsed",
+        action="store_true",
         default=False,
-        help='Use .generate_report_if_interval_elapsed',
+        help="Use .generate_report_if_interval_elapsed",
     )
     parser.add_argument(
-        '--report_time_interval',
+        "--report_time_interval",
         type=float,
         default=60,
-        help='Time interval for .generate_report_if_interval_elapsed in seconds',
+        help="Time interval for .generate_report_if_interval_elapsed in seconds",
     )
     parser.add_argument(
-        '--straggler_gpu_rel_threshold',
+        "--straggler_gpu_rel_threshold",
         type=float,
         default=0.7,
-        help='Threshold for identify_stragglers',
+        help="Threshold for identify_stragglers",
     )
     parser.add_argument(
-        '--straggler_gpu_indiv_threshold',
+        "--straggler_gpu_indiv_threshold",
         type=float,
         default=0.7,
-        help='Threshold for identify_stragglers',
+        help="Threshold for identify_stragglers",
     )
     parser.add_argument(
-        '--straggler_section_rel_threshold',
+        "--straggler_section_rel_threshold",
         type=float,
         default=0.7,
-        help='Threshold for identify_stragglers',
+        help="Threshold for identify_stragglers",
     )
     parser.add_argument(
-        '--straggler_section_indiv_threshold',
+        "--straggler_section_indiv_threshold",
         type=float,
         default=0.7,
-        help='Threshold for identify_stragglers',
+        help="Threshold for identify_stragglers",
     )
 
     args = parser.parse_args()
@@ -135,30 +137,38 @@ def print_section_scores(report, rank):
     print(f"=== Sections perf scores. Report from rank {rank} ===")
     rel_scores = {}
     for section in report.section_relative_perf_scores:
-        rel_scores[section] = round_float_values(report.section_relative_perf_scores[section])
+        rel_scores[section] = round_float_values(
+            report.section_relative_perf_scores[section]
+        )
     print("Sections relative perf scores:", rel_scores)
     indiv_scores = {}
     for section in report.section_individual_perf_scores:
-        indiv_scores[section] = round_float_values(report.section_individual_perf_scores[section])
+        indiv_scores[section] = round_float_values(
+            report.section_individual_perf_scores[section]
+        )
     print("Sections individual perf scores:", indiv_scores)
 
 
 def print_stragglers(stragglers):
     # Print stragglers in easy to parse format
-    for s in stragglers['straggler_gpus_relative']:
+    for s in stragglers["straggler_gpus_relative"]:
         print(f"DETECTED RELATIVE STRAGGLER GPU RANK={s.rank} NODE={s.node}")
-    for s in stragglers['straggler_gpus_individual']:
+    for s in stragglers["straggler_gpus_individual"]:
         print(f"DETECTED INDIVIDUAL STRAGGLER GPU RANK={s.rank} NODE={s.node}")
-    for section in stragglers['straggler_sections_relative']:
-        for s in stragglers['straggler_sections_relative'][section]:
-            print(f"DETECTED RELATIVE STRAGGLER SECTION={section} RANK={s.rank} NODE={s.node}")
-    for section in stragglers['straggler_sections_individual']:
-        for s in stragglers['straggler_sections_individual'][section]:
-            print(f"DETECTED INDIVIDUAL STRAGGLER SECTION={section} RANK={s.rank} NODE={s.node}")
+    for section in stragglers["straggler_sections_relative"]:
+        for s in stragglers["straggler_sections_relative"][section]:
+            print(
+                f"DETECTED RELATIVE STRAGGLER SECTION={section} RANK={s.rank} NODE={s.node}"
+            )
+    for section in stragglers["straggler_sections_individual"]:
+        for s in stragglers["straggler_sections_individual"][section]:
+            print(
+                f"DETECTED INDIVIDUAL STRAGGLER SECTION={section} RANK={s.rank} NODE={s.node}"
+            )
 
 
 def _all_reduce_bool_flag(flag):
-    flag = torch.tensor([flag], dtype=torch.float, device='cuda')
+    flag = torch.tensor([flag], dtype=torch.float, device="cuda")
     torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MAX)
     return bool(flag.item() > 0)
 
@@ -172,13 +182,13 @@ def main():
     args = parse_args()
     print(args)
 
-    torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    torch.distributed.init_process_group(backend="nccl", init_method="env://")
     rank = torch.distributed.get_rank()
 
     random.seed(rank)
 
     torch.cuda.set_device(args.local_rank)
-    device = torch.device('cuda')
+    device = torch.device("cuda")
 
     model = nn.Sequential(
         *[Layer(args.hidden, args.hidden, bias=False) for _ in range(args.layers)]
@@ -195,13 +205,14 @@ def main():
         gather_on_rank0=args.gather_on_rank0,
     )
 
-    straggler.Detector.wrap_callables(callable_ids=[straggler.CallableId(model, "forward")])
+    straggler.Detector.wrap_callables(
+        callable_ids=[straggler.CallableId(model, "forward")]
+    )
 
     t0 = time.monotonic()
     report_idx = 1
 
     for i in range(args.iters):
-
         data = torch.rand(args.batch, args.hidden, device=device)
         target_tensor = torch.rand(args.batch, args.hidden, device=device)
 
@@ -244,5 +255,5 @@ def main():
     print_rank0("DONE")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

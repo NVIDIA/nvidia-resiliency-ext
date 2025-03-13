@@ -45,16 +45,14 @@ class ProgressWatchdog(threading.Thread):
         self.done_waiting = threading.Event()
         self.should_stop = threading.Event()
 
-        super().__init__(name=f'{type(self).__name__}-{rank}', daemon=daemon)
+        super().__init__(name=f"{type(self).__name__}-{rank}", daemon=daemon)
 
     def reset(self):
         self.timestamp = Timestamp(auto=time.monotonic())
         self.send()
 
     def ping(self):
-        self.timestamp = Timestamp(
-            auto=self.timestamp.auto, manual=time.monotonic()
-        )
+        self.timestamp = Timestamp(auto=self.timestamp.auto, manual=time.monotonic())
         self.send()
 
     def send(self):
@@ -157,9 +155,7 @@ class ProgressWatchdog(threading.Thread):
         self.reset()
 
     def spin_drain(self):
-        while not self.is_synchronized.wait(
-            self.spin_interval.total_seconds()
-        ):
+        while not self.is_synchronized.wait(self.spin_interval.total_seconds()):
             pass
 
     def shutdown(self, timeout=None):

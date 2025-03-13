@@ -25,7 +25,7 @@ from .state import State
 
 
 class Finalize(abc.ABC):
-    r'''
+    r"""
     Abstract base class for ``finalize`` argument for
     :py:class:`inprocess.Wrapper`.
 
@@ -46,7 +46,7 @@ class Finalize(abc.ABC):
 
     Multiple instances of :py:class:`Finalize` could be composed with
     :py:class:`inprocess.Compose` to achieve the desired behavior.
-    '''
+    """
 
     @abc.abstractmethod
     def __call__(
@@ -56,7 +56,7 @@ class Finalize(abc.ABC):
 
 
 class ThreadedFinalize(Finalize):
-    r'''
+    r"""
     Executes the provided finalize ``fn`` function with specified positional
     and keyword arguments in a separate :py:class:`threading.Thread`.
 
@@ -68,7 +68,7 @@ class ThreadedFinalize(Finalize):
         fn: function to be executed
         args: tuple of positional arguments
         kwargs: dictionary of keyword arguments
-    '''
+    """
 
     def __init__(
         self,
@@ -88,10 +88,10 @@ class ThreadedFinalize(Finalize):
     def __call__(
         self, state: State, train_ex: Optional[Exception] = None
     ) -> (State, Optional[Exception]):
-        rank = int(os.getenv('RANK', 0))
+        rank = int(os.getenv("RANK", 0))
         thread = threading.Thread(
             target=self.fn,
-            name=f'{type(self).__name__}-{rank}',
+            name=f"{type(self).__name__}-{rank}",
             args=self.args,
             kwargs=self.kwargs,
             daemon=True,

@@ -15,7 +15,7 @@
 
 import logging
 from datetime import timedelta
-from typing import Iterable, Dict, Any
+from typing import Any, Dict, Iterable
 
 from nvidia_resiliency_ext.ptl_resiliency._utils import is_module_available
 
@@ -28,7 +28,9 @@ else:
 
 import torch
 
-from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
+from nvidia_resiliency_ext.checkpointing.local.base_state_dict import (
+    TensorAwareStateDict,
+)
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager import (
     BaseCheckpointManager,
     CkptID,
@@ -38,6 +40,7 @@ from nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback import (
     HierarchicalCheckpointIO,
     LocalCheckpointCallback,
 )
+
 from .test_ft_callback import SimpleModel
 
 
@@ -49,13 +52,12 @@ def _run_trainining(
     custom_callbacks=None,
     custom_checkpoint_io_fn=None,
 ):
-
     custom_callbacks = custom_callbacks if custom_callbacks else []
 
     trainer = pl.Trainer(
-        strategy='ddp',
+        strategy="ddp",
         devices=1,
-        accelerator='gpu',
+        accelerator="gpu",
         logger=False,
         max_steps=max_steps,
         max_epochs=max_epochs,
@@ -64,17 +66,21 @@ def _run_trainining(
         callbacks=custom_callbacks,
     )
     if custom_checkpoint_io_fn is not None:
-        trainer.strategy.checkpoint_io = custom_checkpoint_io_fn(trainer.strategy.checkpoint_io)
+        trainer.strategy.checkpoint_io = custom_checkpoint_io_fn(
+            trainer.strategy.checkpoint_io
+        )
 
     model = SimpleModel()
-    trainer.fit(model, ckpt_path='last')
+    trainer.fit(model, ckpt_path="last")
     return trainer
 
 
-def inspect_checkpoints(dirpath, expected_paths: Iterable[str] = None, verbose: bool = True):
+def inspect_checkpoints(
+    dirpath, expected_paths: Iterable[str] = None, verbose: bool = True
+):
     actual_paths = set(d.name for d in dirpath.iterdir())
     if verbose:
-        print('Actual paths', actual_paths)
+        print("Actual paths", actual_paths)
 
     if expected_paths is not None:
         assert actual_paths == set(expected_paths)
@@ -109,7 +115,7 @@ class MockLocalOnlySaveCheckpointManager(NonDistributedInMemoryCheckpointManager
     Assumes that self.latest_iteration is set externally.
     """
 
-    def __init__(self, session_id='mock', latest_iteration=-1):
+    def __init__(self, session_id="mock", latest_iteration=-1):
         super().__init__(session_id, repl_strategy=None)
         self.mock_save_calls = []
         self._latest_iteration = latest_iteration
@@ -160,10 +166,10 @@ class SimpleTensorAwareStateDict(TensorAwareStateDict):
                 else:
                     if orig_device != self.orig_device:
                         print(
-                            f'WARNING: Orig device set to {self.orig_device},'
-                            f' but encountered {orig_device} tensor. Setting self.orig_device=cpu'
+                            f"WARNING: Orig device set to {self.orig_device},"
+                            f" but encountered {orig_device} tensor. Setting self.orig_device=cpu"
                         )
-                        self.orig_device = 'cpu'
+                        self.orig_device = "cpu"
                 x = x.to("cpu")
             return x
 
@@ -184,8 +190,9 @@ class SimpleTensorAwareStateDict(TensorAwareStateDict):
 
 
 class SimpleHierarchicalCheckpointIO(HierarchicalCheckpointIO):
-
-    def to_tensor_aware_state_dict(self, checkpoint: Dict[str, Any]) -> TensorAwareStateDict:
+    def to_tensor_aware_state_dict(
+        self, checkpoint: Dict[str, Any]
+    ) -> TensorAwareStateDict:
         return SimpleTensorAwareStateDict(checkpoint)
 
 
@@ -208,7 +215,7 @@ def test_local_ckpt_callback_called_every_n_train_steps(tmp_path):
     )
 
     mock_local_ckpt_manager = MockLocalOnlySaveCheckpointManager(
-        'test_local_ckpt_callback_every_n_train_steps'
+        "test_local_ckpt_callback_every_n_train_steps"
     )
     hier_ckpt_io_fn = SimpleHierarchicalCheckpointIO.get_partial_wrapper_constructor(
         mock_local_ckpt_manager,
@@ -223,16 +230,19 @@ def test_local_ckpt_callback_called_every_n_train_steps(tmp_path):
 
     # the intermediate checkpoints are erased
     inspect_checkpoints(
-        tmp_path, expected_paths={'last.ckpt', 'epoch=0-step=128.ckpt'}, verbose=False
+        tmp_path, expected_paths={"last.ckpt", "epoch=0-step=128.ckpt"}, verbose=False
     )
-    assert len(mock_local_ckpt_manager.mock_save_calls) == max_steps // local_every_n_train_steps
+    assert (
+        len(mock_local_ckpt_manager.mock_save_calls)
+        == max_steps // local_every_n_train_steps
+    )
 
 
 def test_local_ckpt_callback_called_every_time_interval(tmp_path):
     """Test if a local checkpoint is saved every 0.2 iterations."""
     local_train_time_interval = timedelta(seconds=0.2)
     global_train_time_interval = timedelta(seconds=2)
-    max_time = {'seconds': 5}
+    max_time = {"seconds": 5}
 
     # Global checkpoints
     global_ckpt_callback = pl.callbacks.ModelCheckpoint(
@@ -247,14 +257,14 @@ def test_local_ckpt_callback_called_every_time_interval(tmp_path):
     )
 
     mock_local_ckpt_manager = MockLocalOnlySaveCheckpointManager(
-        'test_local_ckpt_callback_every_n_train_steps'
+        "test_local_ckpt_callback_every_n_train_steps"
     )
     hier_ckpt_io_fn = SimpleHierarchicalCheckpointIO.get_partial_wrapper_constructor(
         mock_local_ckpt_manager,
         lambda s: 1000,
     )
 
-    trainer = _run_trainining(
+    _run_trainining(
         max_time=max_time,
         custom_callbacks=[global_ckpt_callback, local_ckpt_callback],
         custom_checkpoint_io_fn=hier_ckpt_io_fn,
@@ -284,7 +294,7 @@ def test_local_ckpt_restoration(tmp_path, caplog):
     )
 
     mock_local_ckpt_manager = MockLocalOnlySaveCheckpointManager(
-        'test_local_ckpt_callback_every_n_train_steps',
+        "test_local_ckpt_callback_every_n_train_steps",
     )
     hier_ckpt_io_fn = SimpleHierarchicalCheckpointIO.get_partial_wrapper_constructor(
         mock_local_ckpt_manager,
@@ -300,9 +310,12 @@ def test_local_ckpt_restoration(tmp_path, caplog):
 
     # the intermediate checkpoints are erased
     inspect_checkpoints(
-        tmp_path, expected_paths={'last.ckpt', 'epoch=0-step=128.ckpt'}, verbose=False
+        tmp_path, expected_paths={"last.ckpt", "epoch=0-step=128.ckpt"}, verbose=False
     )
-    assert len(mock_local_ckpt_manager.mock_save_calls) == max_steps // local_every_n_train_steps
+    assert (
+        len(mock_local_ckpt_manager.mock_save_calls)
+        == max_steps // local_every_n_train_steps
+    )
 
     # Make sure we load from a global ckpt when global iter is 1000 (large)
     with caplog.at_level(logging.INFO):
@@ -313,7 +326,7 @@ def test_local_ckpt_restoration(tmp_path, caplog):
         )
         assert trainer.global_step == max_steps * 2
 
-    assert 'Resuming from a global checkpoint' in caplog.text
+    assert "Resuming from a global checkpoint" in caplog.text
 
     # Make sure we load from a local ckpt when local iter is 256 (larger than 100)
     hier_ckpt_io_fn = SimpleHierarchicalCheckpointIO.get_partial_wrapper_constructor(
@@ -329,7 +342,7 @@ def test_local_ckpt_restoration(tmp_path, caplog):
 
         assert trainer.global_step == max_steps * 3
 
-    assert 'Resuming from a local checkpoint' in caplog.text
+    assert "Resuming from a local checkpoint" in caplog.text
 
     # Same iteration as global (384), still load from local ckpt
     hier_ckpt_io_fn = SimpleHierarchicalCheckpointIO.get_partial_wrapper_constructor(
@@ -345,7 +358,7 @@ def test_local_ckpt_restoration(tmp_path, caplog):
 
         assert trainer.global_step == max_steps * 4
 
-    assert 'Resuming from a local checkpoint' in caplog.text
+    assert "Resuming from a local checkpoint" in caplog.text
 
 
 # TODO

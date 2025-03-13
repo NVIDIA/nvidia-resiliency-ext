@@ -78,7 +78,9 @@ def local_executor(
         "NVTE_FUSED_ATTN": "0",
     }
 
-    executor = run.LocalExecutor(ntasks_per_node=devices, launcher="torchrun", env_vars=env_vars)
+    executor = run.LocalExecutor(
+        ntasks_per_node=devices, launcher="torchrun", env_vars=env_vars
+    )
 
     return executor
 
@@ -126,8 +128,8 @@ def get_parser():
         default=8,
         help="Specify the number of GPUs",
     )
-    parser.add_argument('--max-runtime', type=int, default=900)  # in seconds
-    parser.add_argument('--report-time-interval', type=int, default=30)
+    parser.add_argument("--max-runtime", type=int, default=900)  # in seconds
+    parser.add_argument("--report-time-interval", type=int, default=30)
     parser.add_argument(
         "--test-terminate",
         action="store_true",
@@ -221,7 +223,8 @@ def main():
     llama3_trainer = MODEL_SIZE_MAPPING[args.size]["local"]["trainer"](
         callbacks=[
             straggler_det_callback(
-                report_time_interval=args.report_time_interval, stop_if_detected=args.test_terminate
+                report_time_interval=args.report_time_interval,
+                stop_if_detected=args.test_terminate,
             ),
             step_timing_callback(),
         ],

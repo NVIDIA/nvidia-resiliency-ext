@@ -16,6 +16,7 @@
 import asyncio
 import ctypes
 import logging
+import multiprocessing as mp
 import os
 import socket
 import struct
@@ -23,9 +24,8 @@ import time
 
 import psutil
 import torch
-import multiprocessing as mp
 
-_IPC_PICKLER = mp.reduction.ForkingPickler(open(os.devnull, mode='wb'))
+_IPC_PICKLER = mp.reduction.ForkingPickler(open(os.devnull, mode="wb"))
 
 
 def is_process_alive(pid):
@@ -44,7 +44,9 @@ def wait_until_process_terminated(pid, timeout=0):
         remaining_time -= sleep_time
         time.sleep(sleep_time)
     if is_process_alive(pid):
-        raise Exception(f"wait_until_process_terminated: {pid} is alive after {timeout} seconds")
+        raise Exception(
+            f"wait_until_process_terminated: {pid} is alive after {timeout} seconds"
+        )
 
 
 def wait_for_mp_events(events, timeout=60):
@@ -90,7 +92,7 @@ def terminate_mp_processes(allowed_ppids, allowed_pgids):
         return
 
     try:
-        all_processes = psutil.process_iter(attrs=['pid', 'ppid', 'name', 'cmdline'])
+        all_processes = psutil.process_iter(attrs=["pid", "ppid", "name", "cmdline"])
         for process in all_processes:
             try:
                 ppid_match = process.ppid() in allowed_ppids
@@ -123,7 +125,9 @@ def create_logger(name, level=logging.DEBUG, rank=None):
     ch = logging.StreamHandler()
     ch.setLevel(level)
     name_fmt = "%(name)s" if rank is None else f"%(name)s:{rank}"
-    formatter = logging.Formatter(f"[%(asctime)s] [%(levelname)s] [{name_fmt}] %(message)s")
+    formatter = logging.Formatter(
+        f"[%(asctime)s] [%(levelname)s] [{name_fmt}] %(message)s"
+    )
     ch.setFormatter(formatter)
     logger.addHandler(ch)
     logger.propagate = False
@@ -193,7 +197,7 @@ def reduce_cuda_ctx_size():
     # It will reduce CUDA per-thread stack size to bare minimum
     # should not be a problem, if we do not run any kernels
     try:
-        cuda = ctypes.CDLL('libcudart.so')
+        cuda = ctypes.CDLL("libcudart.so")
         cuda.cudaDeviceSetLimit.argtypes = [ctypes.c_int, ctypes.c_size_t]
         cuda.cudaDeviceSetLimit.restype = ctypes.c_int
         # 0x00 is cudaLimitStackSize, try to set it to smallest reasonable value (4)

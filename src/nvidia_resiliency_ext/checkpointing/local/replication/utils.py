@@ -31,12 +31,16 @@ def zip_strict(*args):
     assert len(set(lens)) <= 1, f"Tried to zip iterables of unequal lengths: {lens}!"
     return zip(*args)
 
+
 fallback_logger = logging.getLogger(__name__)
 __LOGGER_NAME_STACK = []
 __LOGGER_STACK = []
 
+
 @contextmanager
-def logger_stack(name: Optional[str] = None, current_logger: Optional[logging.Logger] = None):
+def logger_stack(
+    name: Optional[str] = None, current_logger: Optional[logging.Logger] = None
+):
     if name:
         __LOGGER_NAME_STACK.append(name)
     if current_logger:
@@ -54,8 +58,14 @@ def logger_stack(name: Optional[str] = None, current_logger: Optional[logging.Lo
         if current_logger and __LOGGER_STACK:
             __LOGGER_STACK.pop(-1)
 
+
 @contextmanager
-def debug_time(name: str, logger: Optional[logging.Logger] = None, threshold: float = float("-inf"), level = None):
+def debug_time(
+    name: str,
+    logger: Optional[logging.Logger] = None,
+    threshold: float = float("-inf"),
+    level=None,
+):
     """Simple context manager for timing functions/code blocks.
 
     Args:
@@ -74,8 +84,9 @@ def debug_time(name: str, logger: Optional[logging.Logger] = None, threshold: fl
             if result < threshold:
                 return
             if level is None:
-                level = (logging.DEBUG if threshold == float("-inf") else logging.WARNING)
+                level = logging.DEBUG if threshold == float("-inf") else logging.WARNING
             last_logger.log(level, f"{stacked_name} took {result:.4f}s")
+
 
 def debug_msg(msg: str):
     with logger_stack(None, None) as (stacked_name, last_logger):

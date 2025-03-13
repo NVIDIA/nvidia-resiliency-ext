@@ -102,22 +102,22 @@ class Report:
         """
 
         stragglers: Dict[str, Any] = {
-            'straggler_gpus_relative': (
+            "straggler_gpus_relative": (
                 {
                     StragglerId(rank=r, node=self.rank_to_node[r])
                     for r, d in self.gpu_relative_perf_scores.items()
                     if d < gpu_rel_threshold
                 }
             ),
-            'straggler_gpus_individual': (
+            "straggler_gpus_individual": (
                 {
                     StragglerId(rank=r, node=self.rank_to_node[r])
                     for r, d in self.gpu_individual_perf_scores.items()
                     if d < gpu_indiv_threshold
                 }
             ),
-            'straggler_sections_relative': {},
-            'straggler_sections_individual': {},
+            "straggler_sections_relative": {},
+            "straggler_sections_individual": {},
         }
 
         if self.section_relative_perf_scores:
@@ -130,7 +130,7 @@ class Report:
                     for r, d in perf_scores.items()
                     if d < section_rel_threshold
                 }:
-                    stragglers['straggler_sections_relative'][section] = straggler_ranks
+                    stragglers["straggler_sections_relative"][section] = straggler_ranks
 
         if self.section_individual_perf_scores:
             for (
@@ -142,7 +142,9 @@ class Report:
                     for r, d in perf_scores.items()
                     if d < section_indiv_threshold
                 }:
-                    stragglers['straggler_sections_individual'][section] = straggler_ranks
+                    stragglers["straggler_sections_individual"][section] = (
+                        straggler_ranks
+                    )
 
         return stragglers
 
@@ -160,7 +162,7 @@ class ReportGenerator:
         scores_to_compute,
         gather_on_rank0=True,
         pg=None,
-        node_name='<notset>',
+        node_name="<notset>",
     ) -> None:
         """
         Args:
@@ -170,8 +172,8 @@ class ReportGenerator:
             pg: Process group for communication
             node_name: User-friendly name of the current node, that will be used in reports
         """
-        self.is_computing_rel_scores = 'relative_perf_scores' in scores_to_compute
-        self.is_computing_indiv_scores = 'individual_perf_scores' in scores_to_compute
+        self.is_computing_rel_scores = "relative_perf_scores" in scores_to_compute
+        self.is_computing_indiv_scores = "individual_perf_scores" in scores_to_compute
         self.gather_on_rank0 = gather_on_rank0
         self.group = pg
         self.world_size = dist_utils.get_world_size(self.group)
@@ -180,14 +182,14 @@ class ReportGenerator:
 
         # dicts of best median execution times, used for individual scores normalization
         self.min_local_kernel_times: Dict[str, float] = collections.defaultdict(
-            lambda: float('inf')
+            lambda: float("inf")
         )
         self.min_local_section_times: Dict[str, float] = collections.defaultdict(
-            lambda: float('inf')
+            lambda: float("inf")
         )
 
         self.name_mapper = NameMapper(pg=pg)
-        self.rank_to_node: Dict[int, str] = collections.defaultdict(lambda: '<unk>')
+        self.rank_to_node: Dict[int, str] = collections.defaultdict(lambda: "<unk>")
 
     def _compute_sections_perf_scores(
         self,
@@ -230,7 +232,7 @@ class ReportGenerator:
         # Kernels thet were not executed on all ranks are skipped.
         # (TODO can we allow for different ranks to capture different kernels?).
 
-        rank_score = float('nan')
+        rank_score = float("nan")
         if kernels_summaries:
             weighted_scores_sum = 0.0
             weights_sum = 0.0
@@ -266,7 +268,7 @@ class ReportGenerator:
         num_kernels = self.name_mapper.kernel_counter
         num_sections = self.name_mapper.section_counter
         total_len = num_kernels + num_sections
-        times_tensor = torch.full((total_len,), -1.0, device='cpu')
+        times_tensor = torch.full((total_len,), -1.0, device="cpu")
         for k in kernel_summaries:
             idx = self.name_mapper.get_kernel_id(k)
             times_tensor[idx] = kernel_summaries[k][Statistic.MED]
@@ -274,7 +276,9 @@ class ReportGenerator:
             idx = num_kernels + self.name_mapper.get_section_id(s)
             times_tensor[idx] = section_summaries[s][Statistic.MED]
         times_tensor = times_tensor.to(dist_utils.get_device_for_backend(self.group))
-        dist_utils.all_reduce(times_tensor, op=torch.distributed.ReduceOp.MIN, group=self.group)
+        dist_utils.all_reduce(
+            times_tensor, op=torch.distributed.ReduceOp.MIN, group=self.group
+        )
         # Unpack reduced tensor into dicts of name->score
         # NOTE: -1 will be obtained if some rank(s) did not have stats for given kernel/section
         # convert these to NaNs, to simplify further processing.
@@ -283,12 +287,12 @@ class ReportGenerator:
         for kernel_id in range(num_kernels):
             kernel_name = self.name_mapper.get_kernel_name(kernel_id)
             val = times_tensor[kernel_id].item()
-            min_kernel_times[kernel_name] = val if val >= 0.0 else float('nan')
+            min_kernel_times[kernel_name] = val if val >= 0.0 else float("nan")
         min_section_times = {}
         for section_id in range(num_sections):
             section_name = self.name_mapper.get_section_name(section_id)
             val = times_tensor[num_kernels + section_id].item()
-            min_section_times[section_name] = val if val >= 0.0 else float('nan')
+            min_section_times[section_name] = val if val >= 0.0 else float("nan")
         return min_kernel_times, min_section_times
 
     def _update_local_min_times(
@@ -340,20 +344,22 @@ class ReportGenerator:
     ):
         """Pack local GPU and section scores into a flat/1D CPU tensor"""
         sections_individual_scores = collections.defaultdict(
-            lambda: float('nan'), sections_individual_scores
+            lambda: float("nan"), sections_individual_scores
         )
         sections_relative_scores = collections.defaultdict(
-            lambda: float('nan'), sections_relative_scores
+            lambda: float("nan"), sections_relative_scores
         )
         num_sections = self.name_mapper.section_counter
         num_scores_per_rank = 2 + 2 * num_sections
-        scores_tensor = torch.full((num_scores_per_rank,), float('nan'), device='cpu')
+        scores_tensor = torch.full((num_scores_per_rank,), float("nan"), device="cpu")
         scores_tensor[0] = gpu_individual_score
         scores_tensor[1] = gpu_relative_score
         for section_id in range(num_sections):
             section_name = self.name_mapper.get_section_name(section_id)
             scores_tensor[2 + section_id] = sections_individual_scores[section_name]
-            scores_tensor[2 + num_sections + section_id] = sections_relative_scores[section_name]
+            scores_tensor[2 + num_sections + section_id] = sections_relative_scores[
+                section_name
+            ]
         return scores_tensor
 
     def _get_scores_from_tensor(self, tensor) -> Tuple[float, Mapping, float, Mapping]:
@@ -367,7 +373,9 @@ class ReportGenerator:
         for section_id in range(num_sections):
             section_name = self.name_mapper.get_section_name(section_id)
             sections_individual_scores[section_name] = tensor[2 + section_id].item()
-            sections_relative_scores[section_name] = tensor[2 + num_sections + section_id].item()
+            sections_relative_scores[section_name] = tensor[
+                2 + num_sections + section_id
+            ].item()
         return (
             gpu_individual_score,
             sections_individual_scores,
@@ -460,7 +468,7 @@ class ReportGenerator:
                 section_names=list(section_summaries.keys()),
             )
 
-        gpu_individual_score: float = float('nan')
+        gpu_individual_score: float = float("nan")
         sections_individual_scores: Mapping[str, float] = {}
         if self.is_computing_indiv_scores:
             self._update_local_min_times(kernel_summaries, section_summaries)
@@ -473,11 +481,11 @@ class ReportGenerator:
                 reference=self.min_local_section_times,
             )
 
-        gpu_relative_score: float = float('nan')
+        gpu_relative_score: float = float("nan")
         sections_relative_scores: Mapping[str, float] = {}
         if self.is_computing_rel_scores:
-            min_workload_kernel_times, min_workload_section_times = self._all_reduce_times(
-                kernel_summaries, section_summaries
+            min_workload_kernel_times, min_workload_section_times = (
+                self._all_reduce_times(kernel_summaries, section_summaries)
             )
             gpu_relative_score = self._compute_gpu_perf_score(
                 kernel_summaries,
@@ -490,13 +498,13 @@ class ReportGenerator:
 
         # now we have scores for the local rank, need to format them for the report
         res_gpu_indiv: Mapping[int, float] = {}  # rank->GPU perf score
-        res_section_idiv: Mapping[str, Mapping[int, float]] = (
-            {}
-        )  # section->(rank->section perf score)
+        res_section_idiv: Mapping[
+            str, Mapping[int, float]
+        ] = {}  # section->(rank->section perf score)
         res_gpu_rel: Mapping[int, float] = {}  # rank->GPU perf score
-        res_section_rel: Mapping[str, Mapping[int, float]] = (
-            {}
-        )  # section->(rank->section perf score)
+        res_section_rel: Mapping[
+            str, Mapping[int, float]
+        ] = {}  # section->(rank->section perf score)
 
         if self.gather_on_rank0:
             gathered_scores = self._gather_results_on_rank0(
@@ -523,22 +531,24 @@ class ReportGenerator:
                 }
             if self.is_computing_rel_scores:
                 res_gpu_rel = {self.rank: gpu_relative_score}
-                res_section_rel = {k: {self.rank: v} for k, v in sections_relative_scores.items()}
+                res_section_rel = {
+                    k: {self.rank: v} for k, v in sections_relative_scores.items()
+                }
 
         report_stop = time.perf_counter_ns()
         report_elapsed = (report_stop - report_start) * 1e-6
 
         report_params = {
-            'gpu_relative_perf_scores': res_gpu_rel,
-            'section_relative_perf_scores': res_section_rel,
-            'gpu_individual_perf_scores': res_gpu_indiv,
-            'section_individual_perf_scores': res_section_idiv,
-            'rank_to_node': dict(self.rank_to_node),
-            'local_section_summaries': section_summaries,
-            'local_kernel_summaries': kernel_summaries,
-            'generate_report_elapsed_time': report_elapsed,
-            'gather_on_rank0': self.gather_on_rank0,
-            'rank': self.rank,
+            "gpu_relative_perf_scores": res_gpu_rel,
+            "section_relative_perf_scores": res_section_rel,
+            "gpu_individual_perf_scores": res_gpu_indiv,
+            "section_individual_perf_scores": res_section_idiv,
+            "rank_to_node": dict(self.rank_to_node),
+            "local_section_summaries": section_summaries,
+            "local_kernel_summaries": kernel_summaries,
+            "generate_report_elapsed_time": report_elapsed,
+            "gather_on_rank0": self.gather_on_rank0,
+            "rank": self.rank,
         }
 
         report = Report(**report_params)

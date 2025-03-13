@@ -18,13 +18,15 @@ TorchAsyncCheckpoint defines a wrapper for the async version of `torch.save` wit
 an additional method to synchronize async saving requests
 """
 
-
 import logging
+
 import torch
-from ..utils import wrap_for_async, preload_tensors
+
+from ..utils import preload_tensors, wrap_for_async
 from .core import AsyncCallsQueue, AsyncRequest
 
 logger = logging.getLogger(__name__)
+
 
 class TorchAsyncCheckpoint(object):
     async_fn = None
@@ -42,11 +44,13 @@ class TorchAsyncCheckpoint(object):
 
         preloaded_sd = preload_tensors(state_dict)
         torch.cuda.synchronize()
-        async_request = AsyncRequest(TorchAsyncCheckpoint.async_fn, (preloaded_sd, *args), [], kwargs)
+        async_request = AsyncRequest(
+            TorchAsyncCheckpoint.async_fn, (preloaded_sd, *args), [], kwargs
+        )
         self._async_calls_queue.schedule_async_request(async_request)
 
-    def finalize_async_save(self, blocking: bool=False, no_dist=True):
-        """ Finalizes active async save calls.
+    def finalize_async_save(self, blocking: bool = False, no_dist=True):
+        """Finalizes active async save calls.
 
         Args:
             blocking (bool, optional): if True, will wait until all active requests
@@ -55,6 +59,8 @@ class TorchAsyncCheckpoint(object):
         """
         if blocking and self._async_calls_queue.get_num_unfinalized_calls() > 0:
             if torch.distributed.get_rank() == 0:
-                logger.info('Unfinalized async checkpoint saves. Finalizing them synchronously now.')
+                logger.info(
+                    "Unfinalized async checkpoint saves. Finalizing them synchronously now."
+                )
 
         self._async_calls_queue.maybe_finalize_async_calls(blocking, no_dist=no_dist)

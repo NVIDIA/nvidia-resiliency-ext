@@ -21,19 +21,19 @@ from pybind11.setup_helpers import Pybind11Extension, build_ext
 
 def build(setup_kwargs):
     cpp_extension = Pybind11Extension(
-        'nvidia_resiliency_ext.straggler.cupti_module',
+        "nvidia_resiliency_ext.straggler.cupti_module",
         # Sort .cpp files for reproducibility
-        sorted(glob.glob('src/nvidia_resiliency_ext/straggler/cupti_src/*.cpp')),
-        include_dirs=['/usr/local/cuda/include'],
-        library_dirs=['/usr/local/cuda/lib64'],
+        sorted(glob.glob("src/nvidia_resiliency_ext/straggler/cupti_src/*.cpp")),
+        include_dirs=["/usr/local/cuda/include"],
+        library_dirs=["/usr/local/cuda/lib64"],
         # prefer static CUPTI if available
         libraries=(
-            ['cupti_static']
-            if os.path.exists('/usr/local/cuda/lib64/libcupti_static.a')
-            else ['cupti']
+            ["cupti_static"]
+            if os.path.exists("/usr/local/cuda/lib64/libcupti_static.a")
+            else ["cupti"]
         ),
-        extra_compile_args=['-O3'],
-        language='c++',
+        extra_compile_args=["-O3"],
+        language="c++",
         cxx_std=17,
     )
     ext_modules = [

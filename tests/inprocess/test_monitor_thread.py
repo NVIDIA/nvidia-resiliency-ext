@@ -50,9 +50,7 @@ class TestAsyncRaise(unittest.TestCase):
         for _ in range(iterations):
             stop_event = threading.Event()
             start_event = threading.Event()
-            thread = threading.Thread(
-                target=run, args=(start_event, stop_event)
-            )
+            thread = threading.Thread(target=run, args=(start_event, stop_event))
             thread.start()
 
             try:
@@ -84,9 +82,7 @@ class TestAsyncRaise(unittest.TestCase):
         for _ in range(iterations):
             stop_event = threading.Event()
             start_event = threading.Event()
-            thread = threading.Thread(
-                target=run, args=(start_event, stop_event)
-            )
+            thread = threading.Thread(target=run, args=(start_event, stop_event))
             thread.start()
 
             try:
@@ -111,9 +107,7 @@ class TestAsyncRaise(unittest.TestCase):
 
 
 class TestAsyncReRaise(unittest.TestCase):
-    @unittest.mock.patch.object(
-        sys, 'unraisablehook', new=lambda *args, **kwargs: None
-    )
+    @unittest.mock.patch.object(sys, "unraisablehook", new=lambda *args, **kwargs: None)
     def test_context_manager(self):
         class Foo:
             def __del__(self):
@@ -131,9 +125,7 @@ class TestAsyncReRaise(unittest.TestCase):
 
         self.assertEqual(original_hook, sys.unraisablehook)
 
-    @unittest.mock.patch.object(
-        sys, 'unraisablehook', new=lambda *args, **kwargs: None
-    )
+    @unittest.mock.patch.object(sys, "unraisablehook", new=lambda *args, **kwargs: None)
     def test_decorator(self):
         class Foo:
             def __del__(self):

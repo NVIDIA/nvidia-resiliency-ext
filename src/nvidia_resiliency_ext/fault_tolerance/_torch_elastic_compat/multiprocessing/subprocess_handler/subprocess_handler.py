@@ -13,13 +13,13 @@
 
 import os
 import signal
+
 # Issue: [B404:blacklist] Consider possible security implications associated with the subprocess module.
 # Severity: Low   Confidence: High
 # CWE: CWE-78 (https://cwe.mitre.org/data/definitions/78.html)
 # More Info: https://bandit.readthedocs.io/en/1.7.9/blacklists/blacklist_imports.html#b404-import-subprocess
 import subprocess  # nosec
 import sys
-
 from typing import Any, Dict, Optional, Tuple
 
 __all__ = ["SubprocessHandler"]

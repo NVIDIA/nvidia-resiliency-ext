@@ -58,9 +58,11 @@ def rank_monitors_running(ft_cfg, mp_ctx):
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx)
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
+                ft_cfg, rank, mp_ctx
+            )
             rank_monitors.append(p)
-            os.environ["RANK"] = ''
+            os.environ["RANK"] = ""
 
         yield
 
@@ -126,9 +128,9 @@ def _rank_main_1st_run(*args, tmp_dir, **kwargs):
 
     # Dump timeouts to a file, so that it can be checked in the 2nd run.
     state = {
-        'rmon_cli_state': rank_mon_cli.state_dict(),
-        'timeouts1_initial': rank_mon_cli.timeouts.initial,
-        'timeouts1_subsequent': rank_mon_cli.timeouts.subsequent,
+        "rmon_cli_state": rank_mon_cli.state_dict(),
+        "timeouts1_initial": rank_mon_cli.timeouts.initial,
+        "timeouts1_subsequent": rank_mon_cli.timeouts.subsequent,
     }
 
     dest_file = os.path.join(tmp_dir, TIMEOUTS_FILENAME)
@@ -155,7 +157,7 @@ def _rank_main_2nd_run(*args, tmp_dir, **kwargs):
     with open(src_file, "r") as f:
         state = json.load(f)
 
-    rank_mon_cli.load_state_dict(state['rmon_cli_state'])
+    rank_mon_cli.load_state_dict(state["rmon_cli_state"])
     rank_mon_cli.init_workload_monitoring()
     rank_mon_cli.send_heartbeat()
 
@@ -163,9 +165,11 @@ def _rank_main_2nd_run(*args, tmp_dir, **kwargs):
     assert rank_mon_cli.timeouts.are_valid is True
     assert rank_mon_cli.timeouts.were_calculated is True
 
-    assert rank_mon_cli.timeouts.initial == pytest.approx(state['timeouts1_initial'], rel=0.01)
+    assert rank_mon_cli.timeouts.initial == pytest.approx(
+        state["timeouts1_initial"], rel=0.01
+    )
     assert rank_mon_cli.timeouts.subsequent == pytest.approx(
-        state['timeouts1_subsequent'], rel=0.01
+        state["timeouts1_subsequent"], rel=0.01
     )
 
     # send a few heartbeats one after another and re-calculate the timeouts
@@ -175,8 +179,8 @@ def _rank_main_2nd_run(*args, tmp_dir, **kwargs):
     rank_mon_cli.send_heartbeat()
     rank_mon_cli.calculate_and_set_timeouts()
 
-    assert rank_mon_cli.timeouts.initial < state['timeouts1_initial']
-    assert rank_mon_cli.timeouts.subsequent < state['timeouts1_subsequent']
+    assert rank_mon_cli.timeouts.initial < state["timeouts1_initial"]
+    assert rank_mon_cli.timeouts.subsequent < state["timeouts1_subsequent"]
 
     sys.exit(0)
 
@@ -199,15 +203,17 @@ def _rank_main_3nd_run(*args, tmp_dir, **kwargs):
         state = json.load(f)
 
     rank_mon_cli.init_workload_monitoring()
-    rank_mon_cli.load_state_dict(state['rmon_cli_state'])
+    rank_mon_cli.load_state_dict(state["rmon_cli_state"])
 
     # check if the timeouts are restored correctly
     assert rank_mon_cli.timeouts.are_valid is True
     assert rank_mon_cli.timeouts.were_calculated is True
 
-    assert rank_mon_cli.timeouts.initial == pytest.approx(state['timeouts1_initial'], rel=0.01)
+    assert rank_mon_cli.timeouts.initial == pytest.approx(
+        state["timeouts1_initial"], rel=0.01
+    )
     assert rank_mon_cli.timeouts.subsequent == pytest.approx(
-        state['timeouts1_subsequent'], rel=0.01
+        state["timeouts1_subsequent"], rel=0.01
     )
 
     sys.exit(0)
@@ -235,7 +241,9 @@ def test_timeouts(tmp_dir):
             tmp_dir=tmp_dir,
         )
 
-        ret_codes = multiprocessing_execute_join(rank_processes, timeout=WORKLOAD_TIMEOUT)
+        ret_codes = multiprocessing_execute_join(
+            rank_processes, timeout=WORKLOAD_TIMEOUT
+        )
 
         assert ret_codes == [0] * TEST_WORLD_SIZE
 
@@ -257,7 +265,9 @@ def test_timeouts(tmp_dir):
             tmp_dir=tmp_dir,
         )
 
-        ret_codes = multiprocessing_execute_join(rank_processes, timeout=WORKLOAD_TIMEOUT)
+        ret_codes = multiprocessing_execute_join(
+            rank_processes, timeout=WORKLOAD_TIMEOUT
+        )
 
         assert ret_codes == [0] * TEST_WORLD_SIZE
 
@@ -279,6 +289,8 @@ def test_timeouts(tmp_dir):
             tmp_dir=tmp_dir,
         )
 
-        ret_codes = multiprocessing_execute_join(rank_processes, timeout=WORKLOAD_TIMEOUT)
+        ret_codes = multiprocessing_execute_join(
+            rank_processes, timeout=WORKLOAD_TIMEOUT
+        )
 
         assert ret_codes == [0] * TEST_WORLD_SIZE

@@ -14,7 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import datetime
 import gc
 import io
@@ -40,10 +39,10 @@ class TestCase(unittest.TestCase):
         self.patcher = unittest.mock.patch.dict(
             os.environ,
             {
-                'RANK': '0',
-                'WORLD_SIZE': '1',
-                'MASTER_ADDR': 'localhost',
-                'MASTER_PORT': str(common.find_free_port()),
+                "RANK": "0",
+                "WORLD_SIZE": "1",
+                "MASTER_ADDR": "localhost",
+                "MASTER_PORT": str(common.find_free_port()),
             },
         )
         self.patcher.start()
@@ -72,9 +71,9 @@ class TestCase(unittest.TestCase):
             ]
         for store in stores:
             referrers = [ref for ref in gc.get_referrers(store)]
-            print(f'{store=}')
+            print(f"{store=}")
             for idx, ref in enumerate(referrers):
-                print(f'{idx=}, {ref=}')
+                print(f"{idx=}, {ref=}")
         self.assertEqual(len(stores), 0, stores)
 
         root_log = logging.getLogger()
@@ -89,12 +88,12 @@ class TestCase(unittest.TestCase):
 
     def kwargs(self):
         return {
-            'store_kwargs': {'port': common.find_free_port()},
-            'monitor_thread_interval': datetime.timedelta(seconds=1e-3),
-            'monitor_process_interval': datetime.timedelta(seconds=1e-3),
-            'progress_watchdog_interval': datetime.timedelta(seconds=1e-3),
-            'last_call_wait': datetime.timedelta(seconds=1e-3),
-            'termination_grace_time': datetime.timedelta(seconds=1e-3),
+            "store_kwargs": {"port": common.find_free_port()},
+            "monitor_thread_interval": datetime.timedelta(seconds=1e-3),
+            "monitor_process_interval": datetime.timedelta(seconds=1e-3),
+            "progress_watchdog_interval": datetime.timedelta(seconds=1e-3),
+            "last_call_wait": datetime.timedelta(seconds=1e-3),
+            "termination_grace_time": datetime.timedelta(seconds=1e-3),
         }
 
 
@@ -111,7 +110,7 @@ class TestReturn(TestCase):
         def fn(a, b, c, d=4):
             return a, b, c, d
 
-        self.assertEqual(fn(1, b=2, **{'c': 3}), (1, 2, 3, 4))
+        self.assertEqual(fn(1, b=2, **{"c": 3}), (1, 2, 3, 4))
 
 
 class TestApply(TestCase):
@@ -149,10 +148,10 @@ class TestInit(TestCase):
     @unittest.mock.patch.dict(
         os.environ,
         {
-            'RANK': '0',
-            'WORLD_SIZE': '1',
-            'MASTER_ADDR': 'localhost',
-            'MASTER_PORT': str(common.find_free_port()),
+            "RANK": "0",
+            "WORLD_SIZE": "1",
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": str(common.find_free_port()),
         },
     )
     def test_distributed(self):
@@ -170,7 +169,7 @@ class TestInit(TestCase):
         torch.distributed.init_process_group()
         with self.assertRaisesRegex(
             ValueError,
-            'not torch.distributed.is_initialized()',
+            "not torch.distributed.is_initialized()",
         ):
             fn()
         torch.distributed.destroy_process_group()
@@ -537,9 +536,7 @@ class TestLogging(TestCase):
         first = first_stream.getvalue()
 
         second_stream = io.StringIO()
-        logging.basicConfig(
-            level=logging.INFO, stream=second_stream, force=True
-        )
+        logging.basicConfig(level=logging.INFO, stream=second_stream, force=True)
         fn()
         first_again = first_stream.getvalue()
         second = second_stream.getvalue()
@@ -551,7 +548,7 @@ class TestLogging(TestCase):
         root = logging.getLogger()
         root.level = logging.INFO
 
-        with tempfile.NamedTemporaryFile('r') as tmp_file:
+        with tempfile.NamedTemporaryFile("r") as tmp_file:
 
             @inprocess.Wrapper(
                 **self.kwargs(),
@@ -563,12 +560,12 @@ class TestLogging(TestCase):
             with self.assertWarns(UserWarning):
                 fn()
 
-            with open(tmp_file.name, mode='r') as fp:
+            with open(tmp_file.name, mode="r") as fp:
                 data = fp.read()
 
             self.assertTrue(data, data)
-            self.assertIn('training_pid', data, data)
-            self.assertIn('monitor_process', data, data)
+            self.assertIn("training_pid", data, data)
+            self.assertIn("monitor_process", data, data)
 
 
 class TestTCPStore(TestCase):
@@ -581,12 +578,12 @@ class TestTCPStore(TestCase):
             hidden = 8
             model = torch.nn.Linear(hidden, hidden)
 
-            torch.distributed.init_process_group('gloo')
+            torch.distributed.init_process_group("gloo")
             model = torch.nn.parallel.DistributedDataParallel(model)
             store_ref = weakref.ref(
                 torch.distributed.distributed_c10d._get_default_store()
             )
-            once = store_ref().add('key', 1)
+            once = store_ref().add("key", 1)
             self.assertEqual(once, 1)
 
             for i in range(5):
@@ -598,13 +595,11 @@ class TestTCPStore(TestCase):
 
             raise ZeroDivisionError
 
-        with self.assertRaisesRegex(
-            inprocess.exception.RestartAbort, 'iteration=3'
-        ):
+        with self.assertRaisesRegex(inprocess.exception.RestartAbort, "iteration=3"):
             fn()
 
 
-@unittest.skip('')
+@unittest.skip("")
 class TestConnections(TestCase):
     def test(self):
         counter = 0
@@ -621,34 +616,26 @@ class TestConnections(TestCase):
                 call_wrapper.ping()
 
             proc = psutil.Process()
-            inet_conns = proc.net_connections('inet')
+            inet_conns = proc.net_connections("inet")
             self.assertEqual(len(inet_conns), 4)
 
             listen_conns = [
-                conn
-                for conn in inet_conns
-                if conn.status == psutil.CONN_LISTEN
+                conn for conn in inet_conns if conn.status == psutil.CONN_LISTEN
             ]
             self.assertEqual(len(listen_conns), 1)
             listen_port = listen_conns[0].laddr.port
 
             established_conns = [
-                conn
-                for conn in inet_conns
-                if conn.status == psutil.CONN_ESTABLISHED
+                conn for conn in inet_conns if conn.status == psutil.CONN_ESTABLISHED
             ]
 
             incoming_connections = [
-                conn
-                for conn in established_conns
-                if conn.laddr.port == listen_port
+                conn for conn in established_conns if conn.laddr.port == listen_port
             ]
             self.assertEqual(len(incoming_connections), 2)
 
             outgoing_connections = [
-                conn
-                for conn in established_conns
-                if conn.raddr.port == listen_port
+                conn for conn in established_conns if conn.raddr.port == listen_port
             ]
             self.assertEqual(len(outgoing_connections), 1)
 

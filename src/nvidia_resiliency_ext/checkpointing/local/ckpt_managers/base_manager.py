@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" BaseCheckpointManager defines interface for managing local checkpoints.
+"""BaseCheckpointManager defines interface for managing local checkpoints.
 
 Each CheckpointManager handles tasks such as:
     - cleaning up old checkpoints
@@ -24,21 +24,19 @@ It uses a state_dict interface, requiring users to adjust the state_dict as need
 with MCore facilitating these modifications.
 """
 
-import gc
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from contextlib import contextmanager
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
 
+from ...async_ckpt.core import AsyncRequest
+from ...utils import _disable_gc
 from ..base_state_dict import TensorAwareStateDict
 from ..replication.group_utils import GroupWrapper
 from ..replication.strategies import ReplicationStrategy
 from ..replication.utils import debug_time
-from ...async_ckpt.core import AsyncRequest
-from ...utils import _disable_gc
 
 logger = logging.getLogger(__name__)
 
@@ -137,21 +135,21 @@ class BaseCheckpointManager(ABC):
             iteration : The iteration number for which the checkpoint failed to save.
         """
 
-    @debug_time('BaseCheckpointManager._load_fn', logger)
+    @debug_time("BaseCheckpointManager._load_fn", logger)
     def _load_fn(self, ckpt_id: CkptID) -> TensorAwareStateDict:
         state_dict = self._load(ckpt_id)
         state_dict.restore_tensor_device(non_blocking=False)
-        logger.debug(f'Finish loading {ckpt_id}')
+        logger.debug(f"Finish loading {ckpt_id}")
         return state_dict
 
-    @debug_time('BaseCheckpointManager._save_fn', logger)
+    @debug_time("BaseCheckpointManager._save_fn", logger)
     @_disable_gc()
     def _save_fn(self, id_to_state_dict):
         for ckpt_id, state_dict in id_to_state_dict.items():
             self._save(state_dict, ckpt_id)
-        logger.debug(f'Finish saving {ckpt_id}')
+        logger.debug(f"Finish saving {ckpt_id}")
 
-    @debug_time('BaseCheckpointManager.find_latest', logger)
+    @debug_time("BaseCheckpointManager.find_latest", logger)
     def find_latest(self):
         """
         Searches for the most recent complete checkpoint and returns its iteration number.
@@ -168,10 +166,14 @@ class BaseCheckpointManager(ABC):
             # Use cache to optimize performance in case of two-step loading.
             # Assumes the cache remains valid unless a new save occurs,
             # as no other operations should invalidate the most recent iteration.
-            logger.debug(f'Using cached latest_iteration: {self.latest_iteration} in find_latest')
+            logger.debug(
+                f"Using cached latest_iteration: {self.latest_iteration} in find_latest"
+            )
             return self.latest_iteration
         group_wrapper = GroupWrapper()
-        self.globally_available_ids = group_wrapper.all_gather_object(self._my_ckpt_ids())
+        self.globally_available_ids = group_wrapper.all_gather_object(
+            self._my_ckpt_ids()
+        )
 
         # Maps each iteration to a corresponding set of ranks
         checkpoint_coverage_map = defaultdict(set)
@@ -192,7 +194,7 @@ class BaseCheckpointManager(ABC):
         )
         return self.latest_iteration
 
-    @debug_time('BaseCheckpointManager.load', logger)
+    @debug_time("BaseCheckpointManager.load", logger)
     def load(self) -> Tuple[TensorAwareStateDict, str]:
         """Loads the most recent complete checkpoint.
 
@@ -210,13 +212,19 @@ class BaseCheckpointManager(ABC):
                 "The 'find_latest' method must be called before invoking the 'load' function."
             )
         ckpt_id = self._ckpt_id(self.latest_iteration)
-        logger.debug(f'Loading checkpoint from {self.latest_iteration} iteration')
+        logger.debug(f"Loading checkpoint from {self.latest_iteration} iteration")
         if self.repl_strategy is not None:
-            plan = self.repl_strategy.retrieve_plan(self.globally_available_ids, [ckpt_id])
+            plan = self.repl_strategy.retrieve_plan(
+                self.globally_available_ids, [ckpt_id]
+            )
             my_data = {k: self._load_fn(k) for k in plan.required_ids()}
-            execute_result = list(self.repl_strategy.retrieve_execute(plan, my_data).items())
+            execute_result = list(
+                self.repl_strategy.retrieve_execute(plan, my_data).items()
+            )
             # TODO: refactor
-            assert len(execute_result) == 1, f"Got {len(execute_result)} IDs, but requested only 1!"
+            assert (
+                len(execute_result) == 1
+            ), f"Got {len(execute_result)} IDs, but requested only 1!"
             assert (
                 execute_result[0][0] == ckpt_id
             ), f"Retrieved different ID ({execute_result[0][0]}) than requested ({ckpt_id})?"
@@ -247,7 +255,7 @@ class BaseCheckpointManager(ABC):
         """
         assert (
             self.latest_iteration < iteration
-        ), f'A newer checkpoint is already available: {self.latest_iteration} (saving {iteration})'
+        ), f"A newer checkpoint is already available: {self.latest_iteration} (saving {iteration})"
         if self.repl_strategy:
             save_arg = {
                 ckpt_id: s_dict
@@ -275,7 +283,9 @@ class BaseCheckpointManager(ABC):
                 )
             else:
                 if validated_latest_iteration == iteration:
-                    logging.info(f"Succesfully saved local checkpoint from iteration {iteration}")
+                    logging.info(
+                        f"Succesfully saved local checkpoint from iteration {iteration}"
+                    )
                 else:
                     logging.info(
                         f"WARNING: during saving iteration {iteration} "

@@ -43,25 +43,25 @@ class BarrierOverflow(BarrierError):
 
 
 class StoreMixin:
-    NUM_COMPLETED_RANKS = 'num_completed_ranks'
-    NUM_INTERRUPTED_RANKS = 'num_interrupted_ranks'
-    NUM_TERMINATED_RANKS = 'num_terminated_ranks'
+    NUM_COMPLETED_RANKS = "num_completed_ranks"
+    NUM_INTERRUPTED_RANKS = "num_interrupted_ranks"
+    NUM_TERMINATED_RANKS = "num_terminated_ranks"
 
-    INTERRUPTION_RECORDS = 'interruption_records'
-    INTERRUPTION_RECORDS_LOCK = 'interruption_records_lock'
+    INTERRUPTION_RECORDS = "interruption_records"
+    INTERRUPTION_RECORDS_LOCK = "interruption_records_lock"
 
-    TERMINATED_RANK = 'terminated_rank_{idx}'
-    INITIAL_RANK = 'initial_rank_{rank}'
-    BASE_TERMINATED_LIST = 'base_terminated_list'
-    HEARTBEAT = 'heartbeat_{rank}'
+    TERMINATED_RANK = "terminated_rank_{idx}"
+    INITIAL_RANK = "initial_rank_{rank}"
+    BASE_TERMINATED_LIST = "base_terminated_list"
+    HEARTBEAT = "heartbeat_{rank}"
 
-    BARRIER_PREFIX = 'inprocess_barrier_prefix'
-    STORE_PREFIX = '_inprocess_{iteration}'
+    BARRIER_PREFIX = "inprocess_barrier_prefix"
+    STORE_PREFIX = "_inprocess_{iteration}"
 
-    INITIAL_BARRIER = 'initial_barrier'
-    ITERATION_BARRIER = 'iteration_barrier'
-    COMPLETION_BARRIER = 'completion_barrier'
-    TERMINATION_BARRIER = 'termination_barrier'
+    INITIAL_BARRIER = "initial_barrier"
+    ITERATION_BARRIER = "iteration_barrier"
+    COMPLETION_BARRIER = "completion_barrier"
+    TERMINATION_BARRIER = "termination_barrier"
 
     @property
     def critical_ranks(self):
@@ -83,15 +83,12 @@ class StoreMixin:
         return [
             int(heartbeat)
             for heartbeat in self.multi_get(
-                [
-                    self.HEARTBEAT.format(rank=rank)
-                    for rank in range(world_size)
-                ]
+                [self.HEARTBEAT.format(rank=rank) for rank in range(world_size)]
             )
         ]
 
     def record_base_terminated_rank(self, rank):
-        self.append(self.BASE_TERMINATED_LIST, f'{rank},')
+        self.append(self.BASE_TERMINATED_LIST, f"{rank},")
 
     def get_base_terminated_count(self):
         terminated_ranks = set(
@@ -99,8 +96,8 @@ class StoreMixin:
                 int(r)
                 for r in self.get(self.BASE_TERMINATED_LIST)
                 .decode()
-                .rstrip(',')
-                .split(',')
+                .rstrip(",")
+                .split(",")
                 if r.strip()
             ]
         )
@@ -112,14 +109,12 @@ class StoreMixin:
             if not isinstance(record, list):
                 record = [record]
 
-            self.append(self.INTERRUPTION_RECORDS, '')
+            self.append(self.INTERRUPTION_RECORDS, "")
 
-            records_are_locked = bool(
-                self.add(self.INTERRUPTION_RECORDS_LOCK, 0)
-            )
+            records_are_locked = bool(self.add(self.INTERRUPTION_RECORDS_LOCK, 0))
             if not records_are_locked:
-                msg = ';'.join(str(r) for r in record)
-                self.append(self.INTERRUPTION_RECORDS, f'{msg};')
+                msg = ";".join(str(r) for r in record)
+                self.append(self.INTERRUPTION_RECORDS, f"{msg};")
 
         self.add(self.NUM_INTERRUPTED_RANKS, 1)
 
@@ -127,13 +122,13 @@ class StoreMixin:
         self.add(self.INTERRUPTION_RECORDS_LOCK, 1)
 
     def get_interruption_records(self):
-        self.append(self.INTERRUPTION_RECORDS, '')
+        self.append(self.INTERRUPTION_RECORDS, "")
         records = [
             InterruptionRecord.from_str(record)
             for record in self.get(self.INTERRUPTION_RECORDS)
             .decode()
-            .rstrip(';')
-            .split(';')
+            .rstrip(";")
+            .split(";")
             if record.strip()
         ]
         return records
@@ -177,32 +172,29 @@ class StoreMixin:
     ):
         log = logging.getLogger(__name__)
         cn = inspect.currentframe().f_code.co_name
-        log.debug(f'{rank=} enters {group_name=} {cn} {rendezvous_count=}')
+        log.debug(f"{rank=} enters {group_name=} {cn} {rendezvous_count=}")
 
-        store_key = f'{self.BARRIER_PREFIX}:{cn}:{group_name}'
-        last_worker_arrived_key = f'{store_key}:last_worker_arrived'
-        arrived_key = f'{store_key}:arrived'
+        store_key = f"{self.BARRIER_PREFIX}:{cn}:{group_name}"
+        last_worker_arrived_key = f"{store_key}:last_worker_arrived"
+        arrived_key = f"{store_key}:arrived"
 
         arrived_count = self.add(store_key, 1)
-        self.append(arrived_key, f'{rank},')
+        self.append(arrived_key, f"{rank},")
 
         if arrived_count > rendezvous_count:
             arrived_ranks = sorted(
                 [
                     int(r)
-                    for r in self.get(arrived_key)
-                    .decode()
-                    .rstrip(',')
-                    .split(',')
+                    for r in self.get(arrived_key).decode().rstrip(",").split(",")
                     if r.strip()
                 ]
             )
             raise BarrierOverflow(
-                f'{rank=} {rendezvous_count=} {group_name=} {arrived_ranks=}'
+                f"{rank=} {rendezvous_count=} {group_name=} {arrived_ranks=}"
             )
 
         if arrived_count == rendezvous_count:
-            self.set(last_worker_arrived_key, '1')
+            self.set(last_worker_arrived_key, "1")
 
         if timeout_chunk is None:
             timeout_chunk = timeout
@@ -215,15 +207,12 @@ class StoreMixin:
                 self.wait([last_worker_arrived_key], timeout_chunk)
                 break
             except Exception as ex:
-                if (
-                    datetime.timedelta(seconds=(time.monotonic() - start))
-                    > timeout
-                ):
+                if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
                     raise BarrierTimeout(
-                        f'{rank=} {rendezvous_count=} {group_name=} {timeout=}'
+                        f"{rank=} {rendezvous_count=} {group_name=} {timeout=}"
                     ) from ex
 
-        log.debug(f'{rank=} exits {group_name=} {cn} {rendezvous_count=}')
+        log.debug(f"{rank=} exits {group_name=} {cn} {rendezvous_count=}")
 
     def is_rank_at_reentrant_barrier(
         self,
@@ -232,20 +221,20 @@ class StoreMixin:
     ):
         log = logging.getLogger(__name__)
         barrier_name = self.reentrant_barrier.__name__
-        store_key = f'{self.BARRIER_PREFIX}:{barrier_name}:{group_name}'
-        arrived_key = f'{store_key}:arrived'
-        self.append(arrived_key, '')
+        store_key = f"{self.BARRIER_PREFIX}:{barrier_name}:{group_name}"
+        arrived_key = f"{store_key}:arrived"
+        self.append(arrived_key, "")
         arrived_ranks = set(
             [
                 int(r)
-                for r in self.get(arrived_key).decode().rstrip(',').split(',')
+                for r in self.get(arrived_key).decode().rstrip(",").split(",")
                 if r.strip()
             ]
         )
-        log.debug(f'{rank=} {arrived_ranks=}')
+        log.debug(f"{rank=} {arrived_ranks=}")
         arrived = rank in arrived_ranks
         if arrived:
-            log.debug(f'{rank=} already arrived {group_name=}')
+            log.debug(f"{rank=} already arrived {group_name=}")
         return arrived
 
     def reentrant_barrier(
@@ -258,24 +247,24 @@ class StoreMixin:
     ):
         log = logging.getLogger(__name__)
         cn = inspect.currentframe().f_code.co_name
-        log.debug(f'{rank=} enters {group_name=} {cn} {rendezvous_count=}')
+        log.debug(f"{rank=} enters {group_name=} {cn} {rendezvous_count=}")
 
-        store_key = f'{self.BARRIER_PREFIX}:{cn}:{group_name}'
-        last_worker_arrived_key = f'{store_key}:last_worker_arrived'
-        arrived_key = f'{store_key}:arrived'
+        store_key = f"{self.BARRIER_PREFIX}:{cn}:{group_name}"
+        last_worker_arrived_key = f"{store_key}:last_worker_arrived"
+        arrived_key = f"{store_key}:arrived"
 
         if isinstance(rank, int):
-            self.append(arrived_key, f'{rank},')
+            self.append(arrived_key, f"{rank},")
         elif isinstance(rank, collections.abc.Iterable):
-            ranks = ','.join(str(r) for r in rank)
-            self.append(arrived_key, f'{ranks},')
+            ranks = ",".join(str(r) for r in rank)
+            self.append(arrived_key, f"{ranks},")
         else:
             raise RuntimeError
 
         arrived_ranks = set(
             [
                 int(r)
-                for r in self.get(arrived_key).decode().rstrip(',').split(',')
+                for r in self.get(arrived_key).decode().rstrip(",").split(",")
                 if r.strip()
             ]
         )
@@ -284,11 +273,11 @@ class StoreMixin:
         if arrived_count > rendezvous_count:
             arrived_list = sorted(list(arrived_ranks))
             raise BarrierOverflow(
-                f'{rank=} {rendezvous_count=} {group_name=} {arrived_list=}'
+                f"{rank=} {rendezvous_count=} {group_name=} {arrived_list=}"
             )
 
         if arrived_count == rendezvous_count:
-            self.set(last_worker_arrived_key, '1')
+            self.set(last_worker_arrived_key, "1")
 
         if timeout_chunk is None:
             timeout_chunk = timeout
@@ -301,15 +290,12 @@ class StoreMixin:
                 self.wait([last_worker_arrived_key], timeout_chunk)
                 break
             except Exception as ex:
-                if (
-                    datetime.timedelta(seconds=(time.monotonic() - start))
-                    > timeout
-                ):
+                if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
                     raise BarrierTimeout(
-                        f'{rank=} {rendezvous_count=} {group_name=} {timeout=}'
+                        f"{rank=} {rendezvous_count=} {group_name=} {timeout=}"
                     ) from ex
 
-        log.debug(f'{rank=} exits {group_name=} {cn} {rendezvous_count=}')
+        log.debug(f"{rank=} exits {group_name=} {cn} {rendezvous_count=}")
 
     initial_barrier = functools.partialmethod(
         barrier,
@@ -345,30 +331,30 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         log = logging.getLogger(__name__)
 
         if host_name is None:
-            host_name = os.environ['MASTER_ADDR']
+            host_name = os.environ["MASTER_ADDR"]
         if port is None:
-            port = int(os.environ['MASTER_PORT'])
+            port = int(os.environ["MASTER_PORT"])
         if world_size is None:
-            world_size = int(os.environ['WORLD_SIZE'])
+            world_size = int(os.environ["WORLD_SIZE"])
 
-        rank = int(os.environ['RANK'])
+        rank = int(os.environ["RANK"])
 
         kwargs = {
-            'host_name': host_name,
-            'port': port,
-            'world_size': world_size,
-            'timeout': timeout,
-            'wait_for_workers': wait_for_workers,
-            'multi_tenant': multi_tenant,
-            'use_libuv': use_libuv,
+            "host_name": host_name,
+            "port": port,
+            "world_size": world_size,
+            "timeout": timeout,
+            "wait_for_workers": wait_for_workers,
+            "multi_tenant": multi_tenant,
+            "use_libuv": use_libuv,
         }
 
         if rank == self.TCP_STORE_HOST_RANK:
             try:
                 super().__init__(is_master=True, **kwargs)
-                log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
+                log.debug(f"{rank=} hosting {type(self).__name__}({kwargs})")
             except Exception as store_ex:
-                log.debug(log_exc(rank, store_ex, 'store_ex'))
+                log.debug(log_exc(rank, store_ex, "store_ex"))
                 super().__init__(is_master=False, **kwargs)
         else:
             super().__init__(is_master=False, **kwargs)

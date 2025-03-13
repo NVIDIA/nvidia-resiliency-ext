@@ -49,7 +49,7 @@ class Dataset(torch.utils.data.Dataset):
             (self.hidden,),
             fill_value=idx,
             dtype=torch.float32,
-            device='cpu',
+            device="cpu",
         )
         return data
 
@@ -76,10 +76,10 @@ def parse_args():
     def fault_desc(strings):
         parts = strings.split(",")
         assert len(parts) == 2
-        return {'fault': parts[0], 'delay': float(parts[1])}
+        return {"fault": parts[0], "delay": float(parts[1])}
 
     parser = argparse.ArgumentParser(
-        description='Example of PyTorch DDP training with the Fault Tolerance package',
+        description="Example of PyTorch DDP training with the Fault Tolerance package",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -97,7 +97,7 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cpu', 'cuda'],
                         help='Device')
-    
+
     parser.add_argument('--interrupt_at', type=tuple_type, nargs='*',
                         help='Manual interruption after (epoch, iteration), '
                         'for testing only')
@@ -111,7 +111,7 @@ def parse_args():
                         help='Output dir')
     parser.add_argument('--checkpoint_fname', type=str, default='checkpoint.pt',
                         help='Name of a checkpoint file')
-    
+
     parser.add_argument('--local_rank', type=int,
                         default=os.getenv('LOCAL_RANK', 0))
     parser.add_argument('--init_distributed_method', type=str, default='tcp',
@@ -133,12 +133,12 @@ def parse_args():
 
 def load_checkpoint(path):
     map_location = {
-        'cpu': 'cpu',
+        "cpu": "cpu",
     }
     if torch.cuda.is_available():
-        map_location['cuda:0'] = f'cuda:{torch.cuda.current_device()}'
+        map_location["cuda:0"] = f"cuda:{torch.cuda.current_device()}"
 
-    logging.info(f'Loading checkpoint from {path}')
+    logging.info(f"Loading checkpoint from {path}")
     checkpoint = torch.load(path, map_location=map_location)
     return checkpoint
 
@@ -152,17 +152,17 @@ def save_checkpoint(
     checkpoint_fname,
 ):
     state = {
-        'progress': progress,
-        'model_state': model.state_dict(),
-        'optimizer_state': optimizer.state_dict(),
-        'ft_state': ft_client.state_dict(),
+        "progress": progress,
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "ft_state": ft_client.state_dict(),
     }
 
     checkpoint_path = os.path.join(output_dir, checkpoint_fname)
 
     with dist_utils.sync_workers() as rank:
         if rank == 0:
-            logging.info(f'Saving checkpoint to {checkpoint_path}')
+            logging.info(f"Saving checkpoint to {checkpoint_path}")
             torch.save(state, checkpoint_path)
 
 
@@ -177,18 +177,18 @@ def training_loop(
     progress,
     args,
 ):
-    epoch_idx = progress['epoch_idx']
+    epoch_idx = progress["epoch_idx"]
 
     # NOTE: torch.utils.data.DistributedSampler must be prepared for current epoch
     # need to do it before starting iteration
-    sampler.start_sample_idx = progress['iter_idx'] * args.batch
+    sampler.start_sample_idx = progress["iter_idx"] * args.batch
     sampler.set_epoch(epoch_idx)
 
     para_model.train()
 
     last_log_time = time.monotonic()
 
-    for iter_idx, x in enumerate(dataloader, start=progress['iter_idx']):
+    for iter_idx, x in enumerate(dataloader, start=progress["iter_idx"]):
         if ft_client.timeouts.are_valid is False and epoch_idx == 1 and iter_idx == 1:
             # after 0th epoch is completed and we've done 0th iteration of the 1st epoch,
             # we can calculate and set timeouts. this is a good moment to do so,
@@ -203,19 +203,21 @@ def training_loop(
         loss.backward()
 
         if iter_idx % args.logging_interval == 0:
-            avg_train_loss = dist_utils.all_reduce_item(train_loss, op='mean')
+            avg_train_loss = dist_utils.all_reduce_item(train_loss, op="mean")
             logging.info(
-                f'CHECK TRAIN epoch: {epoch_idx:4d} '
-                f'iter: {iter_idx:5d} '
-                f'loss: {avg_train_loss} '
-                f'input: {x[:, 0]}'
+                f"CHECK TRAIN epoch: {epoch_idx:4d} "
+                f"iter: {iter_idx:5d} "
+                f"loss: {avg_train_loss} "
+                f"input: {x[:, 0]}"
             )
             if iter_idx > 0:
-                time_per_iter = (time.monotonic() - last_log_time) / args.logging_interval
+                time_per_iter = (
+                    time.monotonic() - last_log_time
+                ) / args.logging_interval
                 last_log_time = time.monotonic()
-                logging.debug(f'Avg time per iter: {time_per_iter:.3f} [sec]')
+                logging.debug(f"Avg time per iter: {time_per_iter:.3f} [sec]")
 
-        progress['iter_idx'] = iter_idx + 1
+        progress["iter_idx"] = iter_idx + 1
 
         ft_client.send_heartbeat()
         optimizer.step()
@@ -233,7 +235,7 @@ def training_loop(
                 checkpoint_fname=args.checkpoint_fname,
             )
             if (epoch_idx, iter_idx) in args.interrupt_at:
-                logging.info('Manual interruption, exiting')
+                logging.info("Manual interruption, exiting")
                 sys.exit(0)
 
 
@@ -249,7 +251,8 @@ def validation_loop(ft_client, model, val_dataloader, epoch_idx, device):
         ft_client.send_heartbeat()
 
     logging.info(
-        f'CHECK VAL SUMMARY: epoch: {epoch_idx:4d} ' f'loss: {total_val_loss / (iter_idx + 1)}'
+        f"CHECK VAL SUMMARY: epoch: {epoch_idx:4d} "
+        f"loss: {total_val_loss / (iter_idx + 1)}"
     )
 
 
@@ -273,9 +276,9 @@ def _setup_simulated_fault(ft_client, fault_desc, device):
 
     logging.info(f"Initializing simulated fault: {fault_desc}")
 
-    fault_type = fault_desc['fault']
-    if fault_type == 'random':
-        fault_type = rng.choice(['rank_killed', 'rank_hung'])
+    fault_type = fault_desc["fault"]
+    if fault_type == "random":
+        fault_type = rng.choice(["rank_killed", "rank_hung"])
 
     rank_to_fail = rng.randint(0, dist_utils.get_world_size() - 1)
     rank_to_fail = torch.tensor([rank_to_fail], device=device)
@@ -286,16 +289,16 @@ def _setup_simulated_fault(ft_client, fault_desc, device):
     if rank != rank_to_fail:
         return
 
-    if fault_type == 'rank_killed':
+    if fault_type == "rank_killed":
         target_pid = os.getpid()
         target_sig = signal.SIGKILL
-    elif fault_type == 'rank_hung':
+    elif fault_type == "rank_hung":
         target_pid = os.getpid()
         target_sig = signal.SIGSTOP
     else:
         raise Exception(f"Unknown fault type {fault_type}")
 
-    delay = fault_desc['delay'] + 4.0 * rng.random()
+    delay = fault_desc["delay"] + 4.0 * rng.random()
 
     logging.info(
         f"Selected fault={fault_type}; target rank={rank_to_fail}; delay={delay}",
@@ -334,49 +337,55 @@ def main():
     np.random.seed(123)
     random.seed(123)
 
-    if args.device == 'cuda':
+    if args.device == "cuda":
         if torch.cuda.is_available():
-            device = torch.device('cuda')
+            device = torch.device("cuda")
             torch.cuda.set_device(args.local_rank)
         else:
-            raise RuntimeError("Selected 'cuda' device but torch.cuda is not available.")
-    elif args.device == 'cpu':
-        device = torch.device('cpu')
+            raise RuntimeError(
+                "Selected 'cuda' device but torch.cuda is not available."
+            )
+    elif args.device == "cpu":
+        device = torch.device("cpu")
     else:
-        raise RuntimeError('Unknown device')
+        raise RuntimeError("Unknown device")
 
-    if int(os.getenv('WORLD_SIZE', '1')) == 1:
-        raise RuntimeError('This example supports only multi-gpu training')
+    if int(os.getenv("WORLD_SIZE", "1")) == 1:
+        raise RuntimeError("This example supports only multi-gpu training")
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    if args.init_distributed_method == 'tcp':
+    if args.init_distributed_method == "tcp":
         # NOTE: when runing tests with tcp init method we noticed
         # occasional "address already in use" errors, after workload
         # is restarted
         dist_utils.init_distributed_with_tcp_store(device)
-    elif args.init_distributed_method == 'file':
-        dist_utils.init_distributed_with_file_store(device, store_file_dir=args.output_dir)
+    elif args.init_distributed_method == "file":
+        dist_utils.init_distributed_with_file_store(
+            device, store_file_dir=args.output_dir
+        )
     else:
         raise RuntimeError(
             f"--init_distributed_method should be ['tcp','file'] it is {args.init_distributed_method}"
         )
 
     if args.log_all_ranks:
-        log_file_name = f'train_log_rank_{dist_utils.get_rank()}.log'
+        log_file_name = f"train_log_rank_{dist_utils.get_rank()}.log"
     else:
-        log_file_name = 'train_log.log'
+        log_file_name = "train_log.log"
     log_file_path = os.path.join(args.output_dir, log_file_name)
 
     # NOTE: logging appends outputs to an existing log file if it already
     # exists. Results from a single training run (potentially with many
     # restarts from a checkpoint) are stored in a single log file.
-    log_utils.setup_logging(args.log_all_ranks, filename=log_file_path, filemode='a')
+    log_utils.setup_logging(args.log_all_ranks, filename=log_file_path, filemode="a")
     logging.info(args)
 
     rank = dist_utils.get_rank()
 
-    logging.info(f"SLURM_JOB_ID={os.getenv('SLURM_JOB_ID','<none>')} RANK={rank} PID={os.getpid()}")
+    logging.info(
+        f"SLURM_JOB_ID={os.getenv('SLURM_JOB_ID','<none>')} RANK={rank} PID={os.getpid()}"
+    )
 
     # Dummy datasets
     train_dataset = Dataset(args.train_dataset_size, args.hidden)
@@ -398,8 +407,8 @@ def main():
 
     # Initial value for start epoch - will be overwritten if training is resumed from a checkpoint
     progress = {
-        'epoch_idx': 0,
-        'iter_idx': 0,
+        "epoch_idx": 0,
+        "iter_idx": 0,
     }
 
     checkpoint_path = os.path.join(args.output_dir, args.checkpoint_fname)
@@ -414,16 +423,16 @@ def main():
     if os.path.exists(checkpoint_path):
         checkpoint = load_checkpoint(checkpoint_path)
         if checkpoint:
-            logging.info(f'Checkpoint was loaded from file: {checkpoint_path}')
+            logging.info(f"Checkpoint was loaded from file: {checkpoint_path}")
 
     if checkpoint:
-        model.load_state_dict(checkpoint['model_state'])
-        optimizer.load_state_dict(checkpoint['optimizer_state'])
-        ft_client.load_state_dict(checkpoint['ft_state'])
-        progress.update(checkpoint['progress'])
+        model.load_state_dict(checkpoint["model_state"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        ft_client.load_state_dict(checkpoint["ft_state"])
+        progress.update(checkpoint["progress"])
         # Return with zero exit code if model is already fully trained.
-        if progress['epoch_idx'] == args.epochs:
-            logging.info('Training finished.')
+        if progress["epoch_idx"] == args.epochs:
+            logging.info("Training finished.")
             sys.exit(0)
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -450,21 +459,21 @@ def main():
     # Additionally saved checkpoint is ready for inference and doesn't have to
     # be manually unwrapped by accessing the (undocumented) "module" attribute
     # of DDP-wrapped model.
-    if device.type == 'cuda':
+    if device.type == "cuda":
         device_ids = [args.local_rank]
         output_device = args.local_rank
-    elif device.type == 'cpu':
+    elif device.type == "cpu":
         device_ids = None
         output_device = None
     else:
-        raise RuntimeError('Unsupported device type')
+        raise RuntimeError("Unsupported device type")
     para_model = torch.nn.parallel.DistributedDataParallel(
         model, device_ids=device_ids, output_device=output_device
     )
 
     # Iteration over epochs, notice that it starts from 'epoch_idx'
     # which was previously loaded from the checkpoint
-    for epoch_idx in range(progress['epoch_idx'], args.epochs):
+    for epoch_idx in range(progress["epoch_idx"], args.epochs):
         training_loop(
             ft_client,
             para_model,
@@ -479,8 +488,8 @@ def main():
 
         # epoch_idx is incremented because the current epoch is finished
         # and potential resume from this checkpoint should start a new training epoch.
-        progress['epoch_idx'] += 1
-        progress['iter_idx'] = 0
+        progress["epoch_idx"] += 1
+        progress["iter_idx"] = 0
 
         validation_loop(ft_client, model, val_dataloader, epoch_idx, device)
 
@@ -498,16 +507,20 @@ def main():
         # NOTE: SIGTERM is used by SLURM to initiate graceful job termination
         # if _any_ rank received SIGTERM, we leave the main loop
         if dist_utils.is_true_on_any_rank(_signal_received):
-            logging.info('Leaving the main loop, due to SIGTERM')
+            logging.info("Leaving the main loop, due to SIGTERM")
             break
 
         # Setup simulated fault as soon as we have valid timeouts
-        if args.simulated_fault and not _sim_fault_is_set and ft_client.timeouts.are_valid:
+        if (
+            args.simulated_fault
+            and not _sim_fault_is_set
+            and ft_client.timeouts.are_valid
+        ):
             _setup_simulated_fault(ft_client, args.simulated_fault, device)
 
     _cancel_simulated_fault()
     ft_client.shutdown_workload_monitoring()
-    logging.info('Leaving main, ret_code=0')
+    logging.info("Leaving main, ret_code=0")
     sys.exit(0)
 
 

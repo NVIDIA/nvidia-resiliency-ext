@@ -15,32 +15,22 @@
 # limitations under the License.
 
 import argparse
-import datetime
-import enum
-import faulthandler
 import logging
 import os
-import random
-import signal
 import sys
-import time
 from datetime import timedelta
-from typing import Optional
 
-import torch
-import torch.nn as nn
 
 import nvidia_resiliency_ext.inprocess as inprocess
 import nvidia_resiliency_ext.inprocess.tools as tools
 
-from . import app
-from . import common
+from . import app, common
 
 
 def launch(fn, **kwargs):
-    rank = int(os.environ['RANK'])
+    rank = int(os.environ["RANK"])
 
-    if level := os.getenv('LOG', None):
+    if level := os.getenv("LOG", None):
         loglevel = getattr(logging, level.upper())
     else:
         loglevel = logging.CRITICAL + 1
@@ -49,15 +39,13 @@ def launch(fn, **kwargs):
         level=loglevel,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        filename=f'/tmp/example_{rank}.log',
-        filemode='w',
+        filename=f"/tmp/example_{rank}.log",
+        filemode="w",
         force=True,
     )
-    rank_filter = app.RankFilter(rank, '***', False)
+    rank_filter = app.RankFilter(rank, "***", False)
     console = logging.StreamHandler(sys.stderr)
-    format = (
-        "%(asctime)s | %(levelname)s | %(name)s | %(rank)-3s | %(message)s"
-    )
+    format = "%(asctime)s | %(levelname)s | %(name)s | %(rank)-3s | %(message)s"
     formatter = app.AdaptiveFormatter(format)
     console.setFormatter(formatter)
     console.addFilter(rank_filter)
@@ -84,23 +72,23 @@ class TestInternal(common.MultiProcessTestCase):
     @staticmethod
     def wrapper_kwargs():
         return {
-            'store_kwargs': {'port': int(os.environ['MASTER_PORT']) + 1},
-            'progress_watchdog_interval': timedelta(milliseconds=50),
-            'monitor_thread_interval': timedelta(milliseconds=50),
-            'monitor_process_interval': timedelta(milliseconds=50),
-            'last_call_wait': timedelta(milliseconds=50),
+            "store_kwargs": {"port": int(os.environ["MASTER_PORT"]) + 1},
+            "progress_watchdog_interval": timedelta(milliseconds=50),
+            "monitor_thread_interval": timedelta(milliseconds=50),
+            "monitor_process_interval": timedelta(milliseconds=50),
+            "last_call_wait": timedelta(milliseconds=50),
         }
 
     @staticmethod
     def train_kwargs():
         return {
-            'last_iteration': 4,
-            'train_stall': 0.01,
-            'train_sleep': 0.01,
+            "last_iteration": 4,
+            "train_stall": 0.01,
+            "train_sleep": 0.01,
         }
 
     @common.parametrize(
-        'fault',
+        "fault",
         [
             (app.Fault.EXC,),
             (app.Fault.EXIT,),
@@ -114,7 +102,7 @@ class TestInternal(common.MultiProcessTestCase):
         launch(wrapped, fault=fault, **self.train_kwargs())
 
     @common.parametrize(
-        'fault',
+        "fault",
         [
             (app.Fault.KILL,),
             (app.Fault.TERM,),
@@ -141,24 +129,24 @@ class TestExternal(common.MultiProcessTestCase):
     @staticmethod
     def wrapper_kwargs():
         return {
-            'store_kwargs': {'port': int(os.environ['MASTER_PORT']) + 1},
-            'progress_watchdog_interval': timedelta(milliseconds=50),
-            'monitor_thread_interval': timedelta(milliseconds=50),
-            'monitor_process_interval': timedelta(milliseconds=50),
-            'last_call_wait': timedelta(milliseconds=50),
+            "store_kwargs": {"port": int(os.environ["MASTER_PORT"]) + 1},
+            "progress_watchdog_interval": timedelta(milliseconds=50),
+            "monitor_thread_interval": timedelta(milliseconds=50),
+            "monitor_process_interval": timedelta(milliseconds=50),
+            "last_call_wait": timedelta(milliseconds=50),
         }
 
     @staticmethod
     def train_kwargs():
         return {
-            'train_stall': 0.001,
-            'train_sleep': 0.001,
-            'ext_min_delay': 0.1,
-            'ext_max_delay': 0.2,
+            "train_stall": 0.001,
+            "train_sleep": 0.001,
+            "ext_min_delay": 0.1,
+            "ext_max_delay": 0.2,
         }
 
     @common.parametrize(
-        'ext_fault',
+        "ext_fault",
         [
             (tools.inject_fault.Fault.KILL,),
             (tools.inject_fault.Fault.TERM,),

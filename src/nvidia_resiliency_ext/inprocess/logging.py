@@ -27,7 +27,7 @@ def format_exc(exc: BaseException):
     excs = [repr(exc)]
     while (exc := exc.__cause__) is not None:
         excs.append(repr(exc))
-    return ' <- '.join(excs)
+    return " <- ".join(excs)
 
 
 def log_exc(rank_or_state, exc, name):
@@ -35,7 +35,7 @@ def log_exc(rank_or_state, exc, name):
         rank = rank_or_state
     else:
         rank = rank_or_state.rank
-    return f'{rank=} {name}: {format_exc(exc)}'
+    return f"{rank=} {name}: {format_exc(exc)}"
 
 
 @contextlib.contextmanager
@@ -45,20 +45,20 @@ def _log_exec(target, offset=3):
     caller_modulename = inspect.getmodulename(caller_frame.filename)
 
     log = logging.getLogger(caller_modulename)
-    rank = int(os.getenv('RANK', '0'))
+    rank = int(os.getenv("RANK", "0"))
 
     if callable(target):
-        name = f'{target.__module__}.{target.__qualname__}'
+        name = f"{target.__module__}.{target.__qualname__}"
     else:
         name = target
 
-    log.debug(f'{rank=} starts execution: {name}')
+    log.debug(f"{rank=} starts execution: {name}")
     start_time = time.perf_counter()
     try:
         yield
     finally:
         elapsed = time.perf_counter() - start_time
-        log.debug(f'{rank=} ends execution: {name} [{elapsed=:.4e}]')
+        log.debug(f"{rank=} ends execution: {name} [{elapsed=:.4e}]")
 
 
 def log_exec(target):
@@ -67,7 +67,7 @@ def log_exec(target):
         @functools.wraps(target)
         def wrapper(*args, **kwargs):
             with _log_exec(target):
-                ret = target(*args, **kwargs)
+                target(*args, **kwargs)
 
         return wrapper
     else:
@@ -89,7 +89,7 @@ def find_nearest_handler(logger, handler_cls):
 class Logging:
     @classmethod
     def initialize(cls):
-        parent_module_name = cls.__module__.split('.')[-2]
+        parent_module_name = cls.__module__.split(".")[-2]
         logger = logging.getLogger(parent_module_name)
         logger.propagate = False
 
@@ -110,17 +110,17 @@ class Logging:
             for handler in stream_handlers:
                 logger.addHandler(handler)
         else:
-            warnings.warn('logging not initialized, logs are disabled')
+            warnings.warn("logging not initialized, logs are disabled")
             logger.addHandler(logging.NullHandler())
 
         level = logger.getEffectiveLevel()
         handlers = logger.handlers
-        logger.debug(f'logging initialized {level=} {handlers=}')
+        logger.debug(f"logging initialized {level=} {handlers=}")
 
     @classmethod
     def deinitialize(cls):
-        parent_module_name = cls.__module__.split('.')[-2]
+        parent_module_name = cls.__module__.split(".")[-2]
         logger = logging.getLogger(parent_module_name)
-        logger.debug('deinitialize logging')
+        logger.debug("deinitialize logging")
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)

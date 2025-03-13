@@ -104,7 +104,8 @@ class BasicTensorAwareStateDict(TensorAwareStateDict):
         assert not self.is_hollow
         result = list(self.tensors)
         dict_list_map_inplace(
-            lambda x: TensorPlaceholder(x) if isinstance(x, torch.Tensor) else x, self.state_dict
+            lambda x: TensorPlaceholder(x) if isinstance(x, torch.Tensor) else x,
+            self.state_dict,
         )
         self._is_hollow = True
         return result
@@ -141,7 +142,8 @@ class BasicTensorAwareStateDict(TensorAwareStateDict):
         assert self.is_hollow
         tensor_stack = list(reversed(tensor_data))
         dict_list_map_inplace(
-            lambda x: tensor_stack.pop() if isinstance(x, TensorPlaceholder) else x, self.state_dict
+            lambda x: tensor_stack.pop() if isinstance(x, TensorPlaceholder) else x,
+            self.state_dict,
         )
         self._is_hollow = False
 
@@ -155,7 +157,8 @@ class BasicTensorAwareStateDict(TensorAwareStateDict):
         """
         assert self.is_hollow
         dict_list_map_inplace(
-            lambda x: x.init_tensor() if isinstance(x, TensorPlaceholder) else x, self.state_dict
+            lambda x: x.init_tensor() if isinstance(x, TensorPlaceholder) else x,
+            self.state_dict,
         )
         self._is_hollow = False
 
@@ -169,7 +172,9 @@ class BasicTensorAwareStateDict(TensorAwareStateDict):
         """
         assert not self.is_hollow
         dict_list_map_inplace(
-            lambda x: x.to("cpu", non_blocking=non_blocking) if isinstance(x, torch.Tensor) else x,
+            lambda x: x.to("cpu", non_blocking=non_blocking)
+            if isinstance(x, torch.Tensor)
+            else x,
             self.state_dict,
         )
 
@@ -182,6 +187,8 @@ class BasicTensorAwareStateDict(TensorAwareStateDict):
         """
         assert not self.is_hollow
         dict_list_map_inplace(
-            lambda x: x.to("cuda", non_blocking=non_blocking) if isinstance(x, torch.Tensor) else x,
+            lambda x: x.to("cuda", non_blocking=non_blocking)
+            if isinstance(x, torch.Tensor)
+            else x,
             self.state_dict,
         )

@@ -63,11 +63,11 @@ class TimeoutsCalc:
         device = None
         backend = dist.get_backend()
         if backend == dist.Backend.NCCL:
-            device = torch.device('cuda')
+            device = torch.device("cuda")
         elif backend == dist.Backend.GLOO:
-            device = torch.device('cpu')
+            device = torch.device("cpu")
         else:
-            raise RuntimeError('Unsupported distributed backend')
+            raise RuntimeError("Unsupported distributed backend")
         return device
 
     def synchronize_all(self):
@@ -75,7 +75,9 @@ class TimeoutsCalc:
         Synchronize results from all ranks, by taking the max of all measured times.
         """
         if not (dist.is_available() and dist.is_initialized()):
-            raise TimeoutsCalcError(".synchronize_all() requires initialized process group.")
+            raise TimeoutsCalcError(
+                ".synchronize_all() requires initialized process group."
+            )
         as_tensor = torch.tensor(
             [self.initial_max_time, self.subsequent_max_time],
             dtype=torch.float32,

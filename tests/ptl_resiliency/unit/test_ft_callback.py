@@ -42,7 +42,10 @@ import torch
 from torch import nn
 
 import nvidia_resiliency_ext.fault_tolerance as fault_tolerance
-from nvidia_resiliency_ext.ptl_resiliency import FaultToleranceCallback, SimulatedFaultParams
+from nvidia_resiliency_ext.ptl_resiliency import (
+    FaultToleranceCallback,
+    SimulatedFaultParams,
+)
 
 TEST_WORLD_SIZE = 1
 
@@ -76,21 +79,21 @@ class SimpleModel(pl.LightningModule):
         x, y = batch
         y_hat = self.forward(x)
         loss = self.loss_fn(y_hat, y)
-        self.log('train_loss', loss, prog_bar=True)
+        self.log("train_loss", loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.forward(x)
         loss = self.loss_fn(y_hat, y)
-        self.log('val_loss', loss, prog_bar=True)
+        self.log("val_loss", loss, prog_bar=True)
         return loss
 
     def test_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.forward(x)
         loss = self.loss_fn(y_hat, y)
-        self.log('test_loss', loss, prog_bar=True)
+        self.log("test_loss", loss, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
@@ -110,7 +113,6 @@ class SimpleModel(pl.LightningModule):
 
 
 class StoppingPtlCallback(Callback):
-
     def __init__(self, after_steps, exc_cls=None, sys_exit_code=None):
         self.exc_cls = exc_cls
         self.sys_exit_code = sys_exit_code
@@ -131,7 +133,11 @@ class StoppingPtlCallback(Callback):
         assert False, "should not get here"
 
     def _save_last_checkpoint(self, trainer):
-        chkpt_cb = [cb for cb in trainer.callbacks if isinstance(cb, pl.callbacks.ModelCheckpoint)]
+        chkpt_cb = [
+            cb
+            for cb in trainer.callbacks
+            if isinstance(cb, pl.callbacks.ModelCheckpoint)
+        ]
         assert len(chkpt_cb) == 1
         chkpt_cb = chkpt_cb[0]
         monitor_candidates = chkpt_cb._monitor_candidates(trainer)
@@ -166,7 +172,9 @@ def run_rank_monitors():
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
+                ft_cfg, rank, mp_ctx_spawn
+            )
             rank_monitors.append(p)
 
         yield
@@ -182,7 +190,9 @@ def run_rank_monitors():
 def _create_test_logger(logger_name, log_file_path):
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
     file_handler = logging.FileHandler(log_file_path)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
@@ -198,7 +208,6 @@ def _run_trainining(
     custom_callbacks=None,
     expects_fit_exception=False,
 ):
-
     fault_tol_cb = FaultToleranceCallback(
         autoresume=True,
         calculate_timeouts=True,
@@ -214,9 +223,9 @@ def _run_trainining(
     custom_callbacks = custom_callbacks if custom_callbacks else []
 
     trainer = pl.Trainer(
-        strategy='ddp',
+        strategy="ddp",
         devices=1,
-        accelerator='gpu',
+        accelerator="gpu",
         logger=False,
         max_steps=max_steps,
         max_epochs=max_epochs,
@@ -229,15 +238,14 @@ def _run_trainining(
 
     fit_exception_caught = False
     try:
-        trainer.fit(model, ckpt_path='last')
+        trainer.fit(model, ckpt_path="last")
     except BaseException:
         fit_exception_caught = True
 
     assert fit_exception_caught == expects_fit_exception
 
 
-def _run_eval(tmp_path, which='not set'):
-
+def _run_eval(tmp_path, which="not set"):
     fault_tol_cb = FaultToleranceCallback(
         autoresume=True,
         calculate_timeouts=True,
@@ -251,25 +259,26 @@ def _run_eval(tmp_path, which='not set'):
     )
 
     trainer = pl.Trainer(
-        strategy='ddp',
+        strategy="ddp",
         devices=1,
-        accelerator='gpu',
+        accelerator="gpu",
         logger=False,
         callbacks=[fault_tol_cb, checkpoint_callback],
     )
 
     model = SimpleModel()
 
-    if which == 'validate':
-        trainer.validate(model, ckpt_path='last')
-    elif which == 'test':
-        trainer.test(model, ckpt_path='last')
+    if which == "validate":
+        trainer.validate(model, ckpt_path="last")
+    elif which == "test":
+        trainer.test(model, ckpt_path="last")
     else:
-        raise ValueError(f"Invalid 'which' value: {which} should be 'validate' or 'test'")
+        raise ValueError(
+            f"Invalid 'which' value: {which} should be 'validate' or 'test'"
+        )
 
 
 def test_finished_fit_with_iter_limit(tmp_path, run_rank_monitors):
-
     # training is completed due to iters num limit,
     # ensure that the finished flag is created
 
@@ -277,7 +286,7 @@ def test_finished_fit_with_iter_limit(tmp_path, run_rank_monitors):
     _create_test_logger("test_logger", log_file_path)
 
     finished_flag_path = tmp_path / "finished.flag"
-    os.environ['FAULT_TOL_FINISHED_FLAG_FILE'] = str(finished_flag_path)
+    os.environ["FAULT_TOL_FINISHED_FLAG_FILE"] = str(finished_flag_path)
 
     assert not finished_flag_path.exists()
 
@@ -297,15 +306,14 @@ def test_finished_fit_with_iter_limit(tmp_path, run_rank_monitors):
     assert finished_flag_path.exists()
 
     # ensure that FT callback does not interfere with out of the training loop evaluation
-    _run_eval(tmp_path, which='validate')
+    _run_eval(tmp_path, which="validate")
     gc.collect()
 
-    _run_eval(tmp_path, which='test')
+    _run_eval(tmp_path, which="test")
     gc.collect()
 
 
 def test_finished_fit_after_all_read(tmp_path, run_rank_monitors):
-
     # training is completed due all data read
     # ensure that the finished flag is created
 
@@ -313,7 +321,7 @@ def test_finished_fit_after_all_read(tmp_path, run_rank_monitors):
     _create_test_logger("test_logger", log_file_path)
 
     finished_flag_path = tmp_path / "finished.flag"
-    os.environ['FAULT_TOL_FINISHED_FLAG_FILE'] = str(finished_flag_path)
+    os.environ["FAULT_TOL_FINISHED_FLAG_FILE"] = str(finished_flag_path)
 
     assert not finished_flag_path.exists()
 
@@ -333,15 +341,14 @@ def test_finished_fit_after_all_read(tmp_path, run_rank_monitors):
     assert finished_flag_path.exists()
 
     # ensure that FT callback does not interfere with out of the training loop evaluation
-    _run_eval(tmp_path, which='validate')
+    _run_eval(tmp_path, which="validate")
     gc.collect()
 
-    _run_eval(tmp_path, which='test')
+    _run_eval(tmp_path, which="test")
     gc.collect()
 
 
 def test_finished_fit_with_time_limit(tmp_path, run_rank_monitors):
-
     # training is completed due to time limit,
     # ensure that the finished flag is created
 
@@ -349,37 +356,36 @@ def test_finished_fit_with_time_limit(tmp_path, run_rank_monitors):
     _create_test_logger("test_logger", log_file_path)
 
     finished_flag_path = tmp_path / "finished.flag"
-    os.environ['FAULT_TOL_FINISHED_FLAG_FILE'] = str(finished_flag_path)
+    os.environ["FAULT_TOL_FINISHED_FLAG_FILE"] = str(finished_flag_path)
 
     # flag should not be created after initial run
     assert not finished_flag_path.exists()
 
-    _run_trainining(tmp_path, max_time={'seconds': 2}, max_steps=1000000)
+    _run_trainining(tmp_path, max_time={"seconds": 2}, max_steps=1000000)
     gc.collect()
 
     assert not finished_flag_path.exists()
 
     # empty run is needed to determine that time limit is reached
-    _run_trainining(tmp_path, max_time={'seconds': 2}, max_steps=1000000)
+    _run_trainining(tmp_path, max_time={"seconds": 2}, max_steps=1000000)
     gc.collect()
 
     assert finished_flag_path.exists()
 
     # ensure that FT callback does not interfere with out of the training loop evaluation
-    _run_eval(tmp_path, which='validate')
+    _run_eval(tmp_path, which="validate")
     gc.collect()
 
-    _run_eval(tmp_path, which='test')
+    _run_eval(tmp_path, which="test")
     gc.collect()
 
 
 def test_timeouts_updated_when_graceful_stop(tmp_path, run_rank_monitors):
-
     log_file_path = tmp_path / "test.log"
     _create_test_logger("test_logger", log_file_path)
 
     finished_flag_path = tmp_path / "finished.flag"
-    os.environ['FAULT_TOL_FINISHED_FLAG_FILE'] = str(finished_flag_path)
+    os.environ["FAULT_TOL_FINISHED_FLAG_FILE"] = str(finished_flag_path)
 
     assert not finished_flag_path.exists()
 
@@ -402,12 +408,11 @@ def test_timeouts_updated_when_graceful_stop(tmp_path, run_rank_monitors):
 
 
 def test_timeouts_updated_when_exc(tmp_path, run_rank_monitors):
-
     log_file_path = tmp_path / "test.log"
     _create_test_logger("test_logger", log_file_path)
 
     finished_flag_path = tmp_path / "finished.flag"
-    os.environ['FAULT_TOL_FINISHED_FLAG_FILE'] = str(finished_flag_path)
+    os.environ["FAULT_TOL_FINISHED_FLAG_FILE"] = str(finished_flag_path)
 
     assert not finished_flag_path.exists()
 
@@ -456,12 +461,11 @@ def test_timeouts_updated_when_exc(tmp_path, run_rank_monitors):
 
 
 def test_timeouts_updated_when_sys_exit(tmp_path, run_rank_monitors):
-
     log_file_path = tmp_path / "test.log"
     _create_test_logger("test_logger", log_file_path)
 
     finished_flag_path = tmp_path / "finished.flag"
-    os.environ['FAULT_TOL_FINISHED_FLAG_FILE'] = str(finished_flag_path)
+    os.environ["FAULT_TOL_FINISHED_FLAG_FILE"] = str(finished_flag_path)
 
     assert not finished_flag_path.exists()
 
@@ -510,14 +514,13 @@ def test_timeouts_updated_when_sys_exit(tmp_path, run_rank_monitors):
 
 
 def test_simulated_fault(tmp_path):
-
     log_file_path = tmp_path / "test.log"
     _create_test_logger("test_logger", log_file_path)
 
     finished_flag_path = tmp_path / "finished.flag"
-    os.environ['FAULT_TOL_FINISHED_FLAG_FILE'] = str(finished_flag_path)
+    os.environ["FAULT_TOL_FINISHED_FLAG_FILE"] = str(finished_flag_path)
 
-    sim_fault1 = SimulatedFaultParams(fault_type='rank_hung', base_delay=33.33)
+    sim_fault1 = SimulatedFaultParams(fault_type="rank_hung", base_delay=33.33)
     fault_tol_cb1 = FaultToleranceCallback(
         autoresume=True,
         calculate_timeouts=True,
@@ -526,10 +529,10 @@ def test_simulated_fault(tmp_path):
         simulated_fault_params=sim_fault1,
     )
     assert isinstance(fault_tol_cb1.simulated_fault_params, SimulatedFaultParams)
-    assert fault_tol_cb1.simulated_fault_params.fault_type == 'rank_hung'
+    assert fault_tol_cb1.simulated_fault_params.fault_type == "rank_hung"
     assert fault_tol_cb1.simulated_fault_params.base_delay == 33.33
 
-    sim_fault2 = {'fault_type': 'random', 'base_delay': 123.0}
+    sim_fault2 = {"fault_type": "random", "base_delay": 123.0}
     fault_tol_cb2 = FaultToleranceCallback(
         autoresume=True,
         calculate_timeouts=True,
@@ -538,7 +541,7 @@ def test_simulated_fault(tmp_path):
         simulated_fault_params=sim_fault2,
     )
     assert isinstance(fault_tol_cb2.simulated_fault_params, SimulatedFaultParams)
-    assert fault_tol_cb2.simulated_fault_params.fault_type == 'random'
+    assert fault_tol_cb2.simulated_fault_params.fault_type == "random"
     assert fault_tol_cb2.simulated_fault_params.base_delay == 123.0
 
     fault_tol_cb3 = FaultToleranceCallback(

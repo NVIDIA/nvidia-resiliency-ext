@@ -33,7 +33,6 @@ import nvidia_resiliency_ext.straggler as straggler
 
 
 class StragglerDetectionCallback(Callback):
-
     def __init__(
         self,
         report_time_interval: float,
@@ -78,9 +77,9 @@ class StragglerDetectionCallback(Callback):
         self.profiling_interval: int = profiling_interval
         self.scores_to_compute = []
         if self.calc_relative_gpu_perf:
-            self.scores_to_compute += ['relative_perf_scores']
+            self.scores_to_compute += ["relative_perf_scores"]
         if self.calc_individual_gpu_perf:
-            self.scores_to_compute += ['individual_perf_scores']
+            self.scores_to_compute += ["individual_perf_scores"]
         if not self.scores_to_compute:
             raise ValueError(
                 "No straggler performance scores specified. Check if calc_relative_gpu_perf=True or calc_individual_gpu_perf=True"
@@ -89,7 +88,7 @@ class StragglerDetectionCallback(Callback):
 
     def _wrap_ptl_callables(self, trainer):
         assert getattr(
-            trainer.strategy, 'training_step', None
+            trainer.strategy, "training_step", None
         ), f"{type(trainer.strategy)} does not have 'training_step' method."
         straggler.Detector.wrap_callables(
             callable_ids=[straggler.CallableId(trainer.strategy, "training_step")]
@@ -112,11 +111,11 @@ class StragglerDetectionCallback(Callback):
             self.initialized = False
 
     def _print_stragglers(self, stragglers):
-        if rel_stragglers := stragglers['straggler_gpus_relative']:
+        if rel_stragglers := stragglers["straggler_gpus_relative"]:
             self.logger.warning(
                 f"STRAGGLER DETECTION WARNING: Some GPUs have worse relative performance. Affected ranks: {rel_stragglers}"
             )
-        if indiv_stragglers := stragglers['straggler_gpus_individual']:
+        if indiv_stragglers := stragglers["straggler_gpus_individual"]:
             self.logger.warning(
                 f"STRAGGLER DETECTION WARNING: Some GPUs performance dropped. Affected ranks: {indiv_stragglers}"
             )
@@ -141,7 +140,6 @@ class StragglerDetectionCallback(Callback):
         return res
 
     def _print_gpu_scores(self, report):
-
         assert self.num_gpu_perf_scores_to_print > 0
 
         if self.calc_relative_gpu_perf:
@@ -162,14 +160,16 @@ class StragglerDetectionCallback(Callback):
             )
             self.logger.info(f"\nGPU individual performance:\n{indiv_perf_str}")
 
-    def _log_gpu_perf_scores(self, pl_module, rank_to_score, rank_to_node, score_prefix):
+    def _log_gpu_perf_scores(
+        self, pl_module, rank_to_score, rank_to_node, score_prefix
+    ):
         """
         Logs GPU performance scores with rank and node information to all PTL loggers enabled through trainer.
         """
         scores_log = {}
-        min_val = float('nan')
-        med_val = float('nan')
-        max_val = float('nan')
+        min_val = float("nan")
+        med_val = float("nan")
+        max_val = float("nan")
         scores = list(rank_to_score.values())
         if scores:
             scores = torch.tensor(scores, dtype=torch.float32)
@@ -180,12 +180,13 @@ class StragglerDetectionCallback(Callback):
         scores_log[f"{score_prefix}/median"] = med_val
         scores_log[f"{score_prefix}/max"] = max_val
         try:
-            pl_module.log_dict(scores_log, logger=True, batch_size=1, rank_zero_only=True)
+            pl_module.log_dict(
+                scores_log, logger=True, batch_size=1, rank_zero_only=True
+            )
         except Exception as e:
             self.logger.error(f"Failed to log GPU performance scores: {e}")
 
     def _log_gpu_scores(self, pl_module, report):
-
         assert self.enable_ptl_logging is True
 
         if self.calc_relative_gpu_perf:
@@ -210,7 +211,8 @@ class StragglerDetectionCallback(Callback):
             gpu_indiv_threshold=self.gpu_individual_perf_threshold,
         )
         stragglers_found = (
-            stragglers['straggler_gpus_relative'] or stragglers['straggler_gpus_individual']
+            stragglers["straggler_gpus_relative"]
+            or stragglers["straggler_gpus_individual"]
         )
         if stragglers_found:
             self._print_stragglers(stragglers)
@@ -222,7 +224,9 @@ class StragglerDetectionCallback(Callback):
 
     def _gather_flag_from_rank0(self, flag):
         flag = torch.tensor(
-            [1.0 if flag else 0], device=torch.cuda.current_device(), dtype=torch.float32
+            [1.0 if flag else 0],
+            device=torch.cuda.current_device(),
+            dtype=torch.float32,
         )
         torch.distributed.broadcast(flag, 0)
         flag = bool(flag.item() > 0)
@@ -249,9 +253,19 @@ class StragglerDetectionCallback(Callback):
         self.logger.error("Detected stragglers. Terminating training...")
         trainer.should_stop = True
         if trainer.checkpoint_callback:
-            monitor_candidates = trainer.checkpoint_callback._monitor_candidates(trainer)
-            trainer.checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
-            if hasattr(trainer.strategy.checkpoint_io, 'maybe_finalize_save_checkpoint'):
-                self.logger.info("Async checkpointing detected, waiting for it to complete...")
-                trainer.strategy.checkpoint_io.maybe_finalize_save_checkpoint(blocking=True)
+            monitor_candidates = trainer.checkpoint_callback._monitor_candidates(
+                trainer
+            )
+            trainer.checkpoint_callback._save_last_checkpoint(
+                trainer, monitor_candidates
+            )
+            if hasattr(
+                trainer.strategy.checkpoint_io, "maybe_finalize_save_checkpoint"
+            ):
+                self.logger.info(
+                    "Async checkpointing detected, waiting for it to complete..."
+                )
+                trainer.strategy.checkpoint_io.maybe_finalize_save_checkpoint(
+                    blocking=True
+                )
             sys.exit(1)

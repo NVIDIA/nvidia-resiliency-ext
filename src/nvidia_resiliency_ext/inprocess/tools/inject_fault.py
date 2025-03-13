@@ -25,7 +25,7 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional
 
 import torch
 
@@ -73,7 +73,7 @@ def termination_signal_handler(signum, frame):
 def async_raise_exception(tid, delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    log.critical(f'asynchronously raising {InjectedException}')
+    log.critical(f"asynchronously raising {InjectedException}")
     if callback is not None:
         callback()
     async_raise(tid, InjectedException)
@@ -83,7 +83,7 @@ def raise_gpu_error(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
     device = torch.device(torch.cuda.current_device())
-    log.critical(f'raising GPU error on {device}')
+    log.critical(f"raising GPU error on {device}")
     if callback is not None:
         callback()
     b = torch.ones(1, dtype=torch.int64).to(device)
@@ -94,7 +94,7 @@ def raise_gpu_error(delay, callback):
 def gpu_sleep(delay, device, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    log.critical(f'GPU sleep on {device=}')
+    log.critical(f"GPU sleep on {device=}")
     if callback is not None:
         callback()
     torch.cuda.set_device(device)
@@ -104,16 +104,16 @@ def gpu_sleep(delay, device, callback):
 def lock_gil(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    log.critical('locking GIL')
+    log.critical("locking GIL")
     if callback is not None:
         callback()
-    re.match(r'(a?){40}a{40}', 'a' * 40)
+    re.match(r"(a?){40}a{40}", "a" * 40)
 
 
 def segfault(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    log.critical('raising segmentation fault')
+    log.critical("raising segmentation fault")
     if callback is not None:
         callback()
     ctypes.string_at(1)
@@ -122,7 +122,7 @@ def segfault(delay, callback):
 def send_signal(pid, sgn, delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    log.critical(f'sending {sgn=} to {pid=}')
+    log.critical(f"sending {sgn=} to {pid=}")
     if callback is not None:
         callback()
     os.kill(pid, sgn)
@@ -131,7 +131,7 @@ def send_signal(pid, sgn, delay, callback):
 def abort(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    log.critical('aborting')
+    log.critical("aborting")
     if callback is not None:
         callback()
     os.abort()
@@ -147,13 +147,13 @@ def inject_fault(
 ):
     log = logging.getLogger(__name__)
 
-    rank = int(os.getenv('RANK', '0'))
-    world_size = int(os.getenv('WORLD_SIZE', '1'))
+    rank = int(os.getenv("RANK", "0"))
+    world_size = int(os.getenv("WORLD_SIZE", "1"))
 
     generator = random.Random()
     generator.seed(seed)
 
-    ctx = multiprocessing.get_context('fork')
+    ctx = multiprocessing.get_context("fork")
 
     if isinstance(num_faults, int):
         min_faults, max_faults = num_faults, num_faults
@@ -173,8 +173,7 @@ def inject_fault(
 
     if rank in ranks_to_inject:
         log.info(
-            f'{seed=} {num_ranks_to_inject=} {ranks_to_inject=} '
-            f'{fault=} {delay=}'
+            f"{seed=} {num_ranks_to_inject=} {ranks_to_inject=} " f"{fault=} {delay=}"
         )
 
         if fault == Fault.ASYNC_EXC:
@@ -216,9 +215,7 @@ def inject_fault(
             )
             thread.start()
         elif fault == Fault.ABORT:
-            thread = threading.Thread(
-                target=abort, args=(delay, callback), daemon=True
-            )
+            thread = threading.Thread(target=abort, args=(delay, callback), daemon=True)
             thread.start()
         elif fault == Fault.KILL:
             p = ctx.Process(

@@ -16,7 +16,9 @@ import os
 import warnings
 from typing import Optional
 
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.utils.log_level import get_log_level
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.utils.log_level import (
+    get_log_level,
+)
 
 
 def get_logger(name: Optional[str] = None):

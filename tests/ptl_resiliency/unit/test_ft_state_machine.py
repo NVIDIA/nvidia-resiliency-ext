@@ -14,11 +14,12 @@
 # limitations under the License.
 
 
-from nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback import _TrainingStateMachine
+from nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback import (
+    _TrainingStateMachine,
+)
 
 
 class TestFaultTolerance:
-
     def test_training_ended_ok(self):
         # Training ended if there were no training iterations nor error
         sm = _TrainingStateMachine()

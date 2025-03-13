@@ -16,45 +16,45 @@
 
 
 class RestartError(Exception):
-    r'''
+    r"""
     Base :py:exc:`Exception` for exceptions raised by
     :py:class:`inprocess.Wrapper`.
-    '''
+    """
 
     pass
 
 
 class RestartAbort(BaseException):
-    r'''
+    r"""
     A terminal Python :py:exc:`BaseException` indicating that the
     :py:class:`inprocess.Wrapper` should be aborted immediately, bypassing any
     further restart attempts.
-    '''
+    """
 
     pass
 
 
 class HealthCheckError(RestartError):
-    r'''
+    r"""
     :py:exc:`RestartError` exception to indicate that
     :py:class:`inprocess.health_check.HealthCheck` raised errors, and execution
     shouldn't be restarted on this distributed rank.
-    '''
+    """
 
     pass
 
 
 class InternalError(RestartError):
-    r'''
+    r"""
     :py:class:`inprocess.Wrapper` internal error.
-    '''
+    """
 
     pass
 
 
 class TimeoutError(RestartError):
-    r'''
+    r"""
     :py:class:`inprocess.Wrapper` timeout error.
-    '''
+    """
 
     pass

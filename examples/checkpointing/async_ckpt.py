@@ -1,21 +1,22 @@
 import argparse
 import logging
-import os
 import shutil
-from typing import Union
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
+from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import (
+    TorchAsyncCheckpoint,
+)
 
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO)
 
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Local Checkpointing Basic Example',
+        description="Local Checkpointing Basic Example",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -57,7 +58,7 @@ def init_distributed_backend(backend="nccl"):
 
 def main():
     args = parse_args()
-    logging.info(f'{args}')
+    logging.info(f"{args}")
 
     # Initialize the distributed backend
     init_distributed_backend(backend="nccl")
@@ -67,7 +68,7 @@ def main():
 
     # Define checkpoint directory and manager
     ckpt_dir = "/tmp/test_local_checkpointing/ckpt.pt"
-  
+
     ckpt_impl = TorchAsyncCheckpoint()
 
     ckpt_impl.async_save(model.state_dict(), ckpt_dir + "ckpt.pt")
@@ -78,7 +79,7 @@ def main():
 
     # Synchronize processes to ensure all have completed the loading
     dist.barrier()
-    
+
     # Clean up checkpoint directory only on rank 0
     if dist.get_rank() == 0:
         logging.info(f"Cleaning up checkpoint directory: {ckpt_dir}")

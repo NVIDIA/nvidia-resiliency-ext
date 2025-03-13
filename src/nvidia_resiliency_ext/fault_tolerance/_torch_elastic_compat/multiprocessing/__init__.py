@@ -67,10 +67,9 @@ implementations of the parent :class:`api.PContext` class.
 """
 
 import os
-from typing import Callable, Dict, Optional, Tuple, Union, Set
+from typing import Callable, Dict, Optional, Set, Tuple, Union
 
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.api import (  # noqa: F401
-    _validate_full_rank,
     DefaultLogsSpecs,
     LogsDest,
     LogsSpecs,
@@ -81,6 +80,7 @@ from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing
     SignalException,
     Std,
     SubprocessContext,
+    _validate_full_rank,
     to_map,
 )
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.utils.logging import get_logger

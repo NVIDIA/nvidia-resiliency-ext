@@ -18,12 +18,13 @@ This module provides an async utilities which allow to start
 a checkpoint save process in the background.
 """
 
-import torch
 import logging
-from torch import multiprocessing as mp
 from collections import deque
 from time import time
-from typing import Callable, List, NamedTuple, Optional, Tuple, Dict
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
+
+import torch
+from torch import multiprocessing as mp
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,9 @@ class AsyncRequest(NamedTuple):
             None
         """
         if self.is_frozen:
-            raise RuntimeError('Cannot add finalization functions to a frozen AsyncRequest')
+            raise RuntimeError(
+                "Cannot add finalization functions to a frozen AsyncRequest"
+            )
         self.finalize_fns.append(fn)
 
     def execute_sync(self) -> None:
@@ -70,7 +73,7 @@ class AsyncRequest(NamedTuple):
         for finalize_fn in self.finalize_fns:
             finalize_fn()
 
-    def freeze(self) -> 'AsyncRequest':
+    def freeze(self) -> "AsyncRequest":
         """Freezes the async request, disallowing adding new finalization functions.
 
         Returns:
@@ -112,7 +115,7 @@ class DistributedAsyncCaller:
             f"rank: {torch.distributed.get_rank()}, takes {end_sync - start_sync} to finish D2H "
         )
 
-        ctx = mp.get_context('fork')
+        ctx = mp.get_context("fork")
         self.start_time = time()
         self.process = ctx.Process(target=async_fn, args=save_args, kwargs=save_kwargs)
         self.process.start()
@@ -141,20 +144,23 @@ class DistributedAsyncCaller:
         # The following takes the same overhead as torch.distributed.barrier (single integer all-reduce)
         is_alive = int(self.process.is_alive()) if self.process is not None else 0
 
-        is_done = is_alive
         if not no_dist:
-            ten = torch.tensor([is_alive], dtype=torch.int, device=torch.cuda.current_device())
+            ten = torch.tensor(
+                [is_alive], dtype=torch.int, device=torch.cuda.current_device()
+            )
             logger.debug(
                 f"rank: {torch.distributed.get_rank()}, DistributedAsyncCaller is_alive: {is_alive}"
             )
             torch.distributed.all_reduce(ten)
-            is_done = ten[0]
+            ten[0]
 
         if is_alive > 0 and not blocking:
             return False
         else:
             if self.process is not None:
-                logger.debug(f"rank: {torch.distributed.get_rank()}, joining self.process")
+                logger.debug(
+                    f"rank: {torch.distributed.get_rank()}, joining self.process"
+                )
                 self.process.join()
                 self.process = None
 
@@ -207,9 +213,13 @@ class AsyncCallsQueue:
         async_caller = DistributedAsyncCaller()
         async_request = async_request.freeze()
         async_caller.schedule_async_call(
-            async_request.async_fn, async_request.async_fn_args, async_request.async_fn_kwargs
+            async_request.async_fn,
+            async_request.async_fn_args,
+            async_request.async_fn_kwargs,
         )
-        self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, async_request))
+        self.async_calls.append(
+            _ActiveAsyncRequest(self.call_idx, async_caller, async_request)
+        )
         return self.call_idx
 
     def maybe_finalize_async_calls(self, blocking=False, no_dist=True) -> List[int]:
@@ -230,9 +240,9 @@ class AsyncCallsQueue:
         """
         call_idx_finalized = []
         while self.async_calls:
-            next_async_done = self.async_calls[0].async_caller.is_current_async_call_done(
-                blocking, no_dist
-            )
+            next_async_done = self.async_calls[
+                0
+            ].async_caller.is_current_async_call_done(blocking, no_dist)
             if not next_async_done:
                 break
             call_idx, _, async_request = self.async_calls.popleft()
