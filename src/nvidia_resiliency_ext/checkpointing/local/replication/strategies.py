@@ -21,12 +21,7 @@ from typing import Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar
 import torch
 
 from ..base_state_dict import TensorAwareStateDict
-from .group_utils import (
-    ExchangePlan,
-    GroupWrapper,
-    ProcessGroupLike,
-    parse_group_sequence,
-)
+from .group_utils import ExchangePlan, GroupWrapper, ProcessGroupLike, parse_group_sequence
 from .utils import debug_msg, debug_time, zip_strict
 
 logger = logging.getLogger(__name__)

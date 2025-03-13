@@ -24,7 +24,6 @@ import sys
 import threading
 import time
 
-
 from . import attribution, exception
 from .attribution import Interruption, InterruptionRecord
 from .logging import log_exc

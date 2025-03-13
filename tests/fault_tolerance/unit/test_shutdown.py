@@ -24,10 +24,7 @@ import torch
 import torch.multiprocessing as mp
 
 import nvidia_resiliency_ext.fault_tolerance as fault_tolerance
-from nvidia_resiliency_ext.fault_tolerance.utils import (
-    is_process_alive,
-    wait_for_mp_events,
-)
+from nvidia_resiliency_ext.fault_tolerance.utils import is_process_alive, wait_for_mp_events
 
 from .utils import multiprocessing_execute_join, multiprocessing_execute_start
 

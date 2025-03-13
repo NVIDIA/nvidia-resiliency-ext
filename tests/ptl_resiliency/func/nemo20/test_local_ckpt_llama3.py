@@ -28,9 +28,7 @@ from typing import Any, Callable, Dict, Optional
 import torch
 from lightning_fabric.plugins import CheckpointIO
 from lightning_fabric.utilities.types import _PATH
-from megatron.core.dist_checkpointing.tensor_aware_state_dict import (
-    MCoreTensorAwareStateDict,
-)
+from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
 from nemo import lightning as nl
@@ -45,9 +43,7 @@ from nemo.utils.callbacks.dist_ckpt_io import (
     AsyncFinalizableCheckpointIO,
 )
 
-from nvidia_resiliency_ext.checkpointing.local.base_state_dict import (
-    TensorAwareStateDict,
-)
+from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager import (
     BaseCheckpointManager,
 )

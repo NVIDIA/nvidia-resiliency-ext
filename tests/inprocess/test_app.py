@@ -20,7 +20,6 @@ import os
 import sys
 from datetime import timedelta
 
-
 import nvidia_resiliency_ext.inprocess as inprocess
 import nvidia_resiliency_ext.inprocess.tools as tools
 

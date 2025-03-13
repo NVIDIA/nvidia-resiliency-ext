@@ -18,7 +18,6 @@ import multiprocessing
 import tempfile
 import unittest
 
-
 import nvidia_resiliency_ext.inprocess as inprocess
 
 

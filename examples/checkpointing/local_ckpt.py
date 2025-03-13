@@ -7,9 +7,7 @@ import torch.distributed as dist
 import torch.nn as nn
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue
-from nvidia_resiliency_ext.checkpointing.local.basic_state_dict import (
-    BasicTensorAwareStateDict,
-)
+from nvidia_resiliency_ext.checkpointing.local.basic_state_dict import BasicTensorAwareStateDict
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager import (
     LocalCheckpointManager,
 )

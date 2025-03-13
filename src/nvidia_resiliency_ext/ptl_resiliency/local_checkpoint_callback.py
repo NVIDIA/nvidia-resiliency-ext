@@ -35,9 +35,7 @@ from lightning_fabric.plugins.io.checkpoint_io import CheckpointIO
 from lightning_fabric.utilities.types import _PATH
 from torch import Tensor
 
-from nvidia_resiliency_ext.checkpointing.local.base_state_dict import (
-    TensorAwareStateDict,
-)
+from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager import (
     BaseCheckpointManager,
 )

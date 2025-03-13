@@ -14,9 +14,7 @@
 # limitations under the License.
 import torch
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import (
-    TorchAsyncCheckpoint,
-)
+from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 
 from . import TempNamedDir
 from .test_utilities import TestModel, Utils

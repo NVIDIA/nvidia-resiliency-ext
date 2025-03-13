@@ -28,9 +28,7 @@ else:
 
 import torch
 
-from nvidia_resiliency_ext.checkpointing.local.base_state_dict import (
-    TensorAwareStateDict,
-)
+from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager import (
     BaseCheckpointManager,
     CkptID,

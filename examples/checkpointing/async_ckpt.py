@@ -6,9 +6,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import (
-    TorchAsyncCheckpoint,
-)
+from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO)

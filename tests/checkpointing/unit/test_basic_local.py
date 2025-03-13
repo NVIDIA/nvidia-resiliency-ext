@@ -20,9 +20,7 @@ import pytest
 import torch
 import torch.distributed as dist
 
-from nvidia_resiliency_ext.checkpointing.local.base_state_dict import (
-    TensorAwareStateDict,
-)
+from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager import (
     LocalCheckpointManager,
 )

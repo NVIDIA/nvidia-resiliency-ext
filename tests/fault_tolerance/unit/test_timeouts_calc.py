@@ -21,10 +21,7 @@ import pytest
 import torch
 import torch.distributed as dist
 
-from nvidia_resiliency_ext.fault_tolerance.timeouts_calc import (
-    TimeoutsCalc,
-    TimeoutsCalcError,
-)
+from nvidia_resiliency_ext.fault_tolerance.timeouts_calc import TimeoutsCalc, TimeoutsCalcError
 
 from .utils import multiprocessing_execute_join, multiprocessing_execute_start
 

@@ -14,9 +14,7 @@
 # limitations under the License.
 
 
-from nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback import (
-    _TrainingStateMachine,
-)
+from nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback import _TrainingStateMachine
 
 
 class TestFaultTolerance:

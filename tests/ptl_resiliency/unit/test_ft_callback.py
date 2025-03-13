@@ -42,10 +42,7 @@ import torch
 from torch import nn
 
 import nvidia_resiliency_ext.fault_tolerance as fault_tolerance
-from nvidia_resiliency_ext.ptl_resiliency import (
-    FaultToleranceCallback,
-    SimulatedFaultParams,
-)
+from nvidia_resiliency_ext.ptl_resiliency import FaultToleranceCallback, SimulatedFaultParams
 
 TEST_WORLD_SIZE = 1
 

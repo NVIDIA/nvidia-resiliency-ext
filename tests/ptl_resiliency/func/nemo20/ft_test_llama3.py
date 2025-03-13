@@ -28,9 +28,7 @@ from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 
 from nvidia_resiliency_ext.ptl_resiliency import FaultToleranceCallback
-from nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback import (
-    SimulatedFaultParams,
-)
+from nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback import SimulatedFaultParams
 
 
 @dataclass
