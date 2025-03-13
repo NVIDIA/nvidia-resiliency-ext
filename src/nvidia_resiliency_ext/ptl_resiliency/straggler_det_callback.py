@@ -160,9 +160,7 @@ class StragglerDetectionCallback(Callback):
             )
             self.logger.info(f"\nGPU individual performance:\n{indiv_perf_str}")
 
-    def _log_gpu_perf_scores(
-        self, pl_module, rank_to_score, rank_to_node, score_prefix
-    ):
+    def _log_gpu_perf_scores(self, pl_module, rank_to_score, rank_to_node, score_prefix):
         """
         Logs GPU performance scores with rank and node information to all PTL loggers enabled through trainer.
         """
@@ -180,9 +178,7 @@ class StragglerDetectionCallback(Callback):
         scores_log[f"{score_prefix}/median"] = med_val
         scores_log[f"{score_prefix}/max"] = max_val
         try:
-            pl_module.log_dict(
-                scores_log, logger=True, batch_size=1, rank_zero_only=True
-            )
+            pl_module.log_dict(scores_log, logger=True, batch_size=1, rank_zero_only=True)
         except Exception as e:
             self.logger.error(f"Failed to log GPU performance scores: {e}")
 
@@ -211,8 +207,7 @@ class StragglerDetectionCallback(Callback):
             gpu_indiv_threshold=self.gpu_individual_perf_threshold,
         )
         stragglers_found = (
-            stragglers["straggler_gpus_relative"]
-            or stragglers["straggler_gpus_individual"]
+            stragglers["straggler_gpus_relative"] or stragglers["straggler_gpus_individual"]
         )
         if stragglers_found:
             self._print_stragglers(stragglers)
@@ -253,19 +248,9 @@ class StragglerDetectionCallback(Callback):
         self.logger.error("Detected stragglers. Terminating training...")
         trainer.should_stop = True
         if trainer.checkpoint_callback:
-            monitor_candidates = trainer.checkpoint_callback._monitor_candidates(
-                trainer
-            )
-            trainer.checkpoint_callback._save_last_checkpoint(
-                trainer, monitor_candidates
-            )
-            if hasattr(
-                trainer.strategy.checkpoint_io, "maybe_finalize_save_checkpoint"
-            ):
-                self.logger.info(
-                    "Async checkpointing detected, waiting for it to complete..."
-                )
-                trainer.strategy.checkpoint_io.maybe_finalize_save_checkpoint(
-                    blocking=True
-                )
+            monitor_candidates = trainer.checkpoint_callback._monitor_candidates(trainer)
+            trainer.checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+            if hasattr(trainer.strategy.checkpoint_io, "maybe_finalize_save_checkpoint"):
+                self.logger.info("Async checkpointing detected, waiting for it to complete...")
+                trainer.strategy.checkpoint_io.maybe_finalize_save_checkpoint(blocking=True)
             sys.exit(1)

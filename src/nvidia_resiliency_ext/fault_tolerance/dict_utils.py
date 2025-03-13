@@ -55,9 +55,7 @@ def extract_matching_values(
         nonmatching_vals = {}
         for k, v in x.items():
             if isinstance(v, (list, dict)):
-                match, nonmatch = extract_matching_values(
-                    v, predicate, return_lists_as_dicts
-                )
+                match, nonmatch = extract_matching_values(v, predicate, return_lists_as_dicts)
                 if match:
                     matching_vals[k] = match
                 if nonmatch or not v:
@@ -71,9 +69,7 @@ def extract_matching_values(
         nonmatching_vals = {} if return_lists_as_dicts else []
         for ind, v in enumerate(x):
             if isinstance(v, (list, dict)) and v:
-                match, nonmatch = extract_matching_values(
-                    v, predicate, return_lists_as_dicts
-                )
+                match, nonmatch = extract_matching_values(v, predicate, return_lists_as_dicts)
                 if match:
                     _set_elem(matching_vals, ind, match)
                 if nonmatch or not v:
@@ -264,16 +260,10 @@ def merge_state_dicts_(current, incoming) -> None:
     # Recursively add new keys to `current`
     # Keys that already exists in the `current` will be overwritten
     for key, value in incoming.items():
-        if (
-            key in current
-            and isinstance(current[key], dict)
-            and isinstance(value, dict)
-        ):
+        if key in current and isinstance(current[key], dict) and isinstance(value, dict):
             merge_state_dicts_(current[key], value)
         elif (
-            key in current
-            and isinstance(current[key], Namespace)
-            and isinstance(value, Namespace)
+            key in current and isinstance(current[key], Namespace) and isinstance(value, Namespace)
         ):
             merge_namespaces_(current[key], value)
         else:
@@ -321,9 +311,7 @@ def compare_state_dicts_and_get_new_values(curr_state, new_state):
     changed_entries = {}
 
     def tensors_share_storage(tensor1, tensor2):
-        return (
-            tensor1.untyped_storage().data_ptr() == tensor2.untyped_storage().data_ptr()
-        )
+        return tensor1.untyped_storage().data_ptr() == tensor2.untyped_storage().data_ptr()
 
     def extract_tensors_from_item(item):
         if isinstance(item, torch.Tensor):
@@ -344,9 +332,7 @@ def compare_state_dicts_and_get_new_values(curr_state, new_state):
 
     for key in common_keys:
         if isinstance(curr_state[key], dict) and isinstance(new_state[key], dict):
-            nested_changes = compare_state_dicts_and_get_new_values(
-                curr_state[key], new_state[key]
-            )
+            nested_changes = compare_state_dicts_and_get_new_values(curr_state[key], new_state[key])
             if nested_changes:  # Only add if there are changes in the nested dict
                 if key not in changed_entries:
                     changed_entries[key] = {}
@@ -357,9 +343,7 @@ def compare_state_dicts_and_get_new_values(curr_state, new_state):
             tensors2 = extract_tensors_from_item(new_state[key])
 
             if len(tensors1) == 0 and len(tensors2) == 0:
-                if isinstance(new_state[key], Namespace) and isinstance(
-                    curr_state[key], Namespace
-                ):
+                if isinstance(new_state[key], Namespace) and isinstance(curr_state[key], Namespace):
                     diff = compare_namespaces(curr_state[key], new_state[key])
                     if bool(vars(diff)):  # checks if Namespace is empty
                         changed_entries[key] = diff

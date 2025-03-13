@@ -59,9 +59,7 @@ def _run_rank_monitors_fixture():
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
-                ft_cfg, rank, mp_ctx_spawn
-            )
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
             rank_monitors.append(p)
             os.environ["RANK"] = ""
 
@@ -132,8 +130,7 @@ test_scenarios = [
         "sig": signal.SIGTERM,
         "target_ranks": [0],
         "should_write_chkpt": True,
-        "expected_ret_codes": [-signal.SIGTERM]
-        + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE],
+        "expected_ret_codes": [-signal.SIGTERM] + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE],
     },
     # When rank 0 get SIGKILL,
     # remaning ranks should be terminated due to missing heartbeats
@@ -143,8 +140,7 @@ test_scenarios = [
         "sig": signal.SIGKILL,
         "target_ranks": [0],
         "should_write_chkpt": True,
-        "expected_ret_codes": [-signal.SIGKILL]
-        + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE],
+        "expected_ret_codes": [-signal.SIGKILL] + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE],
     },
     # Ranks 1,2 killed, other should be terminated due to missing heartbeats
     {

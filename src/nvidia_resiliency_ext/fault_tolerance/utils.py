@@ -44,9 +44,7 @@ def wait_until_process_terminated(pid, timeout=0):
         remaining_time -= sleep_time
         time.sleep(sleep_time)
     if is_process_alive(pid):
-        raise Exception(
-            f"wait_until_process_terminated: {pid} is alive after {timeout} seconds"
-        )
+        raise Exception(f"wait_until_process_terminated: {pid} is alive after {timeout} seconds")
 
 
 def wait_for_mp_events(events, timeout=60):
@@ -125,9 +123,7 @@ def create_logger(name, level=logging.DEBUG, rank=None):
     ch = logging.StreamHandler()
     ch.setLevel(level)
     name_fmt = "%(name)s" if rank is None else f"%(name)s:{rank}"
-    formatter = logging.Formatter(
-        f"[%(asctime)s] [%(levelname)s] [{name_fmt}] %(message)s"
-    )
+    formatter = logging.Formatter(f"[%(asctime)s] [%(levelname)s] [{name_fmt}] %(message)s")
     ch.setFormatter(formatter)
     logger.addHandler(ch)
     logger.propagate = False

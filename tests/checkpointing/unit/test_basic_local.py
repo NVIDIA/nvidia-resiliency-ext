@@ -35,9 +35,7 @@ from .test_utilities import Utils
 
 class SimpleTensorAwareStateDict(TensorAwareStateDict):
     def __init__(self, iteration):
-        self._tensors = [
-            torch.empty((1000, 1000), device="cuda").random_() for _ in range(100)
-        ]
+        self._tensors = [torch.empty((1000, 1000), device="cuda").random_() for _ in range(100)]
         self.iteration = iteration
 
     def pop_tensors(self):
@@ -94,23 +92,17 @@ class TestLocalCheckpointing:
 
     @pytest.mark.parametrize(("use_ramdisk"), [True, False])
     @pytest.mark.parametrize(("async_save"), [True, False])
-    def test_basic_save_load_scenarios(
-        self, tmp_path_dist_ckpt, use_ramdisk, async_save
-    ):
+    def test_basic_save_load_scenarios(self, tmp_path_dist_ckpt, use_ramdisk, async_save):
         if use_ramdisk:
             tmp_path_dist_ckpt = Path("/dev/shm")
         with TempNamedDir(tmp_path_dist_ckpt / "test_save_load") as local_ckpt_dir:
-            local_ckpt_dir = (
-                local_ckpt_dir / "subdir"
-            )  # Test handling of non-existent directories
+            local_ckpt_dir = local_ckpt_dir / "subdir"  # Test handling of non-existent directories
 
             # "Without restart"
             checkpoint_manager = LocalCheckpointManager(local_ckpt_dir)
             intermediete_state_dict = SimpleTensorAwareStateDict(iteration=1)
             # SAVE
-            async_save_request = checkpoint_manager.save(
-                intermediete_state_dict, 1, async_save
-            )
+            async_save_request = checkpoint_manager.save(intermediete_state_dict, 1, async_save)
             self._async_save(async_save_request, async_save)
             # LOAD
             iteration = checkpoint_manager.find_latest()
@@ -142,15 +134,11 @@ class TestLocalCheckpointing:
             # "Multiple saves"
             intermediete_state_dict = SimpleTensorAwareStateDict(iteration=1)
             # SAVE
-            async_save_request = checkpoint_manager.save(
-                intermediete_state_dict, 1, async_save
-            )
+            async_save_request = checkpoint_manager.save(intermediete_state_dict, 1, async_save)
             self._async_save(async_save_request, async_save)
             intermediete_state_dict = SimpleTensorAwareStateDict(iteration=2)
             # SAVE
-            async_save_request = checkpoint_manager.save(
-                intermediete_state_dict, 2, async_save
-            )
+            async_save_request = checkpoint_manager.save(intermediete_state_dict, 2, async_save)
             self._async_save(async_save_request, async_save)
             assert not first_ckpt_path.exists()
             ckpt_id = checkpoint_manager._ckpt_id(2)

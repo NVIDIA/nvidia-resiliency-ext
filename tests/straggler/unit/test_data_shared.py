@@ -38,9 +38,7 @@ def _get_summary(timings):
         straggler.Statistic.MAX: np.max(timings),
         straggler.Statistic.MED: np.median(timings),
         straggler.Statistic.AVG: np.mean(timings),
-        straggler.Statistic.STD: (
-            np.std(timings).item() if len(timings) > 1 else float("nan")
-        ),
+        straggler.Statistic.STD: (np.std(timings).item() if len(timings) > 1 else float("nan")),
         straggler.Statistic.NUM: len(timings),
     }
     return stats
@@ -67,16 +65,12 @@ def _test_num_of_all_gather_object_calls(*args, **kwargs):
         f"kernel{k}_{KERNEL_POSTFIX}": _get_summary(np.ones(8)) for k in range(4096)
     }
 
-    with patch(
-        "torch.distributed.all_gather_object", wraps=orig_all_gather_obj
-    ) as mock_all_gather:
+    with patch("torch.distributed.all_gather_object", wraps=orig_all_gather_obj) as mock_all_gather:
         _ = report_gen.generate_report({}, kernel_summaries=kernel_summaries)
         assert mock_all_gather.call_count == 2  # initial sync: kernel names, nodenames
 
     # 2. next report with same 4096 common kernels
-    with patch(
-        "torch.distributed.all_gather_object", wraps=orig_all_gather_obj
-    ) as mock_all_gather:
+    with patch("torch.distributed.all_gather_object", wraps=orig_all_gather_obj) as mock_all_gather:
         _ = report_gen.generate_report({}, kernel_summaries=kernel_summaries)
         assert mock_all_gather.call_count == 0  # no all gather object calls this time
 
@@ -86,33 +80,23 @@ def _test_num_of_all_gather_object_calls(*args, **kwargs):
     }
     new_kernel_summaries.update(kernel_summaries)
 
-    with patch(
-        "torch.distributed.all_gather_object", wraps=orig_all_gather_obj
-    ) as mock_all_gather:
+    with patch("torch.distributed.all_gather_object", wraps=orig_all_gather_obj) as mock_all_gather:
         _ = report_gen.generate_report({}, kernel_summaries=new_kernel_summaries)
         assert mock_all_gather.call_count == 1  #  sync: kernel names
 
     # 4. next report with same 4096 old and 4096 new kernels
-    with patch(
-        "torch.distributed.all_gather_object", wraps=orig_all_gather_obj
-    ) as mock_all_gather:
+    with patch("torch.distributed.all_gather_object", wraps=orig_all_gather_obj) as mock_all_gather:
         _ = report_gen.generate_report({}, kernel_summaries=new_kernel_summaries)
-        assert (
-            mock_all_gather.call_count == 0
-        )  #  there are no new kernel names to synchronize
+        assert mock_all_gather.call_count == 0  #  there are no new kernel names to synchronize
 
     # 5. old kernels for ranks != 0, new kernel for rank 0
     if rank == 0:
         kernel_summaries5_rank0 = {"the_latest_kernel_rank0": _get_summary(np.ones(8))}
     else:
         kernel_summaries5_rank0 = kernel_summaries
-    with patch(
-        "torch.distributed.all_gather_object", wraps=orig_all_gather_obj
-    ) as mock_all_gather:
+    with patch("torch.distributed.all_gather_object", wraps=orig_all_gather_obj) as mock_all_gather:
         _ = report_gen.generate_report({}, kernel_summaries=kernel_summaries5_rank0)
-        assert (
-            mock_all_gather.call_count == 1
-        )  #  new kernel on rank0, so another sync was needed
+        assert mock_all_gather.call_count == 1  #  new kernel on rank0, so another sync was needed
 
 
 def test_all_gather_object_calls_num():

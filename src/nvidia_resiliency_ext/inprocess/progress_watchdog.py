@@ -78,8 +78,7 @@ class ProgressWatchdog(threading.Thread):
         current_time = time.monotonic()
 
         timed_out = any(
-            item is not None and current_time - item > timeout.total_seconds()
-            for item in timestamp
+            item is not None and current_time - item > timeout.total_seconds() for item in timestamp
         )
 
         return timed_out, timestamp
@@ -109,9 +108,7 @@ class ProgressWatchdog(threading.Thread):
         buffer = ctypes.create_string_buffer(
             0, ctypes.sizeof(ctypes.c_double) + ctypes.sizeof(ctypes.c_int64)
         )
-        timestamp_ptr = ctypes.cast(
-            ctypes.addressof(buffer), ctypes.POINTER(ctypes.c_double)
-        )
+        timestamp_ptr = ctypes.cast(ctypes.addressof(buffer), ctypes.POINTER(ctypes.c_double))
         num_completed_ptr = ctypes.cast(
             ctypes.addressof(buffer) + ctypes.sizeof(ctypes.c_double),
             ctypes.POINTER(ctypes.c_int64),
@@ -130,9 +127,7 @@ class ProgressWatchdog(threading.Thread):
                 time.sleep(self.spin_interval.total_seconds())
             self.done_waiting.set()
 
-            adding_status = add_pending_call(
-                self.get_automatic_timestamp, ctypes.addressof(buffer)
-            )
+            adding_status = add_pending_call(self.get_automatic_timestamp, ctypes.addressof(buffer))
             if adding_status == 0:
                 self.num_scheduled += 1
                 self.timestamp = Timestamp(

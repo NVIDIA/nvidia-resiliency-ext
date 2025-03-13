@@ -43,9 +43,7 @@ class TestShiftRanks(unittest.TestCase):
             self.assertEqual(state.world_size, world_size - len(terminated_ranks))
             self.assertEqual(new_terminated_ranks, set())
             ranks[rank] = state.rank
-        self.assertEqual(
-            ranks, {0: 0, 1: None, 2: 1, 3: 2, 4: None, 5: None, 6: 3, 7: 4}
-        )
+        self.assertEqual(ranks, {0: 0, 1: None, 2: 1, 3: 2, 4: None, 5: None, 6: 3, 7: 4})
 
     def test_empty(self):
         world_size = 8
@@ -121,9 +119,7 @@ class TestShiftRanks(unittest.TestCase):
             self.assertEqual(terminated_ranks_2, set())
             ranks[rank] = state.rank
 
-        self.assertEqual(
-            ranks, {0: 0, 1: None, 2: None, 3: 1, 4: 2, 5: 3, 6: 4, 7: None}
-        )
+        self.assertEqual(ranks, {0: 0, 1: None, 2: None, 3: 1, 4: 2, 5: 3, 6: 4, 7: None})
 
 
 class TestFillGaps(unittest.TestCase):
@@ -147,9 +143,7 @@ class TestFillGaps(unittest.TestCase):
             self.assertEqual(state.world_size, world_size - len(terminated_ranks))
             self.assertEqual(new_terminated_ranks, set())
             ranks[rank] = state.rank
-        self.assertEqual(
-            ranks, {0: 0, 1: None, 2: 2, 3: 3, 4: None, 5: None, 6: 4, 7: 5}
-        )
+        self.assertEqual(ranks, {0: 0, 1: None, 2: 2, 3: 3, 4: None, 5: None, 6: 4, 7: 5})
 
     def test_empty(self):
         world_size = 8
@@ -231,9 +225,7 @@ class TestFillGaps(unittest.TestCase):
             self.assertEqual(terminated_ranks_2, set())
             ranks[rank] = state.rank
 
-        self.assertEqual(
-            ranks, {0: 0, 1: None, 2: None, 3: 3, 4: 4, 5: 1, 6: 2, 7: None}
-        )
+        self.assertEqual(ranks, {0: 0, 1: None, 2: None, 3: 3, 4: 4, 5: 1, 6: 2, 7: None})
 
 
 class TestFilterGroupedByKey(unittest.TestCase):
@@ -291,9 +283,7 @@ class TestFilterGroupedByKey(unittest.TestCase):
 
             rank = state.rank
             world_size = state.world_size
-            state, terminated_ranks_div2 = filter_grouped_by_key_div2(
-                state, terminated_ranks
-            )
+            state, terminated_ranks_div2 = filter_grouped_by_key_div2(state, terminated_ranks)
             assert state.rank == rank
             assert state.world_size == world_size
             assert terminated_ranks_div2 == {0, 1, 6, 7}
@@ -312,9 +302,7 @@ class TestFilterGroupedByKey(unittest.TestCase):
             rank_shift = state.rank
             world_size_shift = state.world_size
 
-            state, terminated_ranks_div3 = filter_grouped_by_key_div3(
-                state, terminated_ranks_shift
-            )
+            state, terminated_ranks_div3 = filter_grouped_by_key_div3(state, terminated_ranks_shift)
             assert state.rank == rank_shift
             assert state.world_size == world_size_shift
             assert terminated_ranks_div3 == {3}

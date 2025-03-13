@@ -78,9 +78,7 @@ def _rank_main(*args, test_scenario, ret_queue, **kwargs):
         callable_module_instance.callable4()
 
     report = straggler.Detector.generate_report()
-    int_to_section_mapper = (
-        straggler.Detector.reporter.name_mapper.id_to_section_name.copy()
-    )
+    int_to_section_mapper = straggler.Detector.reporter.name_mapper.id_to_section_name.copy()
 
     ret_queue.put((rank, report, int_to_section_mapper))
 

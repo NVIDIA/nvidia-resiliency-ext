@@ -32,9 +32,7 @@ def broadcast(tensor, src, group=torch.distributed.group.WORLD, async_op=False):
         return torch.distributed.broadcast(tensor, src, group, async_op)
 
 
-def all_gather(
-    tensor_list, tensor, group=torch.distributed.group.WORLD, async_op=False
-):
+def all_gather(tensor_list, tensor, group=torch.distributed.group.WORLD, async_op=False):
     """
     Call torch.distributed.all_gather() if distributed is in use
     """
@@ -152,9 +150,7 @@ def init_distributed_with_file_store(device, store_file_dir="/tmp"):
         else:
             raise RuntimeError("Unknown device")
         # store file should be deleted by PyTorch
-        store_filename = (
-            f'dist_store_slurm_job_id_{os.getenv("SLURM_JOB_ID","none")}.bin'
-        )
+        store_filename = f'dist_store_slurm_job_id_{os.getenv("SLURM_JOB_ID","none")}.bin'
         store_file_path = os.path.join(store_file_dir, store_filename)
         store_file_path = os.path.abspath(store_file_path)
         torch.distributed.init_process_group(
@@ -204,12 +200,8 @@ def is_true_on_any_rank(flag: bool, group=None) -> bool:
     ret = flag
     if get_world_size(group) > 1:
         device = get_device_for_backend(group)
-        flag_tensor = torch.tensor(
-            [1.0 if flag else 0], dtype=torch.float32, device=device
-        )
-        torch.distributed.all_reduce(
-            flag_tensor, op=torch.distributed.ReduceOp.MAX, group=group
-        )
+        flag_tensor = torch.tensor([1.0 if flag else 0], dtype=torch.float32, device=device)
+        torch.distributed.all_reduce(flag_tensor, op=torch.distributed.ReduceOp.MAX, group=group)
         ret = bool(flag_tensor.item() > 0)
     return ret
 

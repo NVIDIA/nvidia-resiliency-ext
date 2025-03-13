@@ -178,18 +178,11 @@ def test_straggler_sections_detected(test_scenario):
     if "stragglers" in test_scenario.keys():
         if test_scenario["stragglers"]:
             # verify that all stragglers are detected
-            for test_straggler_section, test_straggler_rank in test_scenario[
-                "stragglers"
-            ]:
-                assert (
-                    test_straggler_section
-                    in found_stragglers["straggler_sections_relative"]
-                )
+            for test_straggler_section, test_straggler_rank in test_scenario["stragglers"]:
+                assert test_straggler_section in found_stragglers["straggler_sections_relative"]
                 assert (
                     straggler.StragglerId(test_straggler_rank, "dummy_node_name")
-                    in found_stragglers["straggler_sections_relative"][
-                        test_straggler_section
-                    ]
+                    in found_stragglers["straggler_sections_relative"][test_straggler_section]
                 )
         else:
             # there should be no stragglers detected if there were no stragglers in the test
@@ -198,18 +191,11 @@ def test_straggler_sections_detected(test_scenario):
     if "indiv_stragglers" in test_scenario.keys():
         if test_scenario["indiv_stragglers"]:
             # verify that all stragglers are detected
-            for test_straggler_section, test_straggler_rank in test_scenario[
-                "indiv_stragglers"
-            ]:
-                assert (
-                    test_straggler_section
-                    in found_stragglers["straggler_sections_individual"]
-                )
+            for test_straggler_section, test_straggler_rank in test_scenario["indiv_stragglers"]:
+                assert test_straggler_section in found_stragglers["straggler_sections_individual"]
                 assert (
                     straggler.StragglerId(test_straggler_rank, "dummy_node_name")
-                    in found_stragglers["straggler_sections_individual"][
-                        test_straggler_section
-                    ]
+                    in found_stragglers["straggler_sections_individual"][test_straggler_section]
                 )
         else:
             # there should be no stragglers detected if there were no stragglers in the test

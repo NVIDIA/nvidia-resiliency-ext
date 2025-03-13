@@ -79,15 +79,11 @@ class LocalCheckpointCallback(pl.callbacks.ModelCheckpoint):
         )
         self.async_save = async_save
 
-    def on_train_epoch_end(
-        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
-    ) -> None:
+    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         """Skips super functionality"""
         logger.info("Skipping on_train_epoch_end local ckpt save")
 
-    def on_validation_end(
-        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
-    ) -> None:
+    def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         """Skips super functionality"""
         logger.info("Skipping on_validation_end local ckpt save")
 
@@ -104,9 +100,7 @@ class LocalCheckpointCallback(pl.callbacks.ModelCheckpoint):
         local_ckpt_opts = dict(
             ckpt_type="local", iteration=trainer.global_step, is_async=self.async_save
         )
-        trainer.save_checkpoint(
-            None, storage_options={LOCAL_CKPT_OPTS_KEY: local_ckpt_opts}
-        )
+        trainer.save_checkpoint(None, storage_options={LOCAL_CKPT_OPTS_KEY: local_ckpt_opts})
 
 
 class HierarchicalCheckpointIO(_WrappingCheckpointIO):
@@ -146,16 +140,10 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
         if storage_options is None or LOCAL_CKPT_OPTS_KEY not in storage_options:
             return self.checkpoint_io.save_checkpoint(checkpoint, path, storage_options)
         if path is not None:
-            raise ValueError(
-                f"Path shouldn't be set for a local checkpoint, got: {path}."
-            )
-        return self._save_local_checkpoint(
-            checkpoint, storage_options.get(LOCAL_CKPT_OPTS_KEY)
-        )
+            raise ValueError(f"Path shouldn't be set for a local checkpoint, got: {path}.")
+        return self._save_local_checkpoint(checkpoint, storage_options.get(LOCAL_CKPT_OPTS_KEY))
 
-    def _save_local_checkpoint(
-        self, checkpoint: Dict[str, Any], local_ckpt_options: dict
-    ) -> None:
+    def _save_local_checkpoint(self, checkpoint: Dict[str, Any], local_ckpt_options: dict) -> None:
         """Save local checkpoint."""
         return self.local_ckpt_manager.save(
             self.to_tensor_aware_state_dict(checkpoint),
@@ -170,9 +158,7 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
         latest_local_iteration = self.local_ckpt_manager.find_latest()
         if latest_local_iteration < 0:
             logger.debug("No local checkpoint available")
-            return self.checkpoint_io.load_checkpoint(
-                path, map_location=map_location, **kwargs
-            )
+            return self.checkpoint_io.load_checkpoint(path, map_location=map_location, **kwargs)
 
         # There is a local ckpt available, but we don't know if it's newer than the global ckpt yet
         latest_global_iteration = self.get_global_ckpt_iteration_fn(path)
@@ -192,9 +178,7 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
                 f" but global iteration {latest_global_iteration} is greater."
                 f" Resuming from a global checkpoint."
             )
-            return self.checkpoint_io.load_checkpoint(
-                path, map_location=map_location, **kwargs
-            )
+            return self.checkpoint_io.load_checkpoint(path, map_location=map_location, **kwargs)
 
     def remove_checkpoint(self, path: _PATH) -> None:
         """Checkpoint removal is handled independently by the LocalCkptManager."""
@@ -214,12 +198,8 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
         )
 
     @abstractmethod
-    def to_tensor_aware_state_dict(
-        self, checkpoint: Dict[str, Any]
-    ) -> TensorAwareStateDict:
+    def to_tensor_aware_state_dict(self, checkpoint: Dict[str, Any]) -> TensorAwareStateDict:
         raise NotImplementedError
 
-    def from_tensor_aware_state_dict(
-        self, tensor_aware_checkpoint: TensorAwareStateDict, **kwargs
-    ):
+    def from_tensor_aware_state_dict(self, tensor_aware_checkpoint: TensorAwareStateDict, **kwargs):
         return tensor_aware_checkpoint.to_state_dict()

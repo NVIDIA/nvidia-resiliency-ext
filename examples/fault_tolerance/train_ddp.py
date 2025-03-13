@@ -211,9 +211,7 @@ def training_loop(
                 f"input: {x[:, 0]}"
             )
             if iter_idx > 0:
-                time_per_iter = (
-                    time.monotonic() - last_log_time
-                ) / args.logging_interval
+                time_per_iter = (time.monotonic() - last_log_time) / args.logging_interval
                 last_log_time = time.monotonic()
                 logging.debug(f"Avg time per iter: {time_per_iter:.3f} [sec]")
 
@@ -251,8 +249,7 @@ def validation_loop(ft_client, model, val_dataloader, epoch_idx, device):
         ft_client.send_heartbeat()
 
     logging.info(
-        f"CHECK VAL SUMMARY: epoch: {epoch_idx:4d} "
-        f"loss: {total_val_loss / (iter_idx + 1)}"
+        f"CHECK VAL SUMMARY: epoch: {epoch_idx:4d} " f"loss: {total_val_loss / (iter_idx + 1)}"
     )
 
 
@@ -342,9 +339,7 @@ def main():
             device = torch.device("cuda")
             torch.cuda.set_device(args.local_rank)
         else:
-            raise RuntimeError(
-                "Selected 'cuda' device but torch.cuda is not available."
-            )
+            raise RuntimeError("Selected 'cuda' device but torch.cuda is not available.")
     elif args.device == "cpu":
         device = torch.device("cpu")
     else:
@@ -361,9 +356,7 @@ def main():
         # is restarted
         dist_utils.init_distributed_with_tcp_store(device)
     elif args.init_distributed_method == "file":
-        dist_utils.init_distributed_with_file_store(
-            device, store_file_dir=args.output_dir
-        )
+        dist_utils.init_distributed_with_file_store(device, store_file_dir=args.output_dir)
     else:
         raise RuntimeError(
             f"--init_distributed_method should be ['tcp','file'] it is {args.init_distributed_method}"
@@ -383,9 +376,7 @@ def main():
 
     rank = dist_utils.get_rank()
 
-    logging.info(
-        f"SLURM_JOB_ID={os.getenv('SLURM_JOB_ID','<none>')} RANK={rank} PID={os.getpid()}"
-    )
+    logging.info(f"SLURM_JOB_ID={os.getenv('SLURM_JOB_ID','<none>')} RANK={rank} PID={os.getpid()}")
 
     # Dummy datasets
     train_dataset = Dataset(args.train_dataset_size, args.hidden)
@@ -511,11 +502,7 @@ def main():
             break
 
         # Setup simulated fault as soon as we have valid timeouts
-        if (
-            args.simulated_fault
-            and not _sim_fault_is_set
-            and ft_client.timeouts.are_valid
-        ):
+        if args.simulated_fault and not _sim_fault_is_set and ft_client.timeouts.are_valid:
             _setup_simulated_fault(ft_client, args.simulated_fault, device)
 
     _cancel_simulated_fault()

@@ -218,8 +218,7 @@ class MonitorProcess:
                         )
                         if already_arrived and not extended_timeout:
                             log.info(
-                                f"extending {active_progress_timeout=} "
-                                f"to {barrier_timeout=}"
+                                f"extending {active_progress_timeout=} " f"to {barrier_timeout=}"
                             )
                             active_progress_timeout = barrier_timeout
                             extended_timeout = True
@@ -236,9 +235,7 @@ class MonitorProcess:
                             pass
 
                         try:
-                            training_process.wait(
-                                termination_grace_time.total_seconds()
-                            )
+                            training_process.wait(termination_grace_time.total_seconds())
                         except psutil.TimeoutExpired:
                             while is_process_active(training_process):
                                 try:
@@ -251,9 +248,7 @@ class MonitorProcess:
                                 except psutil.NoSuchProcess:
                                     break
                                 else:
-                                    time.sleep(
-                                        termination_grace_time.total_seconds() / 100
-                                    )
+                                    time.sleep(termination_grace_time.total_seconds() / 100)
 
                     if not is_process_active(training_process):
                         log.info("monitored process is terminated")

@@ -45,9 +45,7 @@ class NameMapper:
         self.kernel_counter: int = 0
         self.section_counter: int = 0
 
-    def _check_if_has_all_names(
-        self, kernel_names: List[str], section_names: List[str]
-    ) -> bool:
+    def _check_if_has_all_names(self, kernel_names: List[str], section_names: List[str]) -> bool:
         """Returns True if all provided kernel and section names have assigned IDs."""
         if any(n not in self.kernel_name_to_id for n in kernel_names):
             return False
@@ -55,9 +53,7 @@ class NameMapper:
             return False
         return True
 
-    def gather_and_assign_ids(
-        self, kernel_names: List[str], section_names: List[str]
-    ) -> None:
+    def gather_and_assign_ids(self, kernel_names: List[str], section_names: List[str]) -> None:
         """
         Gathers kernel and section names from all ranks and assigns unique integer IDs to them.
         It's quaranteed that:
@@ -72,9 +68,7 @@ class NameMapper:
         has_all_names = self._check_if_has_all_names(kernel_names, section_names)
         need_gather = not is_all_true(has_all_names, self.group)
         if need_gather:
-            gathered_names = all_gather_object(
-                (section_names, kernel_names), self.group
-            )
+            gathered_names = all_gather_object((section_names, kernel_names), self.group)
             gathered_section_lists = (sections for sections, _ in gathered_names)
             gathered_kernel_lists = (kernels for _, kernels in gathered_names)
 

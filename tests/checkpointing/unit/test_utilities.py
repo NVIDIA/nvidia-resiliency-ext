@@ -63,9 +63,7 @@ class Utils:
 
     @staticmethod
     def set_world_size(world_size=None, rank=None):
-        Utils.world_size = (
-            torch.cuda.device_count() if world_size is None else world_size
-        )
+        Utils.world_size = torch.cuda.device_count() if world_size is None else world_size
         if (
             torch.distributed.is_initialized()
             and Utils.world_size != torch.distributed.get_world_size()
@@ -87,8 +85,6 @@ class TestModel(torch.nn.Module):
             self.register_parameter(
                 f"param_{i}",
                 torch.nn.Parameter(
-                    torch.rand(
-                        size, device=torch.device(f"cuda:{torch.cuda.current_device()}")
-                    )
+                    torch.rand(size, device=torch.device(f"cuda:{torch.cuda.current_device()}"))
                 ),
             )

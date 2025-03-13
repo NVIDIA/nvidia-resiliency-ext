@@ -66,9 +66,7 @@ from nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback import (
 logger = logging.getLogger(__name__)
 
 
-class MCoreHierarchicalCheckpointIO(
-    HierarchicalCheckpointIO, AsyncCompatibleCheckpointIO
-):
+class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleCheckpointIO):
     """HierarchicalCheckpointIO implementation compatible with MCore distributed checkpointing.
 
     Args:
@@ -92,30 +90,24 @@ class MCoreHierarchicalCheckpointIO(
         parallelization_group: Optional[torch.distributed.ProcessGroup] = None,
         allow_cache: bool = False,
     ):
-        super().__init__(
-            wrapped_checkpoint_io, local_ckpt_manager, get_global_ckpt_iteration_fn
-        )
+        super().__init__(wrapped_checkpoint_io, local_ckpt_manager, get_global_ckpt_iteration_fn)
         self.local_ckpt_algo = local_ckpt_algo
         self.parallelization_group = parallelization_group
         self.cached_metadata = None
         self.allow_cache = allow_cache
 
-    def to_tensor_aware_state_dict(
-        self, checkpoint: Dict[str, Any]
-    ) -> TensorAwareStateDict:
+    def to_tensor_aware_state_dict(self, checkpoint: Dict[str, Any]) -> TensorAwareStateDict:
         """Specialized implementation using MCoreTensorAwareStateDict.
 
         Wraps the state dict in MCoreTensorAwareStateDict and makes sure
         that "common" state dict doesn't have any CUDA tensors (this is an
         NVRx v0.2 limitation).
         """
-        state_dict_for_save, cached_metadata = (
-            MCoreTensorAwareStateDict.from_state_dict(
-                checkpoint,
-                algo=self.local_ckpt_algo,
-                parallelization_group=self.parallelization_group,
-                cached_metadata=self.cached_metadata,
-            )
+        state_dict_for_save, cached_metadata = MCoreTensorAwareStateDict.from_state_dict(
+            checkpoint,
+            algo=self.local_ckpt_algo,
+            parallelization_group=self.parallelization_group,
+            cached_metadata=self.cached_metadata,
         )
 
         def to_cpu(x):
@@ -301,9 +293,9 @@ def main():
         checkpoint_io = trainer.strategy.checkpoint_io
 
         if args.async_save:
-            assert isinstance(
-                trainer.strategy.checkpoint_io, AsyncFinalizableCheckpointIO
-            ), type(trainer.strategy.checkpoint_io)
+            assert isinstance(trainer.strategy.checkpoint_io, AsyncFinalizableCheckpointIO), type(
+                trainer.strategy.checkpoint_io
+            )
             checkpoint_io = checkpoint_io.checkpoint_io
 
         if args.num_nodes > 1:

@@ -40,9 +40,7 @@ def empty_dir(path: Path):
 class TempNamedDir(TemporaryDirectory):
     """TemporaryDirectory with a fully named directory. Empties the dir if not empty."""
 
-    def __init__(
-        self, name: Union[str, Path], sync=True, ignore_cleanup_errors=False
-    ) -> None:
+    def __init__(self, name: Union[str, Path], sync=True, ignore_cleanup_errors=False) -> None:
         self.name = str(name)
         if Utils.rank == 0:
             os.makedirs(name, exist_ok=True)

@@ -38,9 +38,7 @@ __LOGGER_STACK = []
 
 
 @contextmanager
-def logger_stack(
-    name: Optional[str] = None, current_logger: Optional[logging.Logger] = None
-):
+def logger_stack(name: Optional[str] = None, current_logger: Optional[logging.Logger] = None):
     if name:
         __LOGGER_NAME_STACK.append(name)
     if current_logger:

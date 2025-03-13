@@ -60,9 +60,7 @@ def _run_rank_monitors_fixture():
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
-                ft_cfg, rank, mp_ctx_spawn
-            )
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
             rank_monitors.append(p)
             os.environ["RANK"] = ""
 
@@ -132,9 +130,7 @@ test_scenarios = [
 ]
 
 
-@pytest.mark.parametrize(
-    "rank_main, is_chkpt_expected, expected_ret_codes", test_scenarios
-)
+@pytest.mark.parametrize("rank_main, is_chkpt_expected, expected_ret_codes", test_scenarios)
 def test_init(rank_main, is_chkpt_expected, expected_ret_codes):
     with contextlib.suppress(FileNotFoundError):
         os.remove(CHKPT_PATH)

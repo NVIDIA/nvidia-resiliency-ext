@@ -49,9 +49,7 @@ class FaultToleranceConfig:
     log_level: int = logging.INFO
 
     @staticmethod
-    def from_kwargs(
-        ignore_not_recognized: bool = True, **kwargs
-    ) -> "FaultToleranceConfig":
+    def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> "FaultToleranceConfig":
         """
         Create a FaultToleranceConfig object from keyword arguments.
 
@@ -73,9 +71,7 @@ class FaultToleranceConfig:
         return FaultToleranceConfig(**matching_args)
 
     @staticmethod
-    def from_yaml_file(
-        cfg_path: str, ignore_not_recognized: bool = True
-    ) -> "FaultToleranceConfig":
+    def from_yaml_file(cfg_path: str, ignore_not_recognized: bool = True) -> "FaultToleranceConfig":
         """
         Load the fault tolerance configuration from a YAML file.
 
@@ -101,9 +97,7 @@ class FaultToleranceConfig:
                     **ft_cfg, ignore_not_recognized=ignore_not_recognized
                 )
             else:
-                raise ValueError(
-                    f"'fault_tolerance' section not found in config file {cfg_path}"
-                )
+                raise ValueError(f"'fault_tolerance' section not found in config file {cfg_path}")
 
     @staticmethod
     def from_args(
@@ -233,9 +227,7 @@ class FaultToleranceConfig:
             else:
                 raise ValueError(f"Invalid log level string: {self.log_level}")
         else:
-            raise ValueError(
-                f"Invalid value for rank_termination_signal: {self.log_level}"
-            )
+            raise ValueError(f"Invalid value for rank_termination_signal: {self.log_level}")
 
     def __post_init__(self):
         self._fix_rank_termination_signal_type()

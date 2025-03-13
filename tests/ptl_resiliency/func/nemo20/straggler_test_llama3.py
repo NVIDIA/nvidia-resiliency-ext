@@ -78,9 +78,7 @@ def local_executor(
         "NVTE_FUSED_ATTN": "0",
     }
 
-    executor = run.LocalExecutor(
-        ntasks_per_node=devices, launcher="torchrun", env_vars=env_vars
-    )
+    executor = run.LocalExecutor(ntasks_per_node=devices, launcher="torchrun", env_vars=env_vars)
 
     return executor
 

@@ -48,8 +48,7 @@ class RankShouldRestart(BaseException):
 
             if len(stack) > 1 and stack[1].filename != wrap.__file__:
                 locations = [
-                    f"{info.frame.f_code.co_filename}:{info.frame.f_lineno}"
-                    for info in stack[1:]
+                    f"{info.frame.f_code.co_filename}:{info.frame.f_lineno}" for info in stack[1:]
                 ]
                 traceback = " <- ".join(locations)
                 log.debug(f"{type(self).__name__} suppressed at {traceback}")
@@ -97,10 +96,7 @@ def reraise_if_unraisable(exc_type):
         return wrapped
 
     def reraising_callback(unraisable_hook_args):
-        if (
-            issubclass(unraisable_hook_args.exc_type, exc_type)
-            and not sys.is_finalizing()
-        ):
+        if issubclass(unraisable_hook_args.exc_type, exc_type) and not sys.is_finalizing():
             log = logging.getLogger(__name__)
             log.debug(f"sys.unraisablehook raises {exc_type}")
             delayed_async_raise(threading.main_thread().ident, exc_type)
@@ -117,11 +113,7 @@ def async_abort_main_thread(abort_signal=None, msg=None):
             DynamicRankShouldRestart = type(
                 "RankShouldRestart",
                 (RankShouldRestart,),
-                {
-                    "__init__": lambda self: super(
-                        DynamicRankShouldRestart, self
-                    ).__init__(msg)
-                },
+                {"__init__": lambda self: super(DynamicRankShouldRestart, self).__init__(msg)},
             )
             exc_type = DynamicRankShouldRestart
         else:
@@ -191,14 +183,10 @@ class MonitorThread(threading.Thread):
         while not self.should_stop.is_set():
             self.loop_started.set()
 
-            timed_out, _ = ProgressWatchdog.is_timed_out(
-                self.progress_watchdog, self.soft_timeout
-            )
+            timed_out, _ = ProgressWatchdog.is_timed_out(self.progress_watchdog, self.soft_timeout)
 
             if timed_out:
-                store.record_interrupted(
-                    InterruptionRecord(rank, Interruption.SOFT_TIMEOUT)
-                )
+                store.record_interrupted(InterruptionRecord(rank, Interruption.SOFT_TIMEOUT))
 
             if store.is_any_rank_iterrupted():
                 self.state.status = Status.ABORTING

@@ -37,9 +37,7 @@ def _get_summary(timings):
         straggler.Statistic.MAX: np.max(timings),
         straggler.Statistic.MED: np.median(timings),
         straggler.Statistic.AVG: np.mean(timings),
-        straggler.Statistic.STD: (
-            np.std(timings).item() if len(timings) > 1 else float("nan")
-        ),
+        straggler.Statistic.STD: (np.std(timings).item() if len(timings) > 1 else float("nan")),
         straggler.Statistic.NUM: len(timings),
     }
     return stats
@@ -185,9 +183,7 @@ def test_relative_gpu_scores_no_gather():
     assert reports[3].rank_to_node[3] == "testnode3"
 
 
-def _rank_main_gpu_relative_test_some_common_kernels(
-    *args, gather_on_rank0, ret_queue, **kwargs
-):
+def _rank_main_gpu_relative_test_some_common_kernels(*args, gather_on_rank0, ret_queue, **kwargs):
     rank = torch.distributed.get_rank()
     random.seed(rank)
 
@@ -201,9 +197,7 @@ def _rank_main_gpu_relative_test_some_common_kernels(
     # there is one common kernel and one unique kernel on each rank
     kernel_summaries = {
         "kernel_common": _get_summary((rank + 1) * np.array([1.0, 1.0, 2.0])),
-        f"kernel_only_on_rank{rank}": _get_summary(
-            (rank + 1) * np.array([2.0, 2.0, 3.0])
-        ),
+        f"kernel_only_on_rank{rank}": _get_summary((rank + 1) * np.array([2.0, 2.0, 3.0])),
     }
     report = report_gen.generate_report({}, kernel_summaries=kernel_summaries)
     ret_queue.put((rank, report))

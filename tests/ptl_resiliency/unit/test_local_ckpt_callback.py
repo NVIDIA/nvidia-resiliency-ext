@@ -66,18 +66,14 @@ def _run_trainining(
         callbacks=custom_callbacks,
     )
     if custom_checkpoint_io_fn is not None:
-        trainer.strategy.checkpoint_io = custom_checkpoint_io_fn(
-            trainer.strategy.checkpoint_io
-        )
+        trainer.strategy.checkpoint_io = custom_checkpoint_io_fn(trainer.strategy.checkpoint_io)
 
     model = SimpleModel()
     trainer.fit(model, ckpt_path="last")
     return trainer
 
 
-def inspect_checkpoints(
-    dirpath, expected_paths: Iterable[str] = None, verbose: bool = True
-):
+def inspect_checkpoints(dirpath, expected_paths: Iterable[str] = None, verbose: bool = True):
     actual_paths = set(d.name for d in dirpath.iterdir())
     if verbose:
         print("Actual paths", actual_paths)
@@ -190,9 +186,7 @@ class SimpleTensorAwareStateDict(TensorAwareStateDict):
 
 
 class SimpleHierarchicalCheckpointIO(HierarchicalCheckpointIO):
-    def to_tensor_aware_state_dict(
-        self, checkpoint: Dict[str, Any]
-    ) -> TensorAwareStateDict:
+    def to_tensor_aware_state_dict(self, checkpoint: Dict[str, Any]) -> TensorAwareStateDict:
         return SimpleTensorAwareStateDict(checkpoint)
 
 
@@ -232,10 +226,7 @@ def test_local_ckpt_callback_called_every_n_train_steps(tmp_path):
     inspect_checkpoints(
         tmp_path, expected_paths={"last.ckpt", "epoch=0-step=128.ckpt"}, verbose=False
     )
-    assert (
-        len(mock_local_ckpt_manager.mock_save_calls)
-        == max_steps // local_every_n_train_steps
-    )
+    assert len(mock_local_ckpt_manager.mock_save_calls) == max_steps // local_every_n_train_steps
 
 
 def test_local_ckpt_callback_called_every_time_interval(tmp_path):
@@ -312,10 +303,7 @@ def test_local_ckpt_restoration(tmp_path, caplog):
     inspect_checkpoints(
         tmp_path, expected_paths={"last.ckpt", "epoch=0-step=128.ckpt"}, verbose=False
     )
-    assert (
-        len(mock_local_ckpt_manager.mock_save_calls)
-        == max_steps // local_every_n_train_steps
-    )
+    assert len(mock_local_ckpt_manager.mock_save_calls) == max_steps // local_every_n_train_steps
 
     # Make sure we load from a global ckpt when global iter is 1000 (large)
     with caplog.at_level(logging.INFO):

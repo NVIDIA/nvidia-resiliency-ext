@@ -32,9 +32,7 @@ def parse_args():
     parser.add_argument("--hidden", type=int, default=512)
     parser.add_argument("--iters", type=int, default=1000000)
     parser.add_argument("--max_runtime", type=int, default=300)
-    parser.add_argument(
-        "--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int
-    )
+    parser.add_argument("--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int)
 
     # Straggler detection arguments
     parser.add_argument(
@@ -137,15 +135,11 @@ def print_section_scores(report, rank):
     print(f"=== Sections perf scores. Report from rank {rank} ===")
     rel_scores = {}
     for section in report.section_relative_perf_scores:
-        rel_scores[section] = round_float_values(
-            report.section_relative_perf_scores[section]
-        )
+        rel_scores[section] = round_float_values(report.section_relative_perf_scores[section])
     print("Sections relative perf scores:", rel_scores)
     indiv_scores = {}
     for section in report.section_individual_perf_scores:
-        indiv_scores[section] = round_float_values(
-            report.section_individual_perf_scores[section]
-        )
+        indiv_scores[section] = round_float_values(report.section_individual_perf_scores[section])
     print("Sections individual perf scores:", indiv_scores)
 
 
@@ -157,14 +151,10 @@ def print_stragglers(stragglers):
         print(f"DETECTED INDIVIDUAL STRAGGLER GPU RANK={s.rank} NODE={s.node}")
     for section in stragglers["straggler_sections_relative"]:
         for s in stragglers["straggler_sections_relative"][section]:
-            print(
-                f"DETECTED RELATIVE STRAGGLER SECTION={section} RANK={s.rank} NODE={s.node}"
-            )
+            print(f"DETECTED RELATIVE STRAGGLER SECTION={section} RANK={s.rank} NODE={s.node}")
     for section in stragglers["straggler_sections_individual"]:
         for s in stragglers["straggler_sections_individual"][section]:
-            print(
-                f"DETECTED INDIVIDUAL STRAGGLER SECTION={section} RANK={s.rank} NODE={s.node}"
-            )
+            print(f"DETECTED INDIVIDUAL STRAGGLER SECTION={section} RANK={s.rank} NODE={s.node}")
 
 
 def _all_reduce_bool_flag(flag):
@@ -205,9 +195,7 @@ def main():
         gather_on_rank0=args.gather_on_rank0,
     )
 
-    straggler.Detector.wrap_callables(
-        callable_ids=[straggler.CallableId(model, "forward")]
-    )
+    straggler.Detector.wrap_callables(callable_ids=[straggler.CallableId(model, "forward")])
 
     t0 = time.monotonic()
     report_idx = 1

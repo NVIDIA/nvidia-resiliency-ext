@@ -64,11 +64,7 @@ class TestCase(unittest.TestCase):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            stores = [
-                obj
-                for obj in gc.get_objects()
-                if isinstance(obj, inprocess.store.TCPStore)
-            ]
+            stores = [obj for obj in gc.get_objects() if isinstance(obj, inprocess.store.TCPStore)]
         for store in stores:
             referrers = [ref for ref in gc.get_referrers(store)]
             print(f"{store=}")
@@ -158,9 +154,7 @@ class TestInit(TestCase):
         max_iterations = 2
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             **self.kwargs(),
         )
         def fn():
@@ -181,9 +175,7 @@ class TestException(TestCase):
         max_iterations = 4
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             **self.kwargs(),
         )
         def fn():
@@ -201,9 +193,7 @@ class TestException(TestCase):
         ret_val = 123
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             **self.kwargs(),
         )
         def fn():
@@ -452,9 +442,7 @@ class TestMultiCall(TestCase):
 
         @inprocess.Wrapper(
             **self.kwargs(),
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
         )
         def fn(wrapped: inprocess.CallWrapper = None):
             nonlocal iteration
@@ -580,9 +568,7 @@ class TestTCPStore(TestCase):
 
             torch.distributed.init_process_group("gloo")
             model = torch.nn.parallel.DistributedDataParallel(model)
-            store_ref = weakref.ref(
-                torch.distributed.distributed_c10d._get_default_store()
-            )
+            store_ref = weakref.ref(torch.distributed.distributed_c10d._get_default_store())
             once = store_ref().add("key", 1)
             self.assertEqual(once, 1)
 
@@ -606,9 +592,7 @@ class TestConnections(TestCase):
         max_iterations = 4
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             **self.kwargs(),
         )
         def fn(self, call_wrapper: inprocess.CallWrapper = None):
@@ -619,9 +603,7 @@ class TestConnections(TestCase):
             inet_conns = proc.net_connections("inet")
             self.assertEqual(len(inet_conns), 4)
 
-            listen_conns = [
-                conn for conn in inet_conns if conn.status == psutil.CONN_LISTEN
-            ]
+            listen_conns = [conn for conn in inet_conns if conn.status == psutil.CONN_LISTEN]
             self.assertEqual(len(listen_conns), 1)
             listen_port = listen_conns[0].laddr.port
 

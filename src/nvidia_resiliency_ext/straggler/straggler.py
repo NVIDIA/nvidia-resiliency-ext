@@ -189,9 +189,7 @@ class Detector:
                 Statistic.MED: torch.median(cpu_elapseds).item(),
                 Statistic.AVG: torch.mean(cpu_elapseds).item(),
                 Statistic.STD: (
-                    torch.std(cpu_elapseds).item()
-                    if len(cpu_elapseds) > 1
-                    else float("nan")
+                    torch.std(cpu_elapseds).item() if len(cpu_elapseds) > 1 else float("nan")
                 ),
                 Statistic.NUM: len(cpu_elapseds),
             }
@@ -284,9 +282,7 @@ class Detector:
         if name in cls.custom_sections:
             section = cls.custom_sections[name]
             if location != section.location:
-                raise ValueError(
-                    f"Section name '{name}' is already used at: {section.location}"
-                )
+                raise ValueError(f"Section name '{name}' is already used at: {section.location}")
 
     @classmethod
     @contextmanager

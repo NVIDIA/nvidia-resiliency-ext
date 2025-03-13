@@ -134,9 +134,7 @@ class RankMonitorServer:
 
     async def _handle_heartbeat_msg(self, msg, writer):
         self.last_hb_time = time.monotonic()
-        assert (
-            not msg.state_dict_for_chkpt
-        ), "state in heartbeat is not supported in this version"
+        assert not msg.state_dict_for_chkpt, "state in heartbeat is not supported in this version"
         await write_obj_to_ipc_stream(OkMsg(), writer)
 
     def _handle_ipc_connection_lost(self):
@@ -276,9 +274,7 @@ class RankMonitorServer:
         return f"{tempfile.gettempdir()}/fault_tol_rmon_{parent_rank}.sock"
 
     @staticmethod
-    def run_in_subprocess(
-        cfg, parent_rank: Optional[int] = None, mp_ctx=torch.multiprocessing
-    ):
+    def run_in_subprocess(cfg, parent_rank: Optional[int] = None, mp_ctx=torch.multiprocessing):
         rank_monitor_ready_event = mp_ctx.Event()
 
         rank_monitor_process_kwargs = {
@@ -294,9 +290,7 @@ class RankMonitorServer:
         rank_monitor_process.daemon = True
         rank_monitor_process.start()
 
-        if not rank_monitor_ready_event.wait(
-            timeout=RankMonitorServer.RANK_MONITOR_INIT_TIMEOUT
-        ):
+        if not rank_monitor_ready_event.wait(timeout=RankMonitorServer.RANK_MONITOR_INIT_TIMEOUT):
             raise RuntimeError(
                 f"Could not start rank monitor. Waited {RankMonitorServer.RANK_MONITOR_INIT_TIMEOUT} sec."
             )

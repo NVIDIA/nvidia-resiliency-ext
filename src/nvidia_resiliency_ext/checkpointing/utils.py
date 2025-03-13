@@ -26,9 +26,7 @@ U = TypeVar("U")
 V = TypeVar("V")
 
 
-def dict_list_map_outplace(
-    f: Callable[[U], V], x: Union[Dict, List, U]
-) -> Union[Dict, List, V]:
+def dict_list_map_outplace(f: Callable[[U], V], x: Union[Dict, List, U]) -> Union[Dict, List, V]:
     """Maps dicts and lists *out-of-place* with a given function."""
     if isinstance(x, dict):
         return {k: dict_list_map_outplace(f, v) for k, v in x.items()}

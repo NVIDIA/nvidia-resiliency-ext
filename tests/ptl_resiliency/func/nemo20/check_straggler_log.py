@@ -124,9 +124,7 @@ def read_log_file(log_file):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Verify a log file created by test_llama3.py."
-    )
+    parser = argparse.ArgumentParser(description="Verify a log file created by test_llama3.py.")
     parser.add_argument("--log", required=True, help="Path to the log file.")
 
     subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
@@ -136,15 +134,11 @@ def main():
     subp1.add_argument("--max", type=int)
     subp1.set_defaults(func=cmd_num_reports)
 
-    subp2 = subparsers.add_parser(
-        "relative_gpu_stragglers", help="Relative GPU stragglers."
-    )
+    subp2 = subparsers.add_parser("relative_gpu_stragglers", help="Relative GPU stragglers.")
     subp2.add_argument("--ranks", type=int, nargs="*", default=set())
     subp2.set_defaults(func=cmd_relative_gpu_stragglers)
 
-    subp3 = subparsers.add_parser(
-        "individual_gpu_stragglers", help="Individual GPU stragglers."
-    )
+    subp3 = subparsers.add_parser("individual_gpu_stragglers", help="Individual GPU stragglers.")
     subp3.add_argument("--ranks", type=int, nargs="*", default=set())
     subp3.set_defaults(func=cmd_individual_gpu_stragglers)
 

@@ -94,9 +94,7 @@ class TestTCPStore(unittest.TestCase):
         for _ in range(5):
             torch.distributed.init_process_group(backend="gloo")
 
-            store_ref = weakref.ref(
-                torch.distributed.distributed_c10d._get_default_store()
-            )
+            store_ref = weakref.ref(torch.distributed.distributed_c10d._get_default_store())
             once = store_ref().add("key", 1)
             self.assertEqual(once, 1)
 
@@ -118,9 +116,7 @@ class TestTCPStore(unittest.TestCase):
             model = torch.nn.Linear(1, 1)
             model = torch.nn.parallel.DistributedDataParallel(model)
 
-            store_ref = weakref.ref(
-                torch.distributed.distributed_c10d._get_default_store()
-            )
+            store_ref = weakref.ref(torch.distributed.distributed_c10d._get_default_store())
             once = store_ref().add("key", 1)
             self.assertEqual(once, 1)
 
@@ -148,9 +144,7 @@ class TestTCPStore(unittest.TestCase):
 
     def test_double_host_raises(self):
         port = common.find_free_port()
-        torch.distributed.TCPStore(
-            host_name="localhost", port=port, world_size=1, is_master=True
-        )
+        torch.distributed.TCPStore(host_name="localhost", port=port, world_size=1, is_master=True)
         with self.assertRaises(RuntimeError):
             torch.distributed.TCPStore(
                 host_name="localhost", port=port, world_size=1, is_master=True
@@ -333,9 +327,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             store = common.wrap_store(
                 c10d.FileStore(self.file_name, self.world_size), pass_device, i
             )
-            self._create_process_group_nccl(
-                store, self.opts(), device_id=init_process_group_device
-            )
+            self._create_process_group_nccl(store, self.opts(), device_id=init_process_group_device)
             self.assertTrue(torch.distributed.is_initialized())
 
             t = torch.ones(size, dtype=torch.int64, device=device)
@@ -363,9 +355,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             store = common.wrap_store(
                 c10d.FileStore(self.file_name, self.world_size), pass_device, i
             )
-            self._create_process_group_nccl(
-                store, self.opts(), device_id=init_process_group_device
-            )
+            self._create_process_group_nccl(store, self.opts(), device_id=init_process_group_device)
             self.assertTrue(torch.distributed.is_initialized())
 
             t = torch.ones(size, dtype=torch.int64, device=device)
@@ -399,9 +389,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             store = common.wrap_store(
                 c10d.FileStore(self.file_name, self.world_size), nccl_abort, i
             )
-            self._create_process_group_nccl(
-                store, self.opts(), device_id=init_process_group_device
-            )
+            self._create_process_group_nccl(store, self.opts(), device_id=init_process_group_device)
             self.assertTrue(torch.distributed.is_initialized())
 
             t = torch.ones(size, dtype=torch.int64, device=device)
@@ -428,12 +416,8 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             init_process_group_device = None
 
         self.assertTrue(torch.distributed.is_available())
-        store = common.wrap_store(
-            c10d.FileStore(self.file_name, self.world_size), rank_to_kill
-        )
-        self._create_process_group_nccl(
-            store, self.opts(), device_id=init_process_group_device
-        )
+        store = common.wrap_store(c10d.FileStore(self.file_name, self.world_size), rank_to_kill)
+        self._create_process_group_nccl(store, self.opts(), device_id=init_process_group_device)
         self.assertTrue(torch.distributed.is_initialized())
 
         t = torch.ones(size, dtype=torch.int64, device=device)
@@ -453,9 +437,7 @@ class ProcessGroupGLOOTest(common.MultiProcessTestCase):
         self._spawn_processes()
         self.skip_return_code_checks = []
 
-    def _create_process_group_gloo(
-        self, store, timeout, world_size=None, device_id=None
-    ):
+    def _create_process_group_gloo(self, store, timeout, world_size=None, device_id=None):
         if world_size is None:
             world_size = self.world_size
         # create nccl processgroup with opts
@@ -477,9 +459,7 @@ class ProcessGroupGLOOTest(common.MultiProcessTestCase):
         size = 1024 * 1024
         tensor = torch.tensor(size)
 
-        timer = threading.Timer(
-            interval=1, function=torch.distributed.destroy_process_group
-        )
+        timer = threading.Timer(interval=1, function=torch.distributed.destroy_process_group)
         timer.start()
 
         try:

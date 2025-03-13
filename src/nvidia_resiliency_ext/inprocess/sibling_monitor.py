@@ -103,9 +103,7 @@ class SiblingMonitor:
         log = logging.getLogger(__name__)
 
         sibling_heartbeat = self.store.get_heartbeat(self.sibling_rank)
-        sibling_delta = datetime.timedelta(
-            microseconds=(time.time_ns() - sibling_heartbeat) / 1e3
-        )
+        sibling_delta = datetime.timedelta(microseconds=(time.time_ns() - sibling_heartbeat) / 1e3)
 
         if sibling_delta > self.heartbeat_timeout:
             heartbeats = self.store.get_all_heartbeats(self.world_size)
@@ -118,9 +116,7 @@ class SiblingMonitor:
                 > self.heartbeat_timeout
             )
 
-            new_unresponsive_ranks = (
-                current_unresponsive_ranks - self.seen_unresponsive_ranks
-            )
+            new_unresponsive_ranks = current_unresponsive_ranks - self.seen_unresponsive_ranks
 
             if new_unresponsive_ranks:
                 log.debug(f"{new_unresponsive_ranks=}")

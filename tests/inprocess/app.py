@@ -165,15 +165,9 @@ def maybe_trigger_fault(rank, world_size, args):
 
     # range starts from keep_alive because first keep_alive ranks can't fail,
     # typically keep_alive = 1 because rank 0 hosts TCPStore
-    ranks_to_trigger = random.sample(
-        range(args.keep_alive, world_size), num_ranks_to_trigger
-    )
+    ranks_to_trigger = random.sample(range(args.keep_alive, world_size), num_ranks_to_trigger)
 
-    if (
-        args.check_fault
-        and torch.distributed.is_available()
-        and torch.distributed.is_initialized()
-    ):
+    if args.check_fault and torch.distributed.is_available() and torch.distributed.is_initialized():
         all_ranks_to_trigger = [None] * world_size
         torch.distributed.all_gather_object(all_ranks_to_trigger, ranks_to_trigger)
 
@@ -256,8 +250,7 @@ class AdaptiveFormatter(logging.Formatter):
 
         # Apply padding for alignment
         padded_parts = [
-            part.ljust(self.max_widths.get(index, 0))
-            for index, part in enumerate(parts)
+            part.ljust(self.max_widths.get(index, 0)) for index, part in enumerate(parts)
         ]
 
         return "|".join(padded_parts)
@@ -309,9 +302,7 @@ def training_main():
         ),
         finalize=None,
         health_check=inprocess.Compose(
-            inprocess.health_check.CudaHealthCheck(
-                timedelta(seconds=args.health_timeout)
-            ),
+            inprocess.health_check.CudaHealthCheck(timedelta(seconds=args.health_timeout)),
             inprocess.health_check.FaultCounter(args.max_rank_faults),
         ),
         rank_assignment=inprocess.Compose(
@@ -451,9 +442,9 @@ def train(
         log_interval = args.log_interval
         sync_interval = args.sync_interval
 
-        model = nn.Sequential(
-            *[nn.Linear(hidden, hidden, bias=False) for _ in range(layers)]
-        ).to(device)
+        model = nn.Sequential(*[nn.Linear(hidden, hidden, bias=False) for _ in range(layers)]).to(
+            device
+        )
         opt = torch.optim.Adam(model.parameters(), lr=1e-6)
 
         if args.distributed:

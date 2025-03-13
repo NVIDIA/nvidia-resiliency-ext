@@ -166,14 +166,10 @@ class BaseCheckpointManager(ABC):
             # Use cache to optimize performance in case of two-step loading.
             # Assumes the cache remains valid unless a new save occurs,
             # as no other operations should invalidate the most recent iteration.
-            logger.debug(
-                f"Using cached latest_iteration: {self.latest_iteration} in find_latest"
-            )
+            logger.debug(f"Using cached latest_iteration: {self.latest_iteration} in find_latest")
             return self.latest_iteration
         group_wrapper = GroupWrapper()
-        self.globally_available_ids = group_wrapper.all_gather_object(
-            self._my_ckpt_ids()
-        )
+        self.globally_available_ids = group_wrapper.all_gather_object(self._my_ckpt_ids())
 
         # Maps each iteration to a corresponding set of ranks
         checkpoint_coverage_map = defaultdict(set)
@@ -214,17 +210,11 @@ class BaseCheckpointManager(ABC):
         ckpt_id = self._ckpt_id(self.latest_iteration)
         logger.debug(f"Loading checkpoint from {self.latest_iteration} iteration")
         if self.repl_strategy is not None:
-            plan = self.repl_strategy.retrieve_plan(
-                self.globally_available_ids, [ckpt_id]
-            )
+            plan = self.repl_strategy.retrieve_plan(self.globally_available_ids, [ckpt_id])
             my_data = {k: self._load_fn(k) for k in plan.required_ids()}
-            execute_result = list(
-                self.repl_strategy.retrieve_execute(plan, my_data).items()
-            )
+            execute_result = list(self.repl_strategy.retrieve_execute(plan, my_data).items())
             # TODO: refactor
-            assert (
-                len(execute_result) == 1
-            ), f"Got {len(execute_result)} IDs, but requested only 1!"
+            assert len(execute_result) == 1, f"Got {len(execute_result)} IDs, but requested only 1!"
             assert (
                 execute_result[0][0] == ckpt_id
             ), f"Retrieved different ID ({execute_result[0][0]}) than requested ({ckpt_id})?"
@@ -283,9 +273,7 @@ class BaseCheckpointManager(ABC):
                 )
             else:
                 if validated_latest_iteration == iteration:
-                    logging.info(
-                        f"Succesfully saved local checkpoint from iteration {iteration}"
-                    )
+                    logging.info(f"Succesfully saved local checkpoint from iteration {iteration}")
                 else:
                     logging.info(
                         f"WARNING: during saving iteration {iteration} "

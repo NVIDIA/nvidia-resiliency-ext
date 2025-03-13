@@ -67,9 +67,7 @@ class LocalCheckpointManager(BaseCheckpointManager):
     @property
     def local_ckpt_dir(self):
         if self._local_ckpt_dir is None:
-            self._local_ckpt_dir = (
-                Path(self.root_local_ckpt_dir) / self.session_id / str(self.rank)
-            )
+            self._local_ckpt_dir = Path(self.root_local_ckpt_dir) / self.session_id / str(self.rank)
         return self._local_ckpt_dir
 
     def _ensure_dir(self):
@@ -140,9 +138,7 @@ class LocalCheckpointManager(BaseCheckpointManager):
             iteration : The iteration number for which the checkpoint was successfully saved.
         """
         ckpts = self.local_ckpt_dir.glob(self._filename_from_template("*", "*", "*"))
-        rm_ckpts = [
-            ckpt for ckpt in ckpts if self._filename_to_id(ckpt.name)[0] < iteration
-        ]
+        rm_ckpts = [ckpt for ckpt in ckpts if self._filename_to_id(ckpt.name)[0] < iteration]
         for ckpt in rm_ckpts:
             logging.info(f"Removing {ckpt}")
             ckpt.unlink()
@@ -154,9 +150,7 @@ class LocalCheckpointManager(BaseCheckpointManager):
         Args:
             iteration : The iteration number for which the checkpoint failed to save.
         """
-        rm_ckpts = self.local_ckpt_dir.glob(
-            self._filename_from_template(iteration, "*", "*")
-        )
+        rm_ckpts = self.local_ckpt_dir.glob(self._filename_from_template(iteration, "*", "*"))
         for ckpt in rm_ckpts:
             logging.info(f"Removing {ckpt}")
             ckpt.unlink()
@@ -165,9 +159,7 @@ class LocalCheckpointManager(BaseCheckpointManager):
         self, iteration: Union[int, str], rank: Union[int, str], extra_suffix: str = ""
     ):
         digits = 7
-        iteration_string = (
-            str(iteration).zfill(digits) if isinstance(iteration, int) else iteration
-        )
+        iteration_string = str(iteration).zfill(digits) if isinstance(iteration, int) else iteration
         if iteration_string.isdigit():
             assert len(iteration_string) == digits
         file_name = f"iter_{iteration_string}_{rank}_local{extra_suffix}.pt"

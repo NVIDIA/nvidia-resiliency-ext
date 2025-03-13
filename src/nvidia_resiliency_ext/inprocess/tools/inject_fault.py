@@ -163,18 +163,12 @@ def inject_fault(
     if not isinstance(delay, float):
         delay = generator.uniform(delay[0], delay[1])
 
-    num_ranks_to_inject = min(
-        generator.randint(min_faults, max_faults), world_size - keep_alive
-    )
-    ranks_to_inject = generator.sample(
-        range(keep_alive, world_size), num_ranks_to_inject
-    )
+    num_ranks_to_inject = min(generator.randint(min_faults, max_faults), world_size - keep_alive)
+    ranks_to_inject = generator.sample(range(keep_alive, world_size), num_ranks_to_inject)
     fault = generator.sample(faults, 1)[0]
 
     if rank in ranks_to_inject:
-        log.info(
-            f"{seed=} {num_ranks_to_inject=} {ranks_to_inject=} " f"{fault=} {delay=}"
-        )
+        log.info(f"{seed=} {num_ranks_to_inject=} {ranks_to_inject=} " f"{fault=} {delay=}")
 
         if fault == Fault.ASYNC_EXC:
             thread = threading.Thread(
@@ -199,20 +193,14 @@ def inject_fault(
             )
             thread.start()
         elif fault == Fault.GIL:
-            thread = threading.Thread(
-                target=lock_gil, args=(delay, callback), daemon=True
-            )
+            thread = threading.Thread(target=lock_gil, args=(delay, callback), daemon=True)
             thread.start()
         elif fault == Fault.GPU_SLEEP:
             device = torch.cuda.current_device()
-            thread = threading.Thread(
-                target=gpu_sleep, args=(delay, device, callback), daemon=True
-            )
+            thread = threading.Thread(target=gpu_sleep, args=(delay, device, callback), daemon=True)
             thread.start()
         elif fault == Fault.SEGFAULT:
-            thread = threading.Thread(
-                target=segfault, args=(delay, callback), daemon=True
-            )
+            thread = threading.Thread(target=segfault, args=(delay, callback), daemon=True)
             thread.start()
         elif fault == Fault.ABORT:
             thread = threading.Thread(target=abort, args=(delay, callback), daemon=True)

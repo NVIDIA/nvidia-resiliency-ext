@@ -92,9 +92,7 @@ def tmp_path():
 def _create_test_logger(logger_name, log_file_path):
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     file_handler = logging.FileHandler(log_file_path)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
@@ -123,9 +121,7 @@ def test_prints_perf_scores_when_fitting(tmp_path):
     _create_test_logger("test_logger", log_file_path)
     straggler_det_cb = StragglerDetectionCallback(**cb_args)
 
-    ptl_logger = pl.loggers.CSVLogger(
-        save_dir=tmp_path, name=None, flush_logs_every_n_steps=1
-    )
+    ptl_logger = pl.loggers.CSVLogger(save_dir=tmp_path, name=None, flush_logs_every_n_steps=1)
 
     trainer = pl.Trainer(
         strategy="ddp",
@@ -181,9 +177,7 @@ def test_logs_perf_scores_when_fitting(tmp_path):
     _create_test_logger("test_logger", log_file_path)
     straggler_det_cb = StragglerDetectionCallback(**cb_args)
 
-    ptl_logger = pl.loggers.CSVLogger(
-        save_dir=tmp_path, name=None, flush_logs_every_n_steps=1
-    )
+    ptl_logger = pl.loggers.CSVLogger(save_dir=tmp_path, name=None, flush_logs_every_n_steps=1)
 
     trainer = pl.Trainer(
         strategy="ddp",

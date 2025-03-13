@@ -55,9 +55,7 @@ class TestCudaHealthCheck(unittest.TestCase):
     def test_timeout(self):
         def run():
             torch.ones(1).cuda()
-            check = inprocess.health_check.CudaHealthCheck(
-                datetime.timedelta(seconds=1)
-            )
+            check = inprocess.health_check.CudaHealthCheck(datetime.timedelta(seconds=1))
             torch.cuda._sleep(1 << 40)
             try:
                 check(None, None)
@@ -72,9 +70,7 @@ class TestCudaHealthCheck(unittest.TestCase):
     @unittest.mock.patch.object(threading, "excepthook", new=lambda _: None)
     def test_raises(self):
         def run():
-            check = inprocess.health_check.CudaHealthCheck(
-                datetime.timedelta(seconds=5)
-            )
+            check = inprocess.health_check.CudaHealthCheck(datetime.timedelta(seconds=5))
             b = torch.ones(1, dtype=torch.int64).cuda()
             a = torch.ones(1, dtype=torch.int64).cuda()
             a[b] = 0

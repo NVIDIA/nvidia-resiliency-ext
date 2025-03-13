@@ -435,8 +435,7 @@ class CallWrapper:
 
                             progress_watchdog.reset()
                             completion_timeout_chunk = (
-                                wrapper.soft_timeout
-                                - wrapper.progress_watchdog_interval
+                                wrapper.soft_timeout - wrapper.progress_watchdog_interval
                             ) / 2
                             store.completion_barrier(
                                 rank=state.rank,
@@ -448,9 +447,7 @@ class CallWrapper:
                             try:
                                 log.error(log_exc(state, train_ex, "train_ex"))
                                 store.record_interrupted(
-                                    InterruptionRecord(
-                                        state.rank, Interruption.EXCEPTION
-                                    )
+                                    InterruptionRecord(state.rank, Interruption.EXCEPTION)
                                 )
                                 progress_watchdog.spin_drain()
                                 monitor_thread.final_check_and_shutdown()
@@ -501,9 +498,7 @@ class CallWrapper:
                     )
                     terminated_ranks = store.get_terminated_ranks()
 
-                    state, terminated_ranks = wrapper.rank_assignment(
-                        state, terminated_ranks
-                    )
+                    state, terminated_ranks = wrapper.rank_assignment(state, terminated_ranks)
                     if terminated_ranks:
                         msg = f"{terminated_ranks=} is not empty"
                         raise RestartError(msg)
@@ -524,9 +519,7 @@ class CallWrapper:
             log.critical(log_exc(state, exit_ex, "exit_ex"))
             if monitor_thread is not None:
                 monitor_thread.shutdown()
-            store.record_interrupted(
-                InterruptionRecord(state.rank, Interruption.BASE_EXCEPTION)
-            )
+            store.record_interrupted(InterruptionRecord(state.rank, Interruption.BASE_EXCEPTION))
             store.record_terminated_rank(state.rank)
 
             store.termination_barrier(

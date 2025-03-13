@@ -39,9 +39,7 @@ def _get_summary(timings):
         straggler.Statistic.MAX: np.max(timings),
         straggler.Statistic.MED: np.median(timings),
         straggler.Statistic.AVG: np.mean(timings),
-        straggler.Statistic.STD: (
-            np.std(timings).item() if len(timings) > 1 else float("nan")
-        ),
+        straggler.Statistic.STD: (np.std(timings).item() if len(timings) > 1 else float("nan")),
         straggler.Statistic.NUM: len(timings),
     }
     return stats
@@ -314,33 +312,23 @@ def _test_mapping_consitiency_with_gather_on_rank0(ret_queue):
             0.5,
             1.0,
         ]
-        assert set(
-            report.section_relative_perf_scores["initial_section_rank0"].keys()
-        ) == {0, 1}
+        assert set(report.section_relative_perf_scores["initial_section_rank0"].keys()) == {0, 1}
         assert all(
             math.isnan(v)
-            for v in report.section_relative_perf_scores[
-                "initial_section_rank0"
-            ].values()
+            for v in report.section_relative_perf_scores["initial_section_rank0"].values()
         )
-        assert set(
-            report.section_relative_perf_scores["initial_section_rank1"].keys()
-        ) == {0, 1}
+        assert set(report.section_relative_perf_scores["initial_section_rank1"].keys()) == {0, 1}
         assert all(
             math.isnan(v)
-            for v in report.section_relative_perf_scores[
-                "initial_section_rank1"
-            ].values()
+            for v in report.section_relative_perf_scores["initial_section_rank1"].values()
         )
         assert set(report.section_relative_perf_scores["rank0_only"].keys()) == {0, 1}
         assert all(
-            math.isnan(v)
-            for v in report.section_relative_perf_scores["rank0_only"].values()
+            math.isnan(v) for v in report.section_relative_perf_scores["rank0_only"].values()
         )
         assert set(report.section_relative_perf_scores["rank1_only"].keys()) == {0, 1}
         assert all(
-            math.isnan(v)
-            for v in report.section_relative_perf_scores["rank1_only"].values()
+            math.isnan(v) for v in report.section_relative_perf_scores["rank1_only"].values()
         )
     else:
         assert not report

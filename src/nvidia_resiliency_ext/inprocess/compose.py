@@ -79,10 +79,7 @@ class Compose:
                     f"calling {instance=} with {args=}"
                 )
                 warnings.warn(msg)
-            if (
-                not isinstance(ret, tuple)
-                and len(inspect.signature(instance).parameters) > 0
-            ):
+            if not isinstance(ret, tuple) and len(inspect.signature(instance).parameters) > 0:
                 args = (ret,)
             else:
                 args = ret

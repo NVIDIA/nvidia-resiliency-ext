@@ -30,9 +30,7 @@ class TestException(Exception):
 class TestAsyncRaise(unittest.TestCase):
     def test(self):
         def run():
-            inprocess.monitor_thread.async_raise(
-                threading.main_thread().ident, TestException
-            )
+            inprocess.monitor_thread.async_raise(threading.main_thread().ident, TestException)
 
         thread = threading.Thread(target=run)
         with self.assertRaises(TestException):
@@ -43,9 +41,7 @@ class TestAsyncRaise(unittest.TestCase):
         def run(start_event, event):
             start_event.wait()
             while not event.is_set():
-                inprocess.monitor_thread.async_raise(
-                    threading.main_thread().ident, TestException
-                )
+                inprocess.monitor_thread.async_raise(threading.main_thread().ident, TestException)
 
         for _ in range(iterations):
             stop_event = threading.Event()
@@ -75,9 +71,7 @@ class TestAsyncRaise(unittest.TestCase):
         def run(start_event, event):
             start_event.wait()
             while not event.is_set():
-                inprocess.monitor_thread.async_raise(
-                    threading.main_thread().ident, TestException
-                )
+                inprocess.monitor_thread.async_raise(threading.main_thread().ident, TestException)
 
         for _ in range(iterations):
             stop_event = threading.Event()

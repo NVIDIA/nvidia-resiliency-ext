@@ -133,11 +133,7 @@ class StoppingPtlCallback(Callback):
         assert False, "should not get here"
 
     def _save_last_checkpoint(self, trainer):
-        chkpt_cb = [
-            cb
-            for cb in trainer.callbacks
-            if isinstance(cb, pl.callbacks.ModelCheckpoint)
-        ]
+        chkpt_cb = [cb for cb in trainer.callbacks if isinstance(cb, pl.callbacks.ModelCheckpoint)]
         assert len(chkpt_cb) == 1
         chkpt_cb = chkpt_cb[0]
         monitor_candidates = chkpt_cb._monitor_candidates(trainer)
@@ -172,9 +168,7 @@ def run_rank_monitors():
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
-                ft_cfg, rank, mp_ctx_spawn
-            )
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
             rank_monitors.append(p)
 
         yield
@@ -190,9 +184,7 @@ def run_rank_monitors():
 def _create_test_logger(logger_name, log_file_path):
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     file_handler = logging.FileHandler(log_file_path)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
@@ -273,9 +265,7 @@ def _run_eval(tmp_path, which="not set"):
     elif which == "test":
         trainer.test(model, ckpt_path="last")
     else:
-        raise ValueError(
-            f"Invalid 'which' value: {which} should be 'validate' or 'test'"
-        )
+        raise ValueError(f"Invalid 'which' value: {which} should be 'validate' or 'test'")
 
 
 def test_finished_fit_with_iter_limit(tmp_path, run_rank_monitors):

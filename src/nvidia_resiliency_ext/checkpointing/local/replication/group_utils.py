@@ -193,9 +193,7 @@ class GroupWrapper:
         """
         my_rank = dist.get_rank()
         my_process_group = [
-            g
-            for g in list_of_groups
-            if my_rank in dist.get_process_group_ranks(g)  # type: ignore
+            g for g in list_of_groups if my_rank in dist.get_process_group_ranks(g)  # type: ignore
         ]
         assert (
             len(my_process_group) <= 1
@@ -355,13 +353,11 @@ class GroupWrapper:
 
         # We gather metadata on the tensors being received, including shape and original device type
         with debug_time("all_gather_placeholders"):
-            group_tensor_placeholders: List[List[TensorPlaceholder]] = (
-                self.all_gather_object([TensorPlaceholder(ten) for ten in my_tensors])
+            group_tensor_placeholders: List[List[TensorPlaceholder]] = self.all_gather_object(
+                [TensorPlaceholder(ten) for ten in my_tensors]
             )
         result = []
-        for broadcasting_rank, tensor_placeholders in enumerate(
-            group_tensor_placeholders
-        ):
+        for broadcasting_rank, tensor_placeholders in enumerate(group_tensor_placeholders):
             i_am_broadcasting = broadcasting_rank == self.my_group_rank
             global_broadcasting_rank = self.get_global_rank(broadcasting_rank)
             result.append([])
@@ -379,9 +375,7 @@ class GroupWrapper:
         return result
 
     # TODO: use dist.batch_isend_irecv
-    def isend_state_dict(
-        self, state_dict: TensorAwareStateDict, dst: int
-    ) -> Dict[str, float]:
+    def isend_state_dict(self, state_dict: TensorAwareStateDict, dst: int) -> Dict[str, float]:
         """Sends the state dictionary to a specified destination.
 
         This method pops tensor data from the state dictionary, sends the state
@@ -479,9 +473,7 @@ class GroupWrapper:
         # TODO: deduplicate or raise an error if found duplicates?
         # assert not exchange_plan.contains_duplicates(), "Exchange plan contains duplicates"
         missing_ids = exchange_plan.required_ids().difference(my_data.keys())
-        assert (
-            not missing_ids
-        ), f"Not all required data provided! Missing ids: {missing_ids}"
+        assert not missing_ids, f"Not all required data provided! Missing ids: {missing_ids}"
 
         recv_buf = {}
         for entry in exchange_plan.entries:
@@ -491,9 +483,7 @@ class GroupWrapper:
                 recv_buf[entry.id_] = my_data[entry.id_]
             # I'm sending to someone else
             elif entry.sender == self.get_global_rank():
-                send_log_data = self.isend_state_dict(
-                    my_data[entry.id_], entry.receiver
-                )
+                send_log_data = self.isend_state_dict(my_data[entry.id_], entry.receiver)
                 sent_bytes += send_log_data["data_sent"]
             # I'm receiving from someone else
             elif entry.receiver == self.get_global_rank():

@@ -133,9 +133,7 @@ class ShiftRanks(RankAssignment):
         if rank in terminated_ranks:
             raise RankDiscarded(f"{rank=} {terminated_ranks=}")
         else:
-            rank = rank - sum(
-                rank > terminated_rank for terminated_rank in terminated_ranks
-            )
+            rank = rank - sum(rank > terminated_rank for terminated_rank in terminated_ranks)
 
         state.rank = rank
         state.world_size = world_size
@@ -229,11 +227,7 @@ class FilterGroupedByKey(RankAssignment):
         alive_world_size = world_size - len(terminated_ranks)
 
         if rank not in terminated_ranks:
-            key = (
-                self.key_or_fn(rank, world_size)
-                if callable(self.key_or_fn)
-                else self.key_or_fn
-            )
+            key = self.key_or_fn(rank, world_size) if callable(self.key_or_fn) else self.key_or_fn
             key = f"filter_grouped_by_key_{self.name}_{key}"
             store.add(key, 1)
             store.barrier(
@@ -256,11 +250,7 @@ class FilterGroupedByKey(RankAssignment):
 
             if store.check([RANKS_TO_TERMINATE]):
                 ranks_to_terminate = set(
-                    int(r)
-                    for r in store.get(RANKS_TO_TERMINATE)
-                    .decode()
-                    .rstrip(",")
-                    .split(",")
+                    int(r) for r in store.get(RANKS_TO_TERMINATE).decode().rstrip(",").split(",")
                 )
             else:
                 ranks_to_terminate = set()

@@ -75,9 +75,7 @@ class TimeoutsCalc:
         Synchronize results from all ranks, by taking the max of all measured times.
         """
         if not (dist.is_available() and dist.is_initialized()):
-            raise TimeoutsCalcError(
-                ".synchronize_all() requires initialized process group."
-            )
+            raise TimeoutsCalcError(".synchronize_all() requires initialized process group.")
         as_tensor = torch.tensor(
             [self.initial_max_time, self.subsequent_max_time],
             dtype=torch.float32,

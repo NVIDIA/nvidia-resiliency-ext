@@ -96,9 +96,7 @@ class Logging:
         parent = logger.parent
         while parent is not None:
             stream_handlers = [
-                handler
-                for handler in parent.handlers
-                if type(handler) is logging.StreamHandler
+                handler for handler in parent.handlers if type(handler) is logging.StreamHandler
             ]
             if stream_handlers:
                 break

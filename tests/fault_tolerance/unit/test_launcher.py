@@ -77,9 +77,7 @@ def test_rank_not_send_initial_hb(tmp_dir):
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
-    cmd_to_run = (
-        f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
-    )
+    cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
@@ -98,9 +96,7 @@ def test_rank_failed(tmp_dir):
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
-    cmd_to_run = (
-        f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
-    )
+    cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
@@ -159,9 +155,7 @@ def test_launcher_sigterm_ignored(tmp_dir):
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
-    cmd_to_run = (
-        f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=ignore"
-    )
+    cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=ignore"
     launcher_cmd = (
         "ft_launcher --term-timeout=5 --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
@@ -182,9 +176,7 @@ def test_ranks_restart(tmp_dir):
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
-    cmd_to_run = (
-        f"{_get_util_script_path()} --scenario={_get_func_name()} --tmp_dir={tmp_dir}"
-    )
+    cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --tmp_dir={tmp_dir}"
     launcher_cmd = (
         "ft_launcher --max-restarts=2 --monitor-interval=1"
         f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
@@ -254,18 +246,14 @@ def test_config_provided_via_cli(tmp_dir):
         " --ft-param-log_level=WARNING"
     )
     cmd_to_run = f"{_get_util_script_path()} --scenario=dump_cfg --tmp_dir={tmp_dir}"
-    launcher_cmd = (
-        "ft_launcher" f" {ft_params_str} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
-    )
+    launcher_cmd = "ft_launcher" f" {ft_params_str} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert ret_code == 0
 
     dumped_ft_cfg_path = os.path.join(tmp_dir, "cfg_dump.yaml")
     assert os.path.exists(dumped_ft_cfg_path)
 
-    restored_ft_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(
-        dumped_ft_cfg_path
-    )
+    restored_ft_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(dumped_ft_cfg_path)
     assert restored_ft_conf.workload_check_interval == 321.0
     assert restored_ft_conf.initial_rank_heartbeat_timeout == 1.0
     assert restored_ft_conf.rank_heartbeat_timeout == 2.0
@@ -303,9 +291,7 @@ def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
     dumped_ft_cfg_path = os.path.join(tmp_dir, "cfg_dump.yaml")
     assert os.path.exists(dumped_ft_cfg_path)
 
-    restored_ft_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(
-        dumped_ft_cfg_path
-    )
+    restored_ft_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(dumped_ft_cfg_path)
     assert restored_ft_conf.workload_check_interval == 321.0
     assert restored_ft_conf.initial_rank_heartbeat_timeout == 111.0
     assert restored_ft_conf.rank_heartbeat_timeout == 123.0

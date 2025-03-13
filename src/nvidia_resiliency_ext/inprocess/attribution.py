@@ -53,9 +53,7 @@ def format_interruption_records(records):
     msg = ", ".join(
         (
             f"{interruption} on {ranks=}"
-            for interruption, group in itertools.groupby(
-                records, key=lambda r: r.interruption
-            )
+            for interruption, group in itertools.groupby(records, key=lambda r: r.interruption)
             for ranks in [[elem.rank for elem in group]]
         )
     )

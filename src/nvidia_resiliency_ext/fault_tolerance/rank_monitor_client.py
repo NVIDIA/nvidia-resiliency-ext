@@ -121,9 +121,7 @@ class RankMonitorClient:
         self.timeouts = new_timeouts
 
     @staticmethod
-    def _merge_timeouts(
-        new_value: float, old_value: float, alpha: float = 0.75
-    ) -> float:
+    def _merge_timeouts(new_value: float, old_value: float, alpha: float = 0.75) -> float:
         """Merge computed timeout values with EMA"""
         assert 0 < alpha <= 1, "Alpha must be in the range (0, 1]."
         assert old_value > 0 and new_value > 0, "Timeout values must be non-negative."
@@ -150,9 +148,7 @@ class RankMonitorClient:
             to = self.timeouts_calc.get_timeouts()
             new_initial, new_subsequent = to.initial, to.subsequent
             if self.timeouts.are_valid and self.timeouts.were_calculated:
-                new_initial = RankMonitorClient._merge_timeouts(
-                    new_initial, self.timeouts.initial
-                )
+                new_initial = RankMonitorClient._merge_timeouts(new_initial, self.timeouts.initial)
                 new_subsequent = RankMonitorClient._merge_timeouts(
                     new_subsequent, self.timeouts.subsequent
                 )
@@ -167,9 +163,7 @@ class RankMonitorClient:
             if skip_if_not_ready:
                 return False
             else:
-                raise RankMonitorClientError(
-                    "Not enough heartbeats to compute timeouts."
-                )
+                raise RankMonitorClientError("Not enough heartbeats to compute timeouts.")
 
     def _send_heartbeat_impl(self, state) -> None:
         """
@@ -216,9 +210,7 @@ class RankMonitorClient:
         if self.is_initialized:
             raise RankMonitorClientError("RankMonitorClient is already initialized")
 
-        self.logger.debug(
-            f"Initializing fault detection. Rank process PID={os.getpid()}"
-        )
+        self.logger.debug(f"Initializing fault detection. Rank process PID={os.getpid()}")
 
         self.rank_info = RankInfo.get_for_current_rank()
 
@@ -292,9 +284,7 @@ class RankMonitorClient:
             state: (Mapping[str, Any]): The state as returend from the `state_dict` method.
         """
         if self.CURRENT_TIMEOUTS_STATE_KEY in state:
-            self.loaded_timeouts = HeartbeatTimeouts(
-                **state[self.CURRENT_TIMEOUTS_STATE_KEY]
-            )
+            self.loaded_timeouts = HeartbeatTimeouts(**state[self.CURRENT_TIMEOUTS_STATE_KEY])
             if self.is_initialized:
                 self._set_calculated_timeouts(self.loaded_timeouts)
             # else, the timeouts will be set in `init_workload_monitoring`

@@ -37,9 +37,7 @@ def _get_summary(timings):
         straggler.Statistic.MAX: np.max(timings),
         straggler.Statistic.MED: np.median(timings),
         straggler.Statistic.AVG: np.mean(timings),
-        straggler.Statistic.STD: (
-            np.std(timings).item() if len(timings) > 1 else float("nan")
-        ),
+        straggler.Statistic.STD: (np.std(timings).item() if len(timings) > 1 else float("nan")),
         straggler.Statistic.NUM: len(timings),
     }
     return stats

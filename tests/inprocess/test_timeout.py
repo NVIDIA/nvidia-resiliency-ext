@@ -72,9 +72,7 @@ class TestSoft(unittest.TestCase):
         ret_val = 123
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             soft_timeout=datetime.timedelta(seconds=0.5),
             **kwargs(),
         )

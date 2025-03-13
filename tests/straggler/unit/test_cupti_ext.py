@@ -98,9 +98,7 @@ def test_reset():
 
 def test_max_stats_per_kernel():
     MAX_STATS_LEN_PER_KERNEL = 7
-    cupti_ext = cupti_module.CuptiProfiler(
-        statsMaxLenPerKernel=MAX_STATS_LEN_PER_KERNEL
-    )
+    cupti_ext = cupti_module.CuptiProfiler(statsMaxLenPerKernel=MAX_STATS_LEN_PER_KERNEL)
     a = torch.randn(1000, 1000, device="cuda")
     b = torch.randn(1000, 1000, device="cuda")
     torch.cuda.synchronize()

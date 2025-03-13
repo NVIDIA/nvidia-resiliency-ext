@@ -45,9 +45,7 @@ def parse_args():
     parser.add_argument("--backward", action="store_true")
     parser.add_argument("--ddp", action="store_true")
     parser.add_argument("--report_interval", type=int, default=100)
-    parser.add_argument(
-        "--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int
-    )
+    parser.add_argument("--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int)
 
     # Filter out pytest arguments
     args, _ = parser.parse_known_args(sys.argv[1:])
@@ -60,10 +58,7 @@ def setup_distributed():
 
 
 def skip_if_condition(test_scenario):
-    return (
-        int(os.getenv("WORLD_SIZE", "1")) == 1
-        and test_scenario["gather_on_rank0"] is True
-    )
+    return int(os.getenv("WORLD_SIZE", "1")) == 1 and test_scenario["gather_on_rank0"] is True
 
 
 @pytest.mark.parametrize(
@@ -91,9 +86,7 @@ def skip_if_condition(test_scenario):
 )
 def test_reporting_options(test_scenario, monkeypatch):
     if skip_if_condition(test_scenario):
-        pytest.skip(
-            "Testing gather_on_rank0 option on multi GPU, but only 1 GPU is available"
-        )
+        pytest.skip("Testing gather_on_rank0 option on multi GPU, but only 1 GPU is available")
 
     args = parse_args()
     world_size = int(os.getenv("WORLD_SIZE", "1"))
@@ -122,9 +115,7 @@ def test_reporting_options(test_scenario, monkeypatch):
         scores_to_compute=scores_to_compute, gather_on_rank0=gather_on_rank0
     )
 
-    straggler.Detector.wrap_callables(
-        callable_ids=[straggler.CallableId(model, "forward")]
-    )
+    straggler.Detector.wrap_callables(callable_ids=[straggler.CallableId(model, "forward")])
 
     for i in range(args.iters):
         data = torch.rand(args.batch, args.hidden, device=device)
@@ -200,9 +191,7 @@ def test_reporting_options(test_scenario, monkeypatch):
 )
 def test_no_gather_called(monkeypatch):
     with patch("torch.distributed.all_gather_object") as mock_all_gather:
-        mock_all_gather.side_effect = RuntimeError(
-            "Distributed communication should not be used"
-        )
+        mock_all_gather.side_effect = RuntimeError("Distributed communication should not be used")
         test_scenario = {
             "scores_to_compute": "individual_perf_scores",
             "gather_on_rank0": False,

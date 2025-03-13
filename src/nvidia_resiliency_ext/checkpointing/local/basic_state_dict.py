@@ -172,9 +172,7 @@ class BasicTensorAwareStateDict(TensorAwareStateDict):
         """
         assert not self.is_hollow
         dict_list_map_inplace(
-            lambda x: x.to("cpu", non_blocking=non_blocking)
-            if isinstance(x, torch.Tensor)
-            else x,
+            lambda x: x.to("cpu", non_blocking=non_blocking) if isinstance(x, torch.Tensor) else x,
             self.state_dict,
         )
 
@@ -187,8 +185,6 @@ class BasicTensorAwareStateDict(TensorAwareStateDict):
         """
         assert not self.is_hollow
         dict_list_map_inplace(
-            lambda x: x.to("cuda", non_blocking=non_blocking)
-            if isinstance(x, torch.Tensor)
-            else x,
+            lambda x: x.to("cuda", non_blocking=non_blocking) if isinstance(x, torch.Tensor) else x,
             self.state_dict,
         )

@@ -94,10 +94,7 @@ class StoreMixin:
         terminated_ranks = set(
             [
                 int(r)
-                for r in self.get(self.BASE_TERMINATED_LIST)
-                .decode()
-                .rstrip(",")
-                .split(",")
+                for r in self.get(self.BASE_TERMINATED_LIST).decode().rstrip(",").split(",")
                 if r.strip()
             ]
         )
@@ -125,10 +122,7 @@ class StoreMixin:
         self.append(self.INTERRUPTION_RECORDS, "")
         records = [
             InterruptionRecord.from_str(record)
-            for record in self.get(self.INTERRUPTION_RECORDS)
-            .decode()
-            .rstrip(";")
-            .split(";")
+            for record in self.get(self.INTERRUPTION_RECORDS).decode().rstrip(";").split(";")
             if record.strip()
         ]
         return records
@@ -154,10 +148,7 @@ class StoreMixin:
         terminated_ranks = set(
             int(terminated_rank)
             for terminated_rank in self.multi_get(
-                [
-                    self.TERMINATED_RANK.format(idx=i)
-                    for i in range(num_terminated_ranks)
-                ]
+                [self.TERMINATED_RANK.format(idx=i) for i in range(num_terminated_ranks)]
             )
         )
         return terminated_ranks
@@ -183,15 +174,9 @@ class StoreMixin:
 
         if arrived_count > rendezvous_count:
             arrived_ranks = sorted(
-                [
-                    int(r)
-                    for r in self.get(arrived_key).decode().rstrip(",").split(",")
-                    if r.strip()
-                ]
+                [int(r) for r in self.get(arrived_key).decode().rstrip(",").split(",") if r.strip()]
             )
-            raise BarrierOverflow(
-                f"{rank=} {rendezvous_count=} {group_name=} {arrived_ranks=}"
-            )
+            raise BarrierOverflow(f"{rank=} {rendezvous_count=} {group_name=} {arrived_ranks=}")
 
         if arrived_count == rendezvous_count:
             self.set(last_worker_arrived_key, "1")
@@ -225,11 +210,7 @@ class StoreMixin:
         arrived_key = f"{store_key}:arrived"
         self.append(arrived_key, "")
         arrived_ranks = set(
-            [
-                int(r)
-                for r in self.get(arrived_key).decode().rstrip(",").split(",")
-                if r.strip()
-            ]
+            [int(r) for r in self.get(arrived_key).decode().rstrip(",").split(",") if r.strip()]
         )
         log.debug(f"{rank=} {arrived_ranks=}")
         arrived = rank in arrived_ranks
@@ -262,19 +243,13 @@ class StoreMixin:
             raise RuntimeError
 
         arrived_ranks = set(
-            [
-                int(r)
-                for r in self.get(arrived_key).decode().rstrip(",").split(",")
-                if r.strip()
-            ]
+            [int(r) for r in self.get(arrived_key).decode().rstrip(",").split(",") if r.strip()]
         )
         arrived_count = len(arrived_ranks)
 
         if arrived_count > rendezvous_count:
             arrived_list = sorted(list(arrived_ranks))
-            raise BarrierOverflow(
-                f"{rank=} {rendezvous_count=} {group_name=} {arrived_list=}"
-            )
+            raise BarrierOverflow(f"{rank=} {rendezvous_count=} {group_name=} {arrived_list=}")
 
         if arrived_count == rendezvous_count:
             self.set(last_worker_arrived_key, "1")

@@ -73,10 +73,7 @@ class RetryController(Initialize):
         if (
             state.world_size < self.min_world_size
             or state.active_world_size < self.min_active_world_size
-            or (
-                self.max_iterations is not None
-                and state.iteration >= self.max_iterations
-            )
+            or (self.max_iterations is not None and state.iteration >= self.max_iterations)
         ):
             msg = (
                 f"{state.iteration=} {self.max_iterations=} "

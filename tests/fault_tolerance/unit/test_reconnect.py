@@ -54,9 +54,7 @@ def rank_monitors_fixture():
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
-                ft_cfg, rank, mp_ctx_spawn
-            )
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
             rank_monitors.append(p)
             os.environ["RANK"] = ""
 

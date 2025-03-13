@@ -126,9 +126,7 @@ def main(rank, world_size):
         sampler.set_epoch(epoch)
         for batch_idx, (data, target) in enumerate(dataloader):
             if (batch_idx % num_iters_for_10pct) == 0 and rank == 0:
-                print(
-                    f"Epoch {epoch} progress: {100 * batch_idx / num_iters_in_epoch:.2f}%"
-                )
+                print(f"Epoch {epoch} progress: {100 * batch_idx / num_iters_in_epoch:.2f}%")
             optimizer.zero_grad()
             output = ddp_model(data)
             loss = loss_fn(output, target)

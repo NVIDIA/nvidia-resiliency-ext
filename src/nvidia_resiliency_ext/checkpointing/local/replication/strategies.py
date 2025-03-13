@@ -125,10 +125,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
             )
 
         others_tensor_data_nbytes = sum(
-            [
-                sum(ten.nbytes for ten in tensor_list)
-                for tensor_list in others_tensor_data
-            ]
+            [sum(ten.nbytes for ten in tensor_list) for tensor_list in others_tensor_data]
         )
         sent_bytes += my_tensor_data_nbytes
         recv_bytes += others_tensor_data_nbytes - my_tensor_data_nbytes
@@ -294,9 +291,7 @@ class LazyReplicationStrategyBuilder(ReplicationStrategy, ABC, Generic[EagerT]):
         """Instantiates the eager class."""
 
 
-class LazyCliqueReplicationStrategy(
-    LazyReplicationStrategyBuilder[CliqueReplicationStrategy]
-):
+class LazyCliqueReplicationStrategy(LazyReplicationStrategyBuilder[CliqueReplicationStrategy]):
     """Lazy version of CliqueReplicationStrategy allowing to delay process group formation.
 
     Training ranks are divided into `W // F` distinct groups of size `F`, where

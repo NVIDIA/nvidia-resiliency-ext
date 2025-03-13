@@ -79,9 +79,7 @@ def get_device_for_backend(group):
 def all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, group=None, async_op=False):
     """All reduce or no-op if the world size is 1."""
     if get_world_size(group) > 1:
-        torch.distributed.all_reduce(
-            tensor=tensor, op=op, group=group, async_op=async_op
-        )
+        torch.distributed.all_reduce(tensor=tensor, op=op, group=group, async_op=async_op)
 
 
 def gather_on_rank0(tensor, group=None):
@@ -97,9 +95,7 @@ def gather_on_rank0(tensor, group=None):
         tensor = tensor.to(gather_device)
         if rank == 0:
             gather_list = [torch.empty_like(tensor) for _ in range(world_size)]
-        torch.distributed.gather(
-            tensor=tensor, gather_list=gather_list, dst=0, group=group
-        )
+        torch.distributed.gather(tensor=tensor, gather_list=gather_list, dst=0, group=group)
         if rank == 0:
             for i in range(world_size):
                 gather_list[i] = gather_list[i].to(orig_device)
@@ -113,11 +109,7 @@ def is_all_true(flag: bool, group=None) -> bool:
     ret = flag
     if get_world_size(group) > 1:
         device = get_device_for_backend(group)
-        flag_tensor = torch.tensor(
-            [1.0 if flag else 0], dtype=torch.float32, device=device
-        )
-        torch.distributed.all_reduce(
-            flag_tensor, op=torch.distributed.ReduceOp.MIN, group=group
-        )
+        flag_tensor = torch.tensor([1.0 if flag else 0], dtype=torch.float32, device=device)
+        torch.distributed.all_reduce(flag_tensor, op=torch.distributed.ReduceOp.MIN, group=group)
         ret = bool(flag_tensor.item() > 0)
     return ret

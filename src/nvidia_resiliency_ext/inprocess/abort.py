@@ -60,9 +60,7 @@ class AbortTorchDistributed(Abort):
         device = torch.device("cuda")
         process_groups = list(torch.distributed.distributed_c10d._world.pg_names)
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=len(process_groups)
-        ) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(process_groups)) as executor:
             futures = [
                 executor.submit(
                     AbortTorchDistributed.shutdown_process_group_backend,

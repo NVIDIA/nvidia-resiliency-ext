@@ -43,9 +43,7 @@ def parse_args():
     parser.add_argument("--iters", type=int, default=1000)
     parser.add_argument("--ddp", action="store_true")
     parser.add_argument("--report_interval", type=int, default=100)
-    parser.add_argument(
-        "--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int
-    )
+    parser.add_argument("--local-rank", default=int(os.getenv("LOCAL_RANK", 0)), type=int)
 
     # Filter out pytest arguments
     args, _ = parser.parse_known_args(sys.argv[1:])
@@ -58,10 +56,7 @@ def setup_distributed():
 
 
 def skip_if_condition(test_scenario):
-    return (
-        int(os.getenv("WORLD_SIZE", "1")) == 1
-        and test_scenario["gather_on_rank0"] is True
-    )
+    return int(os.getenv("WORLD_SIZE", "1")) == 1 and test_scenario["gather_on_rank0"] is True
 
 
 @pytest.mark.parametrize(
@@ -107,9 +102,7 @@ def test_report_elapsed_wrap_callables(test_scenario):
         gather_on_rank0=gather_on_rank0,
     )
 
-    straggler.Detector.wrap_callables(
-        callable_ids=[straggler.CallableId(model, "forward")]
-    )
+    straggler.Detector.wrap_callables(callable_ids=[straggler.CallableId(model, "forward")])
 
     for i in range(args.iters):
         data = torch.rand(args.batch, args.hidden, device=device)
@@ -124,14 +117,12 @@ def test_report_elapsed_wrap_callables(test_scenario):
 
         if gather_on_rank0:
             if rank == 0:
-                assert (
-                    straggler.Detector.report_interval_tracker.is_interval_elapsed()
-                    == bool(report is not None)
+                assert straggler.Detector.report_interval_tracker.is_interval_elapsed() == bool(
+                    report is not None
                 )
         else:
-            assert (
-                straggler.Detector.report_interval_tracker.is_interval_elapsed()
-                == bool(report is not None)
+            assert straggler.Detector.report_interval_tracker.is_interval_elapsed() == bool(
+                report is not None
             )
 
         # check `is_interval_elapsed` public API.
@@ -204,14 +195,12 @@ def test_report_elapsed_det_section(test_scenario):
 
         if gather_on_rank0:
             if rank == 0:
-                assert (
-                    straggler.Detector.report_interval_tracker.is_interval_elapsed()
-                    == bool(report is not None)
+                assert straggler.Detector.report_interval_tracker.is_interval_elapsed() == bool(
+                    report is not None
                 )
         else:
-            assert (
-                straggler.Detector.report_interval_tracker.is_interval_elapsed()
-                == bool(report is not None)
+            assert straggler.Detector.report_interval_tracker.is_interval_elapsed() == bool(
+                report is not None
             )
 
     straggler.Detector.shutdown()
@@ -239,9 +228,7 @@ def test_report_min_interval_is_profiling_interval():
 
     random.seed(args.local_rank)
 
-    profiling_interval = (
-        1000  # large profiling interval, only 1th per 1e6 will be profiled
-    )
+    profiling_interval = 1000  # large profiling interval, only 1th per 1e6 will be profiled
     straggler.Detector.initialize(
         profiling_interval=profiling_interval,
         report_time_interval=0.01,  # computed reporting interval should be small
@@ -259,9 +246,7 @@ def test_report_min_interval_is_profiling_interval():
             assert straggler.Detector.report_interval_tracker.is_interval_elapsed()
             break
 
-    assert (
-        straggler.Detector.report_interval_tracker.iter_interval == profiling_interval
-    )
+    assert straggler.Detector.report_interval_tracker.iter_interval == profiling_interval
 
     straggler.Detector.shutdown()
 

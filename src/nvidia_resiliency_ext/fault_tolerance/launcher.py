@@ -303,9 +303,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         }
         # Note: The 'metadata' field of the Event is converted to a TorchelasticStatusLogEntry later.
         #       The 'name' field of the Event is NOT used in the TorchelasticStatusLogEntry.
-        event = events.Event(
-            name=name, source=events.EventSource.AGENT, metadata=metadata
-        )
+        event = events.Event(name=name, source=events.EventSource.AGENT, metadata=metadata)
         events.record(event)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
@@ -328,9 +326,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         args: Dict[int, Tuple] = {}
         envs: Dict[int, Dict[str, str]] = {}
-        log_line_prefixes: Optional[Dict[int, str]] = (
-            {} if self._log_line_prefix_template else None
-        )
+        log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
         for worker in worker_group.workers:
             local_rank = worker.local_rank
             worker_env = {
@@ -357,9 +353,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
 
             if self._log_line_prefix_template:
-                log_line_prefix = Template(
-                    self._log_line_prefix_template
-                ).safe_substitute(
+                log_line_prefix = Template(self._log_line_prefix_template).safe_substitute(
                     role_name=spec.role,
                     rank=worker.global_rank,
                     local_rank=local_rank,
@@ -411,9 +405,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._pcontext.close(death_sig)
             # Remove multiprocessing leftovers
             # PID=1 become a parent if the original parent died
-            terminate_mp_processes(
-                allowed_ppids={1}, allowed_pgids=self._children_pgids
-            )
+            terminate_mp_processes(allowed_ppids={1}, allowed_pgids=self._children_pgids)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -425,8 +417,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         pc_pids = set(self._pcontext.pids().values())
         if worker_pids != pc_pids:
             logger.error(
-                "[%s] worker pids do not match process_context pids."
-                " Expected: %s, actual: %s",
+                "[%s] worker pids do not match process_context pids." " Expected: %s, actual: %s",
                 role,
                 worker_pids,
                 pc_pids,
@@ -585,9 +576,7 @@ class elastic_launch:
         return launch_agent(self._config, self._entrypoint, list(args))
 
 
-def _get_entrypoint_name(
-    entrypoint: Union[Callable, str, None], args: List[Any]
-) -> str:
+def _get_entrypoint_name(entrypoint: Union[Callable, str, None], args: List[Any]) -> str:
     """Retrieve entrypoint name with the rule:
     1. If entrypoint is a function, use ``entrypoint.__qualname__``.
     2. If entrypoint is a string, check its value:
@@ -620,9 +609,7 @@ def _get_addr_and_port(
         )
     master_addr, master_port = parse_rendezvous_endpoint(endpoint, default_port=-1)
     if master_port == -1:
-        raise ValueError(
-            f"port is missing in endpoint: {endpoint}. Try to specify --master-port"
-        )
+        raise ValueError(f"port is missing in endpoint: {endpoint}. Try to specify --master-port")
     return (master_addr, master_port)
 
 
@@ -734,9 +721,7 @@ def launch_agent(
         events.record(agent.get_event_failed())
         logger.info(f"Launcher got signal. Exception is: {e}")
         if agent.any_rank_failed():
-            logger.warning(
-                "Some ranks exited with non-zero. Re-raising SignalException."
-            )
+            logger.warning("Some ranks exited with non-zero. Re-raising SignalException.")
             raise
         else:
             # if all ranks exited with 0, do not escalate the error,
@@ -1468,9 +1453,7 @@ def determine_local_world_size(nproc_per_node: str):
             device_type = "gpu"
             num_proc = torch.cuda.device_count()
         else:
-            raise ValueError(
-                f"Unsupported nproc_per_node value: {nproc_per_node}"
-            ) from e
+            raise ValueError(f"Unsupported nproc_per_node value: {nproc_per_node}") from e
 
         logger.info(
             "Using nproc_per_node=%s," " setting to %s since the instance " "has %s %s",
@@ -1526,9 +1509,7 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
                 f"Could not find entrypoint under 'torchrun.logs_specs[{logs_specs_name}]' key"
             )
 
-        logging.info(
-            "Using logs_spec '%s' mapped to %s", logs_specs_name, str(logs_specs_cls)
-        )
+        logging.info("Using logs_spec '%s' mapped to %s", logs_specs_name, str(logs_specs_cls))
     else:
         logs_specs_cls = DefaultLogsSpecs
 
@@ -1541,11 +1522,7 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
 
-    if (
-        hasattr(args, "master_addr")
-        and args.rdzv_backend != "static"
-        and not args.rdzv_endpoint
-    ):
+    if hasattr(args, "master_addr") and args.rdzv_backend != "static" and not args.rdzv_endpoint:
         logger.warning(
             "master_addr is only used for static rdzv_backend and when rdzv_endpoint "
             "is not specified."
