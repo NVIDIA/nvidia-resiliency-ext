@@ -30,8 +30,9 @@ class CuptiManager:
             statsMaxLenPerKernel (int, optional): Max number of timing entries per kernel.
                 (when this limit is rached, oldest timing entries are discarded). Defaults to 4096.
         """
-        # lazy load to avoid circular import
-        from . import cupti_module  # type: ignore
+
+        # lazy load the extension module, to avoid circular import
+        import nvrx_cupti_module as cupti_module  # type: ignore
 
         self.cupti_ext = cupti_module.CuptiProfiler(
             bufferSize=bufferSize,

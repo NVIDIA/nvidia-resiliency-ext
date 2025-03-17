@@ -17,17 +17,16 @@ import json
 import logging
 import os
 import pathlib
-import random
-import signal
-import sys
-import threading
-import time
-from dataclasses import dataclass
 from typing import Optional, Union
 
 import torch
 
-from ._utils import is_module_available
+from ._utils import (
+    SimulatedFaultParams,
+    is_module_available,
+    parse_simulated_fault_params,
+    setup_simulated_fault,
+)
 
 if is_module_available("lightning"):
     from lightning.pytorch.callbacks import Callback
@@ -38,32 +37,6 @@ else:
 
 
 import nvidia_resiliency_ext.fault_tolerance as ft
-
-
-@dataclass
-class SimulatedFaultParams:
-    """
-    Description of a simulated rank fault, used for FT testing and debugging.
-
-    Simulated fault types are:
-    - 'rank_killed' a rank is killed with SIGKILL
-    - 'rank_hung' a rank is stopped with SIGSTOP
-    - 'random' randomly selects one of the above faults.
-
-    Fault delay is computed as:
-    - `base_delay` + RAND_FLOAT_FROM_0.0_to_1.0 * `rand_delay`
-
-    Attributes:
-        fault_type (str): The type of fault, one of: ['random', 'rank_killed', 'rank_hung'].
-        base_delay (float): The base (minimum) delay [seconds] for the fault.
-        rand_delay (float, optional): The max additional random delay for the fault. Defaults to 0.0.
-        rank_to_fail (int, optional): The rank to fail. Defaults to None - random rank will be picked.
-    """
-
-    fault_type: str
-    base_delay: float
-    rand_delay: float = 0.0
-    rank_to_fail: Optional[int] = None
 
 
 class _TrainingStateMachine:
@@ -233,11 +206,10 @@ class FaultToleranceCallback(Callback):
         self.fault_tol_client = None
         self.autoresume = autoresume
         self.calculate_timeouts = calculate_timeouts
-        self.simulated_fault_params = self._parse_simulated_fault_params(simulated_fault_params)
+        self.simulated_fault_params = parse_simulated_fault_params(simulated_fault_params)
         self.state_machine = None
         self.provided_exp_dir = exp_dir
         self.timeouts_file_path = None
-        self._verify_env()
 
     @property
     def is_initialized(self):
@@ -245,6 +217,7 @@ class FaultToleranceCallback(Callback):
 
     def setup(self, trainer, pl_module, stage):
         if stage == "fit":
+            self._verify_env()
             self.state_machine = _TrainingStateMachine()
             self.state_machine.on_setup()
             self._setup_fault_tolerance(trainer)
@@ -331,10 +304,11 @@ class FaultToleranceCallback(Callback):
 
     def _maybe_update_ft_timeouts(self):
         if self.calculate_timeouts and self.state_machine.can_update_timeouts:
-            self.fault_tol_client.calculate_and_set_timeouts()
+            self._log_info_on_rank0('Updating FT timeouts...')
+            self.fault_tol_client.calculate_and_set_hb_timeouts()
             self.state_machine.on_ft_timeouts_updated()
             self._log_info_on_rank0(
-                f'Updated FT timeouts. New values: {self.fault_tol_client.timeouts}'
+                f'Updated FT timeouts. New values: {self.fault_tol_client.hb_timeouts}'
             )
             if self._is_rank0():
                 # FT state is the same on all ranks, so we can save it only on rank 0
@@ -350,7 +324,7 @@ class FaultToleranceCallback(Callback):
                     loaded_ft_state_dict = json.load(f)
             if loaded_ft_state_dict:
                 self.fault_tol_client.load_state_dict(loaded_ft_state_dict)
-                ft_timeouts = self.fault_tol_client.timeouts
+                ft_timeouts = self.fault_tol_client.hb_timeouts
                 self._log_info_on_rank0(f"Fault tolerance timeouts loaded: {ft_timeouts}")
 
     def _setup_fault_tolerance(self, trainer):
@@ -377,7 +351,7 @@ class FaultToleranceCallback(Callback):
         self.fault_tol_client.init_workload_monitoring()
         self._maybe_load_ft_timeouts()
 
-        ft_timeouts = self.fault_tol_client.timeouts
+        ft_timeouts = self.fault_tol_client.hb_timeouts
         if ft_timeouts.are_valid:
             self._log_info_on_rank0(f"Fault tolerance client initialized. Timeouts: {ft_timeouts}")
         else:
@@ -391,7 +365,7 @@ class FaultToleranceCallback(Callback):
                 )
         # Simulated fault for testing/debug purposes
         if self.simulated_fault_params:
-            self._setup_simulated_fault()
+            setup_simulated_fault(self.simulated_fault_params)
 
         assert self.is_initialized
 
@@ -407,80 +381,3 @@ class FaultToleranceCallback(Callback):
             flag_file_path.touch()
         except Exception as e:
             self.logger.error(f"_create_finished_flag_file exception: {e}")
-
-    def _parse_simulated_fault_params(
-        self, simulated_fault_params
-    ) -> Optional[SimulatedFaultParams]:
-
-        # TODO: this if for testing only, should be removed in release version
-
-        if simulated_fault_params is None:
-            return None
-        if isinstance(simulated_fault_params, SimulatedFaultParams):
-            return simulated_fault_params
-        try:
-            return SimulatedFaultParams(**simulated_fault_params)
-        except Exception as e:
-            raise ValueError(
-                f"Failed to parse simulated fault params, "
-                "it should be SimulatedFaultParams instance or "
-                "an object that can be unpacked with '**' and passed to the "
-                f"SimulatedFaultParams.__init__ Got: {simulated_fault_params}"
-            ) from e
-
-    def _setup_simulated_fault(self):
-
-        # TODO: this if for testing only, should be removed in release version
-
-        rng = random.Random()
-
-        fault_desc = self.simulated_fault_params
-
-        self._log_info_on_rank0(f"Initializing simulated fault: {fault_desc}")
-
-        # rank that simulates a fault can be explicitly specified in the `rank_to_fail` field
-        # if not specified, it just picks a random rank
-        rank = torch.distributed.get_rank()
-        rand_rank = rng.randint(0, torch.distributed.get_world_size() - 1)
-        rank_to_fail = fault_desc.rank_to_fail if fault_desc.rank_to_fail is not None else rand_rank
-        rank_to_fail = torch.tensor([rank_to_fail], device=torch.cuda.current_device())
-        torch.distributed.broadcast(rank_to_fail, 0)
-        rank_to_fail = int(rank_to_fail.item())
-
-        if rank != rank_to_fail:
-            # this rank is not going to simulate a fault, nothing more to do
-            return
-
-        fault_type = fault_desc.fault_type
-        if fault_type == 'random':
-            fault_type = rng.choice(['rank_killed', 'rank_hung'])
-
-        if fault_type == 'rank_killed':
-            target_pid = os.getpid()
-        elif fault_type == 'rank_hung':
-            target_pid = os.getpid()
-        else:
-            raise Exception(f"Unknown fault type {fault_type}")
-
-        delay = fault_desc.base_delay + fault_desc.rand_delay * rng.random()
-
-        self._log_info_on_rank0(
-            f"Selected fault={fault_type}; target rank={rank_to_fail}; delay={delay}"
-        )
-
-        def __fault_thread():
-            time.sleep(delay)
-            for of in [sys.stdout, sys.stderr]:
-                print(
-                    f"\n####\nSimulating fault: {fault_type}; rank to fail: {rank_to_fail}\n#####\n",
-                    file=of,
-                    flush=True,
-                )
-            if fault_type == 'rank_hung':
-                os.kill(target_pid, signal.SIGSTOP)
-            else:
-                os.kill(target_pid, signal.SIGKILL)
-
-        fault_sim_thread = threading.Thread(target=__fault_thread)
-        fault_sim_thread.daemon = True
-        fault_sim_thread.start()

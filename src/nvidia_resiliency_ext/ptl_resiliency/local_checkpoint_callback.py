@@ -19,6 +19,7 @@ from datetime import timedelta
 from functools import partial
 from typing import Any, Callable, Dict, NewType, Optional
 
+from ..checkpointing.async_ckpt.core import AsyncRequest
 from ._utils import is_module_available
 
 if is_module_available("lightning"):
@@ -69,13 +70,11 @@ class LocalCheckpointCallback(pl.callbacks.ModelCheckpoint):
         self,
         every_n_train_steps: Optional[int] = None,
         train_time_interval: Optional[timedelta] = None,
-        async_save: bool = False,
     ):
         super().__init__(
             every_n_train_steps=every_n_train_steps,
             train_time_interval=train_time_interval,
         )
-        self.async_save = async_save
 
     def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         """Skips super functionality"""
@@ -95,9 +94,7 @@ class LocalCheckpointCallback(pl.callbacks.ModelCheckpoint):
         self, trainer: "pl.Trainer", monitor_candidates: Dict[str, Tensor]
     ) -> None:
         """Simply saves a local checkpoint with appropriate storage_options."""
-        local_ckpt_opts = dict(
-            ckpt_type='local', iteration=trainer.global_step, is_async=self.async_save
-        )
+        local_ckpt_opts = dict(ckpt_type='local', iteration=trainer.global_step)
         trainer.save_checkpoint(None, storage_options={LOCAL_CKPT_OPTS_KEY: local_ckpt_opts})
 
 
@@ -116,6 +113,8 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
         get_global_ckpt_iteration_fn (Callable[[_PATH], int]): a function that
             given a path to a global checkpoint, extracts the global step iteration from it
             (either from the path itself or by loading metadata from the checkpoint).
+        async_save (bool, optional): enables asynchronous save. Passed down to the local checkpoint
+            manager unless overriden with `local_ckpt_options` in `_save_local_checkpoint`.
     """
 
     def __init__(
@@ -123,14 +122,16 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
         wrapped_checkpoint_io: CheckpointIO,
         local_ckpt_manager: BaseCheckpointManager,
         get_global_ckpt_iteration_fn: Callable[[_PATH], int],
+        async_save: bool = False,
     ):
         super().__init__(wrapped_checkpoint_io)
         self.local_ckpt_manager = local_ckpt_manager
         self.get_global_ckpt_iteration_fn = get_global_ckpt_iteration_fn
+        self.async_save = async_save
 
     def save_checkpoint(
         self, checkpoint: Dict[str, Any], path: _PATH, storage_options: Optional[Any] = None
-    ) -> None:
+    ) -> Optional[AsyncRequest]:
         """Save local or global checkpoint, depending on the presence of options."""
         if storage_options is None or LOCAL_CKPT_OPTS_KEY not in storage_options:
             return self.checkpoint_io.save_checkpoint(checkpoint, path, storage_options)
@@ -138,12 +139,14 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
             raise ValueError(f'Path shouldn\'t be set for a local checkpoint, got: {path}.')
         return self._save_local_checkpoint(checkpoint, storage_options.get(LOCAL_CKPT_OPTS_KEY))
 
-    def _save_local_checkpoint(self, checkpoint: Dict[str, Any], local_ckpt_options: dict) -> None:
+    def _save_local_checkpoint(
+        self, checkpoint: Dict[str, Any], local_ckpt_options: dict
+    ) -> Optional[AsyncRequest]:
         """Save local checkpoint."""
         return self.local_ckpt_manager.save(
             self.to_tensor_aware_state_dict(checkpoint),
             local_ckpt_options['iteration'],
-            is_async=local_ckpt_options['is_async'],
+            is_async=local_ckpt_options.get('is_async', self.async_save),
         )
 
     def load_checkpoint(
@@ -196,5 +199,6 @@ class HierarchicalCheckpointIO(_WrappingCheckpointIO):
     def to_tensor_aware_state_dict(self, checkpoint: Dict[str, Any]) -> TensorAwareStateDict:
         raise NotImplementedError
 
+    @abstractmethod
     def from_tensor_aware_state_dict(self, tensor_aware_checkpoint: TensorAwareStateDict, **kwargs):
-        return tensor_aware_checkpoint.to_state_dict()
+        raise NotImplementedError

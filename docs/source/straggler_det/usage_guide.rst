@@ -2,8 +2,8 @@ Usage guide
 ############
 
 
-Straggler Detection Package Design Overview
-*******************************************
+Design Overview
+****************
 
 Package users can mark sections of their code as "straggler detection sections". 
 Timing information is collected for such sections, which includes CPU (wall-clock) time spent in the section. 
@@ -47,8 +47,8 @@ If there are 8 ranks and 2 sections "data_loading" and "fwd" defined, scores mig
 If the performance score drops below the specified threshold, the corresponding section or GPU is identified as a straggler.         
 To detect the stragglers, users should call the reporting function periodically and check the returned report object for stragglers.
 
-Straggler Detection Usage Overview
-**********************************
+Usage Overview
+***************
 
 Sections of the user code that should be monitored for performance ("detection sections") can be defined using:
    * ``Detector.detection_section`` context manager that allows wrapping a custom code block.
@@ -185,8 +185,8 @@ Hence, the following initialization parameters can be used to avoid any inter-ra
 
 In that case, all ranks compute and report their own, individual results only. 
 
-Straggler Detection Integration Guide
-*************************************
+Integration Guide
+******************
 
 This section describes integration with a PTL-based workload (e.g., NeMo) using ``StragglerDetectionCallback``.
 All that is needed is to include :class:`StragglerDetectionCallback <nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback>` in the PTL trainer callbacks. 

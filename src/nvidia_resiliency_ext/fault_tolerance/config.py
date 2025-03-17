@@ -19,7 +19,7 @@ import dataclasses
 import logging
 import signal
 from dataclasses import dataclass, fields
-from typing import Optional
+from typing import Mapping, Optional
 
 import yaml
 
@@ -27,26 +27,48 @@ import yaml
 @dataclass
 class FaultToleranceConfig:
     """
-    Configuration of fault tolerance
-        - `workload_check_interval` [float] periodic rank check interval (in seconds) in rank monitors.
-        - `initial_rank_heartbeat_timeout` [float] timeout (in seconds) for the first heartbeat from a rank.
-        Usually, it takes a bit longer for the first heartbeat to be sent, as the rank needs to initialize.
-        If rank does not send the first heartbeat within `initial_rank_heartbeat_timeout`, failure is detected.
-        If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
-        - `rank_heartbeat_timeout` [float] timeout (in seconds) for subsequent heartbeats from a rank.
-        If no rank heartbeat is received within `rank_heartbeat_timeout`, failure is detected.
-        If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
-        - `safety_factor` [float] when deducing the timeouts, observed heartbeat intervals are multiplied by this factor to obtain the timeouts.
-        - `rank_termination_signal` signal used to terminate the rank when failure is detected.
-        - `log_level` log level of fault tolerance components
+    Configuration of the fault tolerance
+
+    * `workload_check_interval` [float] periodic rank check interval (in seconds) in rank monitors.
+    * `initial_rank_heartbeat_timeout` [float|None] timeout (in seconds) for the first heartbeat from a rank.
+
+    Usually, it takes a bit longer for the first heartbeat to be sent, as the rank needs to initialize.
+    If rank does not send the first heartbeat within `initial_rank_heartbeat_timeout`, failure is detected.
+
+    * `rank_heartbeat_timeout` [float|None] timeout (in seconds) for subsequent heartbeats from a rank.
+
+    If no rank heartbeat is received within `rank_heartbeat_timeout`, failure is detected.
+
+    * `safety_factor` [float] when deducing the timeouts, observed intervals are
+      multiplied by this factor to obtain the timeouts.
+    * `rank_termination_signal` signal used to terminate the rank when failure is detected.
+    * `log_level` log level of fault tolerance components
+    * `rank_section_timeouts` Mapping[str,float|None] timeouts for specific sections in user code.
+    * `rank_out_of_section_timeout` [float|None] the timeout used for implicit/default section,
+      that spans code not wrapped in any other section.
+    * `restart_check_interval` - interval between checks if restart is in progress, needed for layered restart protocol
+    * `enable_nic_monitor` - Enable NIC health monitoring in training.
+    * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
+    * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
+      placeholder which will be replaced with actual NIC device name.
+
+    If any timeout is None, it has no effect (as if it was +INF).
+    All timeouts can be deduced and set during runtime.
     """
 
     workload_check_interval: float = 5.0
     initial_rank_heartbeat_timeout: Optional[float] = 60.0 * 60.0
     rank_heartbeat_timeout: Optional[float] = 45.0 * 60.0
+    rank_section_timeouts: Mapping[str, Optional[float]] = dataclasses.field(default_factory=dict)
+    rank_out_of_section_timeout: Optional[float] = None
+    node_health_check_interval: float = 5.0
     safety_factor: float = 5.0
     rank_termination_signal: signal.Signals = signal.SIGKILL
     log_level: int = logging.INFO
+    restart_check_interval: float = 60.0
+    enable_nic_monitor: bool = True
+    pci_topo_file: Optional[str] = None
+    link_down_path_template: Optional[str] = None
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
@@ -100,6 +122,26 @@ class FaultToleranceConfig:
                 raise ValueError(f"'fault_tolerance' section not found in config file {cfg_path}")
 
     @staticmethod
+    def _parse_section_timeouts_arg(section_timeouts_arg: str) -> Mapping[str, Optional[float]]:
+        # Parse section timeouts CLI argument, expected format is:
+        # "section1:timeout1,section2:timeout2,..."
+        # Timeout can be float or 'None'/'null'/'' to represent None.
+        section_timeouts_arg = section_timeouts_arg.strip()
+        if not section_timeouts_arg:
+            return {}
+        section_timeout_paris = section_timeouts_arg.split(",")
+        res = {}
+        for st in section_timeout_paris:
+            section, timeout = st.split(":")
+            section = section.strip()
+            timeout = timeout.strip()
+            if timeout.lower() in ['none', 'null', '']:
+                res[section] = None
+            else:
+                res[section] = float(timeout)
+        return res
+
+    @staticmethod
     def from_args(
         args: argparse.Namespace,
         cfg_file_arg: str = None,
@@ -136,6 +178,13 @@ class FaultToleranceConfig:
             for k, v in vars(args).items()
             if k.startswith(ft_args_prefix) and v is not None
         }
+
+        if provided_ft_args.get('rank_section_timeouts', None):
+            # convert section timeouts arg to a mapping
+            section_timeouts_arg = provided_ft_args['rank_section_timeouts']
+            provided_ft_args['rank_section_timeouts'] = (
+                FaultToleranceConfig._parse_section_timeouts_arg(section_timeouts_arg)
+            )
 
         for arg_name, arg_val in provided_ft_args.items():
             assert hasattr(

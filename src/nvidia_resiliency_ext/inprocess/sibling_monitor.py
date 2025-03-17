@@ -14,37 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
 import logging
 import threading
 import time
+from datetime import timedelta
 
 from . import exception
-from .attribution import Interruption
-from .attribution import InterruptionRecord
-
-
-def terminate_unresponsive_ranks(
-    store, ranks, world_size, barrier_timeout, interval
-):
-    log = logging.getLogger(__name__)
-
-    store.record_interrupted(
-        [InterruptionRecord(rank, Interruption.UNRESPONSIVE) for rank in ranks]
-    )
-
-    for rank in ranks:
-        store.record_terminated_rank(rank)
-
-    store.termination_barrier(
-        rank=ranks,
-        rendezvous_count=world_size,
-        timeout=barrier_timeout,
-        timeout_chunk=interval / 2,
-    )
-    for rank in ranks:
-        initial_rank = store.get_initial_rank(rank)
-        store.base_store.record_base_terminated_rank(initial_rank)
+from .attribution import Interruption, InterruptionRecord
 
 
 class Heartbeat(threading.Thread):
@@ -62,17 +38,18 @@ class Heartbeat(threading.Thread):
         log = logging.getLogger(__name__)
         rank = self.rank
 
-        while not self.should_stop.is_set():
+        while not self.should_stop.wait(self.interval.total_seconds()):
             log.debug(f'Sending heartbeat from {rank=}')
             self.store.send_heartbeat(rank)
-            time.sleep(self.interval.total_seconds())
 
     def shutdown(self, timeout=None):
         log = logging.getLogger(__name__)
-        log.debug(f'Shutting down heartbeat {timeout=}')
 
         if timeout is None:
             timeout = self.timeout.total_seconds()
+
+        is_alive = self.is_alive()
+        log.debug(f'Shutting down heartbeat {is_alive=} {timeout=}')
 
         self.should_stop.set()
         self.join(timeout)
@@ -80,73 +57,95 @@ class Heartbeat(threading.Thread):
             raise exception.InternalError
 
 
-class SiblingMonitor:
+class SiblingMonitor(threading.Thread):
     def __init__(
         self,
         store,
         rank,
         world_size,
-        heartbeat_timeout,
-        barrier_timeout,
+        initial_world_size,
+        timeout,
         interval,
     ):
         self.store = store
         self.rank = rank
         self.world_size = world_size
-        self.heartbeat_timeout = heartbeat_timeout
-        self.barrier_timeout = barrier_timeout
+        self.initial_world_size = initial_world_size
+        self.timeout = timeout
         self.interval = interval
+        self.should_stop = threading.Event()
 
-        self.termination_threads = []
         self.seen_unresponsive_ranks = set()
 
         self.sibling_rank = (rank + 1) % world_size
+
+        super().__init__(name=f'{type(self).__name__}-{rank}')
+
+    def run(self):
+        heartbeat = Heartbeat(self.rank, self.store, self.interval, self.timeout)
+        heartbeat.start()
+
+        self.store.send_heartbeat(self.sibling_rank)
+
+        while not self.should_stop.wait(self.interval.total_seconds()):
+            self.check_heartbeats()
+
+        heartbeat.shutdown()
+        heartbeat.join()
+
+    def shutdown(self, timeout=None):
+        log = logging.getLogger(__name__)
+
+        if timeout is None:
+            timeout = self.timeout.total_seconds()
+
+        is_alive = self.is_alive()
+        log.debug(f'Shutting down SiblingMonitor {is_alive=} {timeout=}')
+
+        self.should_stop.set()
+        self.join(timeout)
+        if self.is_alive():
+            raise exception.InternalError
 
     def check_heartbeats(self):
         log = logging.getLogger(__name__)
 
         sibling_heartbeat = self.store.get_heartbeat(self.sibling_rank)
-        sibling_delta = datetime.timedelta(
-            microseconds=(time.time_ns() - sibling_heartbeat) / 1e3
-        )
+        sibling_delta = timedelta(seconds=(time.time() - sibling_heartbeat))
 
-        if sibling_delta > self.heartbeat_timeout:
+        if sibling_delta > self.timeout:
             heartbeats = self.store.get_all_heartbeats(self.world_size)
-            now_ns = time.time_ns()
+            now = time.time()
 
             current_unresponsive_ranks = set(
                 rank
                 for rank, heartbeat in enumerate(heartbeats)
-                if datetime.timedelta(microseconds=(now_ns - heartbeat) / 1e3)
-                > self.heartbeat_timeout
+                if timedelta(seconds=(now - heartbeat)) > self.timeout
             )
 
-            new_unresponsive_ranks = (
-                current_unresponsive_ranks - self.seen_unresponsive_ranks
-            )
+            new_unresponsive_ranks = current_unresponsive_ranks - self.seen_unresponsive_ranks
 
             if new_unresponsive_ranks:
                 log.debug(f'{new_unresponsive_ranks=}')
-                termination_thread = threading.Thread(
-                    target=terminate_unresponsive_ranks,
-                    args=(
-                        self.store,
-                        new_unresponsive_ranks,
-                        self.world_size,
-                        self.barrier_timeout,
-                        self.interval,
-                    ),
-                    daemon=True,
-                )
-                termination_thread.start()
+                self.terminate_unresponsive_ranks(new_unresponsive_ranks)
                 self.seen_unresponsive_ranks.update(new_unresponsive_ranks)
-                self.termination_threads.append(termination_thread)
 
-    def join(self):
-        timeout = 2 * self.barrier_timeout + datetime.timedelta(seconds=1)
-        for termination_thread in self.termination_threads:
-            termination_thread.join(timeout.total_seconds())
+    def terminate_unresponsive_ranks(self, unresponsive_ranks):
+        self.store.record_interrupted(
+            [InterruptionRecord(rank, Interruption.UNRESPONSIVE) for rank in unresponsive_ranks]
+        )
 
-        for termination_thread in self.termination_threads:
-            if termination_thread.is_alive():
-                raise exception.TimeoutError
+        self.store.record_terminated_ranks(unresponsive_ranks)
+
+        self.store.iteration_barrier(
+            ranks=unresponsive_ranks,
+            rendezvous_count=self.world_size,
+            timeout=timedelta(0),
+        )
+
+        unresponsive_initial_ranks = self.store.get_initial_ranks(unresponsive_ranks)
+        self.store.base_store.termination_barrier(
+            ranks=unresponsive_initial_ranks,
+            rendezvous_count=self.initial_world_size,
+            timeout=timedelta(0),
+        )

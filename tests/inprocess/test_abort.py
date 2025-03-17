@@ -25,9 +25,8 @@ import nvidia_resiliency_ext.inprocess as inprocess
 from . import common
 
 
-@unittest.skipIf(
-    not torch.distributed.is_nccl_available(), 'nccl not available'
-)
+@common.apply_all_tests(common.retry())
+@unittest.skipIf(not torch.cuda.is_available(), 'cuda not available')
 class TestAbort(unittest.TestCase):
     @staticmethod
     def launch(fn, world_size=2, timeout=datetime.timedelta(seconds=10)):
@@ -54,7 +53,7 @@ class TestAbort(unittest.TestCase):
 
             store = torch.distributed.TCPStore(
                 host_name='localhost',
-                port=29500,
+                port=29501,
                 is_master=(rank == 0),
                 timeout=datetime.timedelta(seconds=5),
             )
@@ -67,9 +66,7 @@ class TestAbort(unittest.TestCase):
             size = 128
             t1 = torch.ones(size, device=device)
             t2 = torch.ones(size, device=device)
-            default_group = (
-                torch.distributed.distributed_c10d._get_default_group()
-            )
+            default_group = torch.distributed.distributed_c10d._get_default_group()
             torch.distributed.all_reduce(t1, group=default_group)
             torch.cuda.synchronize()
             new_group = torch.distributed.new_group([0])

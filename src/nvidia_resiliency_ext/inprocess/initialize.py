@@ -18,7 +18,7 @@ import abc
 from typing import Optional
 
 from . import exception
-from .state import State
+from .state import FrozenState
 
 
 class Initialize(abc.ABC):
@@ -37,7 +37,16 @@ class Initialize(abc.ABC):
     '''
 
     @abc.abstractmethod
-    def __call__(self, state: State) -> State:
+    def __call__(self, state: FrozenState) -> FrozenState:
+        r'''
+        Implementation of a :py:class:`Initialize`.
+
+        Args:
+            state: read-only :py:class:`Wrapper` state
+
+        Returns:
+            Forwarded read-only input ``state``.
+        '''
         raise NotImplementedError
 
 
@@ -69,14 +78,11 @@ class RetryController(Initialize):
         self.min_world_size = min_world_size
         self.min_active_world_size = min_active_world_size
 
-    def __call__(self, state: State) -> State:
+    def __call__(self, state: FrozenState) -> FrozenState:
         if (
             state.world_size < self.min_world_size
             or state.active_world_size < self.min_active_world_size
-            or (
-                self.max_iterations is not None
-                and state.iteration >= self.max_iterations
-            )
+            or (self.max_iterations is not None and state.iteration >= self.max_iterations)
         ):
             msg = (
                 f'{state.iteration=} {self.max_iterations=} '

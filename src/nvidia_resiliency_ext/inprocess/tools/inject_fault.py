@@ -25,23 +25,23 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional
 
 import torch
 
 
 class Fault(enum.Enum):
-    GPU = enum.auto()
+    GPU_ERROR = enum.auto()
     GPU_SLEEP = enum.auto()
     ASYNC_EXC = enum.auto()
     SIGNAL_EXC = enum.auto()
-    ABORT = enum.auto()
-    GIL = enum.auto()
+    OS_ABORT = enum.auto()
+    LOCK_GIL = enum.auto()
     SEGFAULT = enum.auto()
-    INT = enum.auto()
-    KILL = enum.auto()
-    TERM = enum.auto()
-    STOP = enum.auto()
+    SIGINT = enum.auto()
+    SIGKILL = enum.auto()
+    SIGTERM = enum.auto()
+    SIGSTOP = enum.auto()
 
 
 class InjectedException(Exception):
@@ -119,13 +119,13 @@ def segfault(delay, callback):
     ctypes.string_at(1)
 
 
-def send_signal(pid, sgn, delay, callback):
+def send_signal(pid, signal, delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    log.critical(f'sending {sgn=} to {pid=}')
+    log.critical(f'sending {signal=} to {pid=}')
     if callback is not None:
         callback()
-    os.kill(pid, sgn)
+    os.kill(pid, signal)
 
 
 def abort(delay, callback):
@@ -163,19 +163,12 @@ def inject_fault(
     if not isinstance(delay, float):
         delay = generator.uniform(delay[0], delay[1])
 
-    num_ranks_to_inject = min(
-        generator.randint(min_faults, max_faults), world_size - keep_alive
-    )
-    ranks_to_inject = generator.sample(
-        range(keep_alive, world_size), num_ranks_to_inject
-    )
+    num_ranks_to_inject = min(generator.randint(min_faults, max_faults), world_size - keep_alive)
+    ranks_to_inject = generator.sample(range(keep_alive, world_size), num_ranks_to_inject)
     fault = generator.sample(faults, 1)[0]
 
     if rank in ranks_to_inject:
-        log.info(
-            f'{seed=} {num_ranks_to_inject=} {ranks_to_inject=} '
-            f'{fault=} {delay=}'
-        )
+        log.info(f'{seed=} {num_ranks_to_inject=} {ranks_to_inject=} ' f'{fault=} {delay=:.3f}')
 
         if fault == Fault.ASYNC_EXC:
             thread = threading.Thread(
@@ -192,56 +185,48 @@ def inject_fault(
                 daemon=True,
             )
             p.start()
-        elif fault == Fault.GPU:
+        elif fault == Fault.GPU_ERROR:
             thread = threading.Thread(
                 target=raise_gpu_error,
                 args=(delay, callback),
                 daemon=True,
             )
             thread.start()
-        elif fault == Fault.GIL:
-            thread = threading.Thread(
-                target=lock_gil, args=(delay, callback), daemon=True
-            )
+        elif fault == Fault.LOCK_GIL:
+            thread = threading.Thread(target=lock_gil, args=(delay, callback), daemon=True)
             thread.start()
         elif fault == Fault.GPU_SLEEP:
             device = torch.cuda.current_device()
-            thread = threading.Thread(
-                target=gpu_sleep, args=(delay, device, callback), daemon=True
-            )
+            thread = threading.Thread(target=gpu_sleep, args=(delay, device, callback), daemon=True)
             thread.start()
         elif fault == Fault.SEGFAULT:
-            thread = threading.Thread(
-                target=segfault, args=(delay, callback), daemon=True
-            )
+            thread = threading.Thread(target=segfault, args=(delay, callback), daemon=True)
             thread.start()
-        elif fault == Fault.ABORT:
-            thread = threading.Thread(
-                target=abort, args=(delay, callback), daemon=True
-            )
+        elif fault == Fault.OS_ABORT:
+            thread = threading.Thread(target=abort, args=(delay, callback), daemon=True)
             thread.start()
-        elif fault == Fault.KILL:
+        elif fault == Fault.SIGKILL:
             p = ctx.Process(
                 target=send_signal,
                 args=(os.getpid(), signal.SIGKILL, delay, callback),
                 daemon=True,
             )
             p.start()
-        elif fault == Fault.TERM:
+        elif fault == Fault.SIGTERM:
             p = ctx.Process(
                 target=send_signal,
                 args=(os.getpid(), signal.SIGTERM, delay, callback),
                 daemon=True,
             )
             p.start()
-        elif fault == Fault.INT:
+        elif fault == Fault.SIGINT:
             p = ctx.Process(
                 target=send_signal,
                 args=(os.getpid(), signal.SIGINT, delay, callback),
                 daemon=True,
             )
             p.start()
-        elif fault == Fault.STOP:
+        elif fault == Fault.SIGSTOP:
             p = ctx.Process(
                 target=send_signal,
                 args=(os.getpid(), signal.SIGSTOP, delay, callback),

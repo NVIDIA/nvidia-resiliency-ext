@@ -19,19 +19,62 @@ import os
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 
 
+def find_file_in_dir(cuda_path, sfile):
+    """
+    Looks for file under the directory specified by the cuda_path argument.
+    If file is not found, returns None
+
+    Args:
+        cuda_path (str): Directory where to look for the files
+        sfile (str): The file to look for (e.g., 'libcupti.so').
+
+    Returns:
+        tuple: (directory_of_file1, directory_of_file2) or (None, None) if either file is not found.
+    """
+
+    for root, _, files in os.walk(cuda_path):
+        if sfile in files:
+            return root
+    return None
+
+
+def _skip_ext_build():
+    ans = os.environ.get('STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD', '0')
+    return ans.lower() in ['1', 'on', 'yes', 'true']
+
+
 def build(setup_kwargs):
+
+    if _skip_ext_build():
+        print(
+            "WARNING! CUPTI extension wont be build due to STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD flag."
+        )
+        return
+
+    include_dirs = None
+    library_dirs = None
+
+    cuda_path = os.environ.get("CUDA_PATH", "/usr/local/cuda")
+    if not os.path.isdir(cuda_path):
+        raise FileNotFoundError("cuda installation not found in /usr/local/cuda or $CUDA_PATH")
+
+    cupti_h = "cupti.h"
+    libcupti_so = "libcupti.so"
+    idir = find_file_in_dir(cuda_path, cupti_h)
+    ldir = find_file_in_dir(cuda_path, libcupti_so)
+    if idir and ldir:
+        include_dirs = [idir]
+        library_dirs = [ldir]
+    else:
+        raise FileNotFoundError(f"required files {libcupti_so} and {cupti_h} not found")
+
     cpp_extension = Pybind11Extension(
-        'nvidia_resiliency_ext.straggler.cupti_module',
+        'nvrx_cupti_module',
         # Sort .cpp files for reproducibility
         sorted(glob.glob('src/nvidia_resiliency_ext/straggler/cupti_src/*.cpp')),
-        include_dirs=['/usr/local/cuda/include'],
-        library_dirs=['/usr/local/cuda/lib64'],
-        # prefer static CUPTI if available
-        libraries=(
-            ['cupti_static']
-            if os.path.exists('/usr/local/cuda/lib64/libcupti_static.a')
-            else ['cupti']
-        ),
+        include_dirs=include_dirs,
+        library_dirs=library_dirs,
+        libraries=['cupti'],
         extra_compile_args=['-O3'],
         language='c++',
         cxx_std=17,

@@ -14,18 +14,19 @@
 # limitations under the License.
 
 import asyncio
+import contextlib
 import ctypes
-import logging
+import multiprocessing
 import os
 import socket
 import struct
+import sys
 import time
 
 import psutil
 import torch
-import multiprocessing as mp
 
-_IPC_PICKLER = mp.reduction.ForkingPickler(open(os.devnull, mode='wb'))
+_IPC_PICKLER = multiprocessing.reduction.ForkingPickler(open(os.devnull, mode='wb'))
 
 
 def is_process_alive(pid):
@@ -117,19 +118,6 @@ def set_ipc_socket_timeouts(fileno, timeout):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, timeval)
 
 
-def create_logger(name, level=logging.DEBUG, rank=None):
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    ch = logging.StreamHandler()
-    ch.setLevel(level)
-    name_fmt = "%(name)s" if rank is None else f"%(name)s:{rank}"
-    formatter = logging.Formatter(f"[%(asctime)s] [%(levelname)s] [{name_fmt}] %(message)s")
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
-    logger.propagate = False
-    return logger
-
-
 async def read_obj_from_ipc_stream(stream: asyncio.StreamReader):
     """
     Helper for reading pickled objects from stream
@@ -160,26 +148,35 @@ async def write_obj_to_ipc_stream(obj, stream: asyncio.StreamWriter):
         raise  # Might need to do something about it
 
 
-def read_obj_from_ipc_socket(sock):
+def recv_all(sock, n):
+    data = bytearray()
+    while len(data) < n:
+        packet = sock.recv(n - len(data))
+        if not packet:
+            raise ConnectionError("Socket connection broken while receiving")
+        data += packet
+    return data
+
+
+def read_obj_from_ipc_socket(sock, raise_exc=False):
     try:
-        obj_size_as_bytes = sock.recv(4)
+        obj_size_as_bytes = recv_all(sock, 4)
         obj_pickled_size = int.from_bytes(obj_size_as_bytes, byteorder="big")
-        obj_pickled = sock.recv(obj_pickled_size)
+        obj_pickled = recv_all(sock, obj_pickled_size)
         return _IPC_PICKLER.loads(obj_pickled)
-    except Exception:
-        # print(f"Error in read_obj_from_socket: {e}", file=sys.stderr)
-        return None
+    except Exception as e:
+        if raise_exc:
+            raise
+        else:
+            print(f"Exception while read_obj_from_ipc_socket: {e}", file=sys.stderr)
+            return None
 
 
 def write_object_to_ipc_socket(obj, sock):
-    try:
-        obj_pickled = _IPC_PICKLER.dumps(obj)
-        obj_size_as_bytes = len(obj_pickled).to_bytes(length=4, byteorder="big")
-        sock.sendall(obj_size_as_bytes)
-        sock.sendall(obj_pickled)
-    except Exception:
-        # print(f"Error while writing to socket: {e}", file=sys.stderr)
-        raise
+    obj_pickled = _IPC_PICKLER.dumps(obj)
+    obj_size_as_bytes = len(obj_pickled).to_bytes(length=4, byteorder="big")
+    sock.sendall(obj_size_as_bytes)
+    sock.sendall(obj_pickled)
 
 
 def get_rank():
@@ -201,3 +198,22 @@ def reduce_cuda_ctx_size():
     except Exception as _:
         # ignore exception, can continue if this fails
         pass
+
+
+@contextlib.contextmanager
+def patched_method(obj, method_name, new_method):
+    """
+    Temporarily patch `method_name` on `obj` with `new_method`.
+    Restores the original method upon exiting the context.
+    """
+    # Save the original method
+    original_method = getattr(obj, method_name)
+
+    # Patch the method
+    setattr(obj, method_name, new_method)
+
+    try:
+        yield
+    finally:
+        # Restore the original method
+        setattr(obj, method_name, original_method)

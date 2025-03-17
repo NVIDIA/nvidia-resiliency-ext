@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
+import dataclasses
 import datetime
 import gc
 import io
@@ -27,7 +27,6 @@ import warnings
 import weakref
 from typing import Optional
 
-import psutil
 import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
@@ -35,6 +34,7 @@ import nvidia_resiliency_ext.inprocess as inprocess
 from . import common
 
 
+@common.apply_all_tests(common.retry())
 class TestCase(unittest.TestCase):
     def setUp(self):
         self.patcher = unittest.mock.patch.dict(
@@ -65,11 +65,7 @@ class TestCase(unittest.TestCase):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            stores = [
-                obj
-                for obj in gc.get_objects()
-                if isinstance(obj, inprocess.store.TCPStore)
-            ]
+            stores = [obj for obj in gc.get_objects() if isinstance(obj, inprocess.store.TCPStore)]
         for store in stores:
             referrers = [ref for ref in gc.get_referrers(store)]
             print(f'{store=}')
@@ -89,7 +85,10 @@ class TestCase(unittest.TestCase):
 
     def kwargs(self):
         return {
-            'store_kwargs': {'port': common.find_free_port()},
+            'store_kwargs': {
+                'port': common.find_free_port(),
+                'timeout': datetime.timedelta(seconds=10),
+            },
             'monitor_thread_interval': datetime.timedelta(seconds=1e-3),
             'monitor_process_interval': datetime.timedelta(seconds=1e-3),
             'progress_watchdog_interval': datetime.timedelta(seconds=1e-3),
@@ -159,15 +158,13 @@ class TestInit(TestCase):
         max_iterations = 2
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             **self.kwargs(),
         )
         def fn():
             pass
 
-        torch.distributed.init_process_group()
+        torch.distributed.init_process_group('gloo')
         with self.assertRaisesRegex(
             ValueError,
             'not torch.distributed.is_initialized()',
@@ -182,9 +179,7 @@ class TestException(TestCase):
         max_iterations = 4
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             **self.kwargs(),
         )
         def fn():
@@ -202,9 +197,7 @@ class TestException(TestCase):
         ret_val = 123
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             **self.kwargs(),
         )
         def fn():
@@ -273,7 +266,7 @@ class TestException(TestCase):
 
     def test_faulty_finalize(self):
         class Finalize(inprocess.finalize.Finalize):
-            def __call__(self, state, train_ex):
+            def __call__(self, state):
                 raise ZeroDivisionError
 
         @inprocess.Wrapper(
@@ -289,7 +282,7 @@ class TestException(TestCase):
 
     def test_unhealthy(self):
         class HealthCheck(inprocess.health_check.HealthCheck):
-            def __call__(self, state, train_ex):
+            def __call__(self, state):
                 raise ZeroDivisionError
 
         @inprocess.Wrapper(**self.kwargs(), health_check=HealthCheck())
@@ -304,11 +297,11 @@ class TestException(TestCase):
             def __init__(self):
                 self.fail = True
 
-            def __call__(self, state, train_ex):
+            def __call__(self, state):
                 if self.fail:
                     self.fail = False
                     raise ZeroDivisionError
-                return train_ex
+                return state
 
         @inprocess.Wrapper(**self.kwargs(), health_check=HealthCheck())
         def fn():
@@ -318,7 +311,7 @@ class TestException(TestCase):
 
     def test_faulty_rank_assignment(self):
         class RankAssignment(inprocess.rank_assignment.RankAssignment):
-            def __call__(self, state, terminated_ranks):
+            def __call__(self, ctx):
                 raise ZeroDivisionError
 
         @inprocess.Wrapper(
@@ -337,12 +330,12 @@ class TestException(TestCase):
             def __init__(self):
                 self.should_raise = False
 
-            def __call__(self, state, terminated_ranks):
+            def __call__(self, ctx):
                 if self.should_raise:
                     raise ZeroDivisionError
                 else:
                     self.should_raise = True
-                    return state, terminated_ranks
+                    return ctx
 
         @inprocess.Wrapper(
             initialize=inprocess.initialize.RetryController(max_iterations=2),
@@ -355,22 +348,7 @@ class TestException(TestCase):
         with self.assertRaises(ZeroDivisionError):
             fn()
 
-    def test_invalid_rank_assignment(self):
-        class RankAssignment(inprocess.rank_assignment.RankAssignment):
-            def __call__(self, state, terminated_ranks):
-                return state, set([0])
-
-        @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(max_iterations=2),
-            rank_assignment=RankAssignment(),
-            **self.kwargs(),
-        )
-        def fn():
-            raise RuntimeError
-
-        with self.assertRaises(inprocess.exception.RestartError):
-            fn()
-
+    @common.silence_deprecation_warnings()
     def test_faulty_rank_filter(self):
         class RankFilter(inprocess.rank_filter.RankFilter):
             def __call__(self, state):
@@ -387,6 +365,7 @@ class TestException(TestCase):
         with self.assertRaises(ZeroDivisionError):
             fn()
 
+    @common.silence_deprecation_warnings()
     def test_faulty_second_rank_filter(self):
         class RankFilter(inprocess.rank_filter.RankFilter):
             def __init__(self):
@@ -438,6 +417,61 @@ class TestException(TestCase):
             fn()
 
 
+class TestState(TestCase):
+    def test_frozen_initialize(self):
+        class Initialize(inprocess.initialize.Initialize):
+            def __call__(self, state):
+                state.rank = 0
+                return state
+
+        @inprocess.Wrapper(
+            initialize=inprocess.Compose(
+                Initialize(),
+                inprocess.initialize.RetryController(max_iterations=1),
+            ),
+            **self.kwargs(),
+        )
+        def fn():
+            pass
+
+        with self.assertRaises(inprocess.exception.RestartAbort):
+            fn()
+
+    def test_frozen_finalize(self):
+        class Finalize(inprocess.finalize.Finalize):
+            def __call__(self, state):
+                state.rank = 0
+                return state
+
+        @inprocess.Wrapper(
+            initialize=inprocess.initialize.RetryController(max_iterations=1),
+            finalize=Finalize(),
+            **self.kwargs(),
+        )
+        def fn():
+            raise RuntimeError
+
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            fn()
+
+    def test_frozen_health_check(self):
+        class HealthCheck(inprocess.health_check.HealthCheck):
+            def __call__(self, state):
+                state.rank = 0
+                return state
+
+        @inprocess.Wrapper(
+            **self.kwargs(),
+            initialize=inprocess.initialize.RetryController(max_iterations=1),
+            health_check=HealthCheck(),
+        )
+        def fn():
+            raise RuntimeError
+
+        with self.assertRaises(inprocess.exception.HealthCheckError):
+            fn()
+
+
 class TestMultiCall(TestCase):
     def test_same_fn(self):
         @inprocess.Wrapper(**self.kwargs())
@@ -453,9 +487,7 @@ class TestMultiCall(TestCase):
 
         @inprocess.Wrapper(
             **self.kwargs(),
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
         )
         def fn(wrapped: inprocess.CallWrapper = None):
             nonlocal iteration
@@ -537,9 +569,7 @@ class TestLogging(TestCase):
         first = first_stream.getvalue()
 
         second_stream = io.StringIO()
-        logging.basicConfig(
-            level=logging.INFO, stream=second_stream, force=True
-        )
+        logging.basicConfig(level=logging.INFO, stream=second_stream, force=True)
         fn()
         first_again = first_stream.getvalue()
         second = second_stream.getvalue()
@@ -567,7 +597,7 @@ class TestLogging(TestCase):
                 data = fp.read()
 
             self.assertTrue(data, data)
-            self.assertIn('training_pid', data, data)
+            self.assertIn('target_pid', data, data)
             self.assertIn('monitor_process', data, data)
 
 
@@ -583,9 +613,7 @@ class TestTCPStore(TestCase):
 
             torch.distributed.init_process_group('gloo')
             model = torch.nn.parallel.DistributedDataParallel(model)
-            store_ref = weakref.ref(
-                torch.distributed.distributed_c10d._get_default_store()
-            )
+            store_ref = weakref.ref(torch.distributed.distributed_c10d._get_default_store())
             once = store_ref().add('key', 1)
             self.assertEqual(once, 1)
 
@@ -598,71 +626,5 @@ class TestTCPStore(TestCase):
 
             raise ZeroDivisionError
 
-        with self.assertRaisesRegex(
-            inprocess.exception.RestartAbort, 'iteration=3'
-        ):
+        with self.assertRaisesRegex(inprocess.exception.RestartAbort, 'iteration=3'):
             fn()
-
-
-@unittest.skip('')
-class TestConnections(TestCase):
-    def test(self):
-        counter = 0
-        max_iterations = 4
-
-        @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
-            **self.kwargs(),
-        )
-        def fn(self, call_wrapper: inprocess.CallWrapper = None):
-            if call_wrapper is not None:
-                call_wrapper.ping()
-
-            proc = psutil.Process()
-            inet_conns = proc.net_connections('inet')
-            self.assertEqual(len(inet_conns), 4)
-
-            listen_conns = [
-                conn
-                for conn in inet_conns
-                if conn.status == psutil.CONN_LISTEN
-            ]
-            self.assertEqual(len(listen_conns), 1)
-            listen_port = listen_conns[0].laddr.port
-
-            established_conns = [
-                conn
-                for conn in inet_conns
-                if conn.status == psutil.CONN_ESTABLISHED
-            ]
-
-            incoming_connections = [
-                conn
-                for conn in established_conns
-                if conn.laddr.port == listen_port
-            ]
-            self.assertEqual(len(incoming_connections), 2)
-
-            outgoing_connections = [
-                conn
-                for conn in established_conns
-                if conn.raddr.port == listen_port
-            ]
-            self.assertEqual(len(outgoing_connections), 1)
-
-            # unix_conns = proc.net_connections('unix')
-            # socket_conns = [
-            #     conn
-            #     for conn in unix_conns
-            #     if conn.raddr == '' and conn.laddr == ''
-            # ]
-            # self.assertEqual(len(socket_conns), 1)
-
-            nonlocal counter
-            counter += 1
-            if counter < max_iterations:
-                raise ZeroDivisionError
-
-        fn(self)

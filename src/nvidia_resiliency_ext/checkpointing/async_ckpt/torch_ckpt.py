@@ -20,19 +20,25 @@ an additional method to synchronize async saving requests
 
 
 import logging
+
 import torch
-from ..utils import wrap_for_async, preload_tensors
+
+from ..utils import preload_tensors, wrap_for_async
 from .core import AsyncCallsQueue, AsyncRequest
 
 logger = logging.getLogger(__name__)
 
+
 class TorchAsyncCheckpoint(object):
     async_fn = None
 
-    def __init__(self):
+    def __init__(self, persistent_queue=False):
         self.save = torch.save
-        self._async_calls_queue = AsyncCallsQueue()
-        TorchAsyncCheckpoint.async_fn = wrap_for_async(torch.save)
+        self._async_calls_queue = AsyncCallsQueue(persistent=persistent_queue)
+        # Use direct torch.save for persistent queue, avoid unnecessary wrapping
+        TorchAsyncCheckpoint.async_fn = (
+            torch.save if persistent_queue else wrap_for_async(torch.save)
+        )
 
     def async_save(self, state_dict, *args, **kwargs):
         """
@@ -42,19 +48,29 @@ class TorchAsyncCheckpoint(object):
 
         preloaded_sd = preload_tensors(state_dict)
         torch.cuda.synchronize()
-        async_request = AsyncRequest(TorchAsyncCheckpoint.async_fn, (preloaded_sd, *args), [], kwargs)
+        async_request = AsyncRequest(
+            TorchAsyncCheckpoint.async_fn, (preloaded_sd, *args), [], kwargs
+        )
         self._async_calls_queue.schedule_async_request(async_request)
 
-    def finalize_async_save(self, blocking: bool=False, no_dist=True):
-        """ Finalizes active async save calls.
+    def finalize_async_save(self, blocking: bool = False, no_dist=True, terminate=False):
+        """Finalizes active async save calls.
 
         Args:
             blocking (bool, optional): if True, will wait until all active requests
                 are done. Otherwise, finalizes only the async request that already
                 finished. Defaults to False.
+            no_dist (bool, Optional): if True, training ranks simply check its
+                asynchronous checkpoint writer without synchronization.
+            terminate (bool, optional): if True, the asynchronous queue will
+                be closed as the last action of this function.
         """
         if blocking and self._async_calls_queue.get_num_unfinalized_calls() > 0:
             if torch.distributed.get_rank() == 0:
-                logger.info('Unfinalized async checkpoint saves. Finalizing them synchronously now.')
+                logger.info(
+                    'Unfinalized async checkpoint saves. Finalizing them synchronously now.'
+                )
 
         self._async_calls_queue.maybe_finalize_async_calls(blocking, no_dist=no_dist)
+        if terminate:
+            self._async_calls_queue.close()

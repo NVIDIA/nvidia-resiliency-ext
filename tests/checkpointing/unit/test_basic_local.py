@@ -14,67 +14,19 @@
 # limitations under the license.
 
 import os
-import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-import torch
 import torch.distributed as dist
 
-from .test_utilities import Utils
-from . import TempNamedDir
-
-from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
 from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager import (
     LocalCheckpointManager,
 )
 
-
-# from typing import Any, Callable, Tuple, Union
-
-
-class SimpleTensorAwareStateDict(TensorAwareStateDict):
-    def __init__(self, iteration):
-        self._tensors = [torch.empty((1000, 1000), device='cuda').random_() for _ in range(100)]
-        self.iteration = iteration
-
-    def pop_tensors(self):
-        raise NotImplementedError
-
-    @property
-    def tensors(self):
-        raise NotImplementedError
-
-    def tensors_to_orig_device(self):
-        raise NotImplementedError
-
-    def is_hollow(self) -> bool:
-        raise NotImplementedError
-
-    def insert_tensors(self, tensor_data):
-        raise NotImplementedError
-
-    def init_tensors(self):
-        raise NotImplementedError
-
-    def copy_tensors_to_cpu(self, non_blocking=False):
-        for i, ten in enumerate(self._tensors):
-            self._tensors[i] = ten.to("cpu")
-
-    def restore_tensor_device(self, non_blocking=False):
-        for i, ten in enumerate(self._tensors):
-            self._tensors[i] = ten.to("cuda")
-
-    def to_state_dict(self):
-        raise NotImplementedError
-
-    def __eq__(self, other):
-        if len(self._tensors) != len(other._tensors):
-            return False
-        for self_ten, other_ten in zip(self._tensors, other._tensors):
-            if not torch.equal(self_ten, other_ten):
-                return False
-        return self.iteration == other.iteration
+from . import TempNamedDir
+from .test_utilities import SimpleTensorAwareStateDict, Utils
 
 
 class TestLocalCheckpointing:
@@ -88,7 +40,7 @@ class TestLocalCheckpointing:
         if async_save:
             async_save_request.execute_sync()
         else:
-            assert async_save_request == None
+            assert async_save_request is None
 
     @pytest.mark.parametrize(('use_ramdisk'), [True, False])
     @pytest.mark.parametrize(('async_save'), [True, False])
@@ -136,11 +88,54 @@ class TestLocalCheckpointing:
             # SAVE
             async_save_request = checkpoint_manager.save(intermediete_state_dict, 1, async_save)
             self._async_save(async_save_request, async_save)
+            assert first_ckpt_path.exists()
             intermediete_state_dict = SimpleTensorAwareStateDict(iteration=2)
             # SAVE
             async_save_request = checkpoint_manager.save(intermediete_state_dict, 2, async_save)
             self._async_save(async_save_request, async_save)
+            time.sleep(0.4)
             assert not first_ckpt_path.exists()
             ckpt_id = checkpoint_manager._ckpt_id(2)
             second_ckpt_path = checkpoint_manager._local_ckpt_path_from_id(ckpt_id)
             assert second_ckpt_path.exists()
+
+    @contextmanager
+    def find_latest_skeleton(self, tmp_path_dist_ckpt, extra_suffix, repl_strategy=None):
+        with TempNamedDir(
+            name=tmp_path_dist_ckpt / "test_find_latest_disabled_repl"
+        ) as root_local_ckpt_dir:
+            checkpoint_manager = LocalCheckpointManager(
+                root_local_ckpt_dir, repl_strategy=repl_strategy
+            )
+            my_local_ckpt_subdir = Path(checkpoint_manager.local_ckpt_dir)
+            my_local_ckpt_subdir.mkdir(parents=True, exist_ok=True)
+
+            ckpt_filenames = [
+                checkpoint_manager._filename_from_template(10, i, extra_suffix)
+                for i in range(dist.get_world_size())
+            ]
+            ckpt_files = [my_local_ckpt_subdir / filename for filename in ckpt_filenames]
+
+            yield checkpoint_manager, ckpt_files
+
+    @pytest.mark.parametrize(('extra_suffix'), ["", "some_suffix", "some suffix with spaces"])
+    def test_find_latest_repl_disable(self, tmp_path_dist_ckpt, extra_suffix):
+        assert (
+            dist.get_world_size() >= 2
+        ), f"This test needs world_size >= 2, got {dist.get_world_size()}"
+        with self.find_latest_skeleton(tmp_path_dist_ckpt, extra_suffix, repl_strategy=None) as (
+            checkpoint_manager,
+            ckpt_files,
+        ):
+            my_rank = dist.get_rank()
+            # rank 0: []
+            # rank 1: [ckpt_0, ckpt_1]
+            # rank i: [ckpt_i] for i >= 2
+            if my_rank == 1:
+                ckpt_files[0].touch()
+            if my_rank != 0:
+                ckpt_files[my_rank].touch()
+
+            assert (
+                checkpoint_manager.find_latest() == -1
+            ), "It's impossible to retrieve ckpt 0 with replication disabled!"

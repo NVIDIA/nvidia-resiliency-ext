@@ -13,3 +13,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+
+if 'TORCH_CPP_LOG_LEVEL' not in os.environ:
+    os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
+
+
+if 'PYTORCH_NVML_BASED_CUDA_CHECK' not in os.environ:
+    os.environ['PYTORCH_NVML_BASED_CUDA_CHECK'] = '1'

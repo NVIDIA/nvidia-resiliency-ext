@@ -15,17 +15,15 @@
 # limitations under the License.
 
 import abc
-import ctypes
 import datetime
 import logging
 import os
 import threading
-from typing import Optional
 
 import torch
 
 from . import exception
-from .state import State
+from .state import FrozenState
 
 
 class HealthCheck(abc.ABC):
@@ -55,9 +53,16 @@ class HealthCheck(abc.ABC):
     '''
 
     @abc.abstractmethod
-    def __call__(
-        self, state: State, train_ex: Optional[Exception] = None
-    ) -> (State, Optional[Exception]):
+    def __call__(self, state: FrozenState) -> FrozenState:
+        r'''
+        Implementation of a :py:class:`HealthCheck`.
+
+        Args:
+            state: read-only :py:class:`Wrapper` state
+
+        Returns:
+            Forwarded read-only input ``state``.
+        '''
         raise NotImplementedError
 
 
@@ -76,9 +81,7 @@ class CudaHealthCheck(HealthCheck):
     def __init__(self, timeout=datetime.timedelta(seconds=30)):
         self.timeout = timeout
 
-    def __call__(
-        self, state: State, train_ex: Optional[Exception] = None
-    ) -> (State, Optional[Exception]):
+    def __call__(self, state: FrozenState) -> FrozenState:
         log = logging.getLogger(__name__)
         if torch.cuda.is_available() and torch.cuda.is_initialized():
             if (local_rank := os.getenv('LOCAL_RANK', None)) is not None:
@@ -106,7 +109,7 @@ class CudaHealthCheck(HealthCheck):
             # 2nd sync to check if CUDA context is healthy
             log.debug(f'2nd torch.cuda.synchronize({device=})')
             torch.cuda.synchronize(device)
-        return state, train_ex
+        return state
 
 
 class FaultCounterExceeded(exception.RestartError):
@@ -132,17 +135,14 @@ class FaultCounter(HealthCheck):
         self.max_rank_faults = max_rank_faults
         self.faults_count = 0
 
-    def __call__(
-        self, state: State, train_ex: Optional[Exception] = None
-    ) -> (State, Optional[Exception]):
-        if train_ex is None:
-            return state, train_ex
+    def __call__(self, state: FrozenState) -> FrozenState:
+        if state.fn_exception is None:
+            return state
 
-        log = logging.getLogger(__name__)
         self.faults_count += 1
         max_rank_faults = self.max_rank_faults
         faults_count = self.faults_count
 
         if max_rank_faults is not None and faults_count > max_rank_faults:
             raise FaultCounterExceeded(f'{faults_count=} / {max_rank_faults=}')
-        return state, train_ex
+        return state

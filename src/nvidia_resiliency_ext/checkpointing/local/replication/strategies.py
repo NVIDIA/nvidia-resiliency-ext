@@ -16,13 +16,14 @@
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import List, Mapping, Sequence, Tuple, TypeVar, Generic, Optional
+from typing import Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar
 
 import torch
 
+from ...utils import debug_msg, debug_time
 from ..base_state_dict import TensorAwareStateDict
 from .group_utils import ExchangePlan, GroupWrapper, ProcessGroupLike, parse_group_sequence
-from .utils import debug_time, debug_msg, zip_strict
+from .utils import zip_strict
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +319,7 @@ class LazyCliqueReplicationStrategy(LazyReplicationStrategyBuilder[CliqueReplica
         replication_factor (int, optional): `F` in the formula above. Denotes the number of
             ranks storing replicas of a given rank's data.
     """
+
     def __init__(
         self, replication_jump: int = torch.cuda.device_count(), replication_factor: int = 2
     ):

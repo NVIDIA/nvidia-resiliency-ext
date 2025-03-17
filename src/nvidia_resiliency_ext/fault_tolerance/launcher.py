@@ -13,6 +13,7 @@
 # - security fix for watchdog_file_path
 
 # fmt: off
+import collections
 import contextlib
 import importlib.metadata as metadata
 import json
@@ -22,6 +23,7 @@ import signal
 import socket
 import sys
 import tempfile
+import time
 import uuid
 from argparse import REMAINDER, ArgumentParser
 from dataclasses import dataclass, field
@@ -31,17 +33,19 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 import torch
 from torch.distributed.argparse_util import check_env, env
 
-from ._torch_elastic_compat import events, metrics, timer
-from ._torch_elastic_compat.agent.server.api import (
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat import events, metrics, timer
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import (
     RunResult,
     SimpleElasticAgent,
     WorkerGroup,
     WorkerSpec,
     WorkerState,
 )
-from ._torch_elastic_compat.events.api import EventMetadataValue
-from ._torch_elastic_compat.metrics.api import prof
-from ._torch_elastic_compat.multiprocessing import (
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.api import (
+    EventMetadataValue,
+)
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.metrics.api import prof, put_metric
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing import (
     DefaultLogsSpecs,
     LogsSpecs,
     PContext,
@@ -49,56 +53,66 @@ from ._torch_elastic_compat.multiprocessing import (
     Std,
     start_processes,
 )
-from ._torch_elastic_compat.multiprocessing.errors import ChildFailedError, record
-from ._torch_elastic_compat.rendezvous import RendezvousParameters
-from ._torch_elastic_compat.rendezvous import registry as rdzv_registry
-from ._torch_elastic_compat.rendezvous.utils import (
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.errors import (
+    ChildFailedError,
+    record,
+)
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import (
+    RendezvousParameters,
+)
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import (
+    registry as rdzv_registry,
+)
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous.api import (
+    RendezvousGracefulExitError,
+)
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous.utils import (
+    _matches_machine_hostname,
     _parse_rendezvous_config,
     parse_rendezvous_endpoint,
 )
-from ._torch_elastic_compat.utils import macros
-from .config import FaultToleranceConfig
-from .rank_monitor_server import RankMonitorServer
-from .utils import terminate_mp_processes
-
-# fmt: on
-
+from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.utils import macros
+from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.data import (
+    FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
+    FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
+)
+from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
+from nvidia_resiliency_ext.fault_tolerance.utils import patched_method, terminate_mp_processes
 
 logging.basicConfig(
-    level=logging.WARNING,
-    format=f"[%(asctime)s] [%(levelname)s] [ft_launcher@{socket.gethostname()}] %(message)s",
+    level=os.getenv('FT_LAUNCHER_LOGLEVEL', 'INFO'),
+    format=f"[%(asctime)s] [%(levelname)s] [ft_launcher{os.getpid()}@{socket.gethostname()}] %(message)s",
 )
+
 logger = logging.getLogger(__name__)
 
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
+FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
-class RankCachingRdzvHandlerWrapper:
-    """
-    This wrapper goal is to make rank<->node mapping stable if number of nodes is the
-    same as in the last redezvous. It just caches last group rank obtained from rdzv handler
-    and return it for every next redezvous as long as group world size is the same.
-    """
 
-    def __init__(self, rdzv_handler):
-        self._rdzv_handler = rdzv_handler
-        self._prev_group_rank = None
-        self._prev_group_world_size = None
+def _register_ft_rdzv_handler():
 
-    def next_rendezvous(self, *args, **kwargs):
-        (
-            store,
-            group_rank,
-            group_world_size,
-        ) = self._rdzv_handler.next_rendezvous(*args, **kwargs)
-        if self._prev_group_world_size != group_world_size:
-            self._prev_group_world_size = group_world_size
-            self._prev_group_rank = group_rank
-        return store, self._prev_group_rank, self._prev_group_world_size
+    from ._ft_rendezvous import FtRendezvousHandler, create_handler
+    from ._torch_elastic_compat.rendezvous import rendezvous_handler_registry
+    from ._torch_elastic_compat.rendezvous.c10d_rendezvous_backend import create_backend
 
-    def __getattr__(self, attr):
-        return getattr(self._rdzv_handler, attr)
+    def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousHandler:
+        backend, store = create_backend(params)
+        return create_handler(store, backend, params)
+
+    del rendezvous_handler_registry._registry['c10d']  # FIXME: ugly hack to swap the c10d handler
+    rendezvous_handler_registry.register("c10d", _create_ft_rdzv_handler)
+
+
+class UnhealthyNodeException(Exception):
+    """Exception raised when a node in a cluster is found to be unhealthy."""
+
+    def __init__(self, message="A node in the cluster is unhealthy"):
+        self.message = message
+        super().__init__(self.message)
 
 
 # LocalElasticAgent source
@@ -202,7 +216,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         start_method="spawn",
         exit_barrier_timeout: float = 300,
         log_line_prefix_template: Optional[str] = None,
-        term_timeout: float = 600,
+        term_timeout: float = 1800,
+        workers_stop_timeout: float = 30, 
+        restart_policy: str = "any-failed",
+        is_store_host: bool = False,
     ):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
@@ -212,33 +229,249 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._worker_watchdog: Optional[timer.FileTimerServer] = None
         self._logs_specs = logs_specs
         self._term_timeout = term_timeout
-        self._rank_to_rmon: Dict[int, Any] = dict()
+        self._workers_stop_timeout = workers_stop_timeout
+        self._is_store_host = is_store_host
+        self._local_rank_to_rmon: Dict[int, Any] = dict()
         self._ft_cfg = fault_tol_cfg
         self._children_pgids: Set[int] = set()
+        self._restart_policy = restart_policy
+
+    DEFAULT_ROLE = "default"  # FIXME
+
+    # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
+    #  `nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.metrics.prof`.
+    @prof
+    def run(self, role: str = DEFAULT_ROLE) -> RunResult:
+        start_time = time.monotonic()
+        shutdown_called: bool = False
+        try:
+            result = self._invoke_run(role)
+            self._total_execution_time = int(time.monotonic() - start_time)
+            self._record_metrics(result)
+            self._record_worker_events(result)
+            return result
+        except RendezvousGracefulExitError as e:
+            logger.info("Rendezvous gracefully exited: %s", e)
+        except SignalException as e:
+            logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
+            self._shutdown(e.sigval, timeout=self._term_timeout)
+            shutdown_called = True
+            raise
+        finally:
+            if not shutdown_called:
+                self._shutdown()
+            # record the execution time in case there were any exceptions during run.
+            self._total_execution_time = int(time.monotonic() - start_time)
+
+    def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
+        if self._restart_policy == 'any-failed':
+            return self._invoke_run_with_any_failed_policy(role)
+        elif self._restart_policy == 'min-healthy':
+            return self._invoke_run_with_min_healthy_policy(role)
+        else:
+            raise AssertionError(
+                f"Unexpected restart-policy: {self._restart_policy}."
+                " check CLI help for --restart-policy allowed options"
+            )
+
+    def _invoke_run_with_any_failed_policy(self, role: str = DEFAULT_ROLE) -> RunResult:
+        # NOTE: currently only works for a single role
+
+        spec = self._worker_group.spec
+        role = spec.role
+
+        logger.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
+
+        self._initialize_workers(self._worker_group)
+        monitor_interval = spec.monitor_interval
+        rdzv_handler = spec.rdzv_handler
+
+        while True:
+            assert self._worker_group.state != WorkerState.INIT
+            time.sleep(monitor_interval)
+            run_result = self._monitor_workers(self._worker_group)
+            state = run_result.state
+            self._worker_group.state = state
+
+            put_metric(f"workers.{role}.remaining_restarts", self._remaining_restarts)
+            put_metric(f"workers.{role}.{state.name.lower()}", 1)
+
+            if state == WorkerState.SUCCEEDED:
+                logger.info(
+                    "[%s] worker group successfully finished."
+                    " Waiting %s seconds for other agents to finish.",
+                    role,
+                    self._exit_barrier_timeout,
+                )
+                self._exit_barrier()
+                return run_result
+            elif state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                if self._remaining_restarts > 0:
+                    logger.info(
+                        "[%s] Worker group %s. "
+                        "%s/%s attempts left;"
+                        " will restart worker group",
+                        role,
+                        state.name,
+                        self._remaining_restarts,
+                        spec.max_restarts,
+                    )
+                    self._remaining_restarts -= 1
+                    self._restart_workers(self._worker_group)
+                else:
+                    self._stop_workers(self._worker_group)
+                    self._worker_group.state = WorkerState.FAILED
+                    # to preserve torchrun's behaviour, should not return WorkerState.UNHEALTHY.
+                    # we use WorkerState.UNHEALTHY to denote a worker group that is still
+                    # running but has some failed workers. torchrun does not use WorkerState.UNHEALTHY
+                    run_result = self._monitor_workers(self._worker_group)
+                    return run_result
+            elif state == WorkerState.HEALTHY:
+                # membership changes do not count as retries
+                num_nodes_waiting = rdzv_handler.num_nodes_waiting()
+                group_rank = self._worker_group.group_rank
+                if num_nodes_waiting > 0:
+                    logger.info(
+                        "[%s] Detected %s "
+                        "new nodes from group_rank=%s; "
+                        "will restart worker group",
+                        role,
+                        num_nodes_waiting,
+                        group_rank,
+                    )
+                    self._restart_workers(self._worker_group)
+            else:
+                raise Exception(f"[{role}] Worker group in {state.name} state")
+
+    def _invoke_run_with_min_healthy_policy(self, role: str = DEFAULT_ROLE) -> RunResult:
+        # NOTE: currently only works for a single role
+
+        spec = self._worker_group.spec
+        role = spec.role
+
+        logger.info(
+            f"[{role}] starting workers for entrypoint: {spec.get_entrypoint_name()} with min-healthy policy"
+        )
+
+        self._initialize_workers(self._worker_group)
+        monitor_interval = spec.monitor_interval
+        rdzv_handler = spec.rdzv_handler
+        min_nodes = rdzv_handler._settings.min_nodes
+        group_rank = self._worker_group.group_rank
+
+        while True:
+            assert self._worker_group.state != WorkerState.INIT
+            time.sleep(monitor_interval)
+            run_result = self._monitor_workers(self._worker_group)
+            state = run_result.state
+            self._worker_group.state = state
+
+            put_metric(f"workers.{role}.remaining_restarts", self._remaining_restarts)
+            put_metric(f"workers.{role}.{state.name.lower()}", 1)
+
+            if state in {
+                WorkerState.SUCCEEDED,
+                WorkerState.FAILED,
+                WorkerState.UNHEALTHY,
+                WorkerState.HEALTHY,
+            }:
+                state_in_rdzv = rdzv_handler.try_set_worker_state(state)
+                if state_in_rdzv != state:
+                    assert (
+                        state_in_rdzv == WorkerState.UNKNOWN
+                    ), f"Could not set worker group state {state=} {state_in_rdzv=}"
+                    # state in the rdzv is UNKNOWN if this node was marked as dead by other participants
+            else:
+                raise RuntimeError(f"[{role}] Worker group in unexpected state: {state.name}")
+
+            # count the number of worker groups in each state
+            all_worker_states = rdzv_handler.get_worker_states()
+            worker_state_cnt = collections.Counter(all_worker_states.values())
+            num_succ = worker_state_cnt[WorkerState.SUCCEEDED]
+            num_healthy = worker_state_cnt[WorkerState.HEALTHY]
+
+            logger.debug(
+                "[%s] group_rank=%s worker_state_cnt=%s", role, group_rank, worker_state_cnt
+            )
+
+            # check if the current run (rendezvous) ended successfully:
+            # at least "min_nodes" worker groups should succeed to consider a run successful.
+            # NOTE: if the run was successful all agents exit with WorkerState.SUCCEEDED despite
+            # their actual run result
+            if num_healthy == 0:
+                if num_succ >= min_nodes:
+                    logger.info(
+                        f"[{role}] {group_rank=} {state.name=} detected that the run ended successfuly: {worker_state_cnt=}"
+                    )
+                    # ensure this node workers are terminated
+                    self._stop_workers(self._worker_group)
+                    # WAR: return values are not meaningful in this case,
+                    # but some dummy values are required for the event logging
+                    dummy_ret_vals = {w.global_rank: None for w in self._worker_group.workers}
+                    return RunResult(state=WorkerState.SUCCEEDED, return_values=dummy_ret_vals)
+
+            # check if the current run can end successfully
+            max_possible_succ = num_succ + num_healthy
+            can_continue = max_possible_succ >= min_nodes
+
+            if can_continue:
+                # upscaling should be disabled in min-healthy mode
+                num_nodes_waiting = rdzv_handler.num_nodes_waiting()
+                if num_nodes_waiting > 0:
+                    raise RuntimeError(
+                        f"Detected {num_nodes_waiting} nodes in the waiting list. This should not happen with min-healthy mode."
+                    )
+            else:
+                # we can't have min_nodes successful worker groups.
+                # NOTE: this worker group still might be successful/healthy.
+                # all we can do is to restart if possible or shutdown otherwise
+                # NOTE: we use the rdzv round to count the restarts, so restarts are counted
+                # globally (while in any-failed mode each worker counts its own restarts)
+                logger.warning(
+                    f"[{role}] {group_rank=} {state.name=} detected that the current run failed: {worker_state_cnt=}"
+                )
+                self._remaining_restarts = spec.max_restarts - self._rdzv_handler.round()
+                if self._remaining_restarts > 0:
+                    logger.info(
+                        f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
+                    )
+                    self._remaining_restarts -= 1
+                    self._restart_workers(self._worker_group)
+                else:
+                    # try to stop the workers and return the updated run result
+                    logger.info(f"0/{spec.max_restarts} restart attempts left. Exiting...")
+                    self._stop_workers(self._worker_group)
+                    run_result = self._monitor_workers(self._worker_group)
+                    return run_result
+
+    def get_rank_mon_socket_path(self, local_rank):
+        return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
         spawn_mp_ctx = torch.multiprocessing.get_context("spawn")
-        if self._rank_to_rmon:
-            # Ensure we get the same ranks range after redezvous
-            # otherwise we wont be able to use local CPU checkpoints
-            new_ranks = {int(worker_env['RANK']) for worker_env in envs.values()}
-            old_ranks = {rank for rank in self._rank_to_rmon.keys()}
-            assert new_ranks == old_ranks, "Ranks should not change"
         for worker_env in envs.values():
             # Start rank monitors if not already started
             # Each rank (re)connects to its rank monitor when it starts
-            rank = int(worker_env['RANK'])
-            if rank not in self._rank_to_rmon:
-                self._rank_to_rmon[rank] = RankMonitorServer.run_in_subprocess(
-                    self._ft_cfg, rank, spawn_mp_ctx
+            # Monitor of the local rank0 on the store hosting node is the restarter logger
+            local_rank = int(worker_env['LOCAL_RANK'])
+            is_restarter_logger = self._is_store_host and local_rank == 0
+            rmon_ipc_socket = worker_env[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR]
+            if local_rank not in self._local_rank_to_rmon:
+                self._local_rank_to_rmon[local_rank] = RankMonitorServer.run_in_subprocess(
+                    cfg=self._ft_cfg,
+                    ipc_socket_path=rmon_ipc_socket,
+                    is_restarter_logger=is_restarter_logger,
+                    mp_ctx=spawn_mp_ctx,
                 )
 
     def shutdown_rank_monitors(self):
-        for rmon_proc in self._rank_to_rmon.values():
+        for local_rank, rmon_proc in self._local_rank_to_rmon.items():
             with contextlib.suppress(Exception):
                 rmon_proc.terminate()
             with contextlib.suppress(Exception):
                 rmon_proc.join()
+            with contextlib.suppress(Exception):
+                os.unlink(self.get_rank_mon_socket_path(local_rank))
 
     def _setup_local_watchdog(self, envs: Dict[int, Dict[str, str]]) -> None:
         enable_watchdog_env_name = TORCHELASTIC_ENABLE_FILE_TIMER
@@ -310,7 +543,8 @@ class LocalElasticAgent(SimpleElasticAgent):
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
     def _stop_workers(self, worker_group: WorkerGroup) -> None:
-        self._shutdown()
+        logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
+        self._shutdown(timeout=self._workers_stop_timeout)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -348,6 +582,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 "TORCH_NCCL_ASYNC_ERROR_HANDLING": os.getenv(
                     "TORCH_NCCL_ASYNC_ERROR_HANDLING", str(1)
                 ),
+                FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
+                FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
             }
             if "OMP_NUM_THREADS" in os.environ:
                 worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
@@ -381,28 +617,16 @@ class LocalElasticAgent(SimpleElasticAgent):
             start_method=self._start_method,
         )
 
-        self._patch_pcontext_close(self._pcontext)
-
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
         return self._pcontext.pids()
 
-    def _patch_pcontext_close(self, pcontext: PContext) -> None:
-        # replace PContext._close with our version that has cutomized timeout
-        # this ensures that the workers have enough time between SIGTERM and SIGKILL
-        orig_close = pcontext._close
-
-        def __close(death_sig, timeout=None):
-            orig_close(death_sig, timeout=self._term_timeout)
-
-        pcontext._close = __close
-
-    def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM) -> None:
+    def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
         if self._worker_watchdog is not None:
             self._worker_watchdog.stop()
             self._worker_watchdog = None
         if self._pcontext:
-            self._pcontext.close(death_sig)
+            self._pcontext.close(death_sig, timeout=timeout)
             # Remove multiprocessing leftovers
             # PID=1 become a parent if the original parent died
             terminate_mp_processes(allowed_ppids={1}, allowed_pgids=self._children_pgids)
@@ -424,18 +648,33 @@ class LocalElasticAgent(SimpleElasticAgent):
             )
             return RunResult(state=WorkerState.UNKNOWN)
 
-        result = self._pcontext.wait(0)
+        with patched_method(self._pcontext, 'close', lambda *args, **kwargs: None):
+            # do not terminate healthy workers if some failed
+            # we will terminate them when leaving the rendezvous round
+            result = self._pcontext.wait(0)
+
         if result:
+
             if result.is_failed():
                 # map local rank failure to global rank
                 worker_failures = {}
                 for local_rank, failure in result.failures.items():
                     worker = worker_group.workers[local_rank]
                     worker_failures[worker.global_rank] = failure
-                return RunResult(
-                    state=WorkerState.FAILED,
-                    failures=worker_failures,
-                )
+                all_failed = len(result.failures) == len(worker_pids)
+                if all_failed:
+                    run_result = RunResult(
+                        state=WorkerState.FAILED,
+                        failures=worker_failures,
+                    )
+                else:
+                    # some workers have failed, while others are still running or succeeded
+                    # this worker group is going to finish in WorkerState.FAILED state or stay UNHEALTHY.
+                    run_result = RunResult(
+                        state=WorkerState.UNHEALTHY,
+                        failures=worker_failures,
+                    )
+                return run_result
             else:
                 # copy ret_val_queue into a map with a global ranks
                 workers_ret_vals = {}
@@ -454,6 +693,39 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._pcontext is not None:
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
+
+    def clean_rdzv_shutdown(self, close):
+        # Try to exit rendezvous gracefully, with the store host leaving last.
+        # If the store host exits early, other nodes might try to use the store
+        # and fail due to connection errors.
+        # Marking the rdzv as closed causes spare nodes to exit the rdzv with RendezvousGracefulExitError.
+        # and prevents all other agents from using the rdzv, so it should be closed only when leaving
+        # the workload
+        try:
+            rdzv_handler = self._rdzv_handler
+            rdzv_handler._stop_heartbeats()  # stops rdzv backround thread
+            rdzv_handler.remove_this_node()
+            if close:
+                rdzv_handler.set_closed()
+            if self._is_store_host:
+                timeout = self._exit_barrier_timeout
+                pooling_interval = 1.0
+                time_left = timeout
+                while rdzv_handler.num_nodes() > 0 and time_left > 0:
+                    time.sleep(pooling_interval)
+                    time_left -= pooling_interval
+                if rdzv_handler.num_nodes() > 0:
+                    logger.warning(
+                        f"Some nodes did not leave the rendezvous on time ({timeout=} seconds). "
+                        "Exiting agent anyway, but this might result in rdzv failures."
+                    )
+                else:
+                    logger.info(
+                        "Rendezvous don't have any nodes. Leaving the store hosting process..."
+                    )
+        except Exception as e:
+            logger.warning(f"Error while trying to gracefully exit the rendezvous: {e}")
+            pass  # continue, we are exiting the process anyway
 
 
 # Source
@@ -485,6 +757,8 @@ class LaunchConfig:
         role: User defined role of the worker (defaults to "trainer").
         max_restarts: The maximum amount of restarts that elastic agent will conduct
                     on workers before failure.
+        restart_policy: Determines when worker groups are restarted e.g. if any worker group failed,
+                    or if number of healthy worker groups falls below min-nodes etc. see also the CLI arg
         monitor_interval: The interval in seconds that is used by the elastic_agent
                         as a period of monitoring workers.
         start_method: The method is used by the elastic agent to start the
@@ -511,7 +785,9 @@ class LaunchConfig:
     rdzv_configs: Dict[str, Any] = field(default_factory=dict)
     rdzv_timeout: int = -1
     max_restarts: int = 3
-    term_timeout: float = 600
+    restart_policy: str = "any-failed"
+    term_timeout: float = 1800
+    workers_stop_timeout: float = 30
     monitor_interval: float = 30
     start_method: str = "spawn"
     log_line_prefix_template: Optional[str] = None
@@ -613,6 +889,15 @@ def _get_addr_and_port(
     return (master_addr, master_port)
 
 
+def _is_store_host(params: RendezvousParameters) -> bool:
+    """Returns true if this agent is hosting the TCP store"""
+    host, _ = parse_rendezvous_endpoint(params.endpoint, default_port=0)
+    cfg_is_host = params.get_as_bool("is_host")
+    if cfg_is_host is not None:
+        return bool(cfg_is_host)
+    return _matches_machine_hostname(host)
+
+
 def launch_agent(
     config: LaunchConfig,
     entrypoint: Union[Callable, str, None],
@@ -625,6 +910,10 @@ def launch_agent(
 
     entrypoint_name = _get_entrypoint_name(entrypoint, args)
 
+    # with min-healthy restarting policy, if the rendezvous is completed (workers are running),
+    # we dont want to replace missing/dead nodes with spares nor to upscale the rendezvous with new arrivals
+    config.rdzv_configs['upscaling_enabled'] = config.restart_policy != "min-healthy"
+
     logger.info(
         "Starting elastic_operator with launch configs:\n"
         "  entrypoint       : %(entrypoint)s\n"
@@ -636,6 +925,7 @@ def launch_agent(
         "  rdzv_endpoint    : %(rdzv_endpoint)s\n"
         "  rdzv_configs     : %(rdzv_configs)s\n"
         "  max_restarts     : %(max_restarts)s\n"
+        "  restart_policy   : %(restart_policy)s\n"
         "  monitor_interval : %(monitor_interval)s\n"
         "  log_dir          : %(log_dir)s\n"
         "  metrics_cfg      : %(metrics_cfg)s\n",
@@ -649,12 +939,12 @@ def launch_agent(
             "rdzv_endpoint": config.rdzv_endpoint,
             "rdzv_configs": config.rdzv_configs,
             "max_restarts": config.max_restarts,
+            "restart_policy": config.restart_policy,
             "monitor_interval": config.monitor_interval,
             "log_dir": config.logs_specs.root_log_dir,  # type: ignore[union-attr]
             "metrics_cfg": config.metrics_cfg,
         },
     )
-
     rdzv_parameters = RendezvousParameters(
         backend=config.rdzv_backend,
         endpoint=config.rdzv_endpoint,
@@ -666,9 +956,6 @@ def launch_agent(
     )
 
     master_addr, master_port = _get_addr_and_port(rdzv_parameters)
-
-    orig_rdzv_handler = rdzv_registry.get_rendezvous_handler(rdzv_parameters)
-    wrapped_rdzv_handler = RankCachingRdzvHandlerWrapper(orig_rdzv_handler)
 
     spec = WorkerSpec(
         role=config.role,
@@ -690,6 +977,9 @@ def launch_agent(
         start_method=config.start_method,
         log_line_prefix_template=config.log_line_prefix_template,
         term_timeout=config.term_timeout,
+        workers_stop_timeout=config.workers_stop_timeout,
+        restart_policy=config.restart_policy,
+        is_store_host=_is_store_host(rdzv_parameters),
     )
 
     shutdown_rdzv = True
@@ -697,8 +987,13 @@ def launch_agent(
         metrics.initialize_metrics(metrics.MetricsConfig(config.metrics_cfg))
 
         result = agent.run()
+
         # records that agent.run() has succeeded NOT that workers have succeeded
         events.record(agent.get_event_succeeded())
+
+        if result is None:
+            logger.info("Agent .run() result is None. Agent was waiting at the rendezvous.")
+            return None
 
         if result.is_failed():
             # ChildFailedError is treated specially by @record
@@ -710,7 +1005,13 @@ def launch_agent(
                 failures=result.failures,
             )
 
+        logger.info(f"Agent .run() is OK. No failures in the result. {result=}")
         return result.return_values
+    except UnhealthyNodeException as e:
+        # do not shutdown rendezvous when an unhealthy node is leaving
+        shutdown_rdzv = False
+        logger.error(f"Agent .run() raised UnhealthyNodeException: {e}")
+        events.record(agent.get_event_failed())
     except ChildFailedError:
         raise
     except SignalException as e:
@@ -718,22 +1019,22 @@ def launch_agent(
         # since this closes the rendezvous on this rdzv_id permanently and
         # prevents any additional scaling events
         shutdown_rdzv = False
+        logger.error(f"Agent .run() raised SignalException: {e}")
         events.record(agent.get_event_failed())
-        logger.info(f"Launcher got signal. Exception is: {e}")
         if agent.any_rank_failed():
             logger.warning("Some ranks exited with non-zero. Re-raising SignalException.")
             raise
         else:
-            # if all ranks exited with 0, do not escalate the error,
-            # this is useful for preemption handling.
-            logger.info("All ranks exited gracefully. Launcher exiting without error.")
-    except Exception:
+            logger.info("All ranks exited gracefully. Launcher exiting without an error.")
+    except Exception as e:
+        logger.error(f"Agent .run() raised exception, {e=}")
         events.record(agent.get_event_failed())
         raise
     finally:
-        if shutdown_rdzv:
-            spec.rdzv_handler.shutdown()
+        agent.clean_rdzv_shutdown(close=shutdown_rdzv)
         agent.shutdown_rank_monitors()
+        with contextlib.suppress(Exception):
+            os.unlink(FT_LAUNCHER_IPC_SOCKET)
 
 
 # Source
@@ -1139,8 +1440,8 @@ def get_args_parser() -> ArgumentParser:
         "--rdzv_backend",
         action=env,
         type=str,
-        default="static",
-        help="Rendezvous backend.",
+        default="c10d",
+        help="Rendezvous backend. Currently only c10d is supported.",
     )
     parser.add_argument(
         "--rdzv-endpoint",
@@ -1187,14 +1488,21 @@ def get_args_parser() -> ArgumentParser:
         default=0,
         help="Maximum number of worker group restarts before failing.",
     )
-    # this param is added for fault tolerance
     parser.add_argument(
         "--term-timeout",
         "--term_timeout",
         action=env,
         type=float,
         default=1800,
-        help="Interval, in seconds, between initial SIGTERM and rank termination with SIGKILL.",
+        help="Interval, in seconds, between initial SIGTERM and rank termination with SIGKILL, when the launcher forwards a received signal to ranks.",
+    )
+    parser.add_argument(
+        "--workers-stop-timeout",
+        "--workers_stop_timeout",
+        action=env,
+        type=float,
+        default=30,
+        help="Interval, in seconds, between initial SIGTERM and rank termination with SIGKILL, when the launcher stops its ranks in order to restart them.",
     )
     parser.add_argument(
         "--monitor-interval",
@@ -1380,6 +1688,14 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-param-node_health_check_interval",
+        "--ft-param-node_health_check_interval",
+        type=float,
+        default=None,
+        help="Part of Fault Tolerance pkg config (node_health_check_interval).",
+    )
+
+    parser.add_argument(
         "--ft-param-safety_factor",
         "--ft-param-safety_factor",
         type=float,
@@ -1401,6 +1717,67 @@ def get_args_parser() -> ArgumentParser:
         type=str,
         default=None,
         help="Part of Fault Tolerance pkg config (log_level).",
+    )
+
+    parser.add_argument(
+        "--ft-param-rank_out_of_section_timeout",
+        "--ft-param-rank_out_of_section_timeout",
+        type=float,
+        default=None,
+        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout).",
+    )
+
+    parser.add_argument(
+        "--ft-param-rank_section_timeouts",
+        "--ft-param-rank_section_timeouts",
+        type=str,
+        default=None,
+        help="Part of Fault Tolerance pkg config (rank_section_timeouts). "
+        "Expected format: name1:value1,name2:value2,... Use 'null'|'none'|'' for None",
+    )
+
+    parser.add_argument(
+        "--ft-param-restart_check_interval",
+        "--ft-param-restart_check_interval",
+        type=float,
+        default=None,
+        help="Part of Fault Tolerance pkg config (restart_check_interval).",
+    )
+
+    parser.add_argument(
+        "--restart-policy",
+        "--restart_policy",
+        type=str,
+        choices=['any-failed', 'min-healthy'],
+        default='any-failed',
+        help="Worker groups restarting policy. Options: "
+        "'any-failed' restart if any worker group fails (torchrun's default); "
+        "'min-healthy' restart if number of healthy worker groups falls below <minimum_nodes>",
+    )
+
+    parser.add_argument(
+        "--ft_param_enable_nic_monitor",
+        "--ft-param-enable-nic-monitor",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+        default=True,
+        help="Enable or Disable NIC health monitoring in training.",
+    )
+
+    parser.add_argument(
+        "--ft_param_pci_topo_file",
+        "--ft-param-pci-topo-file",
+        type=str,
+        default=None,
+        help="PCI topology file that describes GPU and NIC topology.",
+    )
+
+    parser.add_argument(
+        "--ft_param_link_down_path_template",
+        "--ft-param-link-down-path-template",
+        type=str,
+        default=None,
+        help="Part of Fault Tolerance pkg config (link_down_path_template). "
+        "Template path to check if a NIC link is down.",
     )
 
     #
@@ -1441,7 +1818,7 @@ def parse_min_max_nnodes(nnodes: str):
 
 def determine_local_world_size(nproc_per_node: str):
     try:
-        logging.info("Using nproc_per_node=%s.", nproc_per_node)
+        logger.info("Using nproc_per_node=%s.", nproc_per_node)
         return int(nproc_per_node)
     except ValueError as e:
         if nproc_per_node == "cpu":
@@ -1509,7 +1886,7 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
                 f"Could not find entrypoint under 'torchrun.logs_specs[{logs_specs_name}]' key"
             )
 
-        logging.info("Using logs_spec '%s' mapped to %s", logs_specs_name, str(logs_specs_cls))
+        logger.info("Using logs_spec '%s' mapped to %s", logs_specs_name, str(logs_specs_cls))
     else:
         logs_specs_cls = DefaultLogsSpecs
 
@@ -1551,6 +1928,11 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
         rdzv_configs["rank"] = args.node_rank
 
     rdzv_endpoint = get_rdzv_endpoint(args)
+
+    if args.rdzv_backend.lower() != 'c10d':
+        raise ValueError(
+            f"Current ft_launcher version supports only rdzv_backend=c10d. Got {args.rdzv_backend}"
+        )
 
     try:
         fault_tol_cfg = FaultToleranceConfig.from_args(
@@ -1595,7 +1977,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
         rdzv_backend=args.rdzv_backend,
         rdzv_configs=rdzv_configs,
         max_restarts=args.max_restarts,
+        restart_policy=args.restart_policy,
         term_timeout=args.term_timeout,
+        workers_stop_timeout=args.workers_stop_timeout,
         monitor_interval=args.monitor_interval,
         start_method=args.start_method,
         log_line_prefix_template=log_line_prefix_template,
@@ -1662,6 +2046,7 @@ def run(args):
             args.rdzv_id,
         )
 
+    _register_ft_rdzv_handler()
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(
         config=config,
@@ -1675,9 +2060,15 @@ def main(args=None):
     try:
         run(args)
     except ChildFailedError as e:
-        # logger.info on failed ranks in a compact form
-        logger.error(f"Some rank(s) exited with non-zero exit code: {e.failures}")
+        logger.error(
+            f"Some rank(s) exited with non-zero exit code: {e.failures}. Agent's exit code = 1"
+        )
         sys.exit(1)
+    except Exception as e:
+        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
+        sys.exit(1)
+    logger.info("Agent exits with exit code = 0.")
+    sys.exit(0)
 
 
 if __name__ == "__main__":
