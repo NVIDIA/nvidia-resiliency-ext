@@ -4,11 +4,9 @@ on:
   push:
     branches:
       - main
-      - rel_test
   pull_request:
     branches:
       - main
-      - rel_test
 
 jobs:
   lint:
