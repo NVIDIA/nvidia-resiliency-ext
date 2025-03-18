@@ -49,4 +49,4 @@ The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused so
 
 ## Usage
 
-For detailed documentation and usage information about each component, please refer to the ./docs.
+For detailed documentation and usage information about each component, please refer to the https://nvidia.github.io/nvidia-resiliency-ext/.
