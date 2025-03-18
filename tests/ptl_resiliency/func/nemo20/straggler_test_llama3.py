@@ -38,7 +38,7 @@ from nvidia_resiliency_ext.ptl_resiliency import StragglerDetectionCallback
 
 
 @dataclass
-class Llama3Config36M(Llama3Config):
+class Llama3Config145M(Llama3Config):
     rotary_base: int = 500_000
     seq_length: int = 8192
     num_layers: int = 12
@@ -99,8 +99,8 @@ def get_parser():
     parser.add_argument(
         "--size",
         type=str,
-        default="36m",  # customized config for smaller number of parameters
-        help="Choose llama3 model size 70b/8b/36m",
+        default="145m",  # customized config for smaller number of parameters
+        help="Choose llama3 model size 70b/8b/145m",
     )
     parser.add_argument(
         "--tokenizer-path",
@@ -150,10 +150,10 @@ def main():
         args.tag = "-" + args.tag
 
     MODEL_SIZE_MAPPING: dict[str, dict[str, Any]] = {
-        "36m": {
-            "exp_name": "llama3-36m",
+        "145m": {
+            "exp_name": "llama3-145m",
             "local": {
-                "model": Config(LlamaModel, config=Config(Llama3Config36M)),
+                "model": Config(LlamaModel, config=Config(Llama3Config145M)),
                 "trainer": partial(
                     llm.llama3_8b.trainer,
                     tensor_parallelism=args.tp_size,

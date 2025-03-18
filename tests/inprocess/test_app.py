@@ -15,26 +15,15 @@
 # limitations under the License.
 
 import argparse
-import datetime
-import enum
-import faulthandler
 import logging
 import os
-import random
-import signal
 import sys
-import time
 from datetime import timedelta
-from typing import Optional
-
-import torch
-import torch.nn as nn
 
 import nvidia_resiliency_ext.inprocess as inprocess
 import nvidia_resiliency_ext.inprocess.tools as tools
 
-from . import app
-from . import common
+from . import app, common
 
 
 def launch(fn, **kwargs):
@@ -55,10 +44,9 @@ def launch(fn, **kwargs):
     )
     rank_filter = app.RankFilter(rank, '***', False)
     console = logging.StreamHandler(sys.stderr)
-    format = (
-        "%(asctime)s | %(levelname)s | %(name)s | %(rank)-3s | %(message)s"
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(name)-28s | %(rank)-3s | %(message)s"
     )
-    formatter = app.AdaptiveFormatter(format)
     console.setFormatter(formatter)
     console.addFilter(rank_filter)
     console.setLevel(loglevel)
@@ -68,6 +56,7 @@ def launch(fn, **kwargs):
     fn(namespace=namespace)
 
 
+@common.apply_all_tests(common.retry())
 class TestInternal(common.MultiProcessTestCase):
     @property
     def world_size(self) -> int:
@@ -84,7 +73,10 @@ class TestInternal(common.MultiProcessTestCase):
     @staticmethod
     def wrapper_kwargs():
         return {
-            'store_kwargs': {'port': int(os.environ['MASTER_PORT']) + 1},
+            'store_kwargs': {
+                'port': int(os.environ['MASTER_PORT']) + 1,
+                'timeout': timedelta(seconds=10),
+            },
             'progress_watchdog_interval': timedelta(milliseconds=50),
             'monitor_thread_interval': timedelta(milliseconds=50),
             'monitor_process_interval': timedelta(milliseconds=50),
@@ -103,7 +95,7 @@ class TestInternal(common.MultiProcessTestCase):
         'fault',
         [
             (app.Fault.EXC,),
-            (app.Fault.EXIT,),
+            (app.Fault.SYS_EXIT,),
         ],
     )
     def test_w_exitcode(self, fault):
@@ -116,8 +108,8 @@ class TestInternal(common.MultiProcessTestCase):
     @common.parametrize(
         'fault',
         [
-            (app.Fault.KILL,),
-            (app.Fault.TERM,),
+            (app.Fault.SIGKILL,),
+            (app.Fault.SIGTERM,),
         ],
     )
     def test_wo_exitcode(self, fault):
@@ -128,6 +120,7 @@ class TestInternal(common.MultiProcessTestCase):
         launch(wrapped, fault=fault, **self.train_kwargs())
 
 
+@common.apply_all_tests(common.retry())
 class TestExternal(common.MultiProcessTestCase):
     @property
     def world_size(self) -> int:
@@ -141,7 +134,10 @@ class TestExternal(common.MultiProcessTestCase):
     @staticmethod
     def wrapper_kwargs():
         return {
-            'store_kwargs': {'port': int(os.environ['MASTER_PORT']) + 1},
+            'store_kwargs': {
+                'port': int(os.environ['MASTER_PORT']) + 1,
+                'timeout': timedelta(seconds=10),
+            },
             'progress_watchdog_interval': timedelta(milliseconds=50),
             'monitor_thread_interval': timedelta(milliseconds=50),
             'monitor_process_interval': timedelta(milliseconds=50),
@@ -160,8 +156,8 @@ class TestExternal(common.MultiProcessTestCase):
     @common.parametrize(
         'ext_fault',
         [
-            (tools.inject_fault.Fault.KILL,),
-            (tools.inject_fault.Fault.TERM,),
+            (tools.inject_fault.Fault.SIGKILL,),
+            (tools.inject_fault.Fault.SIGTERM,),
         ],
     )
     def test_wo_exitcode(self, ext_fault):

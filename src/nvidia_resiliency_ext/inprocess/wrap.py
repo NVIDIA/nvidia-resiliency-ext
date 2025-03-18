@@ -18,60 +18,56 @@ import contextlib
 import datetime
 import functools
 import gc
-import itertools
 import logging
 import pathlib
+import sys
 import threading
 import time
+import warnings
 from datetime import timedelta
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import torch
 
-from . import param_utils
-from .abort import Abort
-from .abort import AbortTorchDistributed
-from .attribution import Interruption
-from .attribution import InterruptionRecord
-from .exception import HealthCheckError
-from .exception import InternalError
-from .exception import RestartError
+from . import param_utils, utils
+from .abort import Abort, AbortTorchDistributed
+from .attribution import Interruption, InterruptionRecord
+from .compose import Compose
+from .exception import HealthCheckError, InternalError
 from .finalize import Finalize
 from .health_check import HealthCheck
 from .initialize import Initialize
-from .logging import Logging
-from .logging import log_exc
 from .monitor_process import MonitorProcess
-from .monitor_thread import MonitorThread
-from .monitor_thread import RankShouldRestart
-from .monitor_thread import reraise_if_unraisable
-from .param_utils import enforce_subclass
-from .param_utils import enforce_type
-from .param_utils import enforce_value
+from .monitor_thread import MonitorThread, RankShouldRestart, reraise_if_unraisable
+from .param_utils import enforce_subclass, enforce_type, enforce_value
 from .progress_watchdog import ProgressWatchdog
-from .rank_assignment import RankAssignment
-from .rank_assignment import ShiftRanks
+from .rank_assignment import ActivateAllRanks, RankAssignment, RankAssignmentCtx, ShiftRanks
 from .rank_filter import RankFilter
-from .state import State
-from .state import Status
-from .store import PrefixStore
-from .store import StoreMixin
-from .store import TCPStore
+from .state import Mode, State
+from .store import PrefixStore, StoreMixin, TCPStore
+from .utils import log_exc
 
 
 class HealthCheckPassed(Exception):
     pass
 
 
-def spare_fn(state, progress_watchdog, progress_watchdog_interval):
+def reserve_fn(state, store, progress_watchdog, progress_watchdog_interval):
     log = logging.getLogger(__name__)
     rank = state.rank
-    log.debug(f'{rank=} starting spare_fn')
+
+    log.debug(f'{rank=} starting reserve_fn')
     progress_watchdog.ping()
-    while not state.store.is_any_rank_completed():
-        progress_watchdog.ping()
-        time.sleep(progress_watchdog_interval.total_seconds())
-    log.debug(f'{rank=} finished spare_fn')
+
+    while True:
+        try:
+            store.wait_for_completed(progress_watchdog_interval)
+            break
+        except torch.distributed.DistStoreError:
+            progress_watchdog.ping()
+            time.sleep(sys.getswitchinterval())
+
+    log.debug(f'{rank=} finished reserve_fn')
 
 
 class Wrapper:
@@ -98,11 +94,14 @@ class Wrapper:
         abort: Asynchronously aborts execution.
         finalize: Rank-local finalize.
         health_check: Rank-local health check.
-        rank_assignment: Reassigns ranks and computes the new world size for
-            the next restart iteration.
-        rank_filter: Specifies ranks actively calling the wrapped function.
+        rank_assignment: Reassigns ranks, computes the new world size and
+            specifies which ranks are calling the wrapped function.
+        rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped
+            function.
         monitor_thread_interval: Monitoring interval for the monitor thread.
         monitor_process_interval: Monitoring interval for the monitor process.
+        heartbeat_interval: Monitoring interval for detecting unresponsive
+            ranks.
         progress_watchdog_interval: Interval for automatic progress watchdog
             timestamp updates.
         soft_timeout: Soft progress timeout. Timed-out rank executes
@@ -135,10 +134,14 @@ class Wrapper:
         abort: Optional[Abort] = AbortTorchDistributed(),
         finalize: Optional[Finalize] = None,
         health_check: Optional[HealthCheck] = None,
-        rank_assignment: RankAssignment = ShiftRanks(),
+        rank_assignment: RankAssignment = Compose(
+            ActivateAllRanks(),
+            ShiftRanks(),
+        ),
         rank_filter: Optional[RankFilter] = None,
         monitor_thread_interval: datetime.timedelta = timedelta(seconds=1),
         monitor_process_interval: datetime.timedelta = timedelta(seconds=1),
+        heartbeat_interval: datetime.timedelta = timedelta(seconds=1),
         progress_watchdog_interval: datetime.timedelta = timedelta(seconds=1),
         soft_timeout: datetime.timedelta = timedelta(seconds=60),
         hard_timeout: datetime.timedelta = timedelta(seconds=90),
@@ -156,10 +159,11 @@ class Wrapper:
         enforce_type('abort', (Abort, type(None)))
         enforce_type('finalize', (Finalize, type(None)))
         enforce_type('health_check', (HealthCheck, type(None)))
-        enforce_type('rank_assignment', (RankAssignment, type(None)))
+        enforce_type('rank_assignment', RankAssignment)
         enforce_type('rank_filter', (RankFilter, type(None)))
         enforce_type('monitor_thread_interval', datetime.timedelta)
         enforce_type('monitor_process_interval', datetime.timedelta)
+        enforce_type('heartbeat_interval', datetime.timedelta)
         enforce_type('progress_watchdog_interval', datetime.timedelta)
         enforce_type('soft_timeout', datetime.timedelta)
         enforce_type('hard_timeout', datetime.timedelta)
@@ -174,13 +178,25 @@ class Wrapper:
         enforce_value(soft_timeout < hard_timeout < barrier_timeout)
         enforce_value(monitor_process_interval < barrier_timeout)
         enforce_value(heartbeat_timeout < barrier_timeout)
+        enforce_value(heartbeat_interval < heartbeat_timeout)
         enforce_value(monitor_process_interval < heartbeat_timeout)
+        enforce_value(monitor_process_interval < soft_timeout)
         enforce_value(monitor_thread_interval < soft_timeout)
         enforce_value(progress_watchdog_interval < soft_timeout)
+
         if monitor_process_logfile is not None:
             enforce_value(pathlib.Path(monitor_process_logfile).is_absolute())
 
         enforce_value(torch.distributed.is_available())
+
+        if rank_filter is not None:
+            warnings.warn(
+                'The "rank_filter" argument is deprecated and will be removed '
+                'in the next release. The functionality is merged into '
+                '"rank_assignment".',
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         if store_kwargs is None:
             store_kwargs = {}
@@ -195,6 +211,7 @@ class Wrapper:
         self.rank_filter = rank_filter
         self.monitor_thread_interval = monitor_thread_interval
         self.monitor_process_interval = monitor_process_interval
+        self.heartbeat_interval = heartbeat_interval
         self.progress_watchdog_interval = progress_watchdog_interval
         self.soft_timeout = soft_timeout
         self.hard_timeout = hard_timeout
@@ -237,24 +254,28 @@ class CallWrapper:
     '''
 
     def __init__(self, wrapper: Wrapper):
-        monitor_process = None
-        progress_watchdog = None
+        self.monitor_process = None
+        self.progress_watchdog = None
+        self.base_store = None
+        self.state = None
 
         try:
-            Logging.initialize()
+            utils.Logging.initialize()
             log = logging.getLogger(__name__)
 
             enforce_value(not torch.distributed.is_initialized())
 
-            state = State()
+            state = State.from_env()
 
-            monitor_process = MonitorProcess(
+            self.monitor_process = MonitorProcess(
                 rank=state.rank,
                 world_size=state.world_size,
-                progress_timeout=wrapper.hard_timeout,
+                soft_timeout=wrapper.soft_timeout,
+                hard_timeout=wrapper.hard_timeout,
                 termination_grace_time=wrapper.termination_grace_time,
                 barrier_timeout=wrapper.barrier_timeout,
                 interval=wrapper.monitor_process_interval,
+                heartbeat_interval=wrapper.heartbeat_interval,
                 heartbeat_timeout=wrapper.heartbeat_timeout,
                 log_filename=wrapper.monitor_process_logfile,
                 store_factory=wrapper.store_factory,
@@ -264,49 +285,58 @@ class CallWrapper:
             store_kwargs = wrapper.store_kwargs
             base_store = wrapper.store_factory(**store_kwargs)
             log.debug(f'{base_store=} {store_kwargs=}')
-            state.store = base_store
 
             base_store.initial_barrier(
-                rank=state.rank,
+                ranks=[state.rank],
                 rendezvous_count=state.world_size,
                 timeout=wrapper.barrier_timeout,
             )
             base_store.set_initial_rank(state.rank, state.initial_rank)
-            monitor_process.can_create_store()
+            self.monitor_process.can_create_store()
 
-            progress_watchdog = ProgressWatchdog(
+            self.progress_watchdog = ProgressWatchdog(
                 rank=state.rank,
-                connection=monitor_process.parent_conn_time,
+                monitor_process=self.monitor_process,
                 interval=wrapper.progress_watchdog_interval,
-                daemon=True,
             )
-            progress_watchdog.start()
-            progress_watchdog.loop_started.wait()
+            self.progress_watchdog.start()
 
             self.atomic_lock = threading.RLock()
 
             self.store = base_store
             self.base_store = base_store
             self.state = state
-            self.monitor_process = monitor_process
             self.wrapper = wrapper
-            self.progress_watchdog = progress_watchdog
 
         except Exception:
-            if monitor_process is not None:
-                monitor_process.shutdown()
-            if progress_watchdog is not None:
-                progress_watchdog.shutdown()
-            Logging.deinitialize()
+            self.shutdown()
             raise
+
+    def shutdown(self):
+        if self.state is not None and self.state.initial_rank in self.base_store.critical_ranks:
+            timeout = timedelta.max
+        else:
+            timeout = timedelta(0)
+
+        if self.base_store is not None:
+            self.base_store.termination_barrier(
+                ranks=[self.state.initial_rank],
+                rendezvous_count=self.state.initial_world_size,
+                timeout=timeout,
+            )
+
+        if self.progress_watchdog is not None:
+            self.progress_watchdog.shutdown()
+        if self.monitor_process is not None:
+            self.monitor_process.shutdown()
+
+        utils.Logging.deinitialize()
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.progress_watchdog.shutdown()
-        self.monitor_process.shutdown()
-        Logging.deinitialize()
+        self.shutdown()
 
     @property
     def iteration(self) -> int:
@@ -363,50 +393,27 @@ class CallWrapper:
         wrapper = self.wrapper
         progress_watchdog = self.progress_watchdog
 
-        state, terminated_ranks = wrapper.rank_assignment(state, set())
-        if terminated_ranks:
-            msg = f'{terminated_ranks=} is not empty'
-            raise RestartError(msg)
+        rank_assignment_ctx = RankAssignmentCtx(state, store, set())
+        reassigned_ctx = wrapper.rank_assignment(rank_assignment_ctx)
+        self.state = state = reassigned_ctx.state
 
-        state.activate_all_ranks()
         if wrapper.rank_filter is not None:
             state = wrapper.rank_filter(state)
         state.set_distributed_vars()
 
         monitor_process.start()
-        monitor_thread = None
         ret = None
 
         try:
             while True:
                 store = PrefixStore(state.iteration, base_store)
                 store.set_initial_rank(state.rank, state.initial_rank)
-                state.store = store
-                store.iteration_barrier(
-                    rank=state.rank,
-                    rendezvous_count=state.world_size,
-                    timeout=wrapper.barrier_timeout,
-                )
                 monitor_process.start_iteration(
                     state.rank,
                     state.world_size,
                     state.iteration,
                 )
                 progress_watchdog.reset()
-
-                monitor_thread = MonitorThread(
-                    state=state,
-                    abort=wrapper.abort,
-                    interval=wrapper.monitor_thread_interval,
-                    abort_signal=None,
-                    progress_watchdog=progress_watchdog,
-                    soft_timeout=wrapper.soft_timeout,
-                    monitor_timeout=datetime.timedelta(seconds=5),
-                    last_call_wait=wrapper.last_call_wait,
-                    atomic_lock=self.atomic_lock,
-                    daemon=True,
-                )
-                monitor_thread.start()
 
                 args, kwargs = param_utils.substitute_param_value(
                     fn,
@@ -419,30 +426,41 @@ class CallWrapper:
 
                 try:
                     try:
-                        monitor_thread.start_monitoring()
+                        monitor_thread = MonitorThread(
+                            state=state.freeze(),
+                            store=store,
+                            abort=wrapper.abort,
+                            interval=wrapper.monitor_thread_interval,
+                            progress_watchdog=progress_watchdog,
+                            soft_timeout=wrapper.soft_timeout,
+                            last_call_wait=wrapper.last_call_wait,
+                            atomic_lock=self.atomic_lock,
+                            daemon=True,
+                        )
+                        monitor_thread.start()
+
                         try:
                             try:
                                 if wrapper.initialize is not None:
-                                    state = wrapper.initialize(state)
+                                    wrapper.initialize(state.freeze())
                             except Exception as init_ex:
                                 log.error(log_exc(state, init_ex, 'init_ex'))
                                 raise
 
                             try:
                                 if wrapper.health_check is not None:
-                                    wrapper.health_check(state, None)
+                                    wrapper.health_check(state.freeze())
                             except Exception as health_ex:
-                                log.error(
-                                    log_exc(state, health_ex, 'health_ex')
-                                )
+                                log.error(log_exc(state, health_ex, 'health_ex'))
                                 raise HealthCheckError from health_ex
 
-                            if state.status == Status.ACTIVE:
+                            if state.mode == Mode.ACTIVE:
                                 ret = fn(*args, **kwargs)
-                                state.store.record_completed()
-                            elif state.status == Status.INACTIVE:
-                                ret = spare_fn(
+                                store.record_completed()
+                            elif state.mode == Mode.INACTIVE:
+                                ret = reserve_fn(
                                     state,
+                                    store,
                                     progress_watchdog,
                                     wrapper.progress_watchdog_interval,
                                 )
@@ -450,61 +468,50 @@ class CallWrapper:
                                 raise InternalError(f'{state}')
 
                             progress_watchdog.reset()
-                            completion_timeout_chunk = (
-                                wrapper.soft_timeout
-                                - wrapper.progress_watchdog_interval
-                            ) / 2
                             store.completion_barrier(
-                                rank=state.rank,
+                                ranks=[state.rank],
                                 rendezvous_count=state.world_size,
                                 timeout=wrapper.completion_timeout,
-                                timeout_chunk=completion_timeout_chunk,
+                                timeout_chunk=wrapper.progress_watchdog_interval,
                             )
-                        except Exception as train_ex:
+                        except Exception as fn_ex:
                             try:
-                                log.error(log_exc(state, train_ex, 'train_ex'))
-                                store.record_interrupted(
-                                    InterruptionRecord(
-                                        state.rank, Interruption.EXCEPTION
-                                    )
+                                log.error(log_exc(state, fn_ex, 'fn_ex'))
+                                monitor_process.record_interrupted(
+                                    [InterruptionRecord(state.rank, Interruption.EXCEPTION)]
                                 )
-                                progress_watchdog.spin_drain()
-                                monitor_thread.final_check_and_shutdown()
+                                progress_watchdog.spin_till_paused()
+                                monitor_thread.maybe_join()
                             except RankShouldRestart as async_ex:
                                 log.debug(log_exc(state, async_ex, 'async_ex'))
                                 monitor_thread.shutdown()
-                                raise async_ex from train_ex
+                                raise async_ex from fn_ex
                             except Exception as other_ex:
-                                log.critical(
-                                    log_exc(state, other_ex, 'other_ex')
-                                )
+                                log.critical(log_exc(state, other_ex, 'other_ex'))
                                 raise InternalError(f'{state}') from other_ex
                             else:
-                                raise InternalError(f'{state}') from train_ex
-                        else:
-                            monitor_thread.shutdown()
+                                raise InternalError(f'{state}') from fn_ex
                     except RankShouldRestart as term_ex:
                         log.warning(log_exc(state, term_ex, 'term_ex'))
                         monitor_thread.shutdown()
-                        progress_watchdog.resume()
+
+                        state.fn_exception = term_ex.__cause__
 
                         try:
                             if wrapper.finalize is not None:
-                                wrapper.finalize(state, term_ex.__cause__)
+                                wrapper.finalize(state.freeze())
                         except Exception as finalize_ex:
-                            log.error(
-                                log_exc(state, finalize_ex, 'finalize_ex')
-                            )
+                            log.error(log_exc(state, finalize_ex, 'finalize_ex'))
                             raise finalize_ex from term_ex
 
                         try:
                             if wrapper.health_check is not None:
-                                wrapper.health_check(state, term_ex.__cause__)
+                                wrapper.health_check(state.freeze())
                         except Exception as health_ex:
                             log.error(log_exc(state, health_ex, 'health_ex'))
                             try:
                                 raise health_ex from term_ex
-                            except Exception as ex:
+                            except Exception:
                                 raise HealthCheckError from health_ex
                         else:
                             raise HealthCheckPassed from term_ex
@@ -512,23 +519,23 @@ class CallWrapper:
                     except Exception as term_ex:
                         log.critical(log_exc(state, term_ex, 'term_ex'))
                         raise InternalError(f'{state}') from term_ex
+                    finally:
+                        monitor_thread.shutdown()
                 except HealthCheckPassed as restart_ex:
                     log.info(log_exc(state, restart_ex, 'restart_ex'))
-                    store.termination_barrier(
-                        rank=state.rank,
+                    store.iteration_barrier(
+                        ranks=[state.rank],
                         rendezvous_count=state.world_size,
                         timeout=wrapper.barrier_timeout,
                     )
+                    monitor_process.disable_sibling_monitor()
+
                     terminated_ranks = store.get_terminated_ranks()
 
-                    state, terminated_ranks = wrapper.rank_assignment(
-                        state, terminated_ranks
-                    )
-                    if terminated_ranks:
-                        msg = f'{terminated_ranks=} is not empty'
-                        raise RestartError(msg)
+                    rank_assignment_ctx = RankAssignmentCtx(state, store, terminated_ranks)
+                    reassigned_ctx = wrapper.rank_assignment(rank_assignment_ctx)
+                    self.state = state = reassigned_ctx.state
 
-                    state.activate_all_ranks()
                     if wrapper.rank_filter is not None:
                         state = wrapper.rank_filter(state)
                     state.set_distributed_vars()
@@ -542,43 +549,16 @@ class CallWrapper:
 
         except BaseException as exit_ex:
             log.critical(log_exc(state, exit_ex, 'exit_ex'))
-            if monitor_thread is not None:
-                monitor_thread.shutdown()
-            store.record_interrupted(
-                InterruptionRecord(state.rank, Interruption.BASE_EXCEPTION)
-            )
-            store.record_terminated_rank(state.rank)
+            store.record_interrupted([InterruptionRecord(state.rank, Interruption.BASE_EXCEPTION)])
+            store.record_terminated_ranks([state.rank])
 
-            store.termination_barrier(
-                rank=state.rank,
+            store.iteration_barrier(
+                ranks=[state.rank],
                 rendezvous_count=state.world_size,
                 timeout=wrapper.barrier_timeout,
             )
+            monitor_process.disable_sibling_monitor()
             raise exit_ex
-        else:
-            rank = state.rank
-            log.debug(f'{rank=} clean exit')
-        finally:
-            initial_rank = state.initial_rank
-            rank = state.rank
-            initial_world_size = state.initial_world_size
-
-            if initial_rank in base_store.critical_ranks:
-                base_store.record_base_terminated_rank(initial_rank)
-                log.debug(f'{rank=} {initial_rank=} waiting for other ranks')
-                while (
-                    base_store.get_base_terminated_count()
-                    != initial_world_size
-                ):
-                    time.sleep(wrapper.monitor_thread_interval.total_seconds())
-                log.debug(f'{rank=} {initial_rank=} done waiting')
-                progress_watchdog.shutdown()
-                monitor_process.shutdown()
-            else:
-                progress_watchdog.shutdown()
-                monitor_process.shutdown()
-                base_store.record_base_terminated_rank(state.initial_rank)
-            Logging.deinitialize()
 
         rank = state.rank
         log.debug(f'{rank=} returning')

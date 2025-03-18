@@ -16,12 +16,11 @@
 
 import abc
 import datetime
-import os
 import threading
 from typing import Any, Callable, Optional
 
 from . import exception
-from .state import State
+from .state import FrozenState
 
 
 class Finalize(abc.ABC):
@@ -49,9 +48,16 @@ class Finalize(abc.ABC):
     '''
 
     @abc.abstractmethod
-    def __call__(
-        self, state: State, train_ex: Optional[Exception] = None
-    ) -> (State, Optional[Exception]):
+    def __call__(self, state: FrozenState) -> FrozenState:
+        r'''
+        Implementation of a :py:class:`Finalize`.
+
+        Args:
+            state: read-only :py:class:`Wrapper` state
+
+        Returns:
+            Forwarded read-only input ``state``.
+        '''
         raise NotImplementedError
 
 
@@ -85,10 +91,8 @@ class ThreadedFinalize(Finalize):
         self.args = args
         self.kwargs = kwargs
 
-    def __call__(
-        self, state: State, train_ex: Optional[Exception] = None
-    ) -> (State, Optional[Exception]):
-        rank = int(os.getenv('RANK', 0))
+    def __call__(self, state: FrozenState) -> FrozenState:
+        rank = state.rank
         thread = threading.Thread(
             target=self.fn,
             name=f'{type(self).__name__}-{rank}',
@@ -100,3 +104,5 @@ class ThreadedFinalize(Finalize):
         thread.join(self.timeout.total_seconds())
         if thread.is_alive():
             raise exception.TimeoutError
+
+        return state

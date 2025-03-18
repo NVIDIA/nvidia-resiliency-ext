@@ -23,9 +23,9 @@ from typing import Iterable, Optional, Tuple, Union
 
 import torch
 
+from ...utils import debug_time
 from ..base_state_dict import TensorAwareStateDict
 from ..replication.strategies import ReplicationStrategy
-from ..replication.utils import debug_time
 from .base_manager import (
     BaseCheckpointManager,
     CheckpointingException,
@@ -96,7 +96,7 @@ class LocalCheckpointManager(BaseCheckpointManager):
             # Severity: Medium   Confidence: High
             # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
             # More Info: https://bandit.readthedocs.io/en/latest/plugins/b614_pytorch_load_save.html
-            return torch.load(local_ckpt_path)  # nosec
+            return torch.load(local_ckpt_path, weights_only=False)  # nosec
         except FileNotFoundError as e:
             err_msg = f"File {local_ckpt_path} does not exist!"
             logging.info(err_msg)
@@ -135,7 +135,7 @@ class LocalCheckpointManager(BaseCheckpointManager):
         for the specified iteration.
 
         Args:
-            iteration : The iteration number for which the checkpoint was successfully saved.
+            iteration : The global iteration number for which the checkpoint was successfully saved
         """
         ckpts = self.local_ckpt_dir.glob(self._filename_from_template('*', '*', '*'))
         rm_ckpts = [ckpt for ckpt in ckpts if self._filename_to_id(ckpt.name)[0] < iteration]
@@ -148,7 +148,7 @@ class LocalCheckpointManager(BaseCheckpointManager):
         """Removes invalid checkpoints that could not be saved due to a failure.
 
         Args:
-            iteration : The iteration number for which the checkpoint failed to save.
+            iteration : The global iteration number for which the checkpoint failed to save.
         """
         rm_ckpts = self.local_ckpt_dir.glob(self._filename_from_template(iteration, '*', '*'))
         for ckpt in rm_ckpts:

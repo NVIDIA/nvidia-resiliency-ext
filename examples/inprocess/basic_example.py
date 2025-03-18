@@ -39,6 +39,7 @@ import random
 import time
 from typing import Optional
 
+os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
@@ -116,12 +117,15 @@ def parse_args():
     return parser.parse_args()
 
 
-# TCPStore created by the Wrapper uses ``(MASTER_PORT + 2)`` port for the
-# internal Wrapper TCPStore to avoid conflicts with application's TCPStore
-# listening on ``(MASTER_PORT + 1)``, and with TCPStore created by
+# TCPStore created by the Wrapper uses ``(MASTER_PORT + 1)`` port for the
+# internal Wrapper's TCPStore to avoid conflicts with application's TCPStore
+# listening on ``(MASTER_PORT + 2 + iteration)``, and with TCPStore created by
 # ``torch.distributed.run`` listening on ``MASTER_PORT``.
+#
+# An instance of ``inprocess.CallWrapper` is automatically injected into
+# wrapped function arguments when Wrapper is invoked.
 @inprocess.Wrapper(
-    store_kwargs={'port': int(os.getenv('MASTER_PORT', 29500)) + 2},
+    store_kwargs={'port': int(os.getenv('MASTER_PORT', 29500)) + 1},
     health_check=inprocess.health_check.CudaHealthCheck(),
 )
 def main(call_wrapper: Optional[inprocess.CallWrapper] = None):
@@ -160,11 +164,13 @@ def main(call_wrapper: Optional[inprocess.CallWrapper] = None):
     ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-5)
 
-    # TCPStore uses ``(MASTER_PORT + 1)`` to avoid conflicts with a TCPStore
-    # created by ``torch.distributed.run`` and listening on ``MASTER_PORT``.
+    # Application's TCPStore uses ``(MASTER_PORT + 2 + iteration)`` to avoid
+    # conflicts with a TCPStore created by ``torch.distributed.run``,
+    # inprocess.Wrapper and application's TCPStores created in previous restart
+    # iterations.
     store = torch.distributed.TCPStore(
         host_name=os.environ['MASTER_ADDR'],
-        port=int(os.environ['MASTER_PORT']) + 1,
+        port=int(os.environ['MASTER_PORT']) + 2 + call_wrapper.iteration,
         world_size=int(os.environ['WORLD_SIZE']),
         is_master=int(os.environ['RANK']) == 0,
         multi_tenant=True,

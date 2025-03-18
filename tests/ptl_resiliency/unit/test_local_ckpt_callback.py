@@ -15,7 +15,7 @@
 
 import logging
 from datetime import timedelta
-from typing import Iterable, Dict, Any
+from typing import Any, Dict, Iterable
 
 from nvidia_resiliency_ext.ptl_resiliency._utils import is_module_available
 
@@ -38,7 +38,8 @@ from nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback import (
     HierarchicalCheckpointIO,
     LocalCheckpointCallback,
 )
-from .test_ft_callback import SimpleModel
+
+from .test_ft_callback_hb import SimpleModel
 
 
 def _run_trainining(
@@ -187,6 +188,9 @@ class SimpleHierarchicalCheckpointIO(HierarchicalCheckpointIO):
 
     def to_tensor_aware_state_dict(self, checkpoint: Dict[str, Any]) -> TensorAwareStateDict:
         return SimpleTensorAwareStateDict(checkpoint)
+
+    def from_tensor_aware_state_dict(self, tensor_aware_checkpoint: SimpleTensorAwareStateDict):
+        return tensor_aware_checkpoint.to_state_dict()
 
 
 def test_local_ckpt_callback_called_every_n_train_steps(tmp_path):

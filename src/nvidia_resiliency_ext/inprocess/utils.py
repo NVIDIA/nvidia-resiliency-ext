@@ -22,6 +22,14 @@ import os
 import time
 import warnings
 
+import packaging.version
+import torch
+
+
+def torch_older_than(version):
+    torch_version = packaging.version.Version(torch.__version__)
+    return torch_version < packaging.version.Version(version)
+
 
 def format_exc(exc: BaseException):
     excs = [repr(exc)]
@@ -67,7 +75,7 @@ def log_exec(target):
         @functools.wraps(target)
         def wrapper(*args, **kwargs):
             with _log_exec(target):
-                ret = target(*args, **kwargs)
+                return target(*args, **kwargs)
 
         return wrapper
     else:
@@ -96,9 +104,7 @@ class Logging:
         parent = logger.parent
         while parent is not None:
             stream_handlers = [
-                handler
-                for handler in parent.handlers
-                if type(handler) is logging.StreamHandler
+                handler for handler in parent.handlers if type(handler) is logging.StreamHandler
             ]
             if stream_handlers:
                 break

@@ -16,37 +16,44 @@ import torch
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 
-from .test_utilities import Utils, TestModel
 from . import TempNamedDir
+from .test_utilities import TestModel, Utils
+
 
 class TestAsyncSave:
     def setup_method(self, method):
-        pass
+        Utils.set_world_size(1)
+
+    def teardown_method(self, method):
+        Utils.set_world_size()
 
     def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt):
         Utils.initialize_distributed()
-        model = TestModel((1024,1024), 10)
+        model = TestModel((1024, 1024), 10)
         ckpt_impl = TorchAsyncCheckpoint()
         state_dict = model.state_dict()
-        with TempNamedDir(
-            tmp_path_dist_ckpt / 'test_equivalence_async'
-        ) as async_ckpt_dir, TempNamedDir(
-            tmp_path_dist_ckpt / 'test_equivalence_sync'
-        ) as sync_ckpt_dir:
+        with (
+            TempNamedDir(tmp_path_dist_ckpt / 'test_equivalence_async') as async_ckpt_dir,
+            TempNamedDir(tmp_path_dist_ckpt / 'test_equivalence_sync') as sync_ckpt_dir,
+        ):
             # async
-            ckpt_impl.async_save(state_dict, async_ckpt_dir/'test')
+            ckpt_impl.async_save(state_dict, async_ckpt_dir / 'test')
 
             # sync
-            ckpt_impl.save(state_dict, sync_ckpt_dir/'test')
+            ckpt_impl.save(state_dict, sync_ckpt_dir / 'test')
 
             # finalize async
             ckpt_impl.finalize_async_save(blocking=True)
 
             # load and compare
             device = torch.device(f"cuda:{torch.cuda.current_device()}")
-            loaded_async_state_dict = torch.load(async_ckpt_dir/'test', map_location=device)
-            loaded_sync_state_dict = torch.load(sync_ckpt_dir/'test', map_location=device)
+            loaded_async_state_dict = torch.load(async_ckpt_dir / 'test', map_location=device)
+            loaded_sync_state_dict = torch.load(sync_ckpt_dir / 'test', map_location=device)
             for k in loaded_sync_state_dict.keys():
                 assert k in loaded_async_state_dict, f"{k} is not in loaded async state_dict"
-                assert torch.equal(loaded_async_state_dict[k], loaded_sync_state_dict[k]), f"loaded_async_state_dict[{k}] != loaded_sync_state_dict[{k}]"
-                assert torch.equal(loaded_async_state_dict[k], state_dict[k]), f"loaded_async_state_dict[{k}] != src_state_dict[{k}]"
+                assert torch.equal(
+                    loaded_async_state_dict[k], loaded_sync_state_dict[k]
+                ), f"loaded_async_state_dict[{k}] != loaded_sync_state_dict[{k}]"
+                assert torch.equal(
+                    loaded_async_state_dict[k], state_dict[k]
+                ), f"loaded_async_state_dict[{k}] != src_state_dict[{k}]"

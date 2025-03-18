@@ -40,6 +40,7 @@ import random
 import time
 from typing import Optional
 
+os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
@@ -117,15 +118,15 @@ def parse_args():
     return parser.parse_args()
 
 
-# TCPStore created by the Wrapper uses ``(MASTER_PORT + 2)`` port for the
-# internal Wrapper TCPStore to avoid conflicts with application's TCPStore
-# listening on ``(MASTER_PORT + 1)``, and with a TCPStore created by
+# TCPStore created by the Wrapper uses ``(MASTER_PORT + 1)`` port for the
+# internal Wrapper's TCPStore to avoid conflicts with application's TCPStore
+# listening on ``(MASTER_PORT + 2)``, and with a TCPStore created by
 # ``torch.distributed.run`` listening on ``MASTER_PORT``.
 #
 # An instance of ``inprocess.CallWrapper` is automatically injected into
 # wrapped function arguments when Wrapper is invoked.
 @inprocess.Wrapper(
-    store_kwargs={'port': int(os.getenv('MASTER_PORT', 29500)) + 2},
+    store_kwargs={'port': int(os.getenv('MASTER_PORT', 29500)) + 1},
     health_check=inprocess.health_check.CudaHealthCheck(),
 )
 def train(
@@ -153,9 +154,7 @@ def train(
     # Create a new Store by adding a prefix based on the current inprocess
     # restart iteration. PrefixStore wraps the baseline TCPStore which is
     # reused for all restart iterations
-    store = torch.distributed.PrefixStore(
-        str(call_wrapper.iteration), base_store
-    )
+    store = torch.distributed.PrefixStore(str(call_wrapper.iteration), base_store)
 
     torch.distributed.init_process_group(
         backend,
@@ -228,7 +227,6 @@ def main():
     )
     logging.info(f'{args}')
 
-    rank = int(os.environ['RANK'])
     local_rank = int(os.environ['LOCAL_RANK'])
 
     if args.device == 'cuda':
@@ -252,11 +250,12 @@ def main():
     ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-5)
 
-    # TCPStore uses ``(MASTER_PORT + 1)`` to avoid conflicts with TCPStore
-    # created by ``torch.distributed.run`` and listening on ``MASTER_PORT``.
+    # TCPStore uses ``(MASTER_PORT + 2)`` to avoid conflicts with TCPStore
+    # created by ``torch.distributed.run`` and listening on ``MASTER_PORT``,
+    # and Wrapper's TCPStore listening on ``(MASTER_PORT + 1)``
     store = torch.distributed.TCPStore(
         host_name=os.environ['MASTER_ADDR'],
-        port=int(os.environ['MASTER_PORT']) + 1,
+        port=int(os.environ['MASTER_PORT']) + 2,
         world_size=int(os.environ['WORLD_SIZE']),
         is_master=(int(os.environ['RANK']) == 0),
         multi_tenant=True,

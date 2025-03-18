@@ -41,29 +41,33 @@ class StragglerId:
 @dataclasses.dataclass(frozen=True)
 class Report:
     """
-    There are 2 types of the performance scores provided in this report:
-      - Relative performance scores (0...1) that compare the performance of the current rank to the best performing rank.
-      - Individual performance scores (0...1) that compare the performance of the current rank to the rank's past performance.
+    There are two types of performance scores provided in this report:
+    - Relative performance scores (0...1) that compare the performance of the current rank to the best performing rank.
+    - Individual performance scores (0...1) that compare the performance of the current rank to the rank's past performance.
+
     Relative scores need inter-rank synchronization to be computed, while individual scores can be computed on each rank separately.
     All performance scores can be interpreted as a ratio of: current performance/reference performance.
+
     For example:
-        - If the relative performance score is 0.5, it means that the current rank is 2x slower than the best performing rank.
-        - If the individual performance score is 0.5, it means that the current rank is 2x slower than its best performance.
-    If `gather_on_rank0=True`:  `*_perf_scores` fields contain results for all ranks (only on rank0, otherwise undefined).
-    If `gather_on_rank0=False`:  `*_perf_scores` fields contain only current rank results.
+    - If the relative performance score is 0.5, it means that the current rank is 2x slower than the best performing rank.
+    - If the individual performance score is 0.5, it means that the current rank is 2x slower than its best performance.
+
+    If `gather_on_rank0=True`: `*_perf_scores` fields contain results for all ranks (only on rank0; otherwise undefined).
+    If `gather_on_rank0=False`: `*_perf_scores` fields contain only current rank results.
 
     Containers can be empty if there are no results.
 
-    * gpu_relative_perf_scores: Rank -> GPU relative performance score.
-    * section_relative_perf_scores: Section name -> (Rank -> Section relative performance score).
-    * gpu_individual_perf_scores: Rank -> GPU individual performance score.
-    * section_individual_perf_scores: Section name -> (Rank -> Section individual performance score).
-    * rank_to_node: Rank -> Node name, aux mapping useful for results reporting.
-    * local_section_summaries: Local (e.g. this rank) timing stats for each user defined section/context.
-    * local_kernel_summaries: Local (e.g. this rank) timing stats for each captured CUDA kernel.
-    * generate_report_elapsed_time: How long did it take to generate this report.
-    * gather_on_rank0 : Mode for results gather, if gather_on_rank0 = False,
-    * rank: Rank of the current report. None if not corresponding to any rank (i.e. gather_on_rank0=True).
+    Attributes:
+    - `gpu_relative_perf_scores`: Rank -> GPU relative performance score.
+    - `section_relative_perf_scores`: Section name -> (Rank -> Section relative performance score).
+    - `gpu_individual_perf_scores`: Rank -> GPU individual performance score.
+    - `section_individual_perf_scores`: Section name -> (Rank -> Section individual performance score).
+    - `rank_to_node`: Rank -> Node name, an auxiliary mapping useful for results reporting.
+    - `local_section_summaries`: Local (e.g., this rank) timing stats for each user-defined section/context.
+    - `local_kernel_summaries`: Local (e.g., this rank) timing stats for each captured CUDA kernel.
+    - `generate_report_elapsed_time`: How long it took to generate this report.
+    - `gather_on_rank0`: Mode for results gathering.
+    - `rank`: Rank of the current report. `None` if not corresponding to any rank (i.e., `gather_on_rank0=True`).
     """
 
     gpu_relative_perf_scores: Mapping[int, float]

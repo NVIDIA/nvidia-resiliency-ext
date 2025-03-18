@@ -24,6 +24,7 @@ import signal
 import sys
 import tempfile
 
+from nvidia_resiliency_ext.fault_tolerance.data import FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR
 from nvidia_resiliency_ext.ptl_resiliency._utils import is_module_available
 
 if is_module_available("lightning"):
@@ -157,6 +158,13 @@ def _get_ft_test_config():
     return ft_cfg
 
 
+class _SetFtIpcSocketPathCallback(Callback):
+    def setup(self, trainer, pl_module, stage):
+        rank = trainer.global_rank
+        ipc_sock_path = f"{tempfile.gettempdir()}/_rmon_r{rank}.socket"
+        os.environ[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR] = ipc_sock_path
+
+
 @pytest.fixture()
 def run_rank_monitors():
     ft_cfg = _get_ft_test_config()
@@ -166,7 +174,13 @@ def run_rank_monitors():
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
+            ipc_sock_path = f"{tempfile.gettempdir()}/_rmon_r{rank}.socket"
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
+                cfg=ft_cfg,
+                ipc_socket_path=ipc_sock_path,
+                is_restarter_logger=False,
+                mp_ctx=mp_ctx_spawn,
+            )
             rank_monitors.append(p)
 
         yield
@@ -222,7 +236,8 @@ def _run_trainining(
         max_epochs=max_epochs,
         max_time=max_time,
         val_check_interval=val_check_interval,
-        callbacks=[fault_tol_cb, checkpoint_callback] + custom_callbacks,
+        callbacks=[_SetFtIpcSocketPathCallback(), fault_tol_cb, checkpoint_callback]
+        + custom_callbacks,
     )
 
     model = SimpleModel()

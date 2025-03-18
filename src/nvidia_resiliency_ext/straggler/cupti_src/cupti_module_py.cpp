@@ -30,7 +30,7 @@ static py::dict get_stats_py(CuptiProfiler* profiler_inst) {
     return dict;
 }
 
-PYBIND11_MODULE(cupti_module, m) {
+PYBIND11_MODULE(nvrx_cupti_module, m) {
     py::class_<KernelStats>(m, "KernelStats")
         .def(py::init<>())
         .def_readwrite("min", &KernelStats::min)

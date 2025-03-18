@@ -7,6 +7,7 @@ API documentation
 
    api/wrap
    api/compose
+   api/state
    api/rank_assignment
    api/rank_filter
    api/initialize

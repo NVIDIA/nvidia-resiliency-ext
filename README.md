@@ -37,18 +37,16 @@ The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused so
 
 ### Platform Support
 
-| Category            | Supported Versions / Requirements            |
-|---------------------|----------------------------------------------|
-| Architecture         | x86_64                                      |
-| Operating System     | Ubuntu 22.04                                |
-| Python Version       | >= 3.10, < 3.13                             |
-| PyTorch Version      | 2.3+                                        |
-| CUDA & CUDA Toolkit  | 12.5+                                       |
-| NVML Driver          | 550 or later                                |
-| NCCL Version         | 2.21.5+                                     |
-
-**Note**: The package is designed to support Python >= 3.10, CUDA >= 11.8, PyTorch >= 2.0 and Ubuntu 20.04, but the recommended and tested environment for production is Python >= 3.10, < 3.13, CUDA 12.5+, and Ubuntu 22.04.
+| Category             | Supported Versions / Requirements                                          |
+|----------------------|----------------------------------------------------------------------------|
+| Architecture         | x86_64, arm64                                                              |
+| Operating System     | Ubuntu 22.04, 24.04                                                        |
+| Python Version       | >= 3.10, < 3.13                                                            |
+| PyTorch Version      | >= 2.3.1 (injob & chkpt), 2.5.1 & 2.6.0 (inprocess)                        |
+| CUDA & CUDA Toolkit  | >= 12.5 (12.8 required for GPU health check)                               |
+| NVML Driver          | >= 535 (570 required for GPU health check)                                 |
+| NCCL Version         | >= 2.21.5 (injob & chkpt), >= 2.21.5 and <= 2.22.3 or 2.26.2 (inprocess)   |
 
 ## Usage
 
-For detailed documentation and usage information about each component, please refer to the https://nvidia.github.io/nvidia-resiliency-ext/.
+For detailed documentation and usage information about each component, please refer to the ./docs.

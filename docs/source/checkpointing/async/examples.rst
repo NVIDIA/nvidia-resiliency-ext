@@ -1,6 +1,9 @@
-Basic usage example
+Examples
 ===============================================================================
 
-.. literalinclude:: ../../../../examples/checkpointing/async_ckpt.py
-   :language: python
-   :linenos:
+.. toctree::
+   :maxdepth: 2
+   :caption: Examples
+
+   examples/basic_example.rst
+   examples/writer_example.rst

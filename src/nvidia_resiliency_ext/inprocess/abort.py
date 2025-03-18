@@ -19,8 +19,8 @@ import concurrent.futures
 
 import torch
 
-from .logging import log_exec
-from .state import State
+from . import utils
+from .state import FrozenState
 
 
 class Abort(abc.ABC):
@@ -41,7 +41,16 @@ class Abort(abc.ABC):
     '''
 
     @abc.abstractmethod
-    def __call__(self, state: State) -> State:
+    def __call__(self, state: FrozenState) -> FrozenState:
+        r'''
+        Implementation of a :py:class:`Abort`.
+
+        Args:
+            state: read-only :py:class:`Wrapper` state
+
+        Returns:
+            Forwarded read-only input ``state``.
+        '''
         raise NotImplementedError
 
 
@@ -58,13 +67,9 @@ class AbortTorchDistributed(Abort):
     @staticmethod
     def shutdown_all_process_group_backends():
         device = torch.device('cuda')
-        process_groups = list(
-            torch.distributed.distributed_c10d._world.pg_names
-        )
+        process_groups = list(torch.distributed.distributed_c10d._world.pg_names)
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=len(process_groups)
-        ) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(process_groups)) as executor:
             futures = [
                 executor.submit(
                     AbortTorchDistributed.shutdown_process_group_backend,
@@ -87,14 +92,13 @@ class AbortTorchDistributed(Abort):
                 backend,
                 torch.distributed.distributed_c10d.ProcessGroupNCCL,
             ):
-                backend._shutdown()
+                if utils.torch_older_than('2.6.0'):
+                    backend._shutdown()
+                else:
+                    backend.abort()
 
-    @log_exec
-    def __call__(self, state: State) -> State:
-        if (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-        ):
+    def __call__(self, state: FrozenState) -> FrozenState:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
         return state

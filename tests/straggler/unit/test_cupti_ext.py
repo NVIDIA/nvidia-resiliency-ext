@@ -13,11 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import nvrx_cupti_module as cupti_module  # type: ignore
 import pytest
 import torch
 import torch.nn as nn
-
-from nvidia_resiliency_ext.straggler import cupti_module
 
 
 def test_basic_kernel_tracking():

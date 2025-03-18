@@ -24,10 +24,10 @@ from typing import Dict, List, Optional, Tuple, TypeVar, Union
 import torch
 import torch.distributed as dist
 
+from ...utils import debug_msg, debug_time
 from ..base_state_dict import TensorAwareStateDict
 from ._torch_future import recv_object_list, send_object_list
 from .torch_device_utils import TensorPlaceholder
-from .utils import debug_time, debug_msg
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)

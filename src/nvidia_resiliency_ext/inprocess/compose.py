@@ -17,7 +17,7 @@
 import inspect
 import warnings
 from collections.abc import Callable
-from typing import Any, Iterable, TypeVar
+from typing import Any, TypeVar
 
 T = TypeVar('T')
 
@@ -71,6 +71,9 @@ class Compose:
         )
         return DynamicCompose()
 
+    def __init__(self, *args, **kwargs):
+        pass
+
     def __call__(self, *args: Any):
         for instance in reversed(self.instances):
             ret = instance(*args or ())
@@ -80,10 +83,7 @@ class Compose:
                     f'calling {instance=} with {args=}'
                 )
                 warnings.warn(msg)
-            if (
-                not isinstance(ret, tuple)
-                and len(inspect.signature(instance).parameters) > 0
-            ):
+            if not isinstance(ret, tuple) and len(inspect.signature(instance).parameters) > 0:
                 args = (ret,)
             else:
                 args = ret

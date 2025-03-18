@@ -17,6 +17,7 @@ import logging
 import os
 import signal
 import tempfile
+from argparse import ArgumentParser
 from contextlib import contextmanager
 
 import pytest
@@ -47,6 +48,61 @@ def test_from_kwargs():
     _ = fault_tolerance.FaultToleranceConfig.from_kwargs(
         an_unknown_arg=True, ignore_not_recognized=True
     )
+
+
+def test_from_args():
+    parser = ArgumentParser(description="Test parser")
+    parser.add_argument(
+        "--ft-param-safety_factor",
+        "--ft-param-safety_factor",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--ft-param-rank_termination_signal",
+        "--ft-param-rank_termination_signal",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--ft-param-log_level",
+        "--ft-param-log_level",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--ft-param-rank_out_of_section_timeout",
+        "--ft-param-rank_out_of_section_timeout",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--ft-param-rank_section_timeouts",
+        "--ft-param-rank_section_timeouts",
+        type=str,
+        default=None,
+    )
+    inp = [
+        "--ft-param-safety_factor",
+        "0.567",
+        "--ft-param-rank_termination_signal",
+        "SIGUSR2",
+        "--ft-param-log_level",
+        "DEBUG",
+        "--ft-param-rank_out_of_section_timeout",
+        "123.0",
+        "--ft-param-rank_section_timeouts",
+        "custom1:111.1,custom2:222.2",
+    ]
+    args = parser.parse_args(inp)
+    ft = fault_tolerance.FaultToleranceConfig.from_args(
+        args=args, cfg_file_arg=None, ft_args_prefix='ft_param_'
+    )
+    assert ft.safety_factor == 0.567
+    assert ft.rank_termination_signal == signal.SIGUSR2
+    assert ft.log_level == logging.DEBUG
+    assert ft.rank_out_of_section_timeout == 123.0
+    assert ft.rank_section_timeouts == {'custom1': 111.1, 'custom2': 222.2}
 
 
 def test_signal_field_with_valid_values():
@@ -119,12 +175,18 @@ def test_read_from_yaml():
         "    initial_rank_heartbeat_timeout: 987",
         "    rank_heartbeat_timeout: 121212",
         "    rank_termination_signal: SIGUSR2",
+        "    rank_section_timeouts:",
+        "        custom1: 111.0",
+        "        custom2: 222.0",
+        "    rank_out_of_section_timeout: 333.0",
     ]
     with tmp_yaml_file(YAML_LINES) as temp_file:
         ft = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file)
         assert ft.initial_rank_heartbeat_timeout == 987
         assert ft.rank_heartbeat_timeout == 121212
         assert ft.rank_termination_signal == signal.SIGUSR2
+        assert ft.rank_section_timeouts == {'custom1': 111.0, 'custom2': 222.0}
+        assert ft.rank_out_of_section_timeout == 333.0
 
 
 def test_read_from_yaml_nested():
@@ -174,6 +236,7 @@ def test_to_yaml_file():
     ref_conf.rank_termination_signal = signal.SIGUSR2
     ref_conf.log_level = logging.FATAL
     ref_conf.rank_heartbeat_timeout = 123.0
+    ref_conf.rank_section_timeouts == {'custom1': 111.0, 'custom2': 222.0}
     with tempfile.NamedTemporaryFile() as temp_file:
         ref_conf.to_yaml_file(temp_file.name)
         restored_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file.name)

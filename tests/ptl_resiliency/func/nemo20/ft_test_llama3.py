@@ -27,12 +27,15 @@ from nemo.collections.llm.gpt.model.llama import Llama3Config, LlamaModel
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 
-from nvidia_resiliency_ext.ptl_resiliency import FaultToleranceCallback
-from nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback import SimulatedFaultParams
+from nvidia_resiliency_ext.ptl_resiliency import (
+    FaultToleranceCallback,
+    FaultToleranceSectionsCallback,
+)
+from nvidia_resiliency_ext.ptl_resiliency._utils import SimulatedFaultParams
 
 
 @dataclass
-class Llama3Config36M(Llama3Config):
+class Llama3Config145M(Llama3Config):
     rotary_base: int = 500_000
     seq_length: int = 8192
     num_layers: int = 12
@@ -51,12 +54,22 @@ def get_ft_callback(args):
             fault_type=fault_type,
             base_delay=base_delay,
         )
-    ft_callback = FaultToleranceCallback(
-        autoresume=False,
-        calculate_timeouts=True,
-        exp_dir=args.log_dir,
-        simulated_fault_params=simulated_fault,
-    )
+    if args.cb_type == 'heartbeats':
+        ft_callback = FaultToleranceCallback(
+            autoresume=False,
+            calculate_timeouts=True,
+            exp_dir=args.log_dir,
+            simulated_fault_params=simulated_fault,
+        )
+    elif args.cb_type == 'sections':
+        ft_callback = FaultToleranceSectionsCallback(
+            autoresume=False,
+            calculate_timeouts=True,
+            exp_dir=args.log_dir,
+            simulated_fault_params=simulated_fault,
+        )
+    else:
+        raise AssertionError(f"Unexpected FT callback type: {args.cb_type}")
     return ft_callback
 
 
@@ -153,6 +166,14 @@ def get_parser():
         required=False,
         default="",
     )
+    parser.add_argument(
+        "--cb-type",
+        type=str,
+        choices=['heartbeats', 'sections'],
+        help="Which FT callback to use, can be 'heartbeats' or 'sections'",
+        required=False,
+        default="heartbeats",
+    )
     return parser
 
 
@@ -169,7 +190,7 @@ def main():
         tokenizer=SentencePieceTokenizer(model_path=args.tokenizer_path),
     )
 
-    model = LlamaModel(config=Llama3Config36M())
+    model = LlamaModel(config=Llama3Config145M())
 
     checkpoint_callback = ModelCheckpoint(
         save_last=True,
