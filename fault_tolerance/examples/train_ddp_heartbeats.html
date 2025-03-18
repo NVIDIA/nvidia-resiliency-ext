@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DDP usage example &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+  <title>Heartbeat API usage example with DDP &mdash; nvidia-resiliency-ext 0.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
       <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
@@ -22,7 +22,7 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Inprocess Restart" href="../../inprocess/index.html" />
+    <link rel="next" title="Section API usage example with DDP" href="train_ddp_sections.html" />
     <link rel="prev" title="Basic usage example" href="basic_example.html" /> 
 </head>
 
@@ -49,10 +49,13 @@
 <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration Guides</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../examples.html">Examples</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="basic_example.html">Basic usage example</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">DDP usage example</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Heartbeat API usage example with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_sections.html">Section API usage example with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="in_job_and_in_process_example.html">FT Launcher &amp; Inprocess integration example</a></li>
 </ul>
 </li>
 </ul>
@@ -79,9 +82,9 @@
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
           <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
           <li class="breadcrumb-item"><a href="../examples.html">Examples</a></li>
-      <li class="breadcrumb-item active">DDP usage example</li>
+      <li class="breadcrumb-item active">Heartbeat API usage example with DDP</li>
       <li class="wy-breadcrumbs-aside">
-            <a href="../../_sources/fault_tolerance/examples/train_ddp.rst.txt" rel="nofollow"> View page source</a>
+            <a href="../../_sources/fault_tolerance/examples/train_ddp_heartbeats.rst.txt" rel="nofollow"> View page source</a>
       </li>
   </ul>
   <hr/>
@@ -89,8 +92,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="ddp-usage-example">
-<h1>DDP usage example<a class="headerlink" href="#ddp-usage-example" title="Link to this heading"></a></h1>
+  <section id="heartbeat-api-usage-example-with-ddp">
+<h1>Heartbeat API usage example with DDP<a class="headerlink" href="#heartbeat-api-usage-example-with-ddp" title="Link to this heading"></a></h1>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="linenos">  1</span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
 <span class="linenos">  2</span><span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
 <span class="linenos">  3</span><span class="c1">#</span>
@@ -107,7 +110,7 @@
 <span class="linenos"> 14</span><span class="c1"># limitations under the License.</span>
 <span class="linenos"> 15</span>
 <span class="linenos"> 16</span><span class="sd">&quot;&quot;&quot;</span>
-<span class="linenos"> 17</span><span class="sd">Demo of fault tolerance with DDP training</span>
+<span class="linenos"> 17</span><span class="sd">Demo of fault tolerance with DDP training, using FT package heartbeats API</span>
 <span class="linenos"> 18</span><span class="sd">&quot;&quot;&quot;</span>
 <span class="linenos"> 19</span>
 <span class="linenos"> 20</span><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
@@ -232,7 +235,7 @@
 <span class="linenos">139</span>        <span class="n">map_location</span><span class="p">[</span><span class="s1">&#39;cuda:0&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;cuda:</span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">()</span><span class="si">}</span><span class="s1">&#39;</span>
 <span class="linenos">140</span>
 <span class="linenos">141</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;Loading checkpoint from </span><span class="si">{</span><span class="n">path</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
-<span class="linenos">142</span>    <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">map_location</span><span class="o">=</span><span class="n">map_location</span><span class="p">)</span>
+<span class="linenos">142</span>    <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">map_location</span><span class="o">=</span><span class="n">map_location</span><span class="p">,</span> <span class="n">weights_only</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="linenos">143</span>    <span class="k">return</span> <span class="n">checkpoint</span>
 <span class="linenos">144</span>
 <span class="linenos">145</span>
@@ -282,11 +285,11 @@
 <span class="linenos">189</span>    <span class="n">last_log_time</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
 <span class="linenos">190</span>
 <span class="linenos">191</span>    <span class="k">for</span> <span class="n">iter_idx</span><span class="p">,</span> <span class="n">x</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">dataloader</span><span class="p">,</span> <span class="n">start</span><span class="o">=</span><span class="n">progress</span><span class="p">[</span><span class="s1">&#39;iter_idx&#39;</span><span class="p">]):</span>
-<span class="linenos">192</span>        <span class="k">if</span> <span class="n">ft_client</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">is</span> <span class="kc">False</span> <span class="ow">and</span> <span class="n">epoch_idx</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">iter_idx</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+<span class="linenos">192</span>        <span class="k">if</span> <span class="n">ft_client</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">is</span> <span class="kc">False</span> <span class="ow">and</span> <span class="n">epoch_idx</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">iter_idx</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
 <span class="linenos">193</span>            <span class="c1"># after 0th epoch is completed and we&#39;ve done 0th iteration of the 1st epoch,</span>
 <span class="linenos">194</span>            <span class="c1"># we can calculate and set timeouts. this is a good moment to do so,</span>
 <span class="linenos">195</span>            <span class="c1"># because now we&#39;ve seen the possibly long interval where checkpoint was saved.</span>
-<span class="linenos">196</span>            <span class="n">ft_client</span><span class="o">.</span><span class="n">calculate_and_set_timeouts</span><span class="p">()</span>
+<span class="linenos">196</span>            <span class="n">ft_client</span><span class="o">.</span><span class="n">calculate_and_set_hb_timeouts</span><span class="p">()</span>
 <span class="linenos">197</span>
 <span class="linenos">198</span>        <span class="n">optimizer</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
 <span class="linenos">199</span>        <span class="n">x</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
@@ -517,95 +520,98 @@
 <span class="linenos">424</span>        <span class="c1"># Return with zero exit code if model is already fully trained.</span>
 <span class="linenos">425</span>        <span class="k">if</span> <span class="n">progress</span><span class="p">[</span><span class="s1">&#39;epoch_idx&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">args</span><span class="o">.</span><span class="n">epochs</span><span class="p">:</span>
 <span class="linenos">426</span>            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;Training finished.&#39;</span><span class="p">)</span>
-<span class="linenos">427</span>            <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-<span class="linenos">428</span>
-<span class="linenos">429</span>    <span class="n">train_dataloader</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">DataLoader</span><span class="p">(</span>
-<span class="linenos">430</span>        <span class="n">dataset</span><span class="o">=</span><span class="n">train_dataset</span><span class="p">,</span>
-<span class="linenos">431</span>        <span class="n">batch_size</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">batch</span><span class="p">,</span>
-<span class="linenos">432</span>        <span class="n">sampler</span><span class="o">=</span><span class="n">train_sampler</span><span class="p">,</span>
-<span class="linenos">433</span>        <span class="n">num_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
-<span class="linenos">434</span>        <span class="n">persistent_workers</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<span class="linenos">435</span>        <span class="n">pin_memory</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-<span class="linenos">436</span>    <span class="p">)</span>
-<span class="linenos">437</span>
-<span class="linenos">438</span>    <span class="n">val_dataloader</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">DataLoader</span><span class="p">(</span>
-<span class="linenos">439</span>        <span class="n">dataset</span><span class="o">=</span><span class="n">val_dataset</span><span class="p">,</span>
-<span class="linenos">440</span>        <span class="n">batch_size</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">batch</span><span class="p">,</span>
-<span class="linenos">441</span>        <span class="n">sampler</span><span class="o">=</span><span class="n">val_sampler</span><span class="p">,</span>
-<span class="linenos">442</span>        <span class="n">num_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
-<span class="linenos">443</span>    <span class="p">)</span>
-<span class="linenos">444</span>
-<span class="linenos">445</span>    <span class="c1"># Regular DDP init</span>
-<span class="linenos">446</span>    <span class="c1"># NOTE: for convenience code is keeping both wrapped and unwrapped model and</span>
-<span class="linenos">447</span>    <span class="c1"># uses wrapped model for training and unwrapped model for saving the</span>
-<span class="linenos">448</span>    <span class="c1"># checkpoint and validation. It doesn&#39;t increase memory consumption</span>
-<span class="linenos">449</span>    <span class="c1"># since both models are holding references to the same parameters.</span>
-<span class="linenos">450</span>    <span class="c1"># Additionally saved checkpoint is ready for inference and doesn&#39;t have to</span>
-<span class="linenos">451</span>    <span class="c1"># be manually unwrapped by accessing the (undocumented) &quot;module&quot; attribute</span>
-<span class="linenos">452</span>    <span class="c1"># of DDP-wrapped model.</span>
-<span class="linenos">453</span>    <span class="k">if</span> <span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s1">&#39;cuda&#39;</span><span class="p">:</span>
-<span class="linenos">454</span>        <span class="n">device_ids</span> <span class="o">=</span> <span class="p">[</span><span class="n">args</span><span class="o">.</span><span class="n">local_rank</span><span class="p">]</span>
-<span class="linenos">455</span>        <span class="n">output_device</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">local_rank</span>
-<span class="linenos">456</span>    <span class="k">elif</span> <span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s1">&#39;cpu&#39;</span><span class="p">:</span>
-<span class="linenos">457</span>        <span class="n">device_ids</span> <span class="o">=</span> <span class="kc">None</span>
-<span class="linenos">458</span>        <span class="n">output_device</span> <span class="o">=</span> <span class="kc">None</span>
-<span class="linenos">459</span>    <span class="k">else</span><span class="p">:</span>
-<span class="linenos">460</span>        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;Unsupported device type&#39;</span><span class="p">)</span>
-<span class="linenos">461</span>    <span class="n">para_model</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">parallel</span><span class="o">.</span><span class="n">DistributedDataParallel</span><span class="p">(</span>
-<span class="linenos">462</span>        <span class="n">model</span><span class="p">,</span> <span class="n">device_ids</span><span class="o">=</span><span class="n">device_ids</span><span class="p">,</span> <span class="n">output_device</span><span class="o">=</span><span class="n">output_device</span>
-<span class="linenos">463</span>    <span class="p">)</span>
-<span class="linenos">464</span>
-<span class="linenos">465</span>    <span class="c1"># Iteration over epochs, notice that it starts from &#39;epoch_idx&#39;</span>
-<span class="linenos">466</span>    <span class="c1"># which was previously loaded from the checkpoint</span>
-<span class="linenos">467</span>    <span class="k">for</span> <span class="n">epoch_idx</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">progress</span><span class="p">[</span><span class="s1">&#39;epoch_idx&#39;</span><span class="p">],</span> <span class="n">args</span><span class="o">.</span><span class="n">epochs</span><span class="p">):</span>
-<span class="linenos">468</span>        <span class="n">training_loop</span><span class="p">(</span>
-<span class="linenos">469</span>            <span class="n">ft_client</span><span class="p">,</span>
-<span class="linenos">470</span>            <span class="n">para_model</span><span class="p">,</span>
-<span class="linenos">471</span>            <span class="n">model</span><span class="p">,</span>
-<span class="linenos">472</span>            <span class="n">optimizer</span><span class="p">,</span>
-<span class="linenos">473</span>            <span class="n">device</span><span class="p">,</span>
-<span class="linenos">474</span>            <span class="n">train_dataloader</span><span class="p">,</span>
-<span class="linenos">475</span>            <span class="n">train_sampler</span><span class="p">,</span>
-<span class="linenos">476</span>            <span class="n">progress</span><span class="p">,</span>
-<span class="linenos">477</span>            <span class="n">args</span><span class="p">,</span>
-<span class="linenos">478</span>        <span class="p">)</span>
-<span class="linenos">479</span>
-<span class="linenos">480</span>        <span class="c1"># epoch_idx is incremented because the current epoch is finished</span>
-<span class="linenos">481</span>        <span class="c1"># and potential resume from this checkpoint should start a new training epoch.</span>
-<span class="linenos">482</span>        <span class="n">progress</span><span class="p">[</span><span class="s1">&#39;epoch_idx&#39;</span><span class="p">]</span> <span class="o">+=</span> <span class="mi">1</span>
-<span class="linenos">483</span>        <span class="n">progress</span><span class="p">[</span><span class="s1">&#39;iter_idx&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span>
-<span class="linenos">484</span>
-<span class="linenos">485</span>        <span class="n">validation_loop</span><span class="p">(</span><span class="n">ft_client</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">val_dataloader</span><span class="p">,</span> <span class="n">epoch_idx</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="linenos">427</span>            <span class="n">ft_client</span><span class="o">.</span><span class="n">shutdown_workload_monitoring</span><span class="p">()</span>
+<span class="linenos">428</span>            <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
+<span class="linenos">429</span>            <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<span class="linenos">430</span>
+<span class="linenos">431</span>    <span class="n">train_dataloader</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">DataLoader</span><span class="p">(</span>
+<span class="linenos">432</span>        <span class="n">dataset</span><span class="o">=</span><span class="n">train_dataset</span><span class="p">,</span>
+<span class="linenos">433</span>        <span class="n">batch_size</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">batch</span><span class="p">,</span>
+<span class="linenos">434</span>        <span class="n">sampler</span><span class="o">=</span><span class="n">train_sampler</span><span class="p">,</span>
+<span class="linenos">435</span>        <span class="n">num_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<span class="linenos">436</span>        <span class="n">persistent_workers</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="linenos">437</span>        <span class="n">pin_memory</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+<span class="linenos">438</span>    <span class="p">)</span>
+<span class="linenos">439</span>
+<span class="linenos">440</span>    <span class="n">val_dataloader</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">DataLoader</span><span class="p">(</span>
+<span class="linenos">441</span>        <span class="n">dataset</span><span class="o">=</span><span class="n">val_dataset</span><span class="p">,</span>
+<span class="linenos">442</span>        <span class="n">batch_size</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">batch</span><span class="p">,</span>
+<span class="linenos">443</span>        <span class="n">sampler</span><span class="o">=</span><span class="n">val_sampler</span><span class="p">,</span>
+<span class="linenos">444</span>        <span class="n">num_workers</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<span class="linenos">445</span>    <span class="p">)</span>
+<span class="linenos">446</span>
+<span class="linenos">447</span>    <span class="c1"># Regular DDP init</span>
+<span class="linenos">448</span>    <span class="c1"># NOTE: for convenience code is keeping both wrapped and unwrapped model and</span>
+<span class="linenos">449</span>    <span class="c1"># uses wrapped model for training and unwrapped model for saving the</span>
+<span class="linenos">450</span>    <span class="c1"># checkpoint and validation. It doesn&#39;t increase memory consumption</span>
+<span class="linenos">451</span>    <span class="c1"># since both models are holding references to the same parameters.</span>
+<span class="linenos">452</span>    <span class="c1"># Additionally saved checkpoint is ready for inference and doesn&#39;t have to</span>
+<span class="linenos">453</span>    <span class="c1"># be manually unwrapped by accessing the (undocumented) &quot;module&quot; attribute</span>
+<span class="linenos">454</span>    <span class="c1"># of DDP-wrapped model.</span>
+<span class="linenos">455</span>    <span class="k">if</span> <span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s1">&#39;cuda&#39;</span><span class="p">:</span>
+<span class="linenos">456</span>        <span class="n">device_ids</span> <span class="o">=</span> <span class="p">[</span><span class="n">args</span><span class="o">.</span><span class="n">local_rank</span><span class="p">]</span>
+<span class="linenos">457</span>        <span class="n">output_device</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">local_rank</span>
+<span class="linenos">458</span>    <span class="k">elif</span> <span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s1">&#39;cpu&#39;</span><span class="p">:</span>
+<span class="linenos">459</span>        <span class="n">device_ids</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="linenos">460</span>        <span class="n">output_device</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="linenos">461</span>    <span class="k">else</span><span class="p">:</span>
+<span class="linenos">462</span>        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;Unsupported device type&#39;</span><span class="p">)</span>
+<span class="linenos">463</span>    <span class="n">para_model</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">parallel</span><span class="o">.</span><span class="n">DistributedDataParallel</span><span class="p">(</span>
+<span class="linenos">464</span>        <span class="n">model</span><span class="p">,</span> <span class="n">device_ids</span><span class="o">=</span><span class="n">device_ids</span><span class="p">,</span> <span class="n">output_device</span><span class="o">=</span><span class="n">output_device</span>
+<span class="linenos">465</span>    <span class="p">)</span>
+<span class="linenos">466</span>
+<span class="linenos">467</span>    <span class="c1"># Iteration over epochs, notice that it starts from &#39;epoch_idx&#39;</span>
+<span class="linenos">468</span>    <span class="c1"># which was previously loaded from the checkpoint</span>
+<span class="linenos">469</span>    <span class="k">for</span> <span class="n">epoch_idx</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">progress</span><span class="p">[</span><span class="s1">&#39;epoch_idx&#39;</span><span class="p">],</span> <span class="n">args</span><span class="o">.</span><span class="n">epochs</span><span class="p">):</span>
+<span class="linenos">470</span>        <span class="n">training_loop</span><span class="p">(</span>
+<span class="linenos">471</span>            <span class="n">ft_client</span><span class="p">,</span>
+<span class="linenos">472</span>            <span class="n">para_model</span><span class="p">,</span>
+<span class="linenos">473</span>            <span class="n">model</span><span class="p">,</span>
+<span class="linenos">474</span>            <span class="n">optimizer</span><span class="p">,</span>
+<span class="linenos">475</span>            <span class="n">device</span><span class="p">,</span>
+<span class="linenos">476</span>            <span class="n">train_dataloader</span><span class="p">,</span>
+<span class="linenos">477</span>            <span class="n">train_sampler</span><span class="p">,</span>
+<span class="linenos">478</span>            <span class="n">progress</span><span class="p">,</span>
+<span class="linenos">479</span>            <span class="n">args</span><span class="p">,</span>
+<span class="linenos">480</span>        <span class="p">)</span>
+<span class="linenos">481</span>
+<span class="linenos">482</span>        <span class="c1"># epoch_idx is incremented because the current epoch is finished</span>
+<span class="linenos">483</span>        <span class="c1"># and potential resume from this checkpoint should start a new training epoch.</span>
+<span class="linenos">484</span>        <span class="n">progress</span><span class="p">[</span><span class="s1">&#39;epoch_idx&#39;</span><span class="p">]</span> <span class="o">+=</span> <span class="mi">1</span>
+<span class="linenos">485</span>        <span class="n">progress</span><span class="p">[</span><span class="s1">&#39;iter_idx&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="linenos">486</span>
-<span class="linenos">487</span>        <span class="c1"># Checkpoint contains everything needed for deterministic resume:</span>
-<span class="linenos">488</span>        <span class="c1"># state of the model, optimizer and other components,</span>
-<span class="linenos">489</span>        <span class="n">save_checkpoint</span><span class="p">(</span>
-<span class="linenos">490</span>            <span class="n">progress</span><span class="o">=</span><span class="n">progress</span><span class="p">,</span>
-<span class="linenos">491</span>            <span class="n">model</span><span class="o">=</span><span class="n">model</span><span class="p">,</span>
-<span class="linenos">492</span>            <span class="n">optimizer</span><span class="o">=</span><span class="n">optimizer</span><span class="p">,</span>
-<span class="linenos">493</span>            <span class="n">ft_client</span><span class="o">=</span><span class="n">ft_client</span><span class="p">,</span>
-<span class="linenos">494</span>            <span class="n">output_dir</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">output_dir</span><span class="p">,</span>
-<span class="linenos">495</span>            <span class="n">checkpoint_fname</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">checkpoint_fname</span><span class="p">,</span>
-<span class="linenos">496</span>        <span class="p">)</span>
-<span class="linenos">497</span>
-<span class="linenos">498</span>        <span class="c1"># NOTE: SIGTERM is used by SLURM to initiate graceful job termination</span>
-<span class="linenos">499</span>        <span class="c1"># if _any_ rank received SIGTERM, we leave the main loop</span>
-<span class="linenos">500</span>        <span class="k">if</span> <span class="n">dist_utils</span><span class="o">.</span><span class="n">is_true_on_any_rank</span><span class="p">(</span><span class="n">_signal_received</span><span class="p">):</span>
-<span class="linenos">501</span>            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;Leaving the main loop, due to SIGTERM&#39;</span><span class="p">)</span>
-<span class="linenos">502</span>            <span class="k">break</span>
-<span class="linenos">503</span>
-<span class="linenos">504</span>        <span class="c1"># Setup simulated fault as soon as we have valid timeouts</span>
-<span class="linenos">505</span>        <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">simulated_fault</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">_sim_fault_is_set</span> <span class="ow">and</span> <span class="n">ft_client</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">are_valid</span><span class="p">:</span>
-<span class="linenos">506</span>            <span class="n">_setup_simulated_fault</span><span class="p">(</span><span class="n">ft_client</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">simulated_fault</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-<span class="linenos">507</span>
-<span class="linenos">508</span>    <span class="n">_cancel_simulated_fault</span><span class="p">()</span>
-<span class="linenos">509</span>    <span class="n">ft_client</span><span class="o">.</span><span class="n">shutdown_workload_monitoring</span><span class="p">()</span>
-<span class="linenos">510</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;Leaving main, ret_code=0&#39;</span><span class="p">)</span>
-<span class="linenos">511</span>    <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-<span class="linenos">512</span>
-<span class="linenos">513</span>
-<span class="linenos">514</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-<span class="linenos">515</span>    <span class="n">main</span><span class="p">()</span>
+<span class="linenos">487</span>        <span class="n">validation_loop</span><span class="p">(</span><span class="n">ft_client</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">val_dataloader</span><span class="p">,</span> <span class="n">epoch_idx</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="linenos">488</span>
+<span class="linenos">489</span>        <span class="c1"># Checkpoint contains everything needed for deterministic resume:</span>
+<span class="linenos">490</span>        <span class="c1"># state of the model, optimizer and other components,</span>
+<span class="linenos">491</span>        <span class="n">save_checkpoint</span><span class="p">(</span>
+<span class="linenos">492</span>            <span class="n">progress</span><span class="o">=</span><span class="n">progress</span><span class="p">,</span>
+<span class="linenos">493</span>            <span class="n">model</span><span class="o">=</span><span class="n">model</span><span class="p">,</span>
+<span class="linenos">494</span>            <span class="n">optimizer</span><span class="o">=</span><span class="n">optimizer</span><span class="p">,</span>
+<span class="linenos">495</span>            <span class="n">ft_client</span><span class="o">=</span><span class="n">ft_client</span><span class="p">,</span>
+<span class="linenos">496</span>            <span class="n">output_dir</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">output_dir</span><span class="p">,</span>
+<span class="linenos">497</span>            <span class="n">checkpoint_fname</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">checkpoint_fname</span><span class="p">,</span>
+<span class="linenos">498</span>        <span class="p">)</span>
+<span class="linenos">499</span>
+<span class="linenos">500</span>        <span class="c1"># NOTE: SIGTERM is used by SLURM to initiate graceful job termination</span>
+<span class="linenos">501</span>        <span class="c1"># if _any_ rank received SIGTERM, we leave the main loop</span>
+<span class="linenos">502</span>        <span class="k">if</span> <span class="n">dist_utils</span><span class="o">.</span><span class="n">is_true_on_any_rank</span><span class="p">(</span><span class="n">_signal_received</span><span class="p">):</span>
+<span class="linenos">503</span>            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;Leaving the main loop, due to SIGTERM&#39;</span><span class="p">)</span>
+<span class="linenos">504</span>            <span class="k">break</span>
+<span class="linenos">505</span>
+<span class="linenos">506</span>        <span class="c1"># Setup simulated fault as soon as we have valid timeouts</span>
+<span class="linenos">507</span>        <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">simulated_fault</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">_sim_fault_is_set</span> <span class="ow">and</span> <span class="n">ft_client</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="o">.</span><span class="n">are_valid</span><span class="p">:</span>
+<span class="linenos">508</span>            <span class="n">_setup_simulated_fault</span><span class="p">(</span><span class="n">ft_client</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">simulated_fault</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="linenos">509</span>
+<span class="linenos">510</span>    <span class="n">_cancel_simulated_fault</span><span class="p">()</span>
+<span class="linenos">511</span>    <span class="n">ft_client</span><span class="o">.</span><span class="n">shutdown_workload_monitoring</span><span class="p">()</span>
+<span class="linenos">512</span>    <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
+<span class="linenos">513</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;Leaving main, ret_code=0&#39;</span><span class="p">)</span>
+<span class="linenos">514</span>    <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<span class="linenos">515</span>
+<span class="linenos">516</span>
+<span class="linenos">517</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<span class="linenos">518</span>    <span class="n">main</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>
@@ -615,7 +621,7 @@
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="basic_example.html" class="btn btn-neutral float-left" title="Basic usage example" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="../../inprocess/index.html" class="btn btn-neutral float-right" title="Inprocess Restart" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="train_ddp_sections.html" class="btn btn-neutral float-right" title="Section API usage example with DDP" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

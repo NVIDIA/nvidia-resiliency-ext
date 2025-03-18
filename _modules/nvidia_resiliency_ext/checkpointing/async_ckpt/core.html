@@ -96,12 +96,17 @@
 <span class="sd">a checkpoint save process in the background.</span>
 <span class="sd">&quot;&quot;&quot;</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">multiprocessing</span> <span class="k">as</span> <span class="n">mp</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">ABC</span><span class="p">,</span> <span class="n">abstractmethod</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">deque</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">time</span><span class="w"> </span><span class="kn">import</span> <span class="n">time</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">NamedTuple</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Dict</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">queue</span><span class="w"> </span><span class="kn">import</span> <span class="n">Empty</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">time</span><span class="w"> </span><span class="kn">import</span> <span class="n">sleep</span><span class="p">,</span> <span class="n">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">NamedTuple</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">multiprocessing</span> <span class="k">as</span> <span class="n">mp</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">..utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_disable_gc</span><span class="p">,</span> <span class="n">debug_time</span>
 
 <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
@@ -117,13 +122,22 @@
 <span class="sd">        finalize_fns (List[Callable]): list of functions to call to finalize the request.</span>
 <span class="sd">            These functions will be called synchronously after `async_fn` is done</span>
 <span class="sd">            *on all ranks*.</span>
+<span class="sd">        async_fn_kwargs (Tuple): kwargs to pass to `async_fn`.</span>
+<span class="sd">        preload_fn (Callable): preload function to stage tensors from GPU to Host.</span>
+<span class="sd">            This should be self-contained with a proper list of arguments with  `partial`.</span>
+<span class="sd">        is_frozen (Bool): a flag to indicate this async request can be modified or not.</span>
+<span class="sd">        call_idx (int): index variable used to order async requests for synchronization</span>
+<span class="sd">                        in preloading and writing tensors on the async caller</span>
+
 <span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="n">async_fn</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">]</span>
     <span class="n">async_fn_args</span><span class="p">:</span> <span class="n">Tuple</span>
     <span class="n">finalize_fns</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Callable</span><span class="p">]</span>
     <span class="n">async_fn_kwargs</span><span class="p">:</span> <span class="n">Dict</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">preload_fn</span><span class="p">:</span> <span class="n">Callable</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">is_frozen</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="n">call_idx</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 
 <div class="viewcode-block" id="AsyncRequest.add_finalize_fn">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.add_finalize_fn">[docs]</a>
@@ -170,9 +184,9 @@
 
 
 
-<div class="viewcode-block" id="DistributedAsyncCaller">
-<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">DistributedAsyncCaller</span><span class="p">:</span>
+<div class="viewcode-block" id="AsyncCaller">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">AsyncCaller</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Wrapper around mp.Process that ensures correct semantic of distributed finalization.</span>
 
 <span class="sd">    Starts process asynchronously and allows checking if all processes on all ranks are done.</span>
@@ -181,12 +195,95 @@
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">mp</span><span class="o">.</span><span class="n">Process</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="c1"># Store the rank for logging, in case torch.distributed is destroyed</span>
+        <span class="c1"># before AsyncCaller shuts down.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="kc">None</span>
 
-<div class="viewcode-block" id="DistributedAsyncCaller.schedule_async_call">
-<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.schedule_async_call">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">schedule_async_call</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">async_fn</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">],</span> <span class="n">save_args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">save_kwargs</span><span class="p">:</span> <span class="n">Dict</span> <span class="o">=</span> <span class="p">{}</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<div class="viewcode-block" id="AsyncCaller.schedule_async_call">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller.schedule_async_call">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">schedule_async_call</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">async_req</span><span class="p">:</span> <span class="n">AsyncRequest</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Schedule `async_req` with some process forking or reusing</span>
+<span class="sd">           persistent worker</span>
+
+<span class="sd">        This method must be called on all ranks.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            async_req (AsyncRequest): `AsyncRequest` object containing to</span>
+<span class="sd">                                       start async process</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;This should be implemented&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="AsyncCaller.is_current_async_call_done">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller.is_current_async_call_done">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_current_async_call_done</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span> <span class="n">no_dist</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if async save is finished on all ranks.</span>
+
+<span class="sd">        For semantic correctness, requires rank synchronization in each check.</span>
+<span class="sd">        This method must be called on all ranks.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            blocking (bool, optional): if True, will wait until the call is done</span>
+<span class="sd">                on all ranks. Otherwise, returns immediately if at least one rank</span>
+<span class="sd">                is still active. Defaults to False.</span>
+<span class="sd">            no_dist (bool, Optional): if True, training ranks simply check its</span>
+<span class="sd">                asynchronous checkpoint writer without synchronization.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if all ranks are done (immediately of after active wait</span>
+<span class="sd">                if `blocking` is True), False if at least one rank is still active.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;This should be implemented&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="AsyncCaller.sync_all_async_calls">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller.sync_all_async_calls">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">sync_all_async_calls</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">is_alive</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if all ranks have completed async checkpoint writing</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            is_alive (bool): if True, the current async request is not completed</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if all ranks are done, False if at least one rank is still active.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">ten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="n">is_alive</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">())</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">ten</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">ten</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="mi">0</span></div>
+
+
+<div class="viewcode-block" id="AsyncCaller.close">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller.close">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Terminate the async caller at exit of an application or some termination conditions&quot;&quot;&quot;</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;AsyncCaller: </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, Destroying Async Caller&quot;</span><span class="p">)</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></div>
+
+
+
+<div class="viewcode-block" id="TemporalAsyncCaller">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">TemporalAsyncCaller</span><span class="p">(</span><span class="n">AsyncCaller</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Wrapper around mp.Process that ensures correct semantic of distributed finalization.</span>
+
+<span class="sd">    Starts process asynchronously and allows checking if all processes on all ranks are done.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+
+<div class="viewcode-block" id="TemporalAsyncCaller.schedule_async_call">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller.schedule_async_call">[docs]</a>
+    <span class="nd">@_disable_gc</span><span class="p">()</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">schedule_async_call</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">async_req</span><span class="p">:</span> <span class="n">AsyncRequest</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Spawn a process with `async_fn` as the target.</span>
 
 <span class="sd">        This method must be called on all ranks.</span>
@@ -194,31 +291,42 @@
 <span class="sd">        Args:</span>
 <span class="sd">            async_fn (Callable, optional): async function to call. If None,</span>
 <span class="sd">                no process will be started.</span>
-<span class="sd">            save_args (Tuple): async function args.</span>
-<span class="sd">            save_kwargs (Dict): async function kwargs. Default is None</span>
+<span class="sd">            async_req (AsyncRequest): `AsyncRequest` object containing to</span>
+<span class="sd">                                       start async process</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">if</span> <span class="n">async_fn</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">async_req</span><span class="o">.</span><span class="n">async_fn</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>  <span class="c1"># nothing to do</span>
+
+        <span class="n">async_fn_args</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">async_req</span><span class="o">.</span><span class="n">async_fn_args</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">async_req</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
+            <span class="c1"># If there&#39;s a preload_fn in `async_req`, we call this func</span>
+            <span class="c1"># to do the defined action in `async_req.preload_fn` to</span>
+            <span class="c1"># stage GPU tensors to its defined destination</span>
+            <span class="n">async_fn_args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">async_req</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">()</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
+
         <span class="n">start_sync</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
         <span class="n">end_sync</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, takes </span><span class="si">{</span><span class="n">end_sync</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start_sync</span><span class="si">}</span><span class="s2"> to finish D2H &quot;</span>
-        <span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, takes </span><span class="si">{</span><span class="n">end_sync</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start_sync</span><span class="si">}</span><span class="s2"> to finish D2H &quot;</span><span class="p">)</span>
 
         <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;fork&#39;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="n">async_fn</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="n">save_args</span><span class="p">,</span> <span class="n">kwargs</span><span class="o">=</span><span class="n">save_kwargs</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span>
+            <span class="n">target</span><span class="o">=</span><span class="n">async_req</span><span class="o">.</span><span class="n">async_fn</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="n">async_fn_args</span><span class="p">,</span> <span class="n">kwargs</span><span class="o">=</span><span class="n">async_req</span><span class="o">.</span><span class="n">async_fn_kwargs</span>
+        <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
         <span class="n">init_time</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, takes </span><span class="si">{</span><span class="n">init_time</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="si">}</span><span class="s2"> to schedule async ckpt &quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, takes </span><span class="si">{</span><span class="n">init_time</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="si">}</span><span class="s2"> to schedule async ckpt &quot;</span>
         <span class="p">)</span></div>
 
 
-<div class="viewcode-block" id="DistributedAsyncCaller.is_current_async_call_done">
-<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">is_current_async_call_done</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<div class="viewcode-block" id="TemporalAsyncCaller.is_current_async_call_done">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller.is_current_async_call_done">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_current_async_call_done</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">no_dist</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if async save is finished on all ranks.</span>
 
 <span class="sd">        For semantic correctness, requires rank synchronization in each check.</span>
@@ -235,31 +343,231 @@
 <span class="sd">            bool: True if all ranks are done (immediately of after active wait</span>
 <span class="sd">                if `blocking` is True), False if at least one rank is still active.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="c1"># The following takes the same overhead as torch.distributed.barrier (single integer all-reduce)</span>
+        <span class="c1"># The following takes the same overhead</span>
+        <span class="c1"># as torch.distributed.barrier (single integer all-reduce)</span>
         <span class="n">is_alive</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">is_alive</span><span class="p">())</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mi">0</span>
+        <span class="n">is_done</span> <span class="o">=</span> <span class="ow">not</span> <span class="n">is_alive</span> <span class="k">if</span> <span class="n">no_dist</span> <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">sync_all_async_calls</span><span class="p">(</span><span class="n">is_alive</span><span class="p">)</span>
 
-        <span class="n">is_done</span> <span class="o">=</span> <span class="n">is_alive</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="n">no_dist</span><span class="p">:</span>
-            <span class="n">ten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="n">is_alive</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">())</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">is_done</span> <span class="ow">and</span> <span class="n">blocking</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+            <span class="n">is_done</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="k">return</span> <span class="n">is_done</span></div>
+
+
+<div class="viewcode-block" id="TemporalAsyncCaller.close">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller.close">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, joining self.process&quot;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="kc">None</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, DistributedAsyncCaller is_alive: </span><span class="si">{</span><span class="n">is_alive</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="s2">&quot;TemporalAsyncCaller: Async process join finished &quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;after </span><span class="si">{</span><span class="n">time</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">s from forking&quot;</span>
             <span class="p">)</span>
-            <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">ten</span><span class="p">)</span>
-            <span class="n">is_done</span> <span class="o">=</span> <span class="n">ten</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="kc">None</span></div>
+</div>
 
-        <span class="k">if</span> <span class="n">is_alive</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">blocking</span><span class="p">:</span>
-            <span class="k">return</span> <span class="kc">False</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, joining self.process&quot;</span><span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="kc">None</span>
 
-                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                    <span class="sa">f</span><span class="s2">&quot;DistributedAsyncCaller: </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, Async process join finished after </span><span class="si">{</span><span class="n">time</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">s from forking&quot;</span>
-                <span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="kc">None</span>
-            <span class="k">return</span> <span class="kc">True</span></div>
+
+<div class="viewcode-block" id="PersistentAsyncCaller">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">PersistentAsyncCaller</span><span class="p">(</span><span class="n">AsyncCaller</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Wrapper around mp.Process that ensures correct semantic of distributed finalization.</span>
+
+<span class="sd">    Starts process asynchronously and allows checking if all processes on all ranks are done.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
+        <span class="c1"># main queue to deliver `AsyncRequest` from host to the ckpt worker</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">()</span>
+        <span class="c1"># Queue used to synchronize for the completion of preloading tensors to host</span>
+        <span class="c1"># between a trainer and ckpt worker</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">preload_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">()</span>
+        <span class="c1"># Queue used to inform trainer when the saving is completed</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">comp_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Queue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cur_item</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cur_idx</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
+
+<div class="viewcode-block" id="PersistentAsyncCaller.schedule_async_call">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.schedule_async_call">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">schedule_async_call</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">async_req</span><span class="p">:</span> <span class="n">AsyncRequest</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Put `AsyncRequest` to the Persistent Async Caller</span>
+
+<span class="sd">        This method must be called on all ranks. The async_req object is pickled and</span>
+<span class="sd">        sent to the persistent async worker via a JoinableQueue.</span>
+<span class="sd">        Therefore, all arguments within async_req must be picklable.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            async_fn (Callable, optional): async function to call. If None,</span>
+<span class="sd">                no process will be started.</span>
+<span class="sd">            async_req (AsyncRequest): `AsyncRequest` object containing to</span>
+<span class="sd">                                       schedule a checkpointing request</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">async_req</span><span class="o">.</span><span class="n">async_fn</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>  <span class="c1"># nothing to do</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
+
+        <span class="n">start_sync</span> <span class="o">=</span> <span class="n">end_sync</span> <span class="o">=</span> <span class="kc">None</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Starting Async Caller&quot;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Process</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span>
+                <span class="n">target</span><span class="o">=</span><span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_loop</span><span class="p">,</span>
+                <span class="n">args</span><span class="o">=</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="p">,</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">preload_q</span><span class="p">,</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">comp_q</span><span class="p">,</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">getEffectiveLevel</span><span class="p">(),</span>
+                <span class="p">),</span>
+            <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Started Async Caller&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">async_req</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">preload_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">async_req</span><span class="o">.</span><span class="n">call_idx</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">async_req</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, put </span><span class="si">{</span><span class="n">async_req</span><span class="o">.</span><span class="n">call_idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">async_req</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
+            <span class="n">start_sync</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+            <span class="c1"># Synchronize for pre-staging tensors</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">preload_q</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+            <span class="n">end_sync</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, takes </span><span class="si">{</span><span class="n">end_sync</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start_sync</span><span class="si">}</span><span class="s2"> to finish D2H &quot;</span><span class="p">)</span>
+
+        <span class="n">init_time</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, takes </span><span class="si">{</span><span class="n">init_time</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="si">}</span><span class="s2"> &quot;</span> <span class="s2">&quot;to schedule async ckpt &quot;</span>
+        <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PersistentAsyncCaller.is_current_async_call_done">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.is_current_async_call_done">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_current_async_call_done</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">no_dist</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if async save is finished on all ranks.</span>
+
+<span class="sd">        For semantic correctness, requires rank synchronization in each check.</span>
+<span class="sd">        This method must be called on all ranks.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            blocking (bool, optional): if True, will wait until the call is done</span>
+<span class="sd">                on all ranks. Otherwise, returns immediately if at least one rank</span>
+<span class="sd">                is still active. Defaults to False.</span>
+<span class="sd">            no_dist (bool, Optional): if True, training ranks simply check its</span>
+<span class="sd">                asynchronous checkpoint writer without synchronization.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if all ranks are done (immediately of after active wait</span>
+<span class="sd">                if `blocking` is True), False if at least one rank is still active.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">is_alive</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span>
+            <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">cur_item</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="c1"># Retrieve comp call_idx without waiting</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">cur_item</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">comp_q</span><span class="o">.</span><span class="n">get_nowait</span><span class="p">()</span>
+                <span class="k">except</span> <span class="n">Empty</span><span class="p">:</span>
+                    <span class="c1"># This method is called after any `AsyncRequest` is pushed to the main loop</span>
+                    <span class="c1"># So, the background writing is still active</span>
+                    <span class="c1"># before the worker put call_idx to `comp_q`</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">blocking</span><span class="p">:</span>
+                        <span class="n">is_alive</span> <span class="o">=</span> <span class="kc">True</span>
+                        <span class="k">break</span>
+                    <span class="n">sleep</span><span class="p">(</span><span class="mf">0.1</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cur_item</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, item: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">cur_item</span><span class="si">}</span><span class="s2">&quot;</span> <span class="sa">f</span><span class="s2">&quot; is completed, </span><span class="si">{</span><span class="n">is_alive</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="n">is_done</span> <span class="o">=</span> <span class="ow">not</span> <span class="n">is_alive</span> <span class="k">if</span> <span class="n">no_dist</span> <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">sync_all_async_calls</span><span class="p">(</span><span class="n">is_alive</span><span class="p">)</span>
+        <span class="c1"># This is set to False when blocking == False so this routine is called again</span>
+        <span class="c1"># to simply call `sync_all_async_calls` to check if other ranks complete the writing</span>
+        <span class="k">if</span> <span class="n">is_done</span><span class="p">:</span>
+            <span class="c1"># The current request is completed globally. Reset the current item for polling.</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, item: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">cur_item</span><span class="si">}</span><span class="s2">&quot;</span> <span class="sa">f</span><span class="s2">&quot; is completed globally, </span><span class="si">{</span><span class="n">is_done</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">cur_item</span> <span class="o">=</span> <span class="kc">None</span>
+
+        <span class="k">return</span> <span class="n">is_done</span></div>
+
+
+<div class="viewcode-block" id="PersistentAsyncCaller.close">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.close">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Destroying Async Caller&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s1">&#39;DONE&#39;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="kc">None</span></div>
+
+
+<div class="viewcode-block" id="PersistentAsyncCaller.async_loop">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.async_loop">[docs]</a>
+    <span class="nd">@staticmethod</span>
+    <span class="nd">@_disable_gc</span><span class="p">()</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">async_loop</span><span class="p">(</span>
+        <span class="n">rank</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="n">queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">,</span>
+        <span class="n">preload_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">,</span>
+        <span class="n">comp_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Queue</span><span class="p">,</span>
+        <span class="n">log_level</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">INFO</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Main function for the persistent checkpoint worker</span>
+
+<span class="sd">        The persisent worker is created once and terminated at exit or</span>
+<span class="sd">        when application calls `close()` explictily</span>
+
+<span class="sd">        This routine receives `AsyncRequest` and does `preload_fn` first and</span>
+<span class="sd">        put the integer value in `preload_q` to inform the trainer to proceed.</span>
+<span class="sd">        When the `async_fn` from the request` is completed (background saving is done),</span>
+<span class="sd">        it puts a integer value to `comp_q` to notify the trainer the completion.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            rank (int): the rank of the trainer where the persistent worker is created.</span>
+<span class="sd">            queue (mp.JoinableQueue): the main queue used to receive `AsyncRequest`</span>
+<span class="sd">                                      from the training rank</span>
+<span class="sd">            preload_q (mp.JoinableQueue): a queue to inform trainer that preloading of tensors</span>
+<span class="sd">                                          from GPU to Host or dedicated location is completed</span>
+<span class="sd">            comp_q (mp.Queue): a queue to inform the training rank the completion of scheduled</span>
+<span class="sd">                               async checkpoint request</span>
+<span class="sd">            log_level (int, Optional): an integer to set log-level in this spawned process</span>
+<span class="sd">                                       to get aligned with the training rank&#39;s logging level</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span><span class="n">log_level</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has started&quot;</span><span class="p">)</span>
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">item</span> <span class="o">=</span> <span class="n">queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="ow">and</span> <span class="n">item</span> <span class="o">==</span> <span class="s1">&#39;DONE&#39;</span><span class="p">:</span>
+                <span class="n">queue</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
+                <span class="k">break</span>
+            <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">AsyncRequest</span><span class="p">):</span>
+                <span class="n">async_fn_args</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">async_fn_args</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
+                    <span class="n">call_idx</span> <span class="o">=</span> <span class="n">preload_q</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+                    <span class="c1"># the 2nd arg is state dict</span>
+                    <span class="n">async_fn_args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">()</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has completed D2H of </span><span class="si">{</span><span class="n">call_idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                    <span class="n">preload_q</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
+                <span class="n">item</span><span class="o">.</span><span class="n">async_fn</span><span class="p">(</span><span class="o">*</span><span class="n">async_fn_args</span><span class="p">,</span> <span class="o">**</span><span class="n">item</span><span class="o">.</span><span class="n">async_fn_kwargs</span><span class="p">)</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has completed saving </span><span class="si">{</span><span class="n">item</span><span class="o">.</span><span class="n">call_idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="n">comp_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">call_idx</span><span class="p">)</span>
+                <span class="n">queue</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
+
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">  has terminated&quot;</span><span class="p">)</span></div>
 </div>
 
 
@@ -275,7 +583,7 @@
 <span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="n">idx</span><span class="p">:</span> <span class="nb">int</span>
-    <span class="n">async_caller</span><span class="p">:</span> <span class="n">DistributedAsyncCaller</span>
+    <span class="n">async_caller</span><span class="p">:</span> <span class="n">AsyncCaller</span>
     <span class="n">async_request</span><span class="p">:</span> <span class="n">AsyncRequest</span>
 
 
@@ -288,9 +596,18 @@
 <span class="sd">    active calls with `maybe_finalize_async_calls`.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">persistent</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="p">:</span> <span class="n">deque</span><span class="p">[</span><span class="n">_ActiveAsyncRequest</span><span class="p">]</span> <span class="o">=</span> <span class="n">deque</span><span class="p">([])</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">persistent</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">persistent</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="p">:</span> <span class="n">AsyncCaller</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_get_async_caller</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">TemporalAsyncCaller</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span> <span class="o">=</span> <span class="n">PersistentAsyncCaller</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span>
 
 <div class="viewcode-block" id="AsyncCallsQueue.schedule_async_request">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.schedule_async_request">[docs]</a>
@@ -307,18 +624,23 @@
 <span class="sd">                This can help the user keep track of the async calls.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span> <span class="o">+=</span> <span class="mi">1</span>
-        <span class="n">async_caller</span> <span class="o">=</span> <span class="n">DistributedAsyncCaller</span><span class="p">()</span>
+        <span class="n">async_caller</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_async_caller</span><span class="p">()</span>
+        <span class="c1"># Backward compatibility for local checkpointing built with the old AsyncRequest</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">async_request</span><span class="o">.</span><span class="n">_fields</span><span class="p">)</span> <span class="o">!=</span> <span class="nb">len</span><span class="p">(</span><span class="n">AsyncRequest</span><span class="o">.</span><span class="n">_fields</span><span class="p">):</span>
+            <span class="n">async_request</span> <span class="o">=</span> <span class="n">AsyncRequest</span><span class="p">(</span><span class="o">**</span><span class="n">async_request</span><span class="o">.</span><span class="n">_asdict</span><span class="p">())</span>
+
+        <span class="n">async_request</span> <span class="o">=</span> <span class="n">async_request</span><span class="o">.</span><span class="n">_replace</span><span class="p">(</span><span class="n">call_idx</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span><span class="p">)</span>
+        <span class="n">finalize_fns</span> <span class="o">=</span> <span class="n">async_request</span><span class="o">.</span><span class="n">finalize_fns</span>
+        <span class="n">async_request</span> <span class="o">=</span> <span class="n">async_request</span><span class="o">.</span><span class="n">_replace</span><span class="p">(</span><span class="n">finalize_fns</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
         <span class="n">async_request</span> <span class="o">=</span> <span class="n">async_request</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
-        <span class="n">async_caller</span><span class="o">.</span><span class="n">schedule_async_call</span><span class="p">(</span>
-            <span class="n">async_request</span><span class="o">.</span><span class="n">async_fn</span><span class="p">,</span> <span class="n">async_request</span><span class="o">.</span><span class="n">async_fn_args</span><span class="p">,</span> <span class="n">async_request</span><span class="o">.</span><span class="n">async_fn_kwargs</span>
-        <span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_ActiveAsyncRequest</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span><span class="p">,</span> <span class="n">async_caller</span><span class="p">,</span> <span class="n">async_request</span><span class="p">))</span>
+        <span class="n">async_caller</span><span class="o">.</span><span class="n">schedule_async_call</span><span class="p">(</span><span class="n">async_request</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_ActiveAsyncRequest</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span><span class="p">,</span> <span class="n">async_caller</span><span class="p">,</span> <span class="n">finalize_fns</span><span class="p">))</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span></div>
 
 
 <div class="viewcode-block" id="AsyncCallsQueue.maybe_finalize_async_calls">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">maybe_finalize_async_calls</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">maybe_finalize_async_calls</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Finalizes all available calls.</span>
 
 <span class="sd">        This method must be called on all ranks.</span>
@@ -327,9 +649,6 @@
 <span class="sd">            blocking (bool, optional): if True, will wait until all active requests</span>
 <span class="sd">                are done. Otherwise, finalizes only the async request that already</span>
 <span class="sd">                finished. Defaults to False.</span>
-<span class="sd">            no_dist (bool, Optional): if True, training ranks simply check its</span>
-<span class="sd">                asynchronous checkpoint writer without synchronization.</span>
-
 <span class="sd">        Returns:</span>
 <span class="sd">            List[int]: list of indices (as returned by `schedule_async_request`)</span>
 <span class="sd">                of async calls that have been successfully finalized.</span>
@@ -341,10 +660,18 @@
             <span class="p">)</span>
             <span class="k">if</span> <span class="ow">not</span> <span class="n">next_async_done</span><span class="p">:</span>
                 <span class="k">break</span>
-            <span class="n">call_idx</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">async_request</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="o">.</span><span class="n">popleft</span><span class="p">()</span>
-            <span class="k">for</span> <span class="n">finalize_fn</span> <span class="ow">in</span> <span class="n">async_request</span><span class="o">.</span><span class="n">finalize_fns</span><span class="p">:</span>
-                <span class="n">finalize_fn</span><span class="p">()</span>
-            <span class="n">call_idx_finalized</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">call_idx</span><span class="p">)</span>
+            <span class="k">with</span> <span class="n">debug_time</span><span class="p">(</span><span class="s2">&quot;finalize&quot;</span><span class="p">,</span> <span class="n">logger</span><span class="p">):</span>
+                <span class="n">call_idx</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">finalize_fns</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="o">.</span><span class="n">popleft</span><span class="p">()</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">no_dist</span><span class="p">:</span>
+                    <span class="n">ten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span>
+                        <span class="p">[</span><span class="n">call_idx</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">()</span>
+                    <span class="p">)</span>
+                    <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">ten</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
+                    <span class="k">assert</span> <span class="n">ten</span><span class="o">.</span><span class="n">item</span><span class="p">()</span> <span class="o">==</span> <span class="n">call_idx</span><span class="p">,</span> <span class="s1">&#39;Unmatched async calls. &#39;</span>
+                    <span class="s1">&#39;That probably means not all ranks are participating in async finalization&#39;</span>
+                <span class="k">for</span> <span class="n">finalize_fn</span> <span class="ow">in</span> <span class="n">finalize_fns</span><span class="p">:</span>
+                    <span class="n">finalize_fn</span><span class="p">()</span>
+                <span class="n">call_idx_finalized</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">call_idx</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">call_idx_finalized</span></div>
 
 
@@ -359,7 +686,9 @@
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.close">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Finalize all calls upon closing.&quot;&quot;&quot;</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span></div>
+        <span class="bp">self</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></div>
 </div>
 
 </pre></div>

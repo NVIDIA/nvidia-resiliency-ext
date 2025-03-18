@@ -23,7 +23,7 @@
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="Rank Filter" href="rank_filter.html" />
-    <link rel="prev" title="Compose" href="compose.html" /> 
+    <link rel="prev" title="State" href="state.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -53,12 +53,10 @@
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="wrap.html">Wrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="compose.html">Compose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="state.html">State</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Rank Assignment</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps"><code class="docutils literal notranslate"><span class="pre">FillGaps</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey"><code class="docutils literal notranslate"><span class="pre">FilterGroupedByKey</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="docutils literal notranslate"><span class="pre">RankAssignment</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded"><code class="docutils literal notranslate"><span class="pre">RankDiscarded</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks"><code class="docutils literal notranslate"><span class="pre">ShiftRanks</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id1">Rank Assignment</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#rank-filtering">Rank Filtering</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
@@ -103,8 +101,169 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="module-nvidia_resiliency_ext.inprocess.rank_assignment">
-<span id="rank-assignment"></span><h1>Rank Assignment<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.rank_assignment" title="Link to this heading"></a></h1>
+  <section id="rank-assignment">
+<h1>Rank Assignment<a class="headerlink" href="#rank-assignment" title="Link to this heading"></a></h1>
+<section id="id1">
+<h2>Rank Assignment<a class="headerlink" href="#id1" title="Link to this heading"></a></h2>
+<section id="base-class">
+<h3>Base class<a class="headerlink" href="#base-class" title="Link to this heading"></a></h3>
+</section>
+<section id="module-nvidia_resiliency_ext.inprocess.rank_assignment">
+<span id="tree"></span><h3>Tree<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.rank_assignment" title="Link to this heading"></a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.Layer">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">Layer</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">min_ranks</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_ranks</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">key_or_fn</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">''</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">flag</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#Layer"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Layer" title="Link to this definition"></a></dt>
+<dd><p>Represents a configuration for a layer of branches at a certain depth in
+a topology tree constructed by <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Tree" title="nvidia_resiliency_ext.inprocess.rank_assignment.Tree"><code class="xref py py-class docutils literal notranslate"><span class="pre">Tree</span></code></a>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>min_ranks</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – the minimum number of healthy ranks in a subtree</p></li>
+<li><p><strong>max_ranks</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em> | </em><em>None</em>) – the maximum number of ranks to activate in a subtree, no
+limit if <a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">None</span></code></a></p></li>
+<li><p><strong>key_or_fn</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference internal" href="state.html#nvidia_resiliency_ext.inprocess.State" title="nvidia_resiliency_ext.inprocess.state.State"><em>State</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>) – a string key, or a <code class="docutils literal notranslate"><span class="pre">Callable</span></code> evaluated with
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.State</span></code> as input to produce a grouping string
+key</p></li>
+<li><p><strong>flag</strong> (<a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag" title="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag"><em>LayerFlag</em></a><em> | </em><em>None</em>) – an optional flag that modifies rank assignment policy in a given
+branch</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">LayerFlag</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#LayerFlag"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag" title="Link to this definition"></a></dt>
+<dd><p>A flag to modify rank assignment or rank filtering policy in a given
+<a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Layer" title="nvidia_resiliency_ext.inprocess.rank_assignment.Layer"><code class="xref py py-class docutils literal notranslate"><span class="pre">Layer</span></code></a> of a <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Tree" title="nvidia_resiliency_ext.inprocess.rank_assignment.Tree"><code class="xref py py-class docutils literal notranslate"><span class="pre">Tree</span></code></a> rank assignment.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE">
+<span class="sig-name descname"><span class="pre">RESERVE</span></span><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE" title="Link to this definition"></a></dt>
+<dd><p>indicates that branches at this layer of the topology tree may
+be traversed while searching for a replacement inactive rank</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.BACKFILL">
+<span class="sig-name descname"><span class="pre">BACKFILL</span></span><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.BACKFILL" title="Link to this definition"></a></dt>
+<dd><p>indicates that branches at this layer of the topology tree
+may be traversed while searching for a replacement active rank</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.Tree">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">Tree</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">layers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">world_size_filter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#Tree"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Tree" title="Link to this definition"></a></dt>
+<dd><p>Implements an integrated rank assignment and activation algorithm that
+builds a multi-layer topology tree for distributed ranks. Each layer in
+this tree specifies constraints and policies for assigning and activating
+ranks. Grouping keys in each layer can align with hardware properties
+(e.g., to confine ranks within a compute node) or application-driven
+requirements (e.g., ensuring a particular divisibility).</p>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Tree" title="nvidia_resiliency_ext.inprocess.rank_assignment.Tree"><code class="xref py py-class docutils literal notranslate"><span class="pre">Tree</span></code></a> constructs a rooted topology tree whose depth equals the
+number of layers. Each layer corresponds to a <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Layer" title="nvidia_resiliency_ext.inprocess.rank_assignment.Layer"><code class="xref py py-class docutils literal notranslate"><span class="pre">Layer</span></code></a>,
+determining the rank assignment policy within its subtree. The distributed
+ranks are represented as leaves.</p>
+<p><strong>Algorithm</strong></p>
+<p><strong>Initialization</strong></p>
+<p>The algorithm traverses all ranks in depth-first order. For each visited
+rank, if all ancestor layers permit more active ranks (i.e., if the
+already-active ranks do not exceed any ancestor layer’s
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">Layer.max_ranks</span></code>), that rank is activated.</p>
+<p><strong>Rank reassignment</strong></p>
+<p>When some ranks terminate or become unhealthy, the algorithm proceeds in
+several steps:</p>
+<ol class="arabic simple">
+<li><p><strong>Propagate termination</strong></p></li>
+</ol>
+<p>Using a reverse depth-first search (children before parents), if the number
+of healthy ranks in a branch falls below <code class="xref py py-attr docutils literal notranslate"><span class="pre">Layer.min_ranks</span></code>, that
+entire branch (and its subtree) is terminated.</p>
+<ol class="arabic simple" start="2">
+<li><p><strong>Replace ranks from a reserve domain</strong></p></li>
+</ol>
+<p>The algorithm attempts to replace terminated or unhealthy active ranks with
+inactive ranks from the nearest ancestor subtree that has the
+<a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE" title="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">LayerFlag.RESERVE</span></code></a> flag. This search for an inactive rank
+continues recursively upward until a branch without the
+<a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE" title="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">LayerFlag.RESERVE</span></code></a> flag is reached.</p>
+<ol class="arabic simple" start="3">
+<li><p><strong>Backfill ranks</strong></p></li>
+</ol>
+<p>Within any ancestor subtree flagged as <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.BACKFILL" title="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.BACKFILL"><code class="xref py py-attr docutils literal notranslate"><span class="pre">LayerFlag.BACKFILL</span></code></a>, an
+active rank with the largest rank index swaps places with a terminated
+rank, effectively filling local gaps (similar to <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps" title="nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps"><code class="xref py py-class docutils literal notranslate"><span class="pre">FillGaps</span></code></a>).</p>
+<ol class="arabic simple" start="4">
+<li><p><strong>Shift ranks</strong></p></li>
+</ol>
+<p>After local backfills, remaining gaps from unhandled terminations are
+closed by shifting healthy ranks left to fill any vacated indices.
+This global step reassigns all rank indices past the first unhealthy
+rank (similar to <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks" title="nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShiftRanks</span></code></a>).</p>
+<ol class="arabic simple" start="5">
+<li><p><strong>Optional filter</strong></p></li>
+</ol>
+<p>If a <code class="docutils literal notranslate"><span class="pre">world_size_filter</span></code> callable is provided, it can reduce the
+active ranks to a smaller <code class="docutils literal notranslate"><span class="pre">world_size</span></code> necessary for the workload.
+<code class="docutils literal notranslate"><span class="pre">world_size_filter</span></code> is invoked with the current number of active ranks as
+an argument, and returns the adjusted number of requested active ranks, no
+greater than the input. Healthy ranks with indices greater than the value
+returned value are deactivated and become part of the reserve pool.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Tree" title="nvidia_resiliency_ext.inprocess.rank_assignment.Tree"><code class="xref py py-class docutils literal notranslate"><span class="pre">Tree</span></code></a> cannot be composed with any other instance of
+<code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code> or <code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code>.</p>
+</div>
+<p><strong>Example</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">Tree</span><span class="p">(</span>
+    <span class="p">[</span>
+        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">Layer</span><span class="p">(</span>
+            <span class="n">min_ranks</span><span class="o">=</span><span class="mi">128</span><span class="p">,</span>
+            <span class="n">max_ranks</span><span class="o">=</span><span class="mi">256</span><span class="p">,</span>
+            <span class="n">key_or_fn</span><span class="o">=</span><span class="s1">&#39;root&#39;</span><span class="p">,</span>
+            <span class="n">flag</span><span class="o">=</span><span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">LayerFlag</span><span class="o">.</span><span class="n">RESERVE</span><span class="p">,</span>
+        <span class="p">),</span>
+        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">Layer</span><span class="p">(</span>
+            <span class="n">min_ranks</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
+            <span class="n">max_ranks</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
+            <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span><span class="p">(),</span>
+            <span class="n">flag</span><span class="o">=</span><span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">LayerFlag</span><span class="o">.</span><span class="n">RESERVE</span><span class="p">,</span>
+        <span class="p">),</span>
+    <span class="p">]</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>In this two-level topology tree:</p>
+<ul class="simple">
+<li><p>The first layer (hostname-based) allows up to 8 active ranks per host
+(<code class="xref py py-attr docutils literal notranslate"><span class="pre">Layer.max_ranks=8</span></code>). If the number of healthy ranks in any
+host drops below 8 (<code class="xref py py-attr docutils literal notranslate"><span class="pre">Layer.min_ranks=8</span></code>), that entire host’s
+subtree is terminated. The algorithm can look for inactive reserve ranks
+within the same hostname because of the <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE" title="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">LayerFlag.RESERVE</span></code></a> flag.</p></li>
+<li><p>All hosts are grouped under the <code class="docutils literal notranslate"><span class="pre">'root'</span></code> layer, which permits up to 256
+active ranks (<code class="xref py py-attr docutils literal notranslate"><span class="pre">Layer.max_ranks=256</span></code>). If the global healthy
+rank count drops below 128 (<code class="xref py py-attr docutils literal notranslate"><span class="pre">Layer.min_ranks=128</span></code>), all ranks
+are terminated. The <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE" title="nvidia_resiliency_ext.inprocess.rank_assignment.LayerFlag.RESERVE"><code class="xref py py-attr docutils literal notranslate"><span class="pre">LayerFlag.RESERVE</span></code></a> flag at the <code class="docutils literal notranslate"><span class="pre">'root'</span></code>
+level lets the algorithm traverse upward from one host to another host
+through the <code class="docutils literal notranslate"><span class="pre">'root'</span></code> to search for reserve ranks.</p></li>
+</ul>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>layers</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.13)"><em>list</em></a><em>[</em><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Layer" title="nvidia_resiliency_ext.inprocess.rank_assignment.Layer"><em>Layer</em></a><em>]</em>) – a list of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.Layer" title="nvidia_resiliency_ext.inprocess.rank_assignment.Layer"><code class="xref py py-class docutils literal notranslate"><span class="pre">Layer</span></code></a> instances, each layer specifies
+properties corresponding to one grouping level in a topology tree</p></li>
+<li><p><strong>world_size_filter</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>] </em><em>| </em><em>None</em>) – an optional <code class="docutils literal notranslate"><span class="pre">Callable</span></code> that takes the final
+application-visible world size, and returns the new world size, no
+greater than the input</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+<section id="module-0">
+<span id="composable-rank-assignments"></span><h3>Composable Rank Assignments<a class="headerlink" href="#module-0" title="Link to this heading"></a></h3>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">FillGaps</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#FillGaps"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps" title="Link to this definition"></a></dt>
@@ -131,10 +290,10 @@ reassigned to fill in gaps left by unhealthy ranks.</p>
 </dd></dl>
 
 <dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">FilterGroupedByKey</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">key_or_fn</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">condition</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">datetime.timedelta(seconds=60)</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#FilterGroupedByKey"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey" title="Link to this definition"></a></dt>
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.FilterCountGroupedByKey">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">FilterCountGroupedByKey</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">key_or_fn</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">condition</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">datetime.timedelta(seconds=60)</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#FilterCountGroupedByKey"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterCountGroupedByKey" title="Link to this definition"></a></dt>
 <dd><p>A class for filtering distributed ranks by grouping by a key.</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey" title="nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey"><code class="xref py py-class docutils literal notranslate"><span class="pre">FilterGroupedByKey</span></code></a> organizes ranks into groups based on a
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterCountGroupedByKey" title="nvidia_resiliency_ext.inprocess.rank_assignment.FilterCountGroupedByKey"><code class="xref py py-class docutils literal notranslate"><span class="pre">FilterCountGroupedByKey</span></code></a> organizes ranks into groups based on a
 specified string key. For each group, it increments a group counter by 1
 for every healthy rank. A given boolean <code class="docutils literal notranslate"><span class="pre">condition</span></code> is then evaluated for
 each rank, with the corresponding group counter passed as input.</p>
@@ -144,9 +303,9 @@ preserved.</p></li>
 <li><p>If it evaluates to <code class="docutils literal notranslate"><span class="pre">False</span></code>, the rank is considered unhealthy and marked
 for termination.</p></li>
 </ul>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey" title="nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey"><code class="xref py py-class docutils literal notranslate"><span class="pre">FilterGroupedByKey</span></code></a> needs to be followed by another
-<a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> that performs the actual rank termination by
-raising <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded"><code class="xref py py-exc docutils literal notranslate"><span class="pre">RankDiscarded</span></code></a> exception.</p>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.FilterCountGroupedByKey" title="nvidia_resiliency_ext.inprocess.rank_assignment.FilterCountGroupedByKey"><code class="xref py py-class docutils literal notranslate"><span class="pre">FilterCountGroupedByKey</span></code></a> needs to be followed by another
+<code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code> that performs the actual rank termination by
+raising <code class="xref py py-exc docutils literal notranslate"><span class="pre">RankDiscarded</span></code> exception.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">condition</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">count</span><span class="p">:</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">2</span>
 
 <span class="o">+---+---+---+---+---+---+---+---+</span>     <span class="o">+---+---+---+---+---+---+---+---+</span>
@@ -167,8 +326,8 @@ raising <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.ran
 <span class="n">rank_assignment</span> <span class="o">=</span> <span class="p">(</span>
     <span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
         <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ShiftRanks</span><span class="p">(),</span>
-        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">FilterGroupedByKey</span><span class="p">(</span>
-            <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span><span class="p">(),</span>
+        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">FilterCountGroupedByKey</span><span class="p">(</span>
+            <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span><span class="p">(),</span>
             <span class="n">condition</span><span class="o">=</span><span class="k">lambda</span> <span class="n">count</span><span class="p">:</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">8</span><span class="p">,</span>
         <span class="p">),</span>
     <span class="p">),</span>
@@ -178,33 +337,15 @@ raising <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.ran
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>key_or_fn</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>) – a string key, or a <code class="docutils literal notranslate"><span class="pre">Callable</span></code> evaluated with <code class="docutils literal notranslate"><span class="pre">(rank,</span>
-<span class="pre">world_size)</span></code> as the input to produce a string key</p></li>
+<li><p><strong>key_or_fn</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference internal" href="state.html#nvidia_resiliency_ext.inprocess.State" title="nvidia_resiliency_ext.inprocess.state.State"><em>State</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>) – a string key, or a <code class="docutils literal notranslate"><span class="pre">Callable</span></code> evaluated with
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.state.State</span></code> as the input to produce a string
+key</p></li>
 <li><p><strong>condition</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>]</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>]</em>) – condition to be evaluated with group counter as the input,
 if <code class="docutils literal notranslate"><span class="pre">False</span></code> the rank is terminated</p></li>
 <li><p><strong>timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – timeout for distributed barrier</p></li>
 </ul>
 </dd>
 </dl>
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">RankAssignment</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#RankAssignment"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="Link to this definition"></a></dt>
-<dd><p>Abstract base class for <code class="docutils literal notranslate"><span class="pre">rank_assignment</span></code> argument for
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> is responsible for reassigning distributed ranks
-and computing the new world size for the next iteration of the wrapped
-function.</p>
-<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> could be composed with
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
-</dd></dl>
-
-<dl class="py exception">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded">
-<em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">RankDiscarded</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#RankDiscarded"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded" title="Link to this definition"></a></dt>
-<dd><p>Exception raised when unhealthy distributed rank is discarded by
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.rank_assignment.RankAssignment</span></code>.</p>
 </dd></dl>
 
 <dl class="py class">
@@ -235,12 +376,63 @@ rank are reassigned (shifted).</p>
 </dd></dl>
 
 </section>
+</section>
+<section id="rank-filtering">
+<h2>Rank Filtering<a class="headerlink" href="#rank-filtering" title="Link to this heading"></a></h2>
+<section id="id2">
+<h3>Base class<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+</section>
+<section id="module-1">
+<span id="rank-filters"></span><h3>Rank Filters<a class="headerlink" href="#module-1" title="Link to this heading"></a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.ActivateAllRanks">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">ActivateAllRanks</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#ActivateAllRanks"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ActivateAllRanks" title="Link to this definition"></a></dt>
+<dd><p>Activates all distributed ranks.</p>
+<p>All healthy distributed ranks will call the provided wrapped function in
+the next iteration of <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ActivateAllRanks" title="nvidia_resiliency_ext.inprocess.rank_assignment.ActivateAllRanks"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActivateAllRanks</span></code></a> unconditionally activates all ranks, and
+cannot be combined with any other <code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code> performing
+rank activation.</p>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.ActiveWorldSizeDivisibleBy">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">ActiveWorldSizeDivisibleBy</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">divisor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#ActiveWorldSizeDivisibleBy"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ActiveWorldSizeDivisibleBy" title="Link to this definition"></a></dt>
+<dd><p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.ActiveWorldSizeDivisibleBy" title="nvidia_resiliency_ext.inprocess.rank_assignment.ActiveWorldSizeDivisibleBy"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActiveWorldSizeDivisibleBy</span></code></a> ensures that the active world size
+is divisible by a given number. Ranks within the adjusted world size are
+marked as active and are calling the wrapped function, while ranks outside
+this range are marked as inactive.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>divisor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – the divisor to adjust the active world size by</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_assignment.MaxActiveWorldSize">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">MaxActiveWorldSize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">max_active_world_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#MaxActiveWorldSize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_assignment.MaxActiveWorldSize" title="Link to this definition"></a></dt>
+<dd><p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_assignment.MaxActiveWorldSize" title="nvidia_resiliency_ext.inprocess.rank_assignment.MaxActiveWorldSize"><code class="xref py py-class docutils literal notranslate"><span class="pre">MaxActiveWorldSize</span></code></a> ensures that the active world size is no
+greater than the specified <code class="docutils literal notranslate"><span class="pre">max_active_world_size</span></code>. Ranks with indices
+less than the active world size are active and calling the wrapped
+function, while ranks outside this range are inactive.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>max_active_world_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em> | </em><em>None</em>) – maximum active world size, no limit if
+<a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">None</span></code></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+</section>
+</section>
 
 
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="compose.html" class="btn btn-neutral float-left" title="Compose" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="state.html" class="btn btn-neutral float-left" title="State" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
         <a href="rank_filter.html" class="btn btn-neutral float-right" title="Rank Filter" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 

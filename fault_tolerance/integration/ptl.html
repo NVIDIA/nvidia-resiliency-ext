@@ -1,0 +1,201 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PyTorch Lightning Integration &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="FT Launcher &amp; Inprocess integration" href="inprocess.html" />
+    <link rel="prev" title="Sections API Integration" href="sections.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../integration.html">Integration Guides</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="heartbeats.html">Heartbeats API Integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="sections.html">Sections API Integration</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">PyTorch Lightning Integration</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#use-ft-launcher-to-start-the-workload">1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#add-the-ft-callback-to-the-ptl-trainer">2. Add the FT callback to the PTL trainer</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#implementing-auto-resume">3. Implementing auto-resume</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess.html">FT Launcher &amp; Inprocess integration</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
+          <li class="breadcrumb-item"><a href="../integration.html">Integration Guides</a></li>
+      <li class="breadcrumb-item active">PyTorch Lightning Integration</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/fault_tolerance/integration/ptl.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="pytorch-lightning-integration">
+<h1>PyTorch Lightning Integration<a class="headerlink" href="#pytorch-lightning-integration" title="Link to this heading"></a></h1>
+<p>This section describes Fault Tolerance integration with a PTL-based workload (i.e., NeMo) using <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code>.</p>
+<section id="use-ft-launcher-to-start-the-workload">
+<h2>1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload<a class="headerlink" href="#use-ft-launcher-to-start-the-workload" title="Link to this heading"></a></h2>
+<p>Fault tolerance relies on a special launcher (<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>), which is a modified <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.
+If you are using NeMo, the <a class="reference external" href="https://github.com/NVIDIA/NeMo-Framework-Launcher">NeMo-Framework-Launcher</a> can be used to generate SLURM batch scripts with FT support.</p>
+</section>
+<section id="add-the-ft-callback-to-the-ptl-trainer">
+<h2>2. Add the FT callback to the PTL trainer<a class="headerlink" href="#add-the-ft-callback-to-the-ptl-trainer" title="Link to this heading"></a></h2>
+<p>Add the FT callback to the PTL callbacks.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.ptl_resiliency</span><span class="w"> </span><span class="kn">import</span> <span class="n">FaultToleranceCallback</span>
+
+<span class="n">fault_tol_cb</span> <span class="o">=</span> <span class="n">FaultToleranceCallback</span><span class="p">(</span>
+   <span class="n">autoresume</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+   <span class="n">calculate_timeouts</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+   <span class="n">logger_name</span><span class="o">=</span><span class="s2">&quot;test_logger&quot;</span><span class="p">,</span>
+   <span class="n">exp_dir</span><span class="o">=</span><span class="n">tmp_path</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">trainer</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">Trainer</span><span class="p">(</span>
+   <span class="o">...</span>
+   <span class="n">callbacks</span><span class="o">=</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">fault_tol_cb</span><span class="p">],</span>
+   <span class="n">resume_from_checkpoint</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<dl class="simple">
+<dt>Core FT callback functionality includes:</dt><dd><ul class="simple">
+<li><p>Establishing a connection with a rank monitor.</p></li>
+<li><p>Sending heartbeats during training and evaluation steps.</p></li>
+<li><p>Disconnecting from a rank monitor.</p></li>
+</ul>
+</dd>
+<dt>Optionally, it can also:</dt><dd><ul class="simple">
+<li><p>Compute timeouts that will be used instead of timeouts defined in the FT config.</p></li>
+<li><p>Create a flag file when the training is completed.</p></li>
+</ul>
+</dd>
+</dl>
+<p>FT callback initialization parameters are described in the <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> constructor docstring:
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback</span></code></p>
+</section>
+<section id="implementing-auto-resume">
+<h2>3. Implementing auto-resume<a class="headerlink" href="#implementing-auto-resume" title="Link to this heading"></a></h2>
+<p>Auto-resume simplifies running training jobs that consist of multiple sequential runs.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Auto-resume is not part of the FT package. It is entirely implemented in a launcher script and the <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code>.</p>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> exposes an “interface” that allows implementing an auto-resume launcher script. Specifically, if <code class="docutils literal notranslate"><span class="pre">autoresume=True</span></code>,
+the FT callback creates a special marker file when training is completed. The marker file location is expected to be set in the <code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> environment variable.</p>
+<dl>
+<dt>The following steps can be used to implement an auto-resume launcher script:</dt><dd><ul>
+<li><p>The launcher script starts ranks with <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> should be passed to rank processes.</p></li>
+<li><p>When <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> exits, the launcher script checks if the <code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> file was created.</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>If <code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> exists, the auto-resume loop stops, as training is complete.</p></li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> does not exist, the continuation job can be issued (other conditions can be checked, e.g., if the maximum number of failures is not reached).</p></li>
+</ul>
+</div></blockquote>
+</li>
+</ul>
+</dd>
+</dl>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="sections.html" class="btn btn-neutral float-left" title="Sections API Integration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="inprocess.html" class="btn btn-neutral float-right" title="FT Launcher &amp; Inprocess integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

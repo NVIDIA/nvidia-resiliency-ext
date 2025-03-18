@@ -53,12 +53,12 @@
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="wrap.html">Wrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="compose.html">Compose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="state.html">State</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="initialize.html">Initialize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="abort.html">Abort</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Finalize</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="docutils literal notranslate"><span class="pre">Finalize</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.finalize.ThreadedFinalize"><code class="docutils literal notranslate"><span class="pre">ThreadedFinalize</span></code></a></li>
 </ul>
 </li>
@@ -102,27 +102,6 @@
              
   <section id="module-nvidia_resiliency_ext.inprocess.finalize">
 <span id="finalize"></span><h1>Finalize<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.finalize" title="Link to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.finalize.Finalize">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.finalize.</span></span><span class="sig-name descname"><span class="pre">Finalize</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/finalize.html#Finalize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.finalize.Finalize" title="Link to this definition"></a></dt>
-<dd><p>Abstract base class for <code class="docutils literal notranslate"><span class="pre">finalize</span></code> argument for
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.finalize.Finalize" title="nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code></a> brings the process into a state where a restart of the
-wrapped function may be attempted, e.g.: deinitialize any global variables
-or synchronize with any asynchronous tasks issued by the wrapped function
-that was not already performed by exception handlers in the wrapped
-function.</p>
-<p>Any failure during execution of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.finalize.Finalize" title="nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code></a> should raise an
-exception. In this case the health check is skipped, exception is reraised
-by the wrapper, and it should cause termination of the main Python
-interpreter process.</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.finalize.Finalize" title="nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code></a> class is executed after a fault was detected,
-distributed group was destroyed, but before the
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.health_check.HealthCheck</span></code> is performed.</p>
-<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.finalize.Finalize" title="nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code></a> could be composed with
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
-</dd></dl>
-
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.finalize.ThreadedFinalize">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.finalize.</span></span><span class="sig-name descname"><span class="pre">ThreadedFinalize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fn</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">args</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kwargs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/finalize.html#ThreadedFinalize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.finalize.ThreadedFinalize" title="Link to this definition"></a></dt>

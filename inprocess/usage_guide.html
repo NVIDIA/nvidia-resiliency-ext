@@ -59,8 +59,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#functionality-overview">Functionality overview</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#implementation-overview">Implementation overview</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#distributed-execution-behavior">Distributed execution behavior</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#rank-assignment">Rank assignment</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#rank-filter">Rank filter</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#rank-assignment-and-filtering">Rank assignment and filtering</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#initialize">Initialize</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#wrapped-function-termination-mechanism">Wrapped function termination mechanism</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#progress-timeout">Progress timeout</a></li>
@@ -119,9 +118,10 @@ outlines the requirements, features, and limitations of the in-process restart
 functionality provided by the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>.</p>
 <section id="requirements">
 <h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading"></a></h2>
-<p>In-process restart functionality requires <a class="reference external" href="https://pypi.org/project/torch/">PyPI PyTorch</a> v2.5.1 or <a class="reference external" href="https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch">PyTorch NGC Container</a> versions
-24.07 through 24.10. For further limitations and compatibility details, refer
-to the <a class="reference internal" href="#known-issues"><span class="std std-ref">Known issues</span></a> section.</p>
+<p>In-process restart functionality requires <a class="reference external" href="https://pypi.org/project/torch/">PyPI PyTorch</a> v2.5.1 through v2.6.0 or <a class="reference external" href="https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch">PyTorch NGC
+Container</a>
+versions 24.07 through 24.10. For further limitations and compatibility
+details, refer to the <a class="reference internal" href="#known-issues"><span class="std std-ref">Known issues</span></a> section.</p>
 <section id="requirements-for-the-wrapped-function">
 <h3>Requirements for the wrapped function<a class="headerlink" href="#requirements-for-the-wrapped-function" title="Link to this heading"></a></h3>
 <ul>
@@ -198,7 +198,7 @@ a distributed store by subclassing from
 they hang, except for NCCL collectives or functions waiting on them; NCCL
 collectives are asynchronously aborted by a separate monitoring thread that
 calls <a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code></a>; users can specify
-additional <a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code></a> subclasses to asynchronously
+additional <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code> subclasses to asynchronously
 abort blocking calls from other software components.</p></li>
 </ul>
 </section>
@@ -213,10 +213,9 @@ purposes only and may omit certain implementation details.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">distributed_store</span> <span class="o">=</span> <span class="n">store_factory</span><span class="p">(</span><span class="o">**</span><span class="n">store_kwargs</span><span class="p">)</span>
 <span class="n">initial_barrier</span><span class="p">()</span>
 <span class="n">rank_assignment</span><span class="p">()</span>
-<span class="n">rank_filter</span><span class="p">()</span>
+<span class="n">rank_filter</span><span class="p">()</span>  <span class="c1"># deprecated</span>
 
 <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
-    <span class="n">iteration_barrier</span><span class="p">()</span>
     <span class="n">initialize</span><span class="p">()</span>
     <span class="n">health_check</span><span class="p">()</span>
     <span class="k">try</span><span class="p">:</span>
@@ -229,11 +228,13 @@ purposes only and may omit certain implementation details.</p>
         <span class="n">abort</span><span class="p">()</span>
         <span class="n">finalize</span><span class="p">()</span>
         <span class="n">health_check</span><span class="p">()</span>
-        <span class="n">termination_barrier</span><span class="p">()</span>
+        <span class="n">iteration_barrier</span><span class="p">()</span>
         <span class="n">rank_assignment</span><span class="p">()</span>
-        <span class="n">rank_filter</span><span class="p">()</span>
+        <span class="n">rank_filter</span><span class="p">()</span>  <span class="c1"># deprecated</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="k">break</span>
+
+<span class="n">termination_barrier</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>
@@ -251,30 +252,33 @@ any rank fails to synchronize within the <code class="docutils literal notransla
 as a rank failure, triggering a restart of the wrapped function on all
 distributed ranks.</p>
 <p>The restart <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> incorporates additional distributed barriers to
-ensure proper synchronization: <code class="docutils literal notranslate"><span class="pre">iteration_barrier</span></code> (executed at the start of
-each restart iteration), and <code class="docutils literal notranslate"><span class="pre">termination_barrier</span></code> (executed before rank
-reassignment and filtering). These barriers are designed to be transparent to
-the user, requiring no modifications to the wrapped function or assumptions
+ensure proper synchronization: <code class="docutils literal notranslate"><span class="pre">iteration_barrier</span></code> (executed before rank
+reassignment and filtering), and <code class="docutils literal notranslate"><span class="pre">termination_barrier</span></code> (executed before
+exiting from the wrapped scope). These barriers are designed to be transparent
+to the user, requiring no modifications to the wrapped function or assumptions
 about the execution environment. They operate seamlessly to maintain
 distributed consistency and coordination.</p>
 </section>
+<section id="rank-assignment-and-filtering">
+<h3>Rank assignment and filtering<a class="headerlink" href="#rank-assignment-and-filtering" title="Link to this heading"></a></h3>
 <section id="rank-assignment">
-<h3>Rank assignment<a class="headerlink" href="#rank-assignment" title="Link to this heading"></a></h3>
+<h4>Rank assignment<a class="headerlink" href="#rank-assignment" title="Link to this heading"></a></h4>
 <p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> needs to ensure that the wrapped function is restarted
 with a consecutive sequence of integer rank indices, from <code class="docutils literal notranslate"><span class="pre">0</span></code> to
 <code class="docutils literal notranslate"><span class="pre">WORLD_SIZE</span> <span class="pre">-</span> <span class="pre">1</span></code>, as some of the ranks from previous iteration may have been
 terminated or are in an unhealthy state. Rank reassignment and new world size
 computation is performed by
-<a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code></a> instance passed as
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code> instance passed as
 <code class="docutils literal notranslate"><span class="pre">rank_assignment</span></code> argument to the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>.</p>
 <p>Multiple RankAssignments could be composed with <a class="reference internal" href="api/compose.html#nvidia_resiliency_ext.inprocess.Compose" title="nvidia_resiliency_ext.inprocess.Compose"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code></a>
 to achieve the desired behavior.</p>
 <p>For example:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank_assignment</span> <span class="o">=</span> <span class="p">(</span>
     <span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
+        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ActivateAllRanks</span><span class="p">(),</span>
         <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ShiftRanks</span><span class="p">(),</span>
-        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">FilterGroupedByKey</span><span class="p">(</span>
-            <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">rank</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="n">rank</span> <span class="o">//</span> <span class="mi">8</span><span class="p">,</span>
+        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">FilterCountGroupedByKey</span><span class="p">(</span>
+            <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">state</span><span class="p">:</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span> <span class="o">//</span> <span class="mi">8</span><span class="p">,</span>
             <span class="n">condition</span><span class="o">=</span><span class="k">lambda</span> <span class="n">count</span><span class="p">:</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">8</span><span class="p">,</span>
         <span class="p">),</span>
     <span class="p">),</span>
@@ -287,32 +291,43 @@ terminated, the entire group is terminated. The remaining healthy ranks are
 then reassigned by shifting left to close any gaps, forming a new sequence
 of consecutive integers from <code class="docutils literal notranslate"><span class="pre">0</span></code> up to the updated <code class="docutils literal notranslate"><span class="pre">world</span> <span class="pre">size</span></code>.</p>
 </section>
-<section id="rank-filter">
-<h3>Rank filter<a class="headerlink" href="#rank-filter" title="Link to this heading"></a></h3>
-<p>By default, all active ranks are calling the wrapped function. This behavior
-can be customized by providing a <a class="reference internal" href="api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter" title="nvidia_resiliency_ext.inprocess.rank_filter.RankFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_filter.RankFilter</span></code></a>
-instance as <code class="docutils literal notranslate"><span class="pre">rank_filter</span></code> argument for the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>.
-<code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code> selects which ranks are active in the current restart
-iteration. Active ranks call the wrapped function. Inactive ranks are waiting
-idle, and could serve as a static, preallocated and preinitialized pool of
-spare ranks. Spare ranks would be activated in a subsequent restart iteration
-if previously active ranks were terminated or became unhealthy.</p>
-<p>Multiple rank filters could be composed with <a class="reference internal" href="api/compose.html#nvidia_resiliency_ext.inprocess.Compose" title="nvidia_resiliency_ext.inprocess.Compose"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code></a> to
-achieve the desired behavior. For example:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank_filter</span><span class="o">=</span><span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
-    <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_filter</span><span class="o">.</span><span class="n">WorldSizeDivisibleBy</span><span class="p">(</span><span class="n">M</span><span class="p">),</span>
-    <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_filter</span><span class="o">.</span><span class="n">MaxActiveWorldSize</span><span class="p">(</span><span class="n">N</span><span class="p">),</span>
+<section id="rank-filtering">
+<h4>Rank filtering<a class="headerlink" href="#rank-filtering" title="Link to this heading"></a></h4>
+<p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> categorizes distributed ranks into two groups:</p>
+<ol class="arabic simple">
+<li><p>active ranks, which are calling the wrapped function</p></li>
+<li><p>inactive ranks, which are waiting idle, and could serve as a static,
+preallocated and preinitialized pool of reserve ranks; reserve ranks would
+be activated in a subsequent restart iteration if previously active ranks
+were terminated or became unhealthy</p></li>
+</ol>
+<p>Rank filtering is a process of selecting active and inactive ranks within a
+given restart iteration, and is performed by
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code> instance passed as
+<code class="docutils literal notranslate"><span class="pre">rank_assignment</span></code> argument to the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>.</p>
+<p>Multiple <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter</span></code> or
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code> instances can be composed
+using <a class="reference internal" href="api/compose.html#nvidia_resiliency_ext.inprocess.Compose" title="nvidia_resiliency_ext.inprocess.Compose"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code></a> to achieve the desired behavior. Typically,
+all <code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code> instances should follow any
+<code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code> steps that recalculate rank indices or adjust the
+world size. For example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank_assignment</span><span class="o">=</span><span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ActiveWorldSizeDivisibleBy</span><span class="p">(</span><span class="n">M</span><span class="p">),</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">MaxActiveWorldSize</span><span class="p">(</span><span class="n">N</span><span class="p">),</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ShiftRanks</span><span class="p">(),</span>
 <span class="p">),</span>
 </pre></div>
 </div>
-<p>ensures that the active world size visible to the wrapped function is the
-largest multiple of <code class="docutils literal notranslate"><span class="pre">M</span></code> that is not greater than <code class="docutils literal notranslate"><span class="pre">N</span></code>. The remaining ranks
-would be inactive and serve as spares.</p>
+<p>shifts all healthy ranks to the left to fill gaps created by terminated ranks,
+and then ensures that the active world size visible to the wrapped function is
+the largest multiple of <code class="docutils literal notranslate"><span class="pre">M</span></code> that is not greater than <code class="docutils literal notranslate"><span class="pre">N</span></code>. The remaining
+healthy ranks would be inactive and serve as a reserve.</p>
+</section>
 </section>
 <section id="initialize">
 <h3>Initialize<a class="headerlink" href="#initialize" title="Link to this heading"></a></h3>
 <p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> accepts an optional, user-provided
-<a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.Initialize</span></code></a> class, which is executed at the
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.Initialize</span></code> class, which is executed at the
 start of every restart iteration, including the first one.
 <code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code> can raise exceptions (e.g., if specific preconditions
 are not met). Raising a standard Python <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a> triggers another
@@ -332,7 +347,7 @@ waiting period, the <code class="xref py py-class docutils literal notranslate">
 procedure across all ranks to ensure a consistent recovery process:</p>
 <ul class="simple">
 <li><p>the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> calls an instance of
-<a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code></a> from a separate Python thread; by default,
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code> from a separate Python thread; by default,
 this operation is equivalent to calling
 <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.destroy_process_group()</span></code>,</p></li>
 <li><p>next the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> raises asynchronous Python exception within the
@@ -433,7 +448,7 @@ didn’t record a heartbeat in the specified time interval.</p>
 <section id="finalize">
 <h3>Finalize<a class="headerlink" href="#finalize" title="Link to this heading"></a></h3>
 <p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> accepts optional, user-provided
-<a class="reference internal" href="api/finalize.html#nvidia_resiliency_ext.inprocess.finalize.Finalize" title="nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.finalize.Finalize</span></code></a> class. <code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code> class is
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.finalize.Finalize</span></code> class. <code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code> class is
 executed after a fault was detected, distributed group was destroyed, but
 before the <code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code> is performed. <code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code> should
 bring the process into a state where a restart of the wrapped function may be
@@ -448,7 +463,7 @@ should cause termination of the main Python interpreter process.</p>
 <section id="health-check">
 <h3>Health check<a class="headerlink" href="#health-check" title="Link to this heading"></a></h3>
 <p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> calls optional, user-provided
-<a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.HealthCheck</span></code></a> class before the restart to
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.HealthCheck</span></code> class before the restart to
 ensure that the worker is in a healthy state. <code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code> is
 executed after the wrapped function failure was discovered (on local or remote
 distributed rank), local distributed group was destroyed, and the optional
@@ -475,7 +490,7 @@ fault.</p>
 tasked with periodically checking the distributed store for any faults reported
 by other distributed ranks. It also ensures that the local rank is
 <a class="reference internal" href="#reporting-progress"><span class="std std-ref">reporting progress</span></a>. If a fault or a lack of
-progress is detected, it triggers <a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code></a> and raises
+progress is detected, it triggers <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code> and raises
 asynchronous Python exception within the wrapped function.</p>
 <p>The execution interval of the monitoring loop is governed by the
 <code class="docutils literal notranslate"><span class="pre">monitor_thread_interval</span></code> parameter of the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>. During each
@@ -561,32 +576,24 @@ application raises a Python exception on any distributed rank.</p>
 <td><p>~0.5s + 0.01s * num pending NCCL kernels</p></td>
 </tr>
 <tr class="row-odd"><td><p>CUDA/user</p></td>
-<td><p>drain all pending CUDA kernels</p></td>
+<td><p>complete pending CUDA kernels</p></td>
 <td><p>~training iteration</p></td>
 </tr>
 <tr class="row-even"><td><p>Wrapper</p></td>
-<td><p>query TCPStore for any faults</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">monitor_thread_interval</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p>Wrapper</p></td>
 <td><p>wait for concurrent faults on other ranks</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">last_call_wait</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>Wrapper</p></td>
+<tr class="row-odd"><td><p>Wrapper</p></td>
 <td><p>execute <code class="docutils literal notranslate"><span class="pre">rank_assignment</span></code></p></td>
 <td><p>~0.5s</p></td>
 </tr>
-<tr class="row-odd"><td><p>Wrapper</p></td>
-<td><p>3x TCPStore-based barrier</p></td>
+<tr class="row-even"><td><p>Wrapper</p></td>
+<td><p>TCPStore-based barrier</p></td>
 <td><p>0.5s &#64; 16k ranks</p></td>
 </tr>
-<tr class="row-even"><td><p>Wrapper</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">(H)</span></code> detect GIL-holding hang</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">hard_timeout</span></code> + <code class="docutils literal notranslate"><span class="pre">monitor_process_interval</span></code> + <code class="docutils literal notranslate"><span class="pre">termination_grace_time</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p>Wrapper</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">(H)</span></code> detect GIL-released hang</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">soft_timeout</span></code> + <code class="docutils literal notranslate"><span class="pre">monitor_thread_interval</span></code></p></td>
+<tr class="row-odd"><td><p>user</p></td>
+<td><p>execute user-provided <code class="docutils literal notranslate"><span class="pre">initialize</span></code></p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-even"><td><p>user</p></td>
 <td><p>execute user-provided <code class="docutils literal notranslate"><span class="pre">finalize</span></code></p></td>
@@ -596,11 +603,21 @@ application raises a Python exception on any distributed rank.</p>
 <td><p>execute user-provided <code class="docutils literal notranslate"><span class="pre">health_check</span></code></p></td>
 <td><p>N/A</p></td>
 </tr>
+<tr class="row-even"><td><p>Wrapper</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(H)</span></code> detect GIL-released hang</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">soft_timeout</span></code> + <code class="docutils literal notranslate"><span class="pre">monitor_process_interval</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Wrapper</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(H)</span></code> detect GIL-holding hang</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">hard_timeout</span></code> + <code class="docutils literal notranslate"><span class="pre">monitor_process_interval</span></code> + <code class="docutils literal notranslate"><span class="pre">termination_grace_time</span></code></p></td>
+</tr>
 </tbody>
 </table>
 <p>The latency for executing <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.destroy_process_group()</span></code>
 assumes that NCCL collective kernel termination interval was optimized. See
-<a class="reference internal" href="#known-issues"><span class="std std-ref">Known issues</span></a> for more details.</p>
+<a class="reference internal" href="#known-issues"><span class="std std-ref">Known issues</span></a> for more details. The latency for completing
+all pending CUDA kernels assumes that the training loop performs
+synchronization with the GPU at least once per training iteration.</p>
 </section>
 <section id="known-issues">
 <span id="id4"></span><h2>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading"></a></h2>
@@ -644,6 +661,13 @@ termination of the worker process prevents <a class="reference internal" href="a
 from restarting the wrapper function. A workaround is to set
 <code class="docutils literal notranslate"><span class="pre">TORCH_NCCL_RETHROW_CUDA_ERRORS</span></code> environment variable to <code class="docutils literal notranslate"><span class="pre">0</span></code>, to avoid
 rethrowing CUDA and NCCL errors in PyTorch NCCL Watchdog.</p></li>
+<li><p>The <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> class uses
+<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.Store.wait" title="(in PyTorch v2.6)"><code class="xref py py-meth docutils literal notranslate"><span class="pre">torch.distributed.Store.wait()</span></code></a> to detect events in the distributed
+key-value store within its monitoring loops. Because these loops often
+advance to the next iteration after an expected timeout, PyTorch emits a
+warning every time <code class="xref py py-meth docutils literal notranslate"><span class="pre">wait()</span></code> times out, cluttering the output. To
+suppress these warnings, set the <code class="docutils literal notranslate"><span class="pre">TORCH_CPP_LOG_LEVEL</span></code> environment
+variable to <code class="docutils literal notranslate"><span class="pre">error</span></code> or <code class="docutils literal notranslate"><span class="pre">fatal</span></code> before importing <code class="docutils literal notranslate"><span class="pre">torch</span></code>.</p></li>
 </ol>
 </section>
 </section>

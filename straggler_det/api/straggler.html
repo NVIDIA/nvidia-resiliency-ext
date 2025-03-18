@@ -366,17 +366,17 @@ for wrapping profiled callables.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.straggler.Detector.wrap_callables">
 <em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">wrap_callables</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">callable_ids</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">profile_cuda</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/straggler.html#Detector.wrap_callables"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.straggler.Detector.wrap_callables" title="Link to this definition"></a></dt>
-<dd><p>Each time fn (fn = getattr(callable_id.obj, callable_id.name)) is
-called, it will do the following:
-with straggler.Detector.detection_section(str(callable_id)):</p>
-<blockquote>
-<div><p>fn(<a href="#id1"><span class="problematic" id="id2">*</span></a>args,**kwargs)</p>
-</div></blockquote>
+<dd><p>Each time <cite>fn</cite> (where <cite>fn = getattr(callable_id.obj, callable_id.name)</cite>) is called, the following will occur:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">detection_section</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">callable_id</span><span class="p">)):</span>
+    <span class="n">fn</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+</pre></div>
+</div>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>callable_ids</strong> (<em>List</em><em>[</em><a class="reference internal" href="#nvidia_resiliency_ext.straggler.straggler.CallableId" title="nvidia_resiliency_ext.straggler.straggler.CallableId"><em>CallableId</em></a><em>]</em>) – list of callables to wrap with detection context</p></li>
-<li><p><strong>profile_cuda</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – If true, CUDA kernels launched under this section will be captured and used to compute rank “GPU performance score”. Defaults to True.</p></li>
+<li><p><strong>callable_ids</strong> (<em>List</em><em>[</em><a class="reference internal" href="#nvidia_resiliency_ext.straggler.straggler.CallableId" title="nvidia_resiliency_ext.straggler.straggler.CallableId"><em>CallableId</em></a><em>]</em>) – A list of callables to wrap with the detection context.</p></li>
+<li><p><strong>profile_cuda</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – If <cite>True</cite>, CUDA kernels launched under this section will be captured
+and used to compute the rank’s “GPU performance score”. Defaults to <cite>True</cite>.</p></li>
 </ul>
 </dd>
 </dl>

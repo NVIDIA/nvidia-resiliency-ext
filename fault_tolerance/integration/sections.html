@@ -1,0 +1,193 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sections API Integration &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="PyTorch Lightning Integration" href="ptl.html" />
+    <link rel="prev" title="Heartbeats API Integration" href="heartbeats.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../integration.html">Integration Guides</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="heartbeats.html">Heartbeats API Integration</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Sections API Integration</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#prerequisites">1. Prerequisites</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#ft-configuration">2. FT configuration</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#integration-with-pytorch-workload-code">3. Integration with PyTorch workload code</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="ptl.html">PyTorch Lightning Integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="inprocess.html">FT Launcher &amp; Inprocess integration</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
+          <li class="breadcrumb-item"><a href="../integration.html">Integration Guides</a></li>
+      <li class="breadcrumb-item active">Sections API Integration</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/fault_tolerance/integration/sections.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="sections-api-integration">
+<h1>Sections API Integration<a class="headerlink" href="#sections-api-integration" title="Link to this heading"></a></h1>
+<section id="prerequisites">
+<h2>1. Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Run ranks using <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>. The command line is mostly compatible with <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.</p></li>
+<li><p>Pass the FT config to the <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Some clusters (e.g., SLURM) use SIGTERM as a default method of requesting a graceful workload shutdown.
+It is recommended to implement appropriate signal handling in a fault-tolerant workload.
+To avoid deadlocks and other unintended side effects, signal handling should be synchronized across all ranks.</p>
+</div>
+</section>
+<section id="ft-configuration">
+<h2>2. FT configuration<a class="headerlink" href="#ft-configuration" title="Link to this heading"></a></h2>
+<p>With the section-based API, timeouts must be set for all defined sections, which wrap operations like
+training/eval steps, checkpoint saving, and initialization. Additionally, an out-of-section timeout
+applies when no section is active.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Ensure out-of-section timeout is long enough to accommodate restart overhead, as excessively small values can cause imbalance.
+If needed, consider merging sections (e.g., moving ‘init’ into ‘out-of-section’) to provide more buffer time.</p>
+</div>
+<dl class="simple">
+<dt>Relevant FT configuration items are:</dt><dd><ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">rank_section_timeouts</span></code> is a map of a section name to its timeout.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rank_out_of_section_timeout</span></code> is the out-of-section timeout.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Fixed timeout values can be used throughout the training runs, or timeouts can be calculated based on observed intervals.
+<cite>null</cite> timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.</p>
+<p>Config file example:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="linenos">1</span><span class="nt">fault_tolerance</span><span class="p">:</span>
+<span class="linenos">2</span><span class="w">    </span><span class="nt">initial_rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<span class="linenos">3</span><span class="w">    </span><span class="nt">rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<span class="linenos">4</span><span class="w">    </span><span class="nt">rank_section_timeouts</span><span class="p">:</span>
+<span class="linenos">5</span><span class="w">        </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20</span>
+<span class="linenos">6</span><span class="w">        </span><span class="nt">step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<span class="linenos">7</span><span class="w">        </span><span class="nt">checkpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
+<span class="linenos">8</span><span class="w">    </span><span class="nt">rank_out_of_section_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
+<span class="linenos">9</span><span class="w">    </span><span class="nt">log_level</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;DEBUG&quot;</span>
+</pre></div>
+</div>
+<p>A summary of all FT configuration items can be found in <a class="reference internal" href="../api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig</span></code></a></p>
+</section>
+<section id="integration-with-pytorch-workload-code">
+<h2>3. Integration with PyTorch workload code<a class="headerlink" href="#integration-with-pytorch-workload-code" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Initialize a <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance on each rank with <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.init_workload_monitoring()</span></code>.</p></li>
+<li><p><em>(Optional)</em> Restore the state of <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.load_state_dict()</span></code>.</p></li>
+<li><p>Mark some sections of the code with <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.start_section('&lt;section</span> <span class="pre">name&gt;')</span></code> and <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.end_section('&lt;section</span> <span class="pre">name&gt;')</span></code>.</p></li>
+<li><p><em>(Optional)</em> After a sufficient range of section intervals has been observed, call <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.calculate_and_set_section_timeouts()</span></code> to estimate timeouts.</p></li>
+<li><p><em>(Optional)</em> Save the <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance’s <code class="docutils literal notranslate"><span class="pre">state_dict()</span></code> to a file so that computed timeouts can be reused in the next run.</p></li>
+<li><p>Shut down <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.shutdown_workload_monitoring()</span></code>.</p></li>
+</ol>
+<p>Please refer to the <a class="reference internal" href="../examples/train_ddp_sections.html"><span class="doc">Section API usage example with DDP</span></a> for an implementation example.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="heartbeats.html" class="btn btn-neutral float-left" title="Heartbeats API Integration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="ptl.html" class="btn btn-neutral float-right" title="PyTorch Lightning Integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

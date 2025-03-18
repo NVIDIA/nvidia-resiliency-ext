@@ -49,8 +49,12 @@
 <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration Guides</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Config</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Config</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="client.html">Client</a></li>
 <li class="toctree-l3"><a class="reference internal" href="server.html">Server</a></li>
 <li class="toctree-l3"><a class="reference internal" href="callback.html">Callback</a></li>
@@ -91,43 +95,61 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="config">
-<h1>Config<a class="headerlink" href="#config" title="Link to this heading"></a></h1>
+  <section id="module-nvidia_resiliency_ext.fault_tolerance.config">
+<span id="config"></span><h1>Config<a class="headerlink" href="#module-nvidia_resiliency_ext.fault_tolerance.config" title="Link to this heading"></a></h1>
 <dl class="py class">
-<dt class="sig sig-object py">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout=3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout=2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_section_timeouts=&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_out_of_section_timeout=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_health_check_interval=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal=Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level=20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">restart_check_interval=60.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_nic_monitor=True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pci_topo_file=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">link_down_path_template=None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="Link to this definition"></a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<dl>
-<dt>Configuration of fault tolerance</dt><dd><ul class="simple">
+<p>Configuration of the fault tolerance</p>
+<ul class="simple">
 <li><p><cite>workload_check_interval</cite> [float] periodic rank check interval (in seconds) in rank monitors.</p></li>
-<li><p><cite>initial_rank_heartbeat_timeout</cite> [float] timeout (in seconds) for the first heartbeat from a rank.</p></li>
+<li><p><cite>initial_rank_heartbeat_timeout</cite> [float|None] timeout (in seconds) for the first heartbeat from a rank.</p></li>
 </ul>
 <p>Usually, it takes a bit longer for the first heartbeat to be sent, as the rank needs to initialize.
-If rank does not send the first heartbeat within <cite>initial_rank_heartbeat_timeout</cite>, failure is detected.
-If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
-- <cite>rank_heartbeat_timeout</cite> [float] timeout (in seconds) for subsequent heartbeats from a rank.
-If no rank heartbeat is received within <cite>rank_heartbeat_timeout</cite>, failure is detected.
-If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
-- <cite>safety_factor</cite> [float] when deducing the timeouts, observed heartbeat intervals are multiplied by this factor to obtain the timeouts.
-- <cite>rank_termination_signal</cite> signal used to terminate the rank when failure is detected.
-- <cite>log_level</cite> log level of fault tolerance components</p>
-</dd>
-</dl>
+If rank does not send the first heartbeat within <cite>initial_rank_heartbeat_timeout</cite>, failure is detected.</p>
+<ul class="simple">
+<li><p><cite>rank_heartbeat_timeout</cite> [float|None] timeout (in seconds) for subsequent heartbeats from a rank.</p></li>
+</ul>
+<p>If no rank heartbeat is received within <cite>rank_heartbeat_timeout</cite>, failure is detected.</p>
+<ul class="simple">
+<li><p><cite>safety_factor</cite> [float] when deducing the timeouts, observed intervals are
+multiplied by this factor to obtain the timeouts.</p></li>
+<li><p><cite>rank_termination_signal</cite> signal used to terminate the rank when failure is detected.</p></li>
+<li><p><cite>log_level</cite> log level of fault tolerance components</p></li>
+<li><p><cite>rank_section_timeouts</cite> Mapping[str,float|None] timeouts for specific sections in user code.</p></li>
+<li><p><cite>rank_out_of_section_timeout</cite> [float|None] the timeout used for implicit/default section,
+that spans code not wrapped in any other section.</p></li>
+<li><p><cite>restart_check_interval</cite> - interval between checks if restart is in progress, needed for layered restart protocol</p></li>
+<li><p><cite>enable_nic_monitor</cite> - Enable NIC health monitoring in training.</p></li>
+<li><p><cite>pci_topo_file</cite> - PCI topo file that describes GPU and NIC topology.</p></li>
+<li><p><cite>link_down_path_template</cite> - Template path for NIC link down files. Should contain ‘{dev_name}’
+placeholder which will be replaced with actual NIC device name.</p></li>
+</ul>
+<p>If any timeout is None, it has no effect (as if it was +INF).
+All timeouts can be deduced and set during runtime.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>workload_check_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
 <li><p><strong>initial_rank_heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
 <li><p><strong>rank_heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>rank_section_timeouts</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Mapping" title="(in Python v3.13)"><em>Mapping</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em><em>]</em>)</p></li>
+<li><p><strong>rank_out_of_section_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>node_health_check_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
 <li><p><strong>safety_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
 <li><p><strong>rank_termination_signal</strong> (<a class="reference external" href="https://docs.python.org/3/library/signal.html#signal.Signals" title="(in Python v3.13)"><em>Signals</em></a>)</p></li>
 <li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>restart_check_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
+<li><p><strong>enable_nic_monitor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>)</p></li>
+<li><p><strong>pci_topo_file</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>link_down_path_template</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
 </ul>
 </dd>
 </dl>
 <dl class="py method">
-<dt class="sig sig-object py">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_args</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cfg_file_arg</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ft_args_prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">''</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.from_args"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args">
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_args</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cfg_file_arg</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ft_args_prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">''</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.from_args"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args" title="Link to this definition"></a></dt>
 <dd><p>Init FT config object from parsed CLI args.</p>
 <p>Implements the following logic:
 - Use default FT config as a base.
@@ -146,8 +168,8 @@ If None this timeout needs to be deduced and set during runtime, based on the ob
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_kwargs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ignore_not_recognized</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.from_kwargs"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs">
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_kwargs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ignore_not_recognized</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.from_kwargs"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs" title="Link to this definition"></a></dt>
 <dd><p>Create a FaultToleranceConfig object from keyword arguments.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -160,7 +182,7 @@ If None this timeout needs to be deduced and set during runtime, based on the ob
 <dd class="field-even"><p>The created FaultToleranceConfig object.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference internal" href="../usage_guide.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">FaultToleranceConfig</a></p>
+<dd class="field-odd"><p><a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">FaultToleranceConfig</a></p>
 </dd>
 <dt class="field-even">Raises<span class="colon">:</span></dt>
 <dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.13)"><strong>ValueError</strong></a> – If there are unrecognized arguments and ignore_not_recognized is False.</p>
@@ -169,8 +191,8 @@ If None this timeout needs to be deduced and set during runtime, based on the ob
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_yaml_file</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cfg_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_not_recognized</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.from_yaml_file"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_yaml_file">
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_yaml_file</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cfg_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_not_recognized</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.from_yaml_file"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_yaml_file" title="Link to this definition"></a></dt>
 <dd><p>Load the fault tolerance configuration from a YAML file.</p>
 <p>YAML file should contain <cite>fault_tolerance</cite> section.
 <cite>fault_tolerance</cite> section can be at the top level or nested in any other section.</p>
@@ -186,7 +208,7 @@ Defaults to True.</p></li>
 <dd class="field-even"><p>The fault tolerance configuration object.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference internal" href="../usage_guide.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">FaultToleranceConfig</a></p>
+<dd class="field-odd"><p><a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">FaultToleranceConfig</a></p>
 </dd>
 <dt class="field-even">Raises<span class="colon">:</span></dt>
 <dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.13)"><strong>ValueError</strong></a> – If the ‘fault_tolerance’ section is not found in the config file.</p>
@@ -195,8 +217,8 @@ Defaults to True.</p></li>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py">
-<span class="sig-name descname"><span class="pre">to_yaml_file</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cfg_path</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.to_yaml_file"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.to_yaml_file">
+<span class="sig-name descname"><span class="pre">to_yaml_file</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cfg_path</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.to_yaml_file"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.to_yaml_file" title="Link to this definition"></a></dt>
 <dd><p>Convert the configuration object to a YAML file and save it to the specified path.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>

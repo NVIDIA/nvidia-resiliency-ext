@@ -1,0 +1,658 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="sd">&quot;&quot;&quot; Storage writer for PyT Distributed format allowing asynchronous save. &quot;&quot;&quot;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">queue</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">functools</span><span class="w"> </span><span class="kn">import</span> <span class="n">partial</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">heapq</span><span class="w"> </span><span class="kn">import</span> <span class="n">heappop</span><span class="p">,</span> <span class="n">heappush</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">itertools</span><span class="w"> </span><span class="kn">import</span> <span class="n">chain</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">itemgetter</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">time</span><span class="w"> </span><span class="kn">import</span> <span class="n">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">psutil</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">multiprocessing</span> <span class="k">as</span> <span class="n">mp</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileSystemWriter</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.filesystem</span><span class="w"> </span><span class="kn">import</span> <span class="n">DEFAULT_SUFFIX</span><span class="p">,</span> <span class="n">_StoragePrefix</span><span class="p">,</span> <span class="n">_write_item</span>
+
+<span class="k">try</span><span class="p">:</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.filesystem</span><span class="w"> </span><span class="kn">import</span> <span class="n">_StorageWriterTransforms</span>
+<span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
+    <span class="n">_StorageWriterTransforms</span> <span class="o">=</span> <span class="n">Any</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.planner</span><span class="w"> </span><span class="kn">import</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="n">SavePlanner</span><span class="p">,</span> <span class="n">WriteItem</span><span class="p">,</span> <span class="n">WriteItemType</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.storage</span><span class="w"> </span><span class="kn">import</span> <span class="n">WriteResult</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">Future</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">..utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_disable_gc</span>
+
+<span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">WriteBucket</span> <span class="o">=</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Path</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">list</span><span class="p">,</span> <span class="nb">list</span><span class="p">]]</span>  <span class="c1"># represents writes to a single file</span>
+
+<span class="n">_results_queue</span> <span class="o">=</span> <span class="kc">None</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_write_results_queue</span><span class="p">():</span>
+    <span class="k">global</span> <span class="n">_results_queue</span>
+    <span class="k">if</span> <span class="n">_results_queue</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
+        <span class="n">_results_queue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Manager</span><span class="p">()</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">_results_queue</span>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">FileSystemWriterAsync</span><span class="p">(</span><span class="n">FileSystemWriter</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Async-enabled implementation of FileSystemWriter using file I/O.</span>
+
+<span class="sd">    This class does not spawn the async process itself but relies on an external async mechanism.</span>
+
+<span class="sd">    **Flow:**</span>
+
+<span class="sd">    1. Call `write_data`</span>
+<span class="sd">    2. Externally start an async process with `get_save_function_and_args` and its arguments.</span>
+<span class="sd">    3. The async function `writer_proxy_func` calls `write_preloaded_data` across multiple processes.</span>
+<span class="sd">    4. Once saving is finalized on all ranks, call `super().finish` with the results stored in `self.writer_result`.</span>
+
+<span class="sd">    **Note:** Step (3) can also be executed synchronously.</span>
+
+<span class="sd">    Currently, it is assumed that a separate writer is created for each ckpt save</span>
+<span class="sd">    (intermediate state is stored as writer attributes).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="n">separation_hint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">single_file_per_rank</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span>
+                <span class="s1">&#39;single_file_per_rank flag not supported for FileSystemWriterAsync&#39;</span>
+            <span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">can_run_decentralized_global_plan</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+
+        <span class="c1"># Intermediate state between preparation and finalization</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteBucket</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">mp</span><span class="o">.</span><span class="n">Queue</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">separation_hint</span> <span class="o">=</span> <span class="n">separation_hint</span>
+
+<div class="viewcode-block" id="FileSystemWriterAsync.prepare_write_data">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_write_data">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">prepare_write_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">plan</span><span class="p">:</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="n">planner</span><span class="p">:</span> <span class="n">SavePlanner</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        First stage of async saving. Copy data to CPU and plan the local saving.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            plan (SavePlan): save plan generated by the PyT Distributed compatible planner</span>
+<span class="sd">            planner (SavePlanner): save planner used to resolve the bytes and tensor data</span>
+
+<span class="sd">        Returns: None, but stores the save plan in `self.write_buckets`</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">storage_plan</span><span class="p">:</span> <span class="n">_StoragePrefix</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">storage_data</span>
+        <span class="n">start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;thread_count: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">thread_count</span><span class="si">}</span><span class="s2">, time: </span><span class="si">{</span><span class="n">start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">separation_hint</span><span class="p">:</span>
+            <span class="k">assert</span> <span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">thread_count</span> <span class="o">&gt;</span> <span class="mi">1</span>
+            <span class="p">),</span> <span class="s2">&quot;thread_count must be at least 2 if separation_hint is provided&quot;</span>
+        <span class="n">bins</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">thread_count</span> <span class="o">//</span> <span class="mi">2</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">separation_hint</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">thread_count</span>
+        <span class="n">item_buckets</span> <span class="o">=</span> <span class="n">_split_by_size_and_type</span><span class="p">(</span><span class="n">bins</span><span class="p">,</span> <span class="n">plan</span><span class="o">.</span><span class="n">items</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;bucket_prep, time: </span><span class="si">{</span><span class="n">time</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="n">start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+        <span class="c1"># move tensors from GPU to CPU before starting async writing</span>
+        <span class="c1"># We do D2H synchronously for now</span>
+        <span class="n">file_count</span> <span class="o">=</span> <span class="mi">0</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">gen_file</span><span class="p">(</span><span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">):</span>
+            <span class="k">nonlocal</span> <span class="n">file_count</span>
+            <span class="n">file_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}{</span><span class="n">storage_plan</span><span class="o">.</span><span class="n">prefix</span><span class="si">}{</span><span class="n">file_count</span><span class="si">}{</span><span class="n">DEFAULT_SUFFIX</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="n">file_count</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">return</span> <span class="n">file_name</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_clone_if_needed</span><span class="p">(</span><span class="n">ten</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
+<span class="w">            </span><span class="sd">&quot;&quot;&quot;Clone if we detect incontiguous storage for CPU tensors</span>
+
+<span class="sd">            Makes sure we perform a `clone` only if we detect incontiguous storage,</span>
+<span class="sd">            so that we don&#39;t blow up host memory unnecessarily.</span>
+
+<span class="sd">            TODO: For persistent worker, this work should be changed to move the cpu tensor</span>
+<span class="sd">            to shared_memory.</span>
+<span class="sd">            &quot;&quot;&quot;</span>
+            <span class="n">ten</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">ten</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">!=</span> <span class="s2">&quot;cpu&quot;</span><span class="p">:</span>
+                <span class="c1"># We do D2H later when the async_request is scheduled for both sync / async</span>
+                <span class="c1"># checkpointing</span>
+                <span class="k">return</span> <span class="n">ten</span>
+            <span class="n">is_view</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">untyped_storage</span><span class="p">()</span><span class="o">.</span><span class="n">size</span><span class="p">()</span> <span class="o">!=</span> <span class="n">ten</span><span class="o">.</span><span class="n">numel</span><span class="p">()</span> <span class="o">*</span> <span class="n">ten</span><span class="o">.</span><span class="n">itemsize</span>
+            <span class="k">return</span> <span class="n">ten</span><span class="o">.</span><span class="n">clone</span><span class="p">()</span> <span class="k">if</span> <span class="n">is_view</span> <span class="k">else</span> <span class="n">ten</span>
+
+        <span class="c1"># Prepare bytes / tensor data in each bucket, which will be assigned to each writer process</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">group_name</span><span class="p">,</span> <span class="n">group_buckets</span> <span class="ow">in</span> <span class="n">_split_by_separation_hint</span><span class="p">(</span>
+            <span class="n">item_buckets</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">separation_hint</span>
+        <span class="p">)</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="k">for</span> <span class="n">bucket</span> <span class="ow">in</span> <span class="n">group_buckets</span><span class="p">:</span>
+                <span class="n">bytes_data</span> <span class="o">=</span> <span class="p">[</span>
+                    <span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">planner</span><span class="o">.</span><span class="n">resolve_data</span><span class="p">(</span><span class="n">item</span><span class="p">))</span>
+                    <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">bucket</span>
+                    <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="n">WriteItemType</span><span class="o">.</span><span class="n">BYTE_IO</span>
+                <span class="p">]</span>
+                <span class="n">tensor_data</span> <span class="o">=</span> <span class="p">[</span>
+                    <span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">_clone_if_needed</span><span class="p">(</span><span class="n">planner</span><span class="o">.</span><span class="n">resolve_data</span><span class="p">(</span><span class="n">item</span><span class="p">)))</span>
+                    <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">bucket</span>
+                    <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">type</span> <span class="o">!=</span> <span class="n">WriteItemType</span><span class="o">.</span><span class="n">BYTE_IO</span>
+                <span class="p">]</span>
+                <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">bytes_data</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">tensor_data</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+                    <span class="n">file_name</span> <span class="o">=</span> <span class="n">gen_file</span><span class="p">(</span><span class="n">prefix</span><span class="o">=</span><span class="n">group_name</span><span class="p">)</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+                        <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span> <span class="o">/</span> <span class="n">file_name</span><span class="p">,</span> <span class="n">file_name</span><span class="p">,</span> <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">))</span>
+                    <span class="p">)</span>
+
+        <span class="c1"># Check if there is anything to write on this rank</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">thread_count</span><span class="p">,</span> <span class="p">(</span>
+                <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">),</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">thread_count</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span> <span class="o">=</span> <span class="n">_get_write_results_queue</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;D2H and push, time: </span><span class="si">{</span><span class="n">end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.get_save_function_and_args">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.get_save_function_and_args">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_save_function_and_args</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">],</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">],</span> <span class="n">List</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Get function that saves the data to storage along with its arguments.</span>
+<span class="sd">        Allows the external caller to apply the save function synchronously or asynchronously.</span>
+
+<span class="sd">        Returns: None (if there is nothing to write on this rank) or a tuple of:</span>
+<span class="sd">            1) the function that saves the data.</span>
+<span class="sd">            2) the function that stages the GPU tensors to a destination for async checkpointing.</span>
+<span class="sd">               This function should be self-contained.</span>
+<span class="sd">            3) arguments to that function in 1).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">()</span>
+        <span class="n">transform_list</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">transforms</span><span class="p">]</span> <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;transforms&#39;</span><span class="p">)</span> <span class="k">else</span> <span class="p">[]</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">write_preloaded_data_multiproc</span><span class="p">,</span> <span class="n">transform_list</span><span class="p">),</span>
+            <span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">preload_tensors</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">,</span> <span class="kc">True</span><span class="p">),</span>
+            <span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">(),</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span><span class="p">],</span>
+        <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.preload_tensors">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors">[docs]</a>
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">preload_tensors</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteBucket</span><span class="p">],</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteBucket</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Preloads tensors in `state_dict` to host memory via CPU memory.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            write_buckets (List): List of `WriteBucket` objects that define what to save in a checkpoint.</span>
+<span class="sd">            non_blocking (bool, optional): knob to enable pinned D2H memcpy. Default is True.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="p">[]</span>
+
+        <span class="k">for</span> <span class="n">bucket</span> <span class="ow">in</span> <span class="n">write_buckets</span><span class="p">:</span>
+            <span class="n">file_name</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">,</span> <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">bucket</span>
+            <span class="n">tensor_data</span> <span class="o">=</span> <span class="p">[</span>
+                <span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="n">non_blocking</span><span class="p">))</span> <span class="k">for</span> <span class="n">item</span><span class="p">,</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="n">tensor_data</span>
+            <span class="p">]</span>
+            <span class="n">result</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">file_name</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">,</span> <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">)))</span>
+        <span class="k">if</span> <span class="n">non_blocking</span><span class="p">:</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+        <span class="k">return</span> <span class="n">result</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.write_preloaded_data_multiproc">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multiproc">[docs]</a>
+    <span class="nd">@staticmethod</span>
+    <span class="nd">@_disable_gc</span><span class="p">()</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">write_preloaded_data_multiproc</span><span class="p">(</span>
+        <span class="n">transform_list</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">_StorageWriterTransforms</span><span class="p">],</span>
+        <span class="n">rank</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="n">write_buckets</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteBucket</span><span class="p">],</span>
+        <span class="n">global_results_queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Queue</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Performs saving data to storage with multiple processes.</span>
+
+<span class="sd">        Starts predefined number of processes and uses 2 queues to make sure the results</span>
+<span class="sd">        are complete:</span>
+<span class="sd">        - local_results_queue - to send the actual results</span>
+<span class="sd">        - count_queue - small queue to mark worker as completed</span>
+
+<span class="sd">        Using just one queue disallowed proper exception handling.</span>
+
+<span class="sd">        This method is meant to be run in a forked subprocess.</span>
+<span class="sd">        Triggering GC during execution leads to CUDA errors</span>
+<span class="sd">        (cleaning up tensors owned by the parent process).</span>
+<span class="sd">        To prevent this, we disable the GC explicitly for this function with _disable_gc.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            write_buckets (List[WriteBucket]): write plan</span>
+<span class="sd">            global_results_queue (mp.Queue): mp.Queue to collect Dict[List[WriteResults]]</span>
+<span class="sd">                (or an Exception) from parallel write processes to the main training process</span>
+<span class="sd">        Returns: None</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="n">w_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+        <span class="n">write_results_or_exc</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">dict</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">]</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">()</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;fork&#39;</span><span class="p">)</span>
+        <span class="n">local_results_queue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
+        <span class="n">count_queue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">()</span>
+        <span class="n">p_list</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">write_bucket</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">count_queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">i</span><span class="p">)</span>
+                <span class="n">p_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+                    <span class="n">ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span>
+                        <span class="n">target</span><span class="o">=</span><span class="n">partial</span><span class="p">(</span><span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">write_preloaded_data</span><span class="p">,</span> <span class="n">transform_list</span><span class="p">),</span>
+                        <span class="n">args</span><span class="o">=</span><span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">write_bucket</span><span class="p">,</span> <span class="n">local_results_queue</span><span class="p">,</span> <span class="n">count_queue</span><span class="p">,</span> <span class="kc">True</span><span class="p">),</span>
+                    <span class="p">)</span>
+                <span class="p">)</span>
+            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="n">err_msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;An error is caught while a proc </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s1"> is created, error: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s1">&#39;</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
+                <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">p_list</span><span class="p">:</span>
+                <span class="n">p</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;FileSystemWriterAsync: collecting worker results...&#39;</span><span class="p">)</span>
+
+            <span class="c1"># To make sure all nodes are completed</span>
+            <span class="n">count_queue</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+            <span class="c1"># At this point, all workers completed, so the queue should have exactly</span>
+            <span class="c1"># `len(write_buckets)` items</span>
+            <span class="k">for</span> <span class="n">proc_idx</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">)):</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">local_proc_idx</span><span class="p">,</span> <span class="n">local_results_or_exc</span> <span class="o">=</span> <span class="n">local_results_queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+                <span class="k">except</span> <span class="n">queue</span><span class="o">.</span><span class="n">Empty</span><span class="p">:</span>
+                    <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                        <span class="s1">&#39;Unexpected empty `local_results_queue`&#39;</span>
+                        <span class="sa">f</span><span class="s1">&#39; (got only </span><span class="si">{</span><span class="n">proc_idx</span><span class="si">}</span><span class="s1">/</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">)</span><span class="si">}</span><span class="s1"> items)&#39;</span>
+                    <span class="p">)</span>
+                    <span class="k">break</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">local_results_or_exc</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">):</span>
+                        <span class="n">err_msg</span> <span class="o">=</span> <span class="p">(</span>
+                            <span class="sa">f</span><span class="s2">&quot;Local process </span><span class="si">{</span><span class="n">local_proc_idx</span><span class="si">}</span><span class="s2"> encountered&quot;</span>
+                            <span class="sa">f</span><span class="s2">&quot; an error: </span><span class="si">{</span><span class="n">local_results_or_exc</span><span class="si">}</span><span class="s2">&quot;</span>
+                        <span class="p">)</span>
+                        <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
+                        <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="n">local_results_or_exc</span>
+                        <span class="k">break</span>
+                    <span class="k">assert</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">local_results_or_exc</span><span class="p">,</span> <span class="nb">list</span><span class="p">),</span> <span class="nb">type</span><span class="p">(</span><span class="n">local_results_or_exc</span><span class="p">)</span>
+                    <span class="n">write_results_or_exc</span><span class="p">[</span><span class="n">local_proc_idx</span><span class="p">]</span> <span class="o">=</span> <span class="n">local_results_or_exc</span>
+                    <span class="n">p_list</span><span class="p">[</span><span class="n">local_proc_idx</span><span class="p">]</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;FileSystemWriterAsync: collected worker results successfully&#39;</span><span class="p">)</span>
+
+        <span class="n">global_results_queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">)</span>
+
+        <span class="n">w_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">w_end</span><span class="si">}</span><span class="s2">, rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">,&quot;</span> <span class="sa">f</span><span class="s2">&quot; write(sync,parallel): </span><span class="si">{</span><span class="n">w_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">w_start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.write_preloaded_data">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data">[docs]</a>
+    <span class="nd">@staticmethod</span>
+    <span class="nd">@_disable_gc</span><span class="p">()</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">write_preloaded_data</span><span class="p">(</span>
+        <span class="n">transform_list</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">_StorageWriterTransforms</span><span class="p">],</span>
+        <span class="n">local_proc_idx</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="n">write_bucket</span><span class="p">:</span> <span class="n">WriteBucket</span><span class="p">,</span>
+        <span class="n">results_queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">SimpleQueue</span><span class="p">,</span>
+        <span class="n">count_queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">,</span>
+        <span class="n">use_fsync</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Performs actual data saving to storage.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            local_proc_idx (int): index of a local process that performs writing</span>
+<span class="sd">            write_bucket (WriteBucket): data to write to storage</span>
+<span class="sd">            results_queue (mp.Queue): queue to return the write results</span>
+<span class="sd">                to the proxy checkpoint process.</span>
+<span class="sd">            count_queue (mp.JoinableQueue): queue to marks worker task as completed</span>
+<span class="sd">            use_fsync (bool): if True, calls os.fsync at the end of saving</span>
+
+<span class="sd">        Returns: None, the write result are put into the `queue`</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">local_proc_idx</span><span class="si">}</span><span class="s1"> started&#39;</span><span class="p">)</span>
+        <span class="n">mem_before</span> <span class="o">=</span> <span class="n">_process_memory</span><span class="p">()</span>
+
+        <span class="n">local_results</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">file_name</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">,</span> <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">write_bucket</span>
+            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">file_name</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">stream</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">data</span> <span class="ow">in</span> <span class="n">bytes_data</span><span class="p">:</span>
+                    <span class="n">local_results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+                        <span class="n">_write_item</span><span class="p">(</span><span class="o">*</span><span class="n">transform_list</span><span class="p">,</span> <span class="n">stream</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">)</span>
+                    <span class="p">)</span>
+
+                <span class="k">for</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="n">tensor_data</span><span class="p">:</span>
+                    <span class="k">assert</span> <span class="n">tensor</span><span class="o">.</span><span class="n">is_cpu</span>
+                    <span class="n">local_results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+                        <span class="n">_write_item</span><span class="p">(</span><span class="o">*</span><span class="n">transform_list</span><span class="p">,</span> <span class="n">stream</span><span class="p">,</span> <span class="n">tensor</span><span class="p">,</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">)</span>
+                    <span class="p">)</span>
+
+                <span class="k">if</span> <span class="n">use_fsync</span><span class="p">:</span>
+                    <span class="n">os</span><span class="o">.</span><span class="n">fsync</span><span class="p">(</span><span class="n">stream</span><span class="o">.</span><span class="n">fileno</span><span class="p">())</span>
+            <span class="n">local_output</span> <span class="o">=</span> <span class="p">(</span><span class="n">local_proc_idx</span><span class="p">,</span> <span class="n">local_results</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">local_proc_idx</span><span class="si">}</span><span class="s1"> failed&#39;</span><span class="p">)</span>
+            <span class="n">local_output</span> <span class="o">=</span> <span class="p">(</span><span class="n">local_proc_idx</span><span class="p">,</span> <span class="n">e</span><span class="p">)</span>
+
+        <span class="n">results_queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">local_output</span><span class="p">)</span>
+        <span class="c1"># Signal this process is done.</span>
+        <span class="n">count_queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="n">count_queue</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
+
+        <span class="n">mem_after</span> <span class="o">=</span> <span class="n">_process_memory</span><span class="p">()</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">local_proc_idx</span><span class="si">}</span><span class="s2"> consumed: </span><span class="si">{</span><span class="n">mem_after</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">mem_before</span><span class="si">}</span><span class="s2">,&quot;</span>
+            <span class="sa">f</span><span class="s2">&quot; before: </span><span class="si">{</span><span class="n">mem_before</span><span class="si">}</span><span class="s2">, after: </span><span class="si">{</span><span class="n">mem_after</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.write_data">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_data">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">write_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">plan</span><span class="p">:</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="n">planner</span><span class="p">:</span> <span class="n">SavePlanner</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteResult</span><span class="p">]]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Write all items from ``plan``.&quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s1">&#39;write_data not implemented for FileSystemWriterAsync&#39;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.retrieve_write_results">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.retrieve_write_results">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">retrieve_write_results</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteResult</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Turn the latest dict including write results from `self.results_queue`</span>
+<span class="sd">            into a single results lists. Includes error check.</span>
+
+<span class="sd">        Returns (List[WriteResult]): the list of write results</span>
+<span class="sd">            from all local processes performing the save.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span><span class="o">.</span><span class="n">get_nowait</span><span class="p">()</span>
+            <span class="k">except</span> <span class="n">queue</span><span class="o">.</span><span class="n">Empty</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;results_queue should not be empty&#39;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;Worker failure: </span><span class="si">{</span><span class="n">write_results_or_exc</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">write_results_or_exc</span>
+        <span class="n">write_results</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="n">write_results_or_exc</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span> <span class="o">!=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s1">&#39;Incomplete worker results (expected </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">)</span><span class="si">}</span><span class="s1">,&#39;</span>
+                <span class="sa">f</span><span class="s1">&#39; got </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span><span class="si">}</span><span class="s1">. This probably indicates a worker failure.&#39;</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="nb">list</span><span class="p">(</span><span class="n">chain</span><span class="o">.</span><span class="n">from_iterable</span><span class="p">(</span><span class="n">write_results</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.prepare_decentralized_global_plan">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_decentralized_global_plan">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">prepare_decentralized_global_plan</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">local_plan</span><span class="p">:</span> <span class="n">SavePlan</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SavePlan</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Instead of assigning indices by plan order, uses PyT rank (same outcome).</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            local_plan (SavePlan): local plan to turn to a global plan</span>
+<span class="sd">                (without interactions with other ranks)</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            SavePlan - locally transformed plan equivalent to the plan that would be</span>
+<span class="sd">                created by the coordinator</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span>
+            <span class="n">local_plan</span><span class="p">,</span> <span class="n">storage_data</span><span class="o">=</span><span class="n">_StoragePrefix</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;__</span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">_&quot;</span><span class="p">)</span>
+        <span class="p">)</span></div>
+</div>
+
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_split_by_size_and_type</span><span class="p">(</span><span class="n">bins</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">items</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Splits write items according to item size into close to uniform bins.</span>
+
+<span class="sd">    Same as torch.distributed.checkpoint.filesystem._split_by_size_and_type,</span>
+<span class="sd">    but with a fixed _item_size function.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        bins (int): numbers of bins to split to</span>
+<span class="sd">        items (List[WriteItem]): list of write items</span>
+
+<span class="sd">    Returns (List[List[WriteItem]]): write items split to bins</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">bins</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">items</span><span class="p">]</span>
+
+    <span class="n">bytes_items</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">tensor_items</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">wi</span> <span class="ow">in</span> <span class="n">items</span><span class="p">:</span>
+        <span class="n">container</span> <span class="o">=</span> <span class="n">bytes_items</span> <span class="k">if</span> <span class="n">wi</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="n">WriteItemType</span><span class="o">.</span><span class="n">BYTE_IO</span> <span class="k">else</span> <span class="n">tensor_items</span>
+        <span class="n">container</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">wi</span><span class="p">)</span>
+
+    <span class="n">buckets</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[[]</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">bins</span><span class="p">)]</span>
+    <span class="n">bucket_sizes</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">bins</span><span class="p">)]</span>
+
+    <span class="c1"># Assign bytes with a simple round-robin</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">item</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">bytes_items</span><span class="p">):</span>
+        <span class="n">buckets</span><span class="p">[</span><span class="n">i</span> <span class="o">%</span> <span class="n">bins</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+
+    <span class="c1"># Sort tensor items by size in decreasing order once and store the size with item</span>
+    <span class="n">sized_tensors</span> <span class="o">=</span> <span class="p">[(</span><span class="n">item</span><span class="p">,</span> <span class="n">_item_size</span><span class="p">(</span><span class="n">item</span><span class="p">))</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">tensor_items</span><span class="p">]</span>
+    <span class="n">sized_tensors</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">key</span><span class="o">=</span><span class="n">itemgetter</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="c1"># Use a min heap for bin assignment</span>
+    <span class="c1"># Store (total_size_of_bin, bin_index) tuples</span>
+    <span class="n">heap</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[(</span><span class="mi">0</span><span class="p">,</span> <span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">bins</span><span class="p">)]</span>
+
+    <span class="c1"># Assign tensors using heap</span>
+    <span class="k">for</span> <span class="n">item</span><span class="p">,</span> <span class="n">size</span> <span class="ow">in</span> <span class="n">sized_tensors</span><span class="p">:</span>
+        <span class="n">total_bin_size</span><span class="p">,</span> <span class="n">bin_idx</span> <span class="o">=</span> <span class="n">heappop</span><span class="p">(</span><span class="n">heap</span><span class="p">)</span>
+        <span class="n">buckets</span><span class="p">[</span><span class="n">bin_idx</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+        <span class="n">heappush</span><span class="p">(</span><span class="n">heap</span><span class="p">,</span> <span class="p">(</span><span class="n">total_bin_size</span> <span class="o">+</span> <span class="n">size</span><span class="p">,</span> <span class="n">bin_idx</span><span class="p">))</span>
+
+    <span class="k">return</span> <span class="n">buckets</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_split_by_separation_hint</span><span class="p">(</span>
+    <span class="n">buckets</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">]],</span> <span class="n">separation_hint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">]]]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Splits buckets into those whose keys begin with the separation_hint and those whose keys do not</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        buckets (List[List[WriteItem]]): buckets to split</span>
+<span class="sd">        separation_hint (Optional[str]): optional prefix to split on</span>
+
+<span class="sd">    Returns (Dict[str, List[List[WriteItem]]]): a dictionary</span>
+<span class="sd">        mapping the prefix to the relevant buckets</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">bins</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">buckets</span><span class="p">)</span>
+    <span class="n">buckets_with_separation_hint</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">if</span> <span class="n">separation_hint</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">buckets_default</span> <span class="o">=</span> <span class="p">[[]</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">bins</span><span class="p">)]</span>
+        <span class="n">buckets_hint</span> <span class="o">=</span> <span class="p">[[]</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">bins</span><span class="p">)]</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">bins</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">buckets</span><span class="p">[</span><span class="n">i</span><span class="p">]:</span>
+                <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">index</span><span class="o">.</span><span class="n">fqn</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">separation_hint</span><span class="p">):</span>
+                    <span class="n">buckets_hint</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">buckets_default</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+        <span class="n">buckets_with_separation_hint</span><span class="p">[</span><span class="s2">&quot;&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">buckets_default</span>
+        <span class="n">buckets_with_separation_hint</span><span class="p">[</span><span class="n">separation_hint</span><span class="p">]</span> <span class="o">=</span> <span class="n">buckets_hint</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">buckets_with_separation_hint</span><span class="p">[</span><span class="s2">&quot;&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">buckets</span>
+    <span class="k">return</span> <span class="n">buckets_with_separation_hint</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_item_size</span><span class="p">(</span><span class="n">item</span><span class="p">:</span> <span class="n">WriteItem</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Calculates size (in bytes) of a single write item.</span>
+
+<span class="sd">    Same as torch.distributed.checkpoint.filesystem._item_size,</span>
+<span class="sd">    but fixes computing chunk size (with item.tensor_data.chunk.sizes)</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        item (WriteItem): write item to compute the size of</span>
+
+<span class="sd">    Returns (int): size of an item in bytes</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">size</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="k">assert</span> <span class="n">item</span><span class="o">.</span><span class="n">tensor_data</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+    <span class="c1"># can&#39;t use math.prod as PT needs to support older python</span>
+    <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">item</span><span class="o">.</span><span class="n">tensor_data</span><span class="o">.</span><span class="n">chunk</span><span class="o">.</span><span class="n">sizes</span><span class="p">:</span>
+        <span class="n">size</span> <span class="o">*=</span> <span class="n">s</span>
+
+    <span class="n">dtype</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">tensor_data</span><span class="o">.</span><span class="n">properties</span><span class="o">.</span><span class="n">dtype</span>
+    <span class="k">return</span> <span class="n">size</span> <span class="o">*</span> <span class="n">torch</span><span class="o">.</span><span class="n">_utils</span><span class="o">.</span><span class="n">_element_size</span><span class="p">(</span><span class="n">dtype</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_process_memory</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Get memory used by current process.</span>
+
+<span class="sd">    Returns (int): memory used by current process</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">process</span> <span class="o">=</span> <span class="n">psutil</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">())</span>
+    <span class="n">mem_info</span> <span class="o">=</span> <span class="n">process</span><span class="o">.</span><span class="n">memory_info</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">mem_info</span><span class="o">.</span><span class="n">rss</span>
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

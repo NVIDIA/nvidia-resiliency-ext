@@ -57,10 +57,7 @@
 <li class="toctree-l3"><a class="reference internal" href="straggler.html">Straggler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reporting.html">Reporting</a></li>
 <li class="toctree-l3"><a class="reference internal" href="statistics.html">Statistics</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Callback</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback"><code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code></a></li>
-</ul>
-</li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Callback</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
@@ -94,57 +91,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="module-nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback">
-<span id="callback"></span><h1>Callback<a class="headerlink" href="#module-nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback" title="Link to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.</span></span><span class="sig-name descname"><span class="pre">StragglerDetectionCallback</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">report_time_interval</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calc_relative_gpu_perf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calc_individual_gpu_perf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_gpu_perf_scores_to_print</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpu_relative_perf_threshold</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpu_individual_perf_threshold</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stop_if_detected</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_ptl_logging</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">profiling_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">logger_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'nemo_logger.StragglerDetectionCallback'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/ptl_resiliency/straggler_det_callback.html#StragglerDetectionCallback"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback" title="Link to this definition"></a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Callback</span></code></p>
-<p>Initialize straggler detection callback instance.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>report_time_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Interval [seconds] of the straggler check</p></li>
-<li><p><strong>calc_relative_gpu_perf</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Calculate relative GPU performance</p></li>
-<li><p><strong>calc_individual_gpu_perf</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Calculate individual GPU performance</p></li>
-<li><p><strong>num_gpu_perf_scores_to_print</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – How many best and worst perf scores to print (0 - does not print periodically, but only if stragglers are detected)</p></li>
-<li><p><strong>gpu_relative_perf_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Threshold for relative GPU performance scores</p></li>
-<li><p><strong>gpu_individual_perf_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Threshold for individual GPU performance scores</p></li>
-<li><p><strong>stop_if_detected</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to True, to terminate the workload if stragglers are detected</p></li>
-<li><p><strong>enable_ptl_logging</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to True, to log GPU performance scores to all PTL loggers enabled through trainer</p></li>
-<li><p><strong>profiling_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – <cite>profiling_interval</cite> passed to <cite>straggler.Detector.initialize</cite>. Defaults to 1.</p></li>
-<li><p><strong>logger_name</strong> (<em>Optional</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>, </em><em>optional</em>) – Defaults to “nemo_logger.StragglerDetectionCallback”.</p></li>
-</ul>
-</dd>
-<dt class="field-even">Raises<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.13)"><strong>ValueError</strong></a> – If invalid config was provided.</p>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.on_train_batch_end">
-<span class="sig-name descname"><span class="pre">on_train_batch_end</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">trainer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pl_module</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">outputs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">batch</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">batch_idx</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/ptl_resiliency/straggler_det_callback.html#StragglerDetectionCallback.on_train_batch_end"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.on_train_batch_end" title="Link to this definition"></a></dt>
-<dd><p>Called when the train batch ends.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>The value <code class="docutils literal notranslate"><span class="pre">outputs[&quot;loss&quot;]</span></code> here will be the normalized value w.r.t <code class="docutils literal notranslate"><span class="pre">accumulate_grad_batches</span></code> of the
-loss returned from <code class="docutils literal notranslate"><span class="pre">training_step</span></code>.</p>
-</div>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.setup">
-<span class="sig-name descname"><span class="pre">setup</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">trainer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pl_module</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stage</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/ptl_resiliency/straggler_det_callback.html#StragglerDetectionCallback.setup"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.setup" title="Link to this definition"></a></dt>
-<dd><p>Called when fit, validate, test, predict, or tune begins.</p>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.teardown">
-<span class="sig-name descname"><span class="pre">teardown</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">trainer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pl_module</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stage</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/ptl_resiliency/straggler_det_callback.html#StragglerDetectionCallback.teardown"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.teardown" title="Link to this definition"></a></dt>
-<dd><p>Called when fit, validate, test, predict, or tune ends.</p>
-</dd></dl>
-
-</dd></dl>
-
+  <section id="callback">
+<h1>Callback<a class="headerlink" href="#callback" title="Link to this heading"></a></h1>
 </section>
 
 

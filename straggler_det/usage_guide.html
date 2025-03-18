@@ -53,16 +53,13 @@
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="index.html">Straggler Detection</a><ul class="current">
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Usage guide</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#straggler-detection-package-design-overview">Straggler Detection Package Design Overview</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#straggler-detection-usage-overview">Straggler Detection Usage Overview</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#design-overview">Design Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#usage-overview">Usage Overview</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#alternative-reporting">Alternative Reporting</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#reducing-the-overhead">Reducing the Overhead</a></li>
 </ul>
 </li>
-<li class="toctree-l3"><a class="reference internal" href="#straggler-detection-integration-guide">Straggler Detection Integration Guide</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.ptl_resiliency.StragglerDetectionCallback.__init__"><code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback.__init__()</span></code></a></li>
-</ul>
-</li>
+<li class="toctree-l3"><a class="reference internal" href="#integration-guide">Integration Guide</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
@@ -98,8 +95,8 @@
              
   <section id="usage-guide">
 <h1>Usage guide<a class="headerlink" href="#usage-guide" title="Link to this heading"></a></h1>
-<section id="straggler-detection-package-design-overview">
-<h2>Straggler Detection Package Design Overview<a class="headerlink" href="#straggler-detection-package-design-overview" title="Link to this heading"></a></h2>
+<section id="design-overview">
+<h2>Design Overview<a class="headerlink" href="#design-overview" title="Link to this heading"></a></h2>
 <p>Package users can mark sections of their code as “straggler detection sections”.
 Timing information is collected for such sections, which includes CPU (wall-clock) time spent in the section.
 Additionally, CUDA kernels launched in the detection sections can be benchmarked.</p>
@@ -145,8 +142,8 @@ Relative GPU performance scores:
 <p>If the performance score drops below the specified threshold, the corresponding section or GPU is identified as a straggler.
 To detect the stragglers, users should call the reporting function periodically and check the returned report object for stragglers.</p>
 </section>
-<section id="straggler-detection-usage-overview">
-<h2>Straggler Detection Usage Overview<a class="headerlink" href="#straggler-detection-usage-overview" title="Link to this heading"></a></h2>
+<section id="usage-overview">
+<h2>Usage Overview<a class="headerlink" href="#usage-overview" title="Link to this heading"></a></h2>
 <dl class="simple">
 <dt>Sections of the user code that should be monitored for performance (“detection sections”) can be defined using:</dt><dd><ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">Detector.detection_section</span></code> context manager that allows wrapping a custom code block.</p></li>
@@ -281,10 +278,10 @@ If <code class="docutils literal notranslate"><span class="pre">profiling_interv
 <p>In that case, all ranks compute and report their own, individual results only.</p>
 </section>
 </section>
-<section id="straggler-detection-integration-guide">
-<h2>Straggler Detection Integration Guide<a class="headerlink" href="#straggler-detection-integration-guide" title="Link to this heading"></a></h2>
+<section id="integration-guide">
+<h2>Integration Guide<a class="headerlink" href="#integration-guide" title="Link to this heading"></a></h2>
 <p>This section describes integration with a PTL-based workload (e.g., NeMo) using <code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code>.
-All that is needed is to include <a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback" title="nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback"><code class="xref py py-class docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code></a> in the PTL trainer callbacks.</p>
+All that is needed is to include <code class="xref py py-class docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code> in the PTL trainer callbacks.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.ptl_resiliency</span><span class="w"> </span><span class="kn">import</span> <span class="n">StragglerDetectionCallback</span>
 
 <span class="n">straggler_cb_args</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span>
@@ -307,33 +304,6 @@ All that is needed is to include <a class="reference internal" href="api/callbac
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code> initialization parameters:</p>
-<blockquote>
-<div><dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.ptl_resiliency.StragglerDetectionCallback.__init__">
-<span class="sig-prename descclassname"><span class="pre">StragglerDetectionCallback.</span></span><span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">report_time_interval</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calc_relative_gpu_perf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calc_individual_gpu_perf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_gpu_perf_scores_to_print</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpu_relative_perf_threshold</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpu_individual_perf_threshold</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stop_if_detected</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_ptl_logging</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">profiling_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">logger_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'nemo_logger.StragglerDetectionCallback'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/ptl_resiliency/straggler_det_callback.html#StragglerDetectionCallback.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.ptl_resiliency.StragglerDetectionCallback.__init__" title="Link to this definition"></a></dt>
-<dd><p>Initialize straggler detection callback instance.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>report_time_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Interval [seconds] of the straggler check</p></li>
-<li><p><strong>calc_relative_gpu_perf</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Calculate relative GPU performance</p></li>
-<li><p><strong>calc_individual_gpu_perf</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Calculate individual GPU performance</p></li>
-<li><p><strong>num_gpu_perf_scores_to_print</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – How many best and worst perf scores to print (0 - does not print periodically, but only if stragglers are detected)</p></li>
-<li><p><strong>gpu_relative_perf_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Threshold for relative GPU performance scores</p></li>
-<li><p><strong>gpu_individual_perf_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Threshold for individual GPU performance scores</p></li>
-<li><p><strong>stop_if_detected</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to True, to terminate the workload if stragglers are detected</p></li>
-<li><p><strong>enable_ptl_logging</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to True, to log GPU performance scores to all PTL loggers enabled through trainer</p></li>
-<li><p><strong>profiling_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – <cite>profiling_interval</cite> passed to <cite>straggler.Detector.initialize</cite>. Defaults to 1.</p></li>
-<li><p><strong>logger_name</strong> (<em>Optional</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>, </em><em>optional</em>) – Defaults to “nemo_logger.StragglerDetectionCallback”.</p></li>
-</ul>
-</dd>
-<dt class="field-even">Raises<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.13)"><strong>ValueError</strong></a> – If invalid config was provided.</p>
-</dd>
-</dl>
-</dd></dl>
-
-</div></blockquote>
 </section>
 </section>
 

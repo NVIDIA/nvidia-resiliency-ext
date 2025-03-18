@@ -124,29 +124,33 @@
 <span class="nd">@dataclasses</span><span class="o">.</span><span class="n">dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">Report</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    There are 2 types of the performance scores provided in this report:</span>
-<span class="sd">      - Relative performance scores (0...1) that compare the performance of the current rank to the best performing rank.</span>
-<span class="sd">      - Individual performance scores (0...1) that compare the performance of the current rank to the rank&#39;s past performance.</span>
+<span class="sd">    There are two types of performance scores provided in this report:</span>
+<span class="sd">    - Relative performance scores (0...1) that compare the performance of the current rank to the best performing rank.</span>
+<span class="sd">    - Individual performance scores (0...1) that compare the performance of the current rank to the rank&#39;s past performance.</span>
+
 <span class="sd">    Relative scores need inter-rank synchronization to be computed, while individual scores can be computed on each rank separately.</span>
 <span class="sd">    All performance scores can be interpreted as a ratio of: current performance/reference performance.</span>
+
 <span class="sd">    For example:</span>
-<span class="sd">        - If the relative performance score is 0.5, it means that the current rank is 2x slower than the best performing rank.</span>
-<span class="sd">        - If the individual performance score is 0.5, it means that the current rank is 2x slower than its best performance.</span>
-<span class="sd">    If `gather_on_rank0=True`:  `*_perf_scores` fields contain results for all ranks (only on rank0, otherwise undefined).</span>
-<span class="sd">    If `gather_on_rank0=False`:  `*_perf_scores` fields contain only current rank results.</span>
+<span class="sd">    - If the relative performance score is 0.5, it means that the current rank is 2x slower than the best performing rank.</span>
+<span class="sd">    - If the individual performance score is 0.5, it means that the current rank is 2x slower than its best performance.</span>
+
+<span class="sd">    If `gather_on_rank0=True`: `*_perf_scores` fields contain results for all ranks (only on rank0; otherwise undefined).</span>
+<span class="sd">    If `gather_on_rank0=False`: `*_perf_scores` fields contain only current rank results.</span>
 
 <span class="sd">    Containers can be empty if there are no results.</span>
 
-<span class="sd">    * gpu_relative_perf_scores: Rank -&gt; GPU relative performance score.</span>
-<span class="sd">    * section_relative_perf_scores: Section name -&gt; (Rank -&gt; Section relative performance score).</span>
-<span class="sd">    * gpu_individual_perf_scores: Rank -&gt; GPU individual performance score.</span>
-<span class="sd">    * section_individual_perf_scores: Section name -&gt; (Rank -&gt; Section individual performance score).</span>
-<span class="sd">    * rank_to_node: Rank -&gt; Node name, aux mapping useful for results reporting.</span>
-<span class="sd">    * local_section_summaries: Local (e.g. this rank) timing stats for each user defined section/context.</span>
-<span class="sd">    * local_kernel_summaries: Local (e.g. this rank) timing stats for each captured CUDA kernel.</span>
-<span class="sd">    * generate_report_elapsed_time: How long did it take to generate this report.</span>
-<span class="sd">    * gather_on_rank0 : Mode for results gather, if gather_on_rank0 = False,</span>
-<span class="sd">    * rank: Rank of the current report. None if not corresponding to any rank (i.e. gather_on_rank0=True).</span>
+<span class="sd">    Attributes:</span>
+<span class="sd">    - `gpu_relative_perf_scores`: Rank -&gt; GPU relative performance score.</span>
+<span class="sd">    - `section_relative_perf_scores`: Section name -&gt; (Rank -&gt; Section relative performance score).</span>
+<span class="sd">    - `gpu_individual_perf_scores`: Rank -&gt; GPU individual performance score.</span>
+<span class="sd">    - `section_individual_perf_scores`: Section name -&gt; (Rank -&gt; Section individual performance score).</span>
+<span class="sd">    - `rank_to_node`: Rank -&gt; Node name, an auxiliary mapping useful for results reporting.</span>
+<span class="sd">    - `local_section_summaries`: Local (e.g., this rank) timing stats for each user-defined section/context.</span>
+<span class="sd">    - `local_kernel_summaries`: Local (e.g., this rank) timing stats for each captured CUDA kernel.</span>
+<span class="sd">    - `generate_report_elapsed_time`: How long it took to generate this report.</span>
+<span class="sd">    - `gather_on_rank0`: Mode for results gathering.</span>
+<span class="sd">    - `rank`: Rank of the current report. `None` if not corresponding to any rank (i.e., `gather_on_rank0=True`).</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="n">gpu_relative_perf_scores</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span>

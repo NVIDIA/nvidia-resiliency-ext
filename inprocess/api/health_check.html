@@ -53,6 +53,7 @@
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="wrap.html">Wrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="compose.html">Compose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="state.html">State</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="initialize.html">Initialize</a></li>
@@ -62,7 +63,6 @@
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck"><code class="docutils literal notranslate"><span class="pre">CudaHealthCheck</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.FaultCounter"><code class="docutils literal notranslate"><span class="pre">FaultCounter</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.FaultCounterExceeded"><code class="docutils literal notranslate"><span class="pre">FaultCounterExceeded</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="docutils literal notranslate"><span class="pre">HealthCheck</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="exception.html">Exceptions</a></li>
@@ -136,28 +136,6 @@ process is terminated if total number of faults exceeds the
 <em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.</span></span><span class="sig-name descname"><span class="pre">FaultCounterExceeded</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/health_check.html#FaultCounterExceeded"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.health_check.FaultCounterExceeded" title="Link to this definition"></a></dt>
 <dd><p>Exception raised by <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.FaultCounter" title="nvidia_resiliency_ext.inprocess.health_check.FaultCounter"><code class="xref py py-class docutils literal notranslate"><span class="pre">FaultCounter</span></code></a> when number of faults on the
 current rank exceeds the threshold.</p>
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.health_check.HealthCheck">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.</span></span><span class="sig-name descname"><span class="pre">HealthCheck</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/health_check.html#HealthCheck"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="Link to this definition"></a></dt>
-<dd><p>Abstract base class for <code class="docutils literal notranslate"><span class="pre">health_check</span></code> argument for
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code></a> ensures the worker is in a healthy state and can
-execute the workload.</p>
-<p>Health checks are executed after the target function failure was discovered
-(on local, or other distributed ranks), local distributed group was
-destroyed, and after the user-provided
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.finalize.Finalize</span></code> finished.</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code></a> is executed to filter out unhealthy ranks (e.g. due
-to corrupted CUDA context). The execution should be local to a given rank,
-other ranks may have already been terminated, lost or still executing the
-wrapped function.</p>
-<p>Unhealthy state is reported by raising an <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a>. The
-exception is reraised by the <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>, and should lead
-to termination of the main Python interpreter process.</p>
-<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code></a> could be composed with
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
 </dd></dl>
 
 </section>

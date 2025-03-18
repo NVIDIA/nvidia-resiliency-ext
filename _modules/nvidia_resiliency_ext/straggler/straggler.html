@@ -479,15 +479,23 @@
         <span class="n">callable_ids</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">CallableId</span><span class="p">],</span>
         <span class="n">profile_cuda</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Each time fn (fn = getattr(callable_id.obj, callable_id.name)) is</span>
-<span class="sd">        called, it will do the following:</span>
-<span class="sd">        with straggler.Detector.detection_section(str(callable_id)):</span>
-<span class="sd">            fn(*args,**kwargs)</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Each time `fn` (where `fn = getattr(callable_id.obj, callable_id.name)`) is called, the following will occur:</span>
+
+<span class="sd">        .. code-block:: python</span>
+
+<span class="sd">            with straggler.Detector.detection_section(str(callable_id)):</span>
+<span class="sd">                fn(*args, **kwargs)</span>
 
 <span class="sd">        Args:</span>
-<span class="sd">            callable_ids (List[CallableId]) : list of callables to wrap with detection context</span>
-<span class="sd">            profile_cuda (bool, optional): If true, CUDA kernels launched under this section will be captured and used to compute rank &quot;GPU performance score&quot;. Defaults to True.</span>
+<span class="sd">            callable_ids (List[CallableId]):</span>
+<span class="sd">                A list of callables to wrap with the detection context.</span>
+
+<span class="sd">            profile_cuda (bool, optional):</span>
+<span class="sd">                If `True`, CUDA kernels launched under this section will be captured</span>
+<span class="sd">                and used to compute the rank&#39;s &quot;GPU performance score&quot;. Defaults to `True`.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
+
         <span class="bp">cls</span><span class="o">.</span><span class="n">original_callables</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="k">for</span> <span class="n">callable_id</span> <span class="ow">in</span> <span class="n">callable_ids</span><span class="p">:</span>
             <span class="n">original</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">callable_id</span><span class="o">.</span><span class="n">obj</span><span class="p">,</span> <span class="n">callable_id</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>

@@ -22,7 +22,7 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="DDP usage example" href="train_ddp.html" />
+    <link rel="next" title="Heartbeat API usage example with DDP" href="train_ddp_heartbeats.html" />
     <link rel="prev" title="Examples" href="../examples.html" /> 
 </head>
 
@@ -49,10 +49,13 @@
 <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration Guides</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../examples.html">Examples</a><ul class="current">
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Basic usage example</a></li>
-<li class="toctree-l3"><a class="reference internal" href="train_ddp.html">DDP usage example</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_sections.html">Section API usage example with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="in_job_and_in_process_example.html">FT Launcher &amp; Inprocess integration example</a></li>
 </ul>
 </li>
 </ul>
@@ -193,13 +196,13 @@
 <span class="linenos">100</span>    <span class="c1"># FT: initialize the client</span>
 <span class="linenos">101</span>    <span class="n">ft_client</span> <span class="o">=</span> <span class="n">ft</span><span class="o">.</span><span class="n">RankMonitorClient</span><span class="p">()</span>
 <span class="linenos">102</span>    <span class="n">ft_client</span><span class="o">.</span><span class="n">init_workload_monitoring</span><span class="p">()</span>
-<span class="linenos">103</span>    <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT initialized. Timeouts: </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">timeouts</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="linenos">103</span>    <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT initialized. Timeouts: </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 <span class="linenos">104</span>    <span class="c1"># FT: load state (calculated timeouts)</span>
 <span class="linenos">105</span>    <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="s2">&quot;ft_state.json&quot;</span><span class="p">):</span>
 <span class="linenos">106</span>        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;ft_state.json&quot;</span><span class="p">,</span> <span class="s2">&quot;r&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
 <span class="linenos">107</span>            <span class="n">ft_state</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
 <span class="linenos">108</span>            <span class="n">ft_client</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">ft_state</span><span class="p">)</span>
-<span class="linenos">109</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT timeouts </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">timeouts</span><span class="si">}</span><span class="s2"> loaded from ft_state.json&quot;</span><span class="p">)</span>
+<span class="linenos">109</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT timeouts </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="si">}</span><span class="s2"> loaded from ft_state.json&quot;</span><span class="p">)</span>
 <span class="linenos">110</span>
 <span class="linenos">111</span>    <span class="c1"># Dataset and DataLoader with DistributedSampler</span>
 <span class="linenos">112</span>    <span class="n">dataset</span> <span class="o">=</span> <span class="n">SimpleDataset</span><span class="p">(</span><span class="n">size</span><span class="o">=</span><span class="n">DATASET_LEN</span><span class="p">)</span>
@@ -229,11 +232,11 @@
 <span class="linenos">136</span>            <span class="n">ft_client</span><span class="o">.</span><span class="n">send_heartbeat</span><span class="p">()</span>
 <span class="linenos">137</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Epoch </span><span class="si">{</span><span class="n">epoch</span><span class="si">}</span><span class="s2"> complete. Loss: </span><span class="si">{</span><span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 <span class="linenos">138</span>        <span class="c1"># FT: calculate and set new timeouts</span>
-<span class="linenos">139</span>        <span class="n">ft_client</span><span class="o">.</span><span class="n">calculate_and_set_timeouts</span><span class="p">()</span>
+<span class="linenos">139</span>        <span class="n">ft_client</span><span class="o">.</span><span class="n">calculate_and_set_hb_timeouts</span><span class="p">()</span>
 <span class="linenos">140</span>        <span class="c1"># FT: save the state (calculated timeouts)</span>
 <span class="linenos">141</span>        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;ft_state.json&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
 <span class="linenos">142</span>            <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">ft_client</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">f</span><span class="p">)</span>
-<span class="linenos">143</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT timeouts </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">timeouts</span><span class="si">}</span><span class="s2"> saved to ft_state.json&quot;</span><span class="p">)</span>
+<span class="linenos">143</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;FT timeouts </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="si">}</span><span class="s2"> saved to ft_state.json&quot;</span><span class="p">)</span>
 <span class="linenos">144</span>
 <span class="linenos">145</span>    <span class="c1"># FT: shutdown the client</span>
 <span class="linenos">146</span>    <span class="n">ft_client</span><span class="o">.</span><span class="n">shutdown_workload_monitoring</span><span class="p">()</span>
@@ -255,7 +258,7 @@
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="../examples.html" class="btn btn-neutral float-left" title="Examples" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="train_ddp.html" class="btn btn-neutral float-right" title="DDP usage example" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="train_ddp_heartbeats.html" class="btn btn-neutral float-right" title="Heartbeat API usage example with DDP" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

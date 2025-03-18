@@ -23,7 +23,7 @@
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Usage guide" href="usage_guide.html" />
-    <link rel="prev" title="nvidia-resiliency-ext v0.2.1" href="../index.html" /> 
+    <link rel="prev" title="nvidia-resiliency-ext v0.3.0" href="../index.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -49,6 +49,7 @@
 <ul class="current">
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Fault Tolerance</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration Guides</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
 </ul>
@@ -94,17 +95,23 @@
 </ul>
 </dd>
 </dl>
-<p>The <code class="docutils literal notranslate"><span class="pre">nvidia-resiliency-ext</span></code> package also includes the PTL callback <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> that simplifies FT package integration with PyTorch Lightning-based workloads.</p>
-<p>Fault Tolerance is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance</span></code> package.
+<p>Fault Tolerance is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance</span></code> package.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">nvidia-resiliency-ext</span></code> package also includes the PTL callback <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> that simplifies FT package integration with PyTorch Lightning-based workloads.
 <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.ptl_resiliency</span></code> package.</p>
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="usage_guide.html">Usage guide</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="usage_guide.html#terms">Terms</a></li>
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#ft-package-design-overview">FT Package Design Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#ft-integration-guide-for-pytorch">FT Integration Guide for PyTorch</a></li>
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#ft-integration-guide-for-pytorch-lightning">FT Integration Guide for PyTorch Lightning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#design-overview">Design Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#usage-overview">Usage Overview</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="integration.html">Integration Guides</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="integration/heartbeats.html">Heartbeats API Integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/sections.html">Sections API Integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/ptl.html">PyTorch Lightning Integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/inprocess.html">FT Launcher &amp; Inprocess integration</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">API documentation</a><ul>
@@ -116,7 +123,9 @@
 </li>
 <li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="examples/basic_example.html">Basic usage example</a></li>
-<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp.html">DDP usage example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_sections.html">Section API usage example with DDP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/in_job_and_in_process_example.html">FT Launcher &amp; Inprocess integration example</a></li>
 </ul>
 </li>
 </ul>
@@ -127,7 +136,7 @@
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="../index.html" class="btn btn-neutral float-left" title="nvidia-resiliency-ext v0.2.1" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../index.html" class="btn btn-neutral float-left" title="nvidia-resiliency-ext v0.3.0" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
         <a href="usage_guide.html" class="btn btn-neutral float-right" title="Usage guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 

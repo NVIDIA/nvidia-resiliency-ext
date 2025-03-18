@@ -1,0 +1,374 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="sd">&quot;&quot;&quot; State dict saver for PyT Distributed format allowing asynchronous save. &quot;&quot;&quot;</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">fields</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">getLogger</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">time</span><span class="w"> </span><span class="kn">import</span> <span class="n">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch.distributed</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">dist</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint</span><span class="w"> </span><span class="kn">import</span> <span class="n">CheckpointException</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.default_planner</span><span class="w"> </span><span class="kn">import</span> <span class="n">DefaultSavePlanner</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.metadata</span><span class="w"> </span><span class="kn">import</span> <span class="n">STATE_DICT_TYPE</span><span class="p">,</span> <span class="n">Metadata</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.planner</span><span class="w"> </span><span class="kn">import</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="n">SavePlanner</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_DistWrapper</span><span class="p">,</span> <span class="n">_get_failure_dict</span>
+
+<span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">.filesystem_async</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileSystemWriterAsync</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">.torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">MCoreSavePlanner</span>
+
+
+<span class="n">logger</span> <span class="o">=</span> <span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_compare_dataclasses</span><span class="p">(</span><span class="n">obj1</span><span class="p">,</span> <span class="n">obj2</span><span class="p">):</span>
+    <span class="k">if</span> <span class="nb">type</span><span class="p">(</span><span class="n">obj1</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="nb">type</span><span class="p">(</span><span class="n">obj2</span><span class="p">):</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Objects are of different types: </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">obj1</span><span class="p">)</span><span class="si">}</span><span class="s2"> and </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">obj2</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+
+    <span class="n">differences</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">field</span> <span class="ow">in</span> <span class="n">fields</span><span class="p">(</span><span class="n">obj1</span><span class="p">):</span>
+        <span class="n">value1</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">obj1</span><span class="p">,</span> <span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="n">value2</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">obj2</span><span class="p">,</span> <span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">value1</span> <span class="o">!=</span> <span class="n">value2</span><span class="p">:</span>
+            <span class="n">differences</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">value1</span><span class="si">}</span><span class="s2"> != </span><span class="si">{</span><span class="n">value2</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">differences</span> <span class="k">if</span> <span class="n">differences</span> <span class="k">else</span> <span class="s2">&quot;All fields are equal&quot;</span>
+
+
+<div class="viewcode-block" id="save_state_dict_async_plan">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">save_state_dict_async_plan</span><span class="p">(</span>
+    <span class="n">state_dict</span><span class="p">:</span> <span class="n">STATE_DICT_TYPE</span><span class="p">,</span>
+    <span class="n">storage_writer</span><span class="p">:</span> <span class="s1">&#39;FileSystemWriterAsync&#39;</span><span class="p">,</span>
+    <span class="n">process_group</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">dist</span><span class="o">.</span><span class="n">ProcessGroup</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">coordinator_rank</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="n">planner</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Union</span><span class="p">[</span><span class="n">SavePlanner</span><span class="p">,</span> <span class="s1">&#39;MCoreSavePlanner&#39;</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">cached_ckpt_structure</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Tuple</span><span class="p">[</span><span class="n">SavePlan</span><span class="p">,</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="nb">bool</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">loaded_all_plans</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">SavePlan</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Tuple</span><span class="p">[</span><span class="s1">&#39;FileSystemWriterAsync&#39;</span><span class="p">,</span> <span class="n">Union</span><span class="p">[</span><span class="n">Metadata</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span> <span class="n">_DistWrapper</span><span class="p">],</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="nb">bool</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    First stage of asynchronously saving a state dict to storage.</span>
+
+<span class="sd">    This is an async adaptation of `torch.distributed.checkpoint.state_dict_saver`.</span>
+<span class="sd">    To support async save, the process is split into three stages:</span>
+
+<span class="sd">    1. **Planning**</span>
+<span class="sd">    2. **Actual saving** (must be asynchronous)</span>
+<span class="sd">    3. **Finalization**</span>
+
+<span class="sd">    The planning step is handled by this function and follows several steps as described in</span>
+<span class="sd">    the [PyTorch documentation](https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner).</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        state_dict (STATE_DICT_TYPE): The state dict to save.</span>
+<span class="sd">        storage_writer (FileSystemWriterAsync): The storage writer.</span>
+<span class="sd">            Currently, only an instance of `FileSystemWriterAsync` is supported.</span>
+<span class="sd">        process_group (dist.ProcessGroup, optional): The process group used for save planning.</span>
+<span class="sd">        coordinator_rank (int, optional): The coordinator rank for planning. Defaults to 0.</span>
+<span class="sd">        planner (SavePlanner, optional): The save planner for the `torch.distributed.checkpoint` format.</span>
+<span class="sd">        cached_ckpt_structure (Tuple[SavePlan, SavePlan, bool], optional):</span>
+<span class="sd">            A tuple containing:</span>
+<span class="sd">            - `cached_central_plan` (SavePlan): A globally coordinated save plan cached in the previous iteration.</span>
+<span class="sd">            - `cached_local_plan` (SavePlan): A local plan cached in the previous iteration.</span>
+<span class="sd">            - `validated_cache_reuse` (bool): Whether global metadata and the planning dict are consistent over iterations.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Tuple:</span>
+<span class="sd">        - The storage writer (same as input).</span>
+<span class="sd">        - Metadata from planning (or `None` if cached global metadata is reused).</span>
+<span class="sd">        - The distributed wrapper used for planning.</span>
+
+<span class="sd">    The return value of this function should be passed as input to</span>
+<span class="sd">    `save_state_dict_async_finalize`, along with `cached_plan`, to skip `reduce_scatter` during planning.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">cached_central_plan</span><span class="p">,</span> <span class="n">cached_local_plan</span><span class="p">,</span> <span class="n">validated_cache_reuse</span> <span class="o">=</span> <span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">cached_ckpt_structure</span><span class="p">:</span>
+        <span class="n">cached_central_plan</span><span class="p">,</span> <span class="n">cached_local_plan</span><span class="p">,</span> <span class="n">validated_cache_reuse</span> <span class="o">=</span> <span class="n">cached_ckpt_structure</span>
+
+    <span class="n">rank</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span> <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">()</span> <span class="k">else</span> <span class="mi">0</span>
+    <span class="n">dist_wrapper</span> <span class="o">=</span> <span class="n">_DistWrapper</span><span class="p">(</span><span class="n">process_group</span><span class="p">,</span> <span class="kc">True</span><span class="p">,</span> <span class="n">coordinator_rank</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">planner</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">planner</span> <span class="o">=</span> <span class="n">DefaultSavePlanner</span><span class="p">()</span>
+    <span class="k">assert</span> <span class="n">planner</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+    <span class="n">global_metadata</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, starting state dict save&quot;</span><span class="p">)</span>
+    <span class="n">local_plan</span> <span class="o">=</span> <span class="n">cached_local_plan</span>
+    <span class="n">global_md_verify_reuse</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">local_step</span><span class="p">():</span>
+        <span class="k">nonlocal</span> <span class="n">local_plan</span>
+        <span class="k">assert</span> <span class="n">planner</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="c1"># PyTorch 2.4 introduced additional `metadata` argument,</span>
+        <span class="c1"># we have to reference `is_coordinator` args by name</span>
+        <span class="n">planner</span><span class="o">.</span><span class="n">set_up_planner</span><span class="p">(</span><span class="n">state_dict</span><span class="p">,</span> <span class="n">is_coordinator</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">is_coordinator</span><span class="p">)</span>
+        <span class="n">storage_writer</span><span class="o">.</span><span class="n">set_up_storage_writer</span><span class="p">(</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">is_coordinator</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">validated_cache_reuse</span> <span class="ow">and</span> <span class="n">local_plan</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">local_plan</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">create_local_plan</span><span class="p">()</span>
+        <span class="n">local_plan</span> <span class="o">=</span> <span class="n">storage_writer</span><span class="o">.</span><span class="n">prepare_local_plan</span><span class="p">(</span><span class="n">local_plan</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">local_plan</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">global_step</span><span class="p">(</span><span class="n">all_local_plans</span><span class="p">):</span>
+        <span class="k">nonlocal</span> <span class="n">global_metadata</span>
+        <span class="k">assert</span> <span class="n">planner</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="n">all_local_plans</span><span class="p">,</span> <span class="n">global_metadata</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">create_global_plan</span><span class="p">(</span><span class="n">all_local_plans</span><span class="p">)</span>
+        <span class="n">all_local_plans</span> <span class="o">=</span> <span class="n">storage_writer</span><span class="o">.</span><span class="n">prepare_global_plan</span><span class="p">(</span><span class="n">all_local_plans</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">all_local_plans</span>
+
+    <span class="c1"># Execute local and global planning</span>
+    <span class="c1"># Ideally we want to use the cached plan. Otherwise if the planner and storage_writer</span>
+    <span class="c1"># allow it (`can_run_decentralized_global_plan`) we gather the plans to create</span>
+    <span class="c1"># the metadata but prepare the plans independently on each rank.</span>
+    <span class="c1"># In the worst case we have to reduce_scatter all the plans.</span>
+    <span class="n">start_plan</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">validated_cache_reuse</span> <span class="ow">and</span> <span class="n">cached_central_plan</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Passed cache reusable&quot;</span><span class="p">)</span>
+        <span class="n">local_step</span><span class="p">()</span>
+        <span class="n">central_plan</span> <span class="o">=</span> <span class="n">cached_central_plan</span>
+    <span class="k">elif</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">planner</span><span class="p">,</span> <span class="s1">&#39;can_run_decentralized_global_plan&#39;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">getattr</span><span class="p">(</span>
+        <span class="n">storage_writer</span><span class="p">,</span> <span class="s1">&#39;can_run_decentralized_global_plan&#39;</span><span class="p">,</span> <span class="kc">False</span>
+    <span class="p">):</span>
+        <span class="n">local_plan</span> <span class="o">=</span> <span class="n">local_step</span><span class="p">()</span>
+        <span class="n">global_md_verify_reuse</span> <span class="o">=</span> <span class="n">verify_global_md_reuse</span><span class="p">(</span>
+            <span class="n">loaded_all_plans</span><span class="p">,</span> <span class="n">local_plan</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">dist_wrapper</span>
+        <span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">loaded_all_plans</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">global_md_verify_reuse</span><span class="p">:</span>
+            <span class="n">all_local_plans</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">gather_object</span><span class="p">(</span><span class="n">local_plan</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">is_coordinator</span><span class="p">:</span>
+                <span class="n">_</span><span class="p">,</span> <span class="n">global_metadata</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">create_global_plan</span><span class="p">(</span><span class="n">all_local_plans</span><span class="p">)</span>
+                <span class="n">global_metadata</span><span class="o">.</span><span class="n">all_local_plans</span> <span class="o">=</span> <span class="n">all_local_plans</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Passed cached global metadata&quot;</span><span class="p">)</span>
+            <span class="n">global_metadata</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">local_plan</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">create_decentralized_global_plan</span><span class="p">(</span><span class="n">local_plan</span><span class="p">)</span>
+        <span class="n">local_plan</span> <span class="o">=</span> <span class="n">storage_writer</span><span class="o">.</span><span class="n">prepare_decentralized_global_plan</span><span class="p">(</span><span class="n">local_plan</span><span class="p">)</span>
+        <span class="n">central_plan</span> <span class="o">=</span> <span class="n">local_plan</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">central_plan</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">reduce_scatter</span><span class="p">(</span><span class="s2">&quot;plan&quot;</span><span class="p">,</span> <span class="n">local_step</span><span class="p">,</span> <span class="n">global_step</span><span class="p">)</span>
+    <span class="n">central_plan</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">finish_plan</span><span class="p">(</span><span class="n">central_plan</span><span class="p">)</span>
+    <span class="n">end_plan</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, plan time: </span><span class="si">{</span><span class="n">end_plan</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start_plan</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="c1"># Prepare async writing of tensors.</span>
+    <span class="c1"># The `storage_writer` will store the information about tensors it needs to save</span>
+    <span class="n">start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+    <span class="n">storage_writer</span><span class="o">.</span><span class="n">prepare_write_data</span><span class="p">(</span><span class="n">central_plan</span><span class="p">,</span> <span class="n">planner</span><span class="p">)</span>
+    <span class="n">end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">time</span><span class="p">()</span><span class="si">}</span><span class="s2"> rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, write(async) time: </span><span class="si">{</span><span class="n">end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="p">(</span>
+        <span class="p">(</span><span class="n">storage_writer</span><span class="p">,</span> <span class="n">global_metadata</span><span class="p">,</span> <span class="n">dist_wrapper</span><span class="p">),</span>
+        <span class="n">central_plan</span><span class="p">,</span>
+        <span class="n">local_plan</span><span class="p">,</span>
+        <span class="n">cached_central_plan</span> <span class="o">==</span> <span class="n">central_plan</span><span class="p">,</span>
+        <span class="n">global_md_verify_reuse</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="verify_global_md_reuse">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_md_reuse">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">verify_global_md_reuse</span><span class="p">(</span>
+    <span class="n">loaded_all_plans</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">SavePlan</span><span class="p">],</span> <span class="n">local_plan</span><span class="p">:</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="n">rank</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">dist_wrapper</span><span class="p">:</span> <span class="n">_DistWrapper</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Verifies that global metadata reuse is possible by checking the loaded plans from the</span>
+<span class="sd">     checkpoint are consistent, which means we have the same settings when resuming training.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        loaded_all_plans: List[SavePlan], The loaded plans from the checkpoint</span>
+<span class="sd">         (stored in checkpoint metadata).</span>
+<span class="sd">        local_plan: SavePlan, The local save plan.</span>
+<span class="sd">        rank: Current process rank.</span>
+<span class="sd">        dist_wrapper (_DistWrapper): distributed wrapper created during planning</span>
+
+<span class="sd">    Returns: True iff the global metadata reuse is possible.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;verifying reuse of global metadata&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">loaded_all_plans</span><span class="p">:</span>
+        <span class="n">global_md_verify_reuse</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;loaded global metadata reuse verification: no loaded plans passed&quot;</span><span class="p">)</span>
+
+    <span class="k">elif</span> <span class="nb">len</span><span class="p">(</span><span class="n">loaded_all_plans</span><span class="p">)</span> <span class="o">==</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">get_world_size</span><span class="p">():</span>
+        <span class="n">local_verify_reuse</span> <span class="o">=</span> <span class="nb">all</span><span class="p">(</span>
+            <span class="nb">getattr</span><span class="p">(</span><span class="n">local_plan</span><span class="p">,</span> <span class="n">f</span><span class="o">.</span><span class="n">name</span><span class="p">)</span> <span class="o">==</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">loaded_all_plans</span><span class="p">[</span><span class="n">rank</span><span class="p">],</span> <span class="n">f</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="n">fields</span><span class="p">(</span><span class="n">local_plan</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">f</span><span class="o">.</span><span class="n">name</span> <span class="o">!=</span> <span class="s1">&#39;storage_data&#39;</span>
+        <span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">local_verify_reuse</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;local_verify_reuse is False: diffs -&quot;</span>
+                <span class="sa">f</span><span class="s2">&quot; </span><span class="si">{</span><span class="n">_compare_dataclasses</span><span class="p">(</span><span class="n">local_plan</span><span class="p">,</span><span class="w"> </span><span class="n">loaded_all_plans</span><span class="p">[</span><span class="n">rank</span><span class="p">])</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+        <span class="n">all_results</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="n">local_verify_reuse</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s1">&#39;cuda&#39;</span><span class="p">)</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">all_results</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">MIN</span><span class="p">)</span>
+        <span class="c1"># Check if all reduced results are True</span>
+        <span class="n">global_md_verify_reuse</span> <span class="o">=</span> <span class="n">all_results</span><span class="o">.</span><span class="n">item</span><span class="p">()</span> <span class="o">==</span> <span class="mi">1</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">global_md_verify_reuse</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="k">return</span> <span class="n">global_md_verify_reuse</span></div>
+
+
+
+<div class="viewcode-block" id="save_state_dict_async_finalize">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">save_state_dict_async_finalize</span><span class="p">(</span>
+    <span class="n">storage_writer</span><span class="p">:</span> <span class="s1">&#39;FileSystemWriterAsync&#39;</span><span class="p">,</span> <span class="n">global_metadata</span><span class="p">:</span> <span class="n">Metadata</span><span class="p">,</span> <span class="n">dist_wrapper</span><span class="p">:</span> <span class="n">_DistWrapper</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Finalization of save_state_dict_async_plan.</span>
+
+<span class="sd">    The input arguments are the same as the save_state_dict_async_plan output,</span>
+<span class="sd">    the `write_results` are retrieved from the storage_writer.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        storage_writer (FileSystemWriterAsync): storage writer used for planning</span>
+<span class="sd">        global_metadata (Metadata): metadata created during planning</span>
+<span class="sd">        dist_wrapper (_DistWrapper): distributed wrapper created during planning</span>
+
+<span class="sd">    Returns: None</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">write_results</span> <span class="o">=</span> <span class="n">storage_writer</span><span class="o">.</span><span class="n">retrieve_write_results</span><span class="p">()</span>
+
+    <span class="c1"># Gather the write results that will be saved to the metadata file.</span>
+    <span class="n">gather_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+    <span class="n">all_results</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">gather_object</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span>
+    <span class="n">gather_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">gather_end</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, gather: </span><span class="si">{</span><span class="n">gather_end</span><span class="o">-</span><span class="n">gather_start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Store the metadata on coordinator rank</span>
+    <span class="k">if</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">is_coordinator</span><span class="p">:</span>
+        <span class="n">node_failures</span> <span class="o">=</span> <span class="n">_get_failure_dict</span><span class="p">(</span><span class="n">all_results</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">node_failures</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">assert</span> <span class="n">global_metadata</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="n">write_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+            <span class="n">storage_writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">global_metadata</span><span class="p">,</span> <span class="n">all_results</span><span class="p">)</span>
+            <span class="n">write_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">write_end</span><span class="si">}</span><span class="s2">, metadata_write: </span><span class="si">{</span><span class="n">write_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">write_start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">CheckpointException</span><span class="p">(</span><span class="s2">&quot;write&quot;</span><span class="p">,</span> <span class="n">node_failures</span><span class="p">)</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

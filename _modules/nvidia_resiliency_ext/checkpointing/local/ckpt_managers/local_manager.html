@@ -101,9 +101,9 @@
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">...utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">debug_time</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">..base_state_dict</span><span class="w"> </span><span class="kn">import</span> <span class="n">TensorAwareStateDict</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">..replication.strategies</span><span class="w"> </span><span class="kn">import</span> <span class="n">ReplicationStrategy</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">..replication.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">debug_time</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.base_manager</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">BaseCheckpointManager</span><span class="p">,</span>
     <span class="n">CheckpointingException</span><span class="p">,</span>
@@ -176,7 +176,7 @@
             <span class="c1"># Severity: Medium   Confidence: High</span>
             <span class="c1"># CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)</span>
             <span class="c1"># More Info: https://bandit.readthedocs.io/en/latest/plugins/b614_pytorch_load_save.html</span>
-            <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">local_ckpt_path</span><span class="p">)</span>  <span class="c1"># nosec</span>
+            <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">local_ckpt_path</span><span class="p">,</span> <span class="n">weights_only</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>  <span class="c1"># nosec</span>
         <span class="k">except</span> <span class="ne">FileNotFoundError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="n">err_msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;File </span><span class="si">{</span><span class="n">local_ckpt_path</span><span class="si">}</span><span class="s2"> does not exist!&quot;</span>
             <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
@@ -215,7 +215,7 @@
 <span class="sd">        for the specified iteration.</span>
 
 <span class="sd">        Args:</span>
-<span class="sd">            iteration : The iteration number for which the checkpoint was successfully saved.</span>
+<span class="sd">            iteration : The global iteration number for which the checkpoint was successfully saved</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">ckpts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="s1">&#39;*&#39;</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">))</span>
         <span class="n">rm_ckpts</span> <span class="o">=</span> <span class="p">[</span><span class="n">ckpt</span> <span class="k">for</span> <span class="n">ckpt</span> <span class="ow">in</span> <span class="n">ckpts</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_filename_to_id</span><span class="p">(</span><span class="n">ckpt</span><span class="o">.</span><span class="n">name</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">iteration</span><span class="p">]</span>
@@ -228,7 +228,7 @@
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Removes invalid checkpoints that could not be saved due to a failure.</span>
 
 <span class="sd">        Args:</span>
-<span class="sd">            iteration : The iteration number for which the checkpoint failed to save.</span>
+<span class="sd">            iteration : The global iteration number for which the checkpoint failed to save.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">rm_ckpts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="n">iteration</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">))</span>
         <span class="k">for</span> <span class="n">ckpt</span> <span class="ow">in</span> <span class="n">rm_ckpts</span><span class="p">:</span>

@@ -53,6 +53,7 @@
 <li class="toctree-l2 current"><a class="current reference internal" href="#">API documentation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="api/wrap.html">Wrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/compose.html">Compose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/state.html">State</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/rank_filter.html">Rank Filter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/initialize.html">Initialize</a></li>
@@ -114,32 +115,48 @@
 <li class="toctree-l2"><a class="reference internal" href="api/compose.html#nvidia_resiliency_ext.inprocess.Compose"><code class="docutils literal notranslate"><span class="pre">Compose</span></code></a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="api/state.html">State</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/state.html#nvidia_resiliency_ext.inprocess.Mode"><code class="docutils literal notranslate"><span class="pre">Mode</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/state.html#nvidia_resiliency_ext.inprocess.Mode.INITIALIZED"><code class="docutils literal notranslate"><span class="pre">Mode.INITIALIZED</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/state.html#nvidia_resiliency_ext.inprocess.Mode.ACTIVE"><code class="docutils literal notranslate"><span class="pre">Mode.ACTIVE</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/state.html#nvidia_resiliency_ext.inprocess.Mode.INACTIVE"><code class="docutils literal notranslate"><span class="pre">Mode.INACTIVE</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/state.html#nvidia_resiliency_ext.inprocess.Mode.TERMINATED"><code class="docutils literal notranslate"><span class="pre">Mode.TERMINATED</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api/state.html#nvidia_resiliency_ext.inprocess.FrozenState"><code class="docutils literal notranslate"><span class="pre">FrozenState</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/state.html#nvidia_resiliency_ext.inprocess.State"><code class="docutils literal notranslate"><span class="pre">State</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="api/rank_assignment.html">Rank Assignment</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.FillGaps"><code class="docutils literal notranslate"><span class="pre">FillGaps</span></code></a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.FilterGroupedByKey"><code class="docutils literal notranslate"><span class="pre">FilterGroupedByKey</span></code></a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="docutils literal notranslate"><span class="pre">RankAssignment</span></code></a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankDiscarded"><code class="docutils literal notranslate"><span class="pre">RankDiscarded</span></code></a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.ShiftRanks"><code class="docutils literal notranslate"><span class="pre">ShiftRanks</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#id1">Rank Assignment</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/rank_assignment.html#base-class">Base class</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/rank_assignment.html#module-nvidia_resiliency_ext.inprocess.rank_assignment">Tree</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/rank_assignment.html#module-0">Composable Rank Assignments</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html#rank-filtering">Rank Filtering</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/rank_assignment.html#id2">Base class</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/rank_assignment.html#module-1">Rank Filters</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api/rank_filter.html">Rank Filter</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy"><code class="docutils literal notranslate"><span class="pre">ActiveWorldSizeDivisibleBy</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize"><code class="docutils literal notranslate"><span class="pre">MaxActiveWorldSize</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter"><code class="docutils literal notranslate"><span class="pre">RankFilter</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.WorldSizeDivisibleBy"><code class="docutils literal notranslate"><span class="pre">WorldSizeDivisibleBy</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api/initialize.html">Initialize</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="docutils literal notranslate"><span class="pre">Initialize</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.RetryController"><code class="docutils literal notranslate"><span class="pre">RetryController</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api/abort.html">Abort</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.Abort"><code class="docutils literal notranslate"><span class="pre">Abort</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="docutils literal notranslate"><span class="pre">AbortTorchDistributed</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api/finalize.html">Finalize</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/finalize.html#nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="docutils literal notranslate"><span class="pre">Finalize</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/finalize.html#nvidia_resiliency_ext.inprocess.finalize.ThreadedFinalize"><code class="docutils literal notranslate"><span class="pre">ThreadedFinalize</span></code></a></li>
 </ul>
 </li>
@@ -147,7 +164,6 @@
 <li class="toctree-l2"><a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck"><code class="docutils literal notranslate"><span class="pre">CudaHealthCheck</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.FaultCounter"><code class="docutils literal notranslate"><span class="pre">FaultCounter</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.FaultCounterExceeded"><code class="docutils literal notranslate"><span class="pre">FaultCounterExceeded</span></code></a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="docutils literal notranslate"><span class="pre">HealthCheck</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api/exception.html">Exceptions</a><ul>

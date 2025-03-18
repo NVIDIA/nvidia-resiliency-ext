@@ -52,7 +52,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Async Checkpointing</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="examples.html">Basic usage example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../local/index.html">Local Checkpointing</a></li>
@@ -85,11 +85,18 @@
              
   <section id="async-checkpointing">
 <h1>Async Checkpointing<a class="headerlink" href="#async-checkpointing" title="Link to this heading"></a></h1>
-<p>Asynchronous checkpointing in NVIDIA resiliency extension provides core utilities to make checkpointing routines
-run in the background. It uses <cite>torch.multiprocessing</cite> to fork a temporary process to initiate asynchronous checkpointing routine.
-Application can check this asynchronous checkpoint save in a non-blocking manner and specify a user-defined finalization step
-when all ranks finish its background checkpoint saving.</p>
-<p>In this repo, we include an instantation of this asynchronous checkpoint utils for <cite>torch.save</cite></p>
+<p>The asynchronous checkpointing feature in the NVIDIA Resiliency Extension provides core utilities to offload checkpointing routines to the background.
+It leverages <cite>torch.multiprocessing</cite> to either fork a temporary process or spawn a persistent process for efficient, non-blocking checkpointing.</p>
+<p>Applications can monitor asynchronous checkpoint progress in a non-blocking manner
+and define a custom finalization step once all ranks complete their background checkpoint saving.</p>
+<p>This repository includes an implementation of asynchronous checkpointing utilities for both <cite>torch.save</cite> and <cite>torch.distributed.save_state_dict</cite>.
+Our modified <cite>torch.distributed.save_state_dict</cite> interface is integrated with an optimized backend, <cite>FileSystemWriterAsync</cite>, which:</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>Runs in the async checkpoint process creating child parallel processes for intra-node parallelism, avoiding GIL contention.</p></li>
+<li><p>Minimizes metadata communication overhead by metadata caching, ensuring efficient checkpoint saving.</p></li>
+</ul>
+</div></blockquote>
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul>
@@ -100,10 +107,16 @@ when all ranks finish its background checkpoint saving.</p>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">API documentation</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="api/core.html">Asynchronous Checkpoint Core Utilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/filesystem_async.html">Asynchronous FileSystemWriter Implementation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/state_dict_saver.html">Asynchronous Pytorch Distributed Checkpoint save with optimized <cite>FileSystemWriter</cite></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/torch_ckpt.html">Asynchronous PyTorch <cite>torch.save</cite> with the Core utility</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="examples.html">Basic usage example</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="examples/basic_example.html">Basic usage example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/writer_example.html">FileSystemWriter example</a></li>
+</ul>
+</li>
 </ul>
 </div>
 </section>

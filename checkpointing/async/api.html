@@ -53,10 +53,12 @@
 <li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">API documentation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="api/core.html">Asynchronous Checkpoint Core Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/filesystem_async.html">Asynchronous FileSystemWriter Implementation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/state_dict_saver.html">Asynchronous Pytorch Distributed Checkpoint save with optimized <cite>FileSystemWriter</cite></a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/torch_ckpt.html">Asynchronous PyTorch <cite>torch.save</cite> with the Core utility</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="examples.html">Basic usage example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../local/index.html">Local Checkpointing</a></li>
@@ -94,9 +96,21 @@
 <p class="caption" role="heading"><span class="caption-text">API documentation</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="api/core.html">Asynchronous Checkpoint Core Utilities</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller"><code class="docutils literal notranslate"><span class="pre">AsyncCaller</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue"><code class="docutils literal notranslate"><span class="pre">AsyncCallsQueue</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest"><code class="docutils literal notranslate"><span class="pre">AsyncRequest</span></code></a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller"><code class="docutils literal notranslate"><span class="pre">DistributedAsyncCaller</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller"><code class="docutils literal notranslate"><span class="pre">PersistentAsyncCaller</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller"><code class="docutils literal notranslate"><span class="pre">TemporalAsyncCaller</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/filesystem_async.html">Asynchronous FileSystemWriter Implementation</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api/state_dict_saver.html">Asynchronous Pytorch Distributed Checkpoint save with optimized <cite>FileSystemWriter</cite></a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize"><code class="docutils literal notranslate"><span class="pre">save_state_dict_async_finalize()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan"><code class="docutils literal notranslate"><span class="pre">save_state_dict_async_plan()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_md_reuse"><code class="docutils literal notranslate"><span class="pre">verify_global_md_reuse()</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="api/torch_ckpt.html">Asynchronous PyTorch <cite>torch.save</cite> with the Core utility</a><ul>

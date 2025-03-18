@@ -56,7 +56,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
-<li class="toctree-l2"><a class="reference internal" href="examples.html">Basic usage example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../local/index.html">Local Checkpointing</a></li>
@@ -121,7 +121,7 @@ For example, if a checkpointing routine needs to write metadata (e.g., iteration
 global synchronization ensures that all ranks finish their asynchronous checkpointing before proceeding.</p>
 <p>This global synchronization is implemented using a single integer collective operation, ensuring that all ranks have completed their asynchronous checkpoint writes.
 The synchronization logic is handled within
-<a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done"><code class="xref py py-meth docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done()</span></code></a>, which is invoked by <code class="xref py py-meth docutils literal notranslate"><span class="pre">AsyncCallsQueue.maybe_finalize_async_calls()</span></code>.</p>
+<code class="xref py py-meth docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done()</span></code>, which is invoked by <code class="xref py py-meth docutils literal notranslate"><span class="pre">AsyncCallsQueue.maybe_finalize_async_calls()</span></code>.</p>
 <p>The following snippet demonstrates how global synchronization is performed when <cite>no_dist</cite> is set to <cite>False</cite> (indicating that synchronization is required):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">is_alive</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">is_alive</span><span class="p">())</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mi">0</span>
 

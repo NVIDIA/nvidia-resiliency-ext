@@ -49,10 +49,10 @@
 <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration Guides</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="config.html">Config</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Client</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts"><code class="docutils literal notranslate"><span class="pre">HeartbeatTimeouts</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClientError"><code class="docutils literal notranslate"><span class="pre">RankMonitorClientError</span></code></a></li>
 </ul>
@@ -99,43 +99,31 @@
   <section id="module-nvidia_resiliency_ext.fault_tolerance.rank_monitor_client">
 <span id="client"></span><h1>Client<a class="headerlink" href="#module-nvidia_resiliency_ext.fault_tolerance.rank_monitor_client" title="Link to this heading"></a></h1>
 <dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.</span></span><span class="sig-name descname"><span class="pre">HeartbeatTimeouts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">initial</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">subsequent</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">were_calculated</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#HeartbeatTimeouts"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>Contains hearbeat related timeouts used by FT.
-- <cite>initial</cite> is the timeout for the first heartbeat.
-- <cite>subsequent</cite> is the timeout for the subsequent heartbeats.</p>
-<p>Usually, the first heartbeat takes longer to be sent, hence there are 2 separate timeouts.
-- <cite>were_calculated</cite> indicates whether the timeouts were calculated from</p>
-<blockquote>
-<div><p>the observed heartbeat intervals or defined in the (YAML) config.</p>
-</div></blockquote>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>initial</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>subsequent</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>were_calculated</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em> | </em><em>None</em>)</p></li>
-</ul>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.</span></span><span class="sig-name descname"><span class="pre">RankMonitorClient</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient" title="Link to this definition"></a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p><cite>RankMonitorClient</cite> is a client for <cite>RankMonitorServer</cite>.
 Its instances are created in each rank process. After creation,
-IPC connection can be established with <cite>RankMonitorServer</cite> using <cite>.init_workload_monitoring</cite>.
-The client should send heartbeats to the server, which monitor its health.
-Heartbeats are sent with <cite>.send_heartbeat</cite>.</p>
-<p><cite>RankMonitorServer</cite> monitors time between heartbeats and can detect hangs.
-<cite>RankMonitorClient</cite> can estimate suitable timeouts for the heartbeats,
+IPC connection can be established with <cite>RankMonitorServer</cite> using <cite>.init_workload_monitoring</cite>.</p>
+<p><cite>RankMonitorClient</cite> provides 2 independent functionalities that can be used for hang detection:</p>
+<p>1. Heartbeat mechanism:
+<cite>.send_heartbeat</cite> method sends a heartbeat to the server.
+<cite>RankMonitorServer</cite> monitors time elapsed between heartbeats and detects hangs, based on two timeouts:
+- initial timeout, is a maximum time between client initialization and the first heartbeat
+- subsequent timeout, is a maximum time between two consecutive heartbeats</p>
+<p>2. Section mechanism:
+<cite>.start_section</cite> and <cite>.end_section</cite> are used to wrap some sections of user code.
+Sections are identified by a user-provided name. User can configure timeouts for each section in the FT config.
+Hang is detected if a section is open for too long.
+To ensure that code that is not wrapped in any section is not running for too long (hung),
+there is additional “out-of-section” timeout, which is active while no section is open.</p>
+<p><cite>RankMonitorClient</cite> can estimate suitable timeouts for the heartbeats and sections,
 that will be used instead of values provided in the FT config.
 If there are timeouts predefined in the FT config and timeouts calculated,
-the calculated timeouts always take precedence. Currently used timeouts can be read from
-<cite>timeouts</cite> field. New timeouts can be calculated and set with <cite>.calculate_and_set_timeouts</cite>.</p>
+the calculated timeouts always take precedence.</p>
+<p>If a timeout value is None it means it’s not used (as if it was +inf).</p>
+<p>Currently used timeouts can be read from <cite>.hb_timeouts</cite> and <cite>.section_timeouts</cite> fields.
+New timeouts can be calculated and set with <cite>.calculate_and_set_hb_timeouts</cite> and <cite>.calculate_and_set_section_timeouts</cite>.</p>
 <p>Stateful protocol (<cite>.state_dict()</cite> <cite>.load_state_dict()</cite>)
 is used to persist the state of the client, e.g. calculated timeouts.</p>
 <p><cite>RankMonitorClient</cite> logger is used for logging.</p>
@@ -143,11 +131,10 @@ is used to persist the state of the client, e.g. calculated timeouts.</p>
 <cite>.init_workload_monitoring()</cite> and <cite>.load_state_dict()</cite> need to be called to fully initialize.
 Full FT configuration will be obtained from the server via IPC.</p>
 <dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts">
-<span class="sig-name descname"><span class="pre">calculate_and_set_timeouts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">skip_if_not_ready</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.calculate_and_set_timeouts"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts" title="Link to this definition"></a></dt>
-<dd><p>Calculates and sets the timeouts used for hang detection.</p>
-<p>NOTE: this call synchronizes the calculated timeouts across all ranks.
-NOTE: if calculated timeout value is smaller that currently used, the new value is ignored.</p>
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_hb_timeouts">
+<span class="sig-name descname"><span class="pre">calculate_and_set_hb_timeouts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">skip_if_not_ready</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.calculate_and_set_hb_timeouts"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_hb_timeouts" title="Link to this definition"></a></dt>
+<dd><p>Calculates and sets heartbeat timeouts used for hang detection.</p>
+<p>NOTE: this call synchronizes the calculated timeouts across all ranks.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>skip_if_not_ready</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – If True, silently skips the calculation if there
@@ -162,6 +149,62 @@ is not enough data collected. Otherwise error will be raised. Defaults to False.
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_section_timeouts">
+<span class="sig-name descname"><span class="pre">calculate_and_set_section_timeouts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">selected_sections</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calc_out_of_section</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_if_not_ready</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.calculate_and_set_section_timeouts"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_section_timeouts" title="Link to this definition"></a></dt>
+<dd><p>Calculates and sets section timeouts used for hang detection.</p>
+<p>NOTE: this call synchronizes the calculated timeouts across all ranks.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>selected_sections</strong> (<em>List</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>, </em><em>optional</em>) – List of sections which timeouts should be updated,
+If not provided (None) all section timeouts will be updated</p></li>
+<li><p><strong>calc_out_of_section</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – (bool): Determines if “out of section” timeout should be updated.
+Defaults to True.</p></li>
+<li><p><strong>skip_if_not_ready</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – If True, silently skips the calculation if there
+is not enough data collected. Otherwise error will be raised. Defaults to False.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><dl class="simple">
+<dt>True if the timeouts were calculated and set successfully. False is returned only</dt><dd><p>if calculation was not possible and <cite>skip_if_not_ready</cite> was <cite>True</cite>.</p>
+</dd>
+</dl>
+</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.end_all_sections">
+<span class="sig-name descname"><span class="pre">end_all_sections</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.end_all_sections"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.end_all_sections" title="Link to this definition"></a></dt>
+<dd><p>Closes all currently opened sections.
+Does nothing if there are no sections open.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>None</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.end_section">
+<span class="sig-name descname"><span class="pre">end_section</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">section</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.end_section"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.end_section" title="Link to this definition"></a></dt>
+<dd><p>Close the section with the given name.</p>
+<p>NOTE: The section must be opened.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>section</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – User defined name of the section.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>None</p>
 </dd>
 </dl>
 </dd></dl>
@@ -204,9 +247,39 @@ is not enough data collected. Otherwise error will be raised. Defaults to False.
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request">
+<span class="sig-name descname"><span class="pre">send_workload_control_request</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">req</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.send_workload_control_request"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request" title="Link to this definition"></a></dt>
+<dd><p>Request an workload related action.
+It is sent to the ft_launcher and affects the subsequent rendezvous.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>req</strong> (<em>WorkloadControlRequest</em>) – request specification</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.shutdown_workload_monitoring">
 <span class="sig-name descname"><span class="pre">shutdown_workload_monitoring</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.shutdown_workload_monitoring"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.shutdown_workload_monitoring" title="Link to this definition"></a></dt>
 <dd><p>Shutdown the workload monitoring and close the connection to the RankMonitorServer.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.start_section">
+<span class="sig-name descname"><span class="pre">start_section</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">section</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.start_section"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.start_section" title="Link to this definition"></a></dt>
+<dd><p>Starts a new timed section with the given name.</p>
+<dl class="simple">
+<dt>NOTE: Different sections can be arbitraly aranged (nested, partially or fully overlapping).</dt><dd><p>but the same section name cannot be opened twice without closing it first.</p>
+</dd>
+</dl>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>section</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – User defined name of the section.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>None</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">

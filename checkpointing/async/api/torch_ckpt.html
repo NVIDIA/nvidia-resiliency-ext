@@ -22,8 +22,8 @@
     <script src="../../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../../genindex.html" />
     <link rel="search" title="Search" href="../../../search.html" />
-    <link rel="next" title="Basic usage example" href="../examples.html" />
-    <link rel="prev" title="Asynchronous Checkpoint Core Utilities" href="core.html" /> 
+    <link rel="next" title="Examples" href="../examples.html" />
+    <link rel="prev" title="Asynchronous Pytorch Distributed Checkpoint save with optimized FileSystemWriter" href="state_dict_saver.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -53,13 +53,15 @@
 <li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="core.html">Asynchronous Checkpoint Core Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="filesystem_async.html">Asynchronous FileSystemWriter Implementation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="state_dict_saver.html">Asynchronous Pytorch Distributed Checkpoint save with optimized <cite>FileSystemWriter</cite></a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Asynchronous PyTorch <cite>torch.save</cite> with the Core utility</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint"><code class="docutils literal notranslate"><span class="pre">TorchAsyncCheckpoint</span></code></a></li>
 </ul>
 </li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../examples.html">Basic usage example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../local/index.html">Local Checkpointing</a></li>
@@ -98,7 +100,7 @@
 an additional method to synchronize async saving requests</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.</span></span><span class="sig-name descname"><span class="pre">TorchAsyncCheckpoint</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/torch_ckpt.html#TorchAsyncCheckpoint"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.</span></span><span class="sig-name descname"><span class="pre">TorchAsyncCheckpoint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">persistent_queue</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/torch_ckpt.html#TorchAsyncCheckpoint"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint" title="Link to this definition"></a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.async_fn">
@@ -114,13 +116,19 @@ Schedules a <cite>AsyncReuqest</cite> with preloading tensors to CPU with pinned
 
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.finalize_async_save">
-<span class="sig-name descname"><span class="pre">finalize_async_save</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">blocking</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">no_dist</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/torch_ckpt.html#TorchAsyncCheckpoint.finalize_async_save"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.finalize_async_save" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">finalize_async_save</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">blocking</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">no_dist</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">terminate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/torch_ckpt.html#TorchAsyncCheckpoint.finalize_async_save"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.finalize_async_save" title="Link to this definition"></a></dt>
 <dd><p>Finalizes active async save calls.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until all active requests
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until all active requests
 are done. Otherwise, finalizes only the async request that already
-finished. Defaults to False.</p>
+finished. Defaults to False.</p></li>
+<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>Optional</em>) – if True, training ranks simply check its
+asynchronous checkpoint writer without synchronization.</p></li>
+<li><p><strong>terminate</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, the asynchronous queue will
+be closed as the last action of this function.</p></li>
+</ul>
 </dd>
 </dl>
 </dd></dl>
@@ -133,8 +141,8 @@ finished. Defaults to False.</p>
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="core.html" class="btn btn-neutral float-left" title="Asynchronous Checkpoint Core Utilities" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="../examples.html" class="btn btn-neutral float-right" title="Basic usage example" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="state_dict_saver.html" class="btn btn-neutral float-left" title="Asynchronous Pytorch Distributed Checkpoint save with optimized FileSystemWriter" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../examples.html" class="btn btn-neutral float-right" title="Examples" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

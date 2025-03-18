@@ -23,7 +23,7 @@
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Usage Guide" href="usage_guide.html" />
-    <link rel="prev" title="DDP usage example" href="../fault_tolerance/examples/train_ddp.html" /> 
+    <link rel="prev" title="FT Launcher &amp; Inprocess integration example" href="../fault_tolerance/examples/in_job_and_in_process_example.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -110,7 +110,7 @@ any distributed rank</p></li>
 <li><p>timeout mechanism to detect and recover from deadlocks or livelocks, and a
 guarantee that the job is making meaningful forward progress</p></li>
 <li><p>modular and customizable rank reassignment and health check functions</p></li>
-<li><p>support for pre-allocated and pre-initialized spare workers</p></li>
+<li><p>support for pre-allocated and pre-initialized reserve workers</p></li>
 <li><p>gradual engineering ramp up: integration with existing codebase may start
 from restarting the entire <code class="docutils literal notranslate"><span class="pre">main()</span></code> function, then gradually refactor
 process-group-independent initialization into a separate function call in
@@ -134,6 +134,7 @@ Guide</span></a> and <a class="reference internal" href="examples.html"><span cl
 <li class="toctree-l1"><a class="reference internal" href="api.html">API documentation</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="api/wrap.html">Wrapper</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/compose.html">Compose</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/state.html">State</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/rank_filter.html">Rank Filter</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/initialize.html">Initialize</a></li>
@@ -156,7 +157,7 @@ Guide</span></a> and <a class="reference internal" href="examples.html"><span cl
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="../fault_tolerance/examples/train_ddp.html" class="btn btn-neutral float-left" title="DDP usage example" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../fault_tolerance/examples/in_job_and_in_process_example.html" class="btn btn-neutral float-left" title="FT Launcher &amp; Inprocess integration example" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
         <a href="usage_guide.html" class="btn btn-neutral float-right" title="Usage Guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 

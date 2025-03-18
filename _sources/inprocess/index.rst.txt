@@ -29,7 +29,7 @@ Features:
 - timeout mechanism to detect and recover from deadlocks or livelocks, and a
   guarantee that the job is making meaningful forward progress
 - modular and customizable rank reassignment and health check functions
-- support for pre-allocated and pre-initialized spare workers
+- support for pre-allocated and pre-initialized reserve workers
 - gradual engineering ramp up: integration with existing codebase may start
   from restarting the entire ``main()`` function, then gradually refactor
   process-group-independent initialization into a separate function call in

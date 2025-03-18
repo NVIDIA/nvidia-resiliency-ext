@@ -95,11 +95,24 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">socket</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Collection</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">.data</span><span class="w"> </span><span class="kn">import</span> <span class="n">AuthkeyMsg</span><span class="p">,</span> <span class="n">HeartbeatMsg</span><span class="p">,</span> <span class="n">InitMsg</span><span class="p">,</span> <span class="n">OkMsg</span><span class="p">,</span> <span class="n">RankInfo</span><span class="p">,</span> <span class="n">UpdateConfigMsg</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_monitor_server</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankMonitorServer</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.data</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">FT_LAUNCHER_IPC_SOCKET_ENV_VAR</span><span class="p">,</span>
+    <span class="n">FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR</span><span class="p">,</span>
+    <span class="n">AuthkeyMsg</span><span class="p">,</span>
+    <span class="n">HeartbeatMsg</span><span class="p">,</span>
+    <span class="n">HeartbeatTimeouts</span><span class="p">,</span>
+    <span class="n">InitMsg</span><span class="p">,</span>
+    <span class="n">OkMsg</span><span class="p">,</span>
+    <span class="n">RankInfo</span><span class="p">,</span>
+    <span class="n">SectionAction</span><span class="p">,</span>
+    <span class="n">SectionMsg</span><span class="p">,</span>
+    <span class="n">SectionTimeouts</span><span class="p">,</span>
+    <span class="n">UpdateConfigMsg</span><span class="p">,</span>
+    <span class="n">WorkloadControlRequest</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.ipc_connector</span><span class="w"> </span><span class="kn">import</span> <span class="n">IpcConnector</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.timeouts_calc</span><span class="w"> </span><span class="kn">import</span> <span class="n">TimeoutsCalc</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">,</span> <span class="n">write_object_to_ipc_socket</span>
 
@@ -111,35 +124,6 @@
 
 
 
-<div class="viewcode-block" id="HeartbeatTimeouts">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts">[docs]</a>
-<span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">HeartbeatTimeouts</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    Contains hearbeat related timeouts used by FT.</span>
-<span class="sd">    - `initial` is the timeout for the first heartbeat.</span>
-<span class="sd">    - `subsequent` is the timeout for the subsequent heartbeats.</span>
-
-<span class="sd">    Usually, the first heartbeat takes longer to be sent, hence there are 2 separate timeouts.</span>
-<span class="sd">    - `were_calculated` indicates whether the timeouts were calculated from</span>
-<span class="sd">        the observed heartbeat intervals or defined in the (YAML) config.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-
-    <span class="n">initial</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-    <span class="n">subsequent</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-    <span class="n">were_calculated</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-
-    <span class="nd">@property</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">are_valid</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">initial</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">subsequent</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-        <span class="n">ini</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">initial</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">initial</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="s2">&quot;None&quot;</span>
-        <span class="n">subs</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">subsequent</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">subsequent</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="s2">&quot;None&quot;</span>
-        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;HeartbeatTimeouts(initial=</span><span class="si">{</span><span class="n">ini</span><span class="si">}</span><span class="s2">, subsequent=</span><span class="si">{</span><span class="n">subs</span><span class="si">}</span><span class="s2">, were_calculated=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">were_calculated</span><span class="si">}</span><span class="s2">)&quot;</span></div>
-
-
-
 <div class="viewcode-block" id="RankMonitorClient">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">RankMonitorClient</span><span class="p">:</span>
@@ -147,15 +131,31 @@
 <span class="sd">    `RankMonitorClient` is a client for `RankMonitorServer`.</span>
 <span class="sd">    Its instances are created in each rank process. After creation,</span>
 <span class="sd">    IPC connection can be established with `RankMonitorServer` using `.init_workload_monitoring`.</span>
-<span class="sd">    The client should send heartbeats to the server, which monitor its health.</span>
-<span class="sd">    Heartbeats are sent with `.send_heartbeat`.</span>
 
-<span class="sd">    `RankMonitorServer` monitors time between heartbeats and can detect hangs.</span>
-<span class="sd">    `RankMonitorClient` can estimate suitable timeouts for the heartbeats,</span>
+<span class="sd">    `RankMonitorClient` provides 2 independent functionalities that can be used for hang detection:</span>
+
+<span class="sd">    1. Heartbeat mechanism:</span>
+<span class="sd">    `.send_heartbeat` method sends a heartbeat to the server.</span>
+<span class="sd">    `RankMonitorServer` monitors time elapsed between heartbeats and detects hangs, based on two timeouts:</span>
+<span class="sd">    - initial timeout, is a maximum time between client initialization and the first heartbeat</span>
+<span class="sd">    - subsequent timeout, is a maximum time between two consecutive heartbeats</span>
+
+<span class="sd">    2. Section mechanism:</span>
+<span class="sd">    `.start_section` and `.end_section` are used to wrap some sections of user code.</span>
+<span class="sd">    Sections are identified by a user-provided name. User can configure timeouts for each section in the FT config.</span>
+<span class="sd">    Hang is detected if a section is open for too long.</span>
+<span class="sd">    To ensure that code that is not wrapped in any section is not running for too long (hung),</span>
+<span class="sd">    there is additional &quot;out-of-section&quot; timeout, which is active while no section is open.</span>
+
+<span class="sd">    `RankMonitorClient` can estimate suitable timeouts for the heartbeats and sections,</span>
 <span class="sd">    that will be used instead of values provided in the FT config.</span>
 <span class="sd">    If there are timeouts predefined in the FT config and timeouts calculated,</span>
-<span class="sd">    the calculated timeouts always take precedence. Currently used timeouts can be read from</span>
-<span class="sd">    `timeouts` field. New timeouts can be calculated and set with `.calculate_and_set_timeouts`.</span>
+<span class="sd">    the calculated timeouts always take precedence.</span>
+
+<span class="sd">    If a timeout value is None it means it&#39;s not used (as if it was +inf).</span>
+
+<span class="sd">    Currently used timeouts can be read from `.hb_timeouts` and `.section_timeouts` fields.</span>
+<span class="sd">    New timeouts can be calculated and set with `.calculate_and_set_hb_timeouts` and `.calculate_and_set_section_timeouts`.</span>
 
 <span class="sd">    Stateful protocol (`.state_dict()` `.load_state_dict()`)</span>
 <span class="sd">    is used to persist the state of the client, e.g. calculated timeouts.</span>
@@ -175,12 +175,24 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">loaded_timeouts</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">hb_timeouts</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">section_timeouts</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">loaded_hb_timeouts</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">loaded_section_timeouts</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">chkpt_manager</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">iter_idx</span> <span class="o">=</span> <span class="mi">0</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">&quot;RankMonitorClient&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">launcher_connector</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">launcher_ipc_socket_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="n">FT_LAUNCHER_IPC_SOCKET_ENV_VAR</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">launcher_ipc_socket_path</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">launcher_connector</span> <span class="o">=</span> <span class="n">IpcConnector</span><span class="p">(</span><span class="n">launcher_ipc_socket_path</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">FT_LAUNCHER_IPC_SOCKET_ENV_VAR</span><span class="si">}</span><span class="s2"> env varialble is not set. &quot;</span>
+                <span class="s2">&quot;`.send_workload_control_request` wont work. This is normal if &quot;</span>
+                <span class="s2">&quot;this rank was not started with ft_launcher&quot;</span>
+            <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_ensure_is_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
@@ -193,34 +205,35 @@
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unexpected reply: </span><span class="si">{</span><span class="n">reply</span><span class="si">}</span><span class="s2">. Expected OkMsg&quot;</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">reply</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_set_calculated_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_timeouts</span><span class="p">:</span> <span class="n">HeartbeatTimeouts</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_set_calculated_timeouts</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">new_hb_timeouts</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">HeartbeatTimeouts</span><span class="p">],</span>
+        <span class="n">new_section_timeouts</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">SectionTimeouts</span><span class="p">],</span>
+    <span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Send calculated timeouts to the server. They have an effect immediately after the call.</span>
+<span class="sd">        If heartbeat or section timeouts is None, old values are not updated.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">assert</span> <span class="n">new_timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">and</span> <span class="n">new_timeouts</span><span class="o">.</span><span class="n">were_calculated</span>
         <span class="n">cfg_upd_msg</span> <span class="o">=</span> <span class="n">UpdateConfigMsg</span><span class="p">(</span>
-            <span class="n">new_initial_heartbeat_timeout</span><span class="o">=</span><span class="n">new_timeouts</span><span class="o">.</span><span class="n">initial</span><span class="p">,</span>
-            <span class="n">new_heartbeat_timeout</span><span class="o">=</span><span class="n">new_timeouts</span><span class="o">.</span><span class="n">subsequent</span><span class="p">,</span>
+            <span class="n">hb_timeouts</span><span class="o">=</span><span class="n">new_hb_timeouts</span><span class="p">,</span> <span class="n">section_timeouts</span><span class="o">=</span><span class="n">new_section_timeouts</span>
         <span class="p">)</span>
         <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">cfg_upd_msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span> <span class="o">=</span> <span class="n">new_timeouts</span>
+        <span class="k">if</span> <span class="n">new_hb_timeouts</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">hb_timeouts</span> <span class="o">=</span> <span class="n">new_hb_timeouts</span>
+        <span class="k">if</span> <span class="n">new_section_timeouts</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">section_timeouts</span> <span class="o">=</span> <span class="n">new_section_timeouts</span>
 
-    <span class="nd">@staticmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">_merge_timeouts</span><span class="p">(</span><span class="n">new_value</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">old_value</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">alpha</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.75</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Merge computed timeout values with EMA&quot;&quot;&quot;</span>
-        <span class="k">assert</span> <span class="mi">0</span> <span class="o">&lt;</span> <span class="n">alpha</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;Alpha must be in the range (0, 1].&quot;</span>
-        <span class="k">assert</span> <span class="n">old_value</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">new_value</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;Timeout values must be non-negative.&quot;</span>
-        <span class="k">return</span> <span class="n">alpha</span> <span class="o">*</span> <span class="n">new_value</span> <span class="o">+</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">alpha</span><span class="p">)</span> <span class="o">*</span> <span class="n">old_value</span>
-
-<div class="viewcode-block" id="RankMonitorClient.calculate_and_set_timeouts">
-<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">calculate_and_set_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">skip_if_not_ready</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<div class="viewcode-block" id="RankMonitorClient.calculate_and_set_hb_timeouts">
+<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_hb_timeouts">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">calculate_and_set_hb_timeouts</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">skip_if_not_ready</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">        Calculates and sets the timeouts used for hang detection.</span>
+<span class="sd">        Calculates and sets heartbeat timeouts used for hang detection.</span>
 
 <span class="sd">        NOTE: this call synchronizes the calculated timeouts across all ranks.</span>
-<span class="sd">        NOTE: if calculated timeout value is smaller that currently used, the new value is ignored.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            skip_if_not_ready (bool, optional): If True, silently skips the calculation if there</span>
@@ -232,26 +245,66 @@
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_is_ready</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">synchronize_all</span><span class="p">()</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">can_get_timeouts</span><span class="p">():</span>
-            <span class="n">to</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">get_timeouts</span><span class="p">()</span>
-            <span class="n">new_initial</span><span class="p">,</span> <span class="n">new_subsequent</span> <span class="o">=</span> <span class="n">to</span><span class="o">.</span><span class="n">initial</span><span class="p">,</span> <span class="n">to</span><span class="o">.</span><span class="n">subsequent</span>
-            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">were_calculated</span><span class="p">:</span>
-                <span class="n">new_initial</span> <span class="o">=</span> <span class="n">RankMonitorClient</span><span class="o">.</span><span class="n">_merge_timeouts</span><span class="p">(</span><span class="n">new_initial</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">initial</span><span class="p">)</span>
-                <span class="n">new_subsequent</span> <span class="o">=</span> <span class="n">RankMonitorClient</span><span class="o">.</span><span class="n">_merge_timeouts</span><span class="p">(</span>
-                    <span class="n">new_subsequent</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">subsequent</span>
-                <span class="p">)</span>
-            <span class="n">new_timeouts</span> <span class="o">=</span> <span class="n">HeartbeatTimeouts</span><span class="p">(</span>
-                <span class="n">initial</span><span class="o">=</span><span class="n">new_initial</span><span class="p">,</span>
-                <span class="n">subsequent</span><span class="o">=</span><span class="n">new_subsequent</span><span class="p">,</span>
-                <span class="n">were_calculated</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-            <span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_set_calculated_timeouts</span><span class="p">(</span><span class="n">new_timeouts</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">can_get_hb_timeouts</span><span class="p">():</span>
+            <span class="n">hb_timeouts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">get_hb_timeouts</span><span class="p">(</span><span class="n">current</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_set_calculated_timeouts</span><span class="p">(</span><span class="n">new_hb_timeouts</span><span class="o">=</span><span class="n">hb_timeouts</span><span class="p">,</span> <span class="n">new_section_timeouts</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
             <span class="k">return</span> <span class="kc">True</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">skip_if_not_ready</span><span class="p">:</span>
                 <span class="k">return</span> <span class="kc">False</span>
             <span class="k">else</span><span class="p">:</span>
-                <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="s2">&quot;Not enough heartbeats to compute timeouts.&quot;</span><span class="p">)</span></div>
+                <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="s2">&quot;Not enough data to compute timeouts.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="RankMonitorClient.calculate_and_set_section_timeouts">
+<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_section_timeouts">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">calculate_and_set_section_timeouts</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">selected_sections</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Collection</span><span class="p">[</span><span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">calc_out_of_section</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">skip_if_not_ready</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Calculates and sets section timeouts used for hang detection.</span>
+
+<span class="sd">        NOTE: this call synchronizes the calculated timeouts across all ranks.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            selected_sections (List[str], optional): List of sections which timeouts should be updated,</span>
+<span class="sd">              If not provided (None) all section timeouts will be updated</span>
+<span class="sd">            calc_out_of_section: (bool): Determines if &quot;out of section&quot; timeout should be updated.</span>
+<span class="sd">              Defaults to True.</span>
+<span class="sd">            skip_if_not_ready (bool, optional): If True, silently skips the calculation if there</span>
+<span class="sd">              is not enough data collected. Otherwise error will be raised. Defaults to False.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if the timeouts were calculated and set successfully. False is returned only</span>
+<span class="sd">                if calculation was not possible and `skip_if_not_ready` was `True`.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_is_ready</span><span class="p">()</span>
+        <span class="c1"># if no section is opened, update out-of-section time.</span>
+        <span class="c1"># this can be useful, e.g. if &quot;calculate_and_set_section_timeouts&quot; is called at the end of a training.</span>
+        <span class="c1"># it can happen that the final &quot;out-of-section&quot; chunk is the longest one observed, so it would</span>
+        <span class="c1"># underestimate the oos timeout if we didn&#39;t update it here.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">maybe_bump_oos_time</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">synchronize_all</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">can_get_section_timeouts</span><span class="p">(</span>
+            <span class="n">selected_sections</span><span class="o">=</span><span class="n">selected_sections</span><span class="p">,</span> <span class="n">calc_out_of_section</span><span class="o">=</span><span class="n">calc_out_of_section</span>
+        <span class="p">):</span>
+            <span class="n">section_timeouts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">get_section_timeouts</span><span class="p">(</span>
+                <span class="n">selected_sections</span><span class="o">=</span><span class="n">selected_sections</span><span class="p">,</span>
+                <span class="n">calc_out_of_section</span><span class="o">=</span><span class="n">calc_out_of_section</span><span class="p">,</span>
+                <span class="n">current</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">section_timeouts</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_set_calculated_timeouts</span><span class="p">(</span>
+                <span class="n">new_hb_timeouts</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">new_section_timeouts</span><span class="o">=</span><span class="n">section_timeouts</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="kc">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">skip_if_not_ready</span><span class="p">:</span>
+                <span class="k">return</span> <span class="kc">False</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="s2">&quot;Not enough data to compute timeouts.&quot;</span><span class="p">)</span></div>
 
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_send_heartbeat_impl</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
@@ -263,20 +316,44 @@
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_is_ready</span><span class="p">()</span>
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">hb_msg</span> <span class="o">=</span> <span class="n">HeartbeatMsg</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+            <span class="n">hb_msg</span> <span class="o">=</span> <span class="n">HeartbeatMsg</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
             <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">hb_msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">update</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">update_on_heartbeat</span><span class="p">()</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span>
                 <span class="sa">f</span><span class="s2">&quot;RankMonitorClient could not send the heartbeat. Exception: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span>
             <span class="p">)</span>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">_send_section_msg_impl</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">section</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">action</span><span class="p">:</span> <span class="n">SectionAction</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Implementation of section related update sending.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            section (str): Section name</span>
+<span class="sd">            action (SectionAction): Section related action</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_is_ready</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">SectionMsg</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span> <span class="n">section</span><span class="o">=</span><span class="n">section</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="n">action</span><span class="p">)</span>
+            <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">update_on_section_event</span><span class="p">(</span><span class="n">section</span><span class="o">=</span><span class="n">section</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="n">action</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;RankMonitorClient could not send section update. Exception: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">_connect_to_rmon_server</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span> <span class="ow">is</span> <span class="kc">None</span>
-        <span class="n">ipc_socket_path</span> <span class="o">=</span> <span class="n">RankMonitorServer</span><span class="o">.</span><span class="n">get_ipc_socket_path</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">rank</span><span class="p">)</span>
+        <span class="n">rmon_ipc_socket_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="n">FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">rmon_ipc_socket_path</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR</span><span class="si">}</span><span class="s2"> env variable should &quot;</span>
+                <span class="s2">&quot;be set in a process that is running RankMonitorClient&quot;</span>
+            <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span> <span class="o">=</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">(</span><span class="n">socket</span><span class="o">.</span><span class="n">AF_UNIX</span><span class="p">,</span> <span class="n">socket</span><span class="o">.</span><span class="n">SOCK_STREAM</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">ipc_socket_path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">rmon_ipc_socket_path</span><span class="p">)</span>
         <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">AuthkeyMsg</span><span class="p">(),</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="n">init_msg</span> <span class="o">=</span> <span class="n">InitMsg</span><span class="p">()</span>
@@ -307,28 +384,30 @@
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_connect_to_rmon_server</span><span class="p">()</span>
 
-        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span> <span class="o">=</span> <span class="n">TimeoutsCalc</span><span class="p">(</span><span class="n">safety_factor</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">safety_factor</span><span class="p">)</span>
+        <span class="n">sections</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_section_timeouts</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span> <span class="o">=</span> <span class="n">TimeoutsCalc</span><span class="p">(</span><span class="n">sections</span><span class="o">=</span><span class="n">sections</span><span class="p">,</span> <span class="n">safety_factor</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">safety_factor</span><span class="p">)</span>
 
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">loaded_timeouts</span><span class="p">:</span>
-            <span class="c1"># restore the timeouts that were calculated and set previously.</span>
+        <span class="c1"># by default, use predefined timeouts from the config</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">hb_timeouts</span> <span class="o">=</span> <span class="n">HeartbeatTimeouts</span><span class="p">(</span>
+            <span class="n">initial</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">initial_rank_heartbeat_timeout</span><span class="p">,</span>
+            <span class="n">subsequent</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_heartbeat_timeout</span><span class="p">,</span>
+            <span class="n">were_calculated</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">section_timeouts</span> <span class="o">=</span> <span class="n">SectionTimeouts</span><span class="p">(</span>
+            <span class="n">section</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_section_timeouts</span><span class="p">,</span>
+            <span class="n">out_of_section</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_out_of_section_timeout</span><span class="p">,</span>
+            <span class="n">calculated_sections</span><span class="o">=</span><span class="p">{},</span>
+            <span class="n">is_out_of_section_calculated</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">loaded_hb_timeouts</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">loaded_section_timeouts</span><span class="p">:</span>
+            <span class="c1"># restore the timeouts that were calculated and stored previously.</span>
             <span class="c1"># rank monitor server is only aware of the timeouts from the main config.</span>
             <span class="c1"># if timeouts were calculated by the client, we need to send it to the server.</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_set_calculated_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">loaded_timeouts</span><span class="p">)</span>
-            <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">were_calculated</span> <span class="ow">is</span> <span class="kc">True</span>
-        <span class="k">elif</span> <span class="p">(</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">initial_rank_heartbeat_timeout</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-            <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_heartbeat_timeout</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-        <span class="p">):</span>
-            <span class="c1"># will use predefined timeouts from the config</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span> <span class="o">=</span> <span class="n">HeartbeatTimeouts</span><span class="p">(</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">initial_rank_heartbeat_timeout</span><span class="p">,</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_heartbeat_timeout</span><span class="p">,</span>
-                <span class="kc">False</span><span class="p">,</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_set_calculated_timeouts</span><span class="p">(</span>
+                <span class="n">new_hb_timeouts</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">loaded_hb_timeouts</span><span class="p">,</span>
+                <span class="n">new_section_timeouts</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">loaded_section_timeouts</span><span class="p">,</span>
             <span class="p">)</span>
-            <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">were_calculated</span> <span class="ow">is</span> <span class="kc">False</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span> <span class="o">=</span> <span class="n">HeartbeatTimeouts</span><span class="p">()</span>
-            <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">is</span> <span class="kc">False</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span> <span class="o">=</span> <span class="kc">True</span></div>
 
@@ -355,6 +434,45 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_send_heartbeat_impl</span><span class="p">(</span><span class="n">state</span><span class="o">=</span><span class="nb">dict</span><span class="p">())</span></div>
 
 
+<div class="viewcode-block" id="RankMonitorClient.start_section">
+<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.start_section">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">start_section</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">section</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Starts a new timed section with the given name.</span>
+
+<span class="sd">        NOTE: Different sections can be arbitraly aranged (nested, partially or fully overlapping).</span>
+<span class="sd">            but the same section name cannot be opened twice without closing it first.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            section (str): User defined name of the section.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_send_section_msg_impl</span><span class="p">(</span><span class="n">section</span><span class="p">,</span> <span class="n">SectionAction</span><span class="o">.</span><span class="n">OPEN</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="RankMonitorClient.end_section">
+<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.end_section">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">end_section</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">section</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Close the section with the given name.</span>
+
+<span class="sd">        NOTE: The section must be opened.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            section (str): User defined name of the section.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_send_section_msg_impl</span><span class="p">(</span><span class="n">section</span><span class="p">,</span> <span class="n">SectionAction</span><span class="o">.</span><span class="n">CLOSE</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="RankMonitorClient.end_all_sections">
+<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.end_all_sections">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">end_all_sections</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Closes all currently opened sections.</span>
+<span class="sd">        Does nothing if there are no sections open.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_send_section_msg_impl</span><span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="n">SectionAction</span><span class="o">.</span><span class="n">CLOSE_ALL</span><span class="p">)</span></div>
+
+
 <div class="viewcode-block" id="RankMonitorClient.state_dict">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.state_dict">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">state_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
@@ -367,11 +485,27 @@
 <span class="sd">        Returns:</span>
 <span class="sd">            Mapping[str, Any]: The state dictionary containing the current state.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">state</span> <span class="o">=</span> <span class="p">{}</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="o">.</span><span class="n">were_calculated</span><span class="p">:</span>
-            <span class="c1"># timeouts are sychronized across all ranks after calculation,</span>
-            <span class="c1"># so `self.timeouts` is identical on all ranks.</span>
-            <span class="n">state</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span><span class="p">]</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">timeouts</span><span class="p">)</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="p">{</span><span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span><span class="p">:</span> <span class="p">{}}</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="o">.</span><span class="n">are_valid</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="o">.</span><span class="n">were_calculated</span><span class="p">:</span>
+            <span class="n">state</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span><span class="p">][</span><span class="s1">&#39;heartbeat&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">asdict</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">hb_timeouts</span>
+            <span class="p">)</span>
+        <span class="n">has_calculated_section_timeouts</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">section_timeouts</span><span class="o">.</span><span class="n">calculated_sections</span>
+            <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">section_timeouts</span><span class="o">.</span><span class="n">is_out_of_section_calculated</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">has_calculated_section_timeouts</span><span class="p">:</span>
+            <span class="n">state</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span><span class="p">][</span><span class="s1">&#39;section&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">asdict</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">section_timeouts</span>
+            <span class="p">)</span>
+            <span class="c1"># convert set to list for JSON serialization</span>
+            <span class="n">calc_sections_list</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span>
+                <span class="n">state</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span><span class="p">][</span><span class="s1">&#39;section&#39;</span><span class="p">][</span><span class="s1">&#39;calculated_sections&#39;</span><span class="p">]</span>
+            <span class="p">)</span>
+            <span class="n">calc_sections_list</span><span class="o">.</span><span class="n">sort</span><span class="p">()</span>
+            <span class="n">state</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span><span class="p">][</span><span class="s1">&#39;section&#39;</span><span class="p">][</span>
+                <span class="s1">&#39;calculated_sections&#39;</span>
+            <span class="p">]</span> <span class="o">=</span> <span class="n">calc_sections_list</span>
         <span class="k">return</span> <span class="n">state</span></div>
 
 
@@ -387,12 +521,40 @@
 <span class="sd">            state: (Mapping[str, Any]): The state as returend from the `state_dict` method.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span> <span class="ow">in</span> <span class="n">state</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">loaded_timeouts</span> <span class="o">=</span> <span class="n">HeartbeatTimeouts</span><span class="p">(</span><span class="o">**</span><span class="n">state</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span><span class="p">])</span>
+            <span class="n">ft_state</span> <span class="o">=</span> <span class="n">state</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">CURRENT_TIMEOUTS_STATE_KEY</span><span class="p">]</span>
+            <span class="k">if</span> <span class="s1">&#39;heartbeat&#39;</span> <span class="ow">in</span> <span class="n">ft_state</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">loaded_hb_timeouts</span> <span class="o">=</span> <span class="n">HeartbeatTimeouts</span><span class="p">(</span><span class="o">**</span><span class="n">ft_state</span><span class="p">[</span><span class="s1">&#39;heartbeat&#39;</span><span class="p">])</span>
+            <span class="k">if</span> <span class="s1">&#39;section&#39;</span> <span class="ow">in</span> <span class="n">ft_state</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">loaded_section_timeouts</span> <span class="o">=</span> <span class="n">SectionTimeouts</span><span class="p">(</span><span class="o">**</span><span class="n">ft_state</span><span class="p">[</span><span class="s1">&#39;section&#39;</span><span class="p">])</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_set_calculated_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">loaded_timeouts</span><span class="p">)</span></div>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_set_calculated_timeouts</span><span class="p">(</span>
+                    <span class="n">new_hb_timeouts</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">loaded_hb_timeouts</span><span class="p">,</span>
+                    <span class="n">new_section_timeouts</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">loaded_section_timeouts</span><span class="p">,</span>
+                <span class="p">)</span></div>
+
+            <span class="c1"># else,</span>
+            <span class="c1"># the timeouts will be set in `init_workload_monitoring`</span>
+
+<div class="viewcode-block" id="RankMonitorClient.send_workload_control_request">
+<a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">send_workload_control_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">req</span><span class="p">:</span> <span class="n">WorkloadControlRequest</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Request an workload related action.</span>
+<span class="sd">        It is sent to the ft_launcher and affects the subsequent rendezvous.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            req (WorkloadControlRequest): request specification</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">launcher_connector</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;IPC connection with the launcher is not available.&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">launcher_connector</span><span class="o">.</span><span class="n">send</span><span class="p">(</span>
+            <span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span>
+                <span class="n">req</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="p">)</span></div>
 </div>
 
-            <span class="c1"># else, the timeouts will be set in `init_workload_monitoring`</span>
 </pre></div>
 
            </div>

@@ -96,60 +96,56 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">datetime</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">itertools</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">timedelta</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Optional</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Optional</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">param_utils</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.abort</span><span class="w"> </span><span class="kn">import</span> <span class="n">Abort</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.abort</span><span class="w"> </span><span class="kn">import</span> <span class="n">AbortTorchDistributed</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.attribution</span><span class="w"> </span><span class="kn">import</span> <span class="n">Interruption</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.attribution</span><span class="w"> </span><span class="kn">import</span> <span class="n">InterruptionRecord</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheckError</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">InternalError</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">RestartError</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">param_utils</span><span class="p">,</span> <span class="n">utils</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.abort</span><span class="w"> </span><span class="kn">import</span> <span class="n">Abort</span><span class="p">,</span> <span class="n">AbortTorchDistributed</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.attribution</span><span class="w"> </span><span class="kn">import</span> <span class="n">Interruption</span><span class="p">,</span> <span class="n">InterruptionRecord</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.compose</span><span class="w"> </span><span class="kn">import</span> <span class="n">Compose</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheckError</span><span class="p">,</span> <span class="n">InternalError</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.finalize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Finalize</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheck</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.initialize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Initialize</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">Logging</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">log_exc</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_process</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorProcess</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorThread</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankShouldRestart</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">reraise_if_unraisable</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.param_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">enforce_subclass</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.param_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">enforce_type</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.param_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">enforce_value</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorThread</span><span class="p">,</span> <span class="n">RankShouldRestart</span><span class="p">,</span> <span class="n">reraise_if_unraisable</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.param_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">enforce_subclass</span><span class="p">,</span> <span class="n">enforce_type</span><span class="p">,</span> <span class="n">enforce_value</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.progress_watchdog</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProgressWatchdog</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_assignment</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankAssignment</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_assignment</span><span class="w"> </span><span class="kn">import</span> <span class="n">ShiftRanks</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_assignment</span><span class="w"> </span><span class="kn">import</span> <span class="n">ActivateAllRanks</span><span class="p">,</span> <span class="n">RankAssignment</span><span class="p">,</span> <span class="n">RankAssignmentCtx</span><span class="p">,</span> <span class="n">ShiftRanks</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.rank_filter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankFilter</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">State</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">Status</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">PrefixStore</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">StoreMixin</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">TCPStore</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">Mode</span><span class="p">,</span> <span class="n">State</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">PrefixStore</span><span class="p">,</span> <span class="n">StoreMixin</span><span class="p">,</span> <span class="n">TCPStore</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">log_exc</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">HealthCheckPassed</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
     <span class="k">pass</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">spare_fn</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">progress_watchdog</span><span class="p">,</span> <span class="n">progress_watchdog_interval</span><span class="p">):</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">reserve_fn</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">,</span> <span class="n">progress_watchdog</span><span class="p">,</span> <span class="n">progress_watchdog_interval</span><span class="p">):</span>
     <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
     <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
-    <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> starting spare_fn&#39;</span><span class="p">)</span>
+
+    <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> starting reserve_fn&#39;</span><span class="p">)</span>
     <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">ping</span><span class="p">()</span>
-    <span class="k">while</span> <span class="ow">not</span> <span class="n">state</span><span class="o">.</span><span class="n">store</span><span class="o">.</span><span class="n">is_any_rank_completed</span><span class="p">():</span>
-        <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">ping</span><span class="p">()</span>
-        <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">progress_watchdog_interval</span><span class="o">.</span><span class="n">total_seconds</span><span class="p">())</span>
-    <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> finished spare_fn&#39;</span><span class="p">)</span>
+
+    <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">wait_for_completed</span><span class="p">(</span><span class="n">progress_watchdog_interval</span><span class="p">)</span>
+            <span class="k">break</span>
+        <span class="k">except</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">DistStoreError</span><span class="p">:</span>
+            <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">ping</span><span class="p">()</span>
+            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">getswitchinterval</span><span class="p">())</span>
+
+    <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> finished reserve_fn&#39;</span><span class="p">)</span>
 
 
 <div class="viewcode-block" id="Wrapper">
@@ -178,11 +174,14 @@
 <span class="sd">        abort: Asynchronously aborts execution.</span>
 <span class="sd">        finalize: Rank-local finalize.</span>
 <span class="sd">        health_check: Rank-local health check.</span>
-<span class="sd">        rank_assignment: Reassigns ranks and computes the new world size for</span>
-<span class="sd">            the next restart iteration.</span>
-<span class="sd">        rank_filter: Specifies ranks actively calling the wrapped function.</span>
+<span class="sd">        rank_assignment: Reassigns ranks, computes the new world size and</span>
+<span class="sd">            specifies which ranks are calling the wrapped function.</span>
+<span class="sd">        rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped</span>
+<span class="sd">            function.</span>
 <span class="sd">        monitor_thread_interval: Monitoring interval for the monitor thread.</span>
 <span class="sd">        monitor_process_interval: Monitoring interval for the monitor process.</span>
+<span class="sd">        heartbeat_interval: Monitoring interval for detecting unresponsive</span>
+<span class="sd">            ranks.</span>
 <span class="sd">        progress_watchdog_interval: Interval for automatic progress watchdog</span>
 <span class="sd">            timestamp updates.</span>
 <span class="sd">        soft_timeout: Soft progress timeout. Timed-out rank executes</span>
@@ -215,10 +214,14 @@
         <span class="n">abort</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Abort</span><span class="p">]</span> <span class="o">=</span> <span class="n">AbortTorchDistributed</span><span class="p">(),</span>
         <span class="n">finalize</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Finalize</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">health_check</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">HealthCheck</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-        <span class="n">rank_assignment</span><span class="p">:</span> <span class="n">RankAssignment</span> <span class="o">=</span> <span class="n">ShiftRanks</span><span class="p">(),</span>
+        <span class="n">rank_assignment</span><span class="p">:</span> <span class="n">RankAssignment</span> <span class="o">=</span> <span class="n">Compose</span><span class="p">(</span>
+            <span class="n">ActivateAllRanks</span><span class="p">(),</span>
+            <span class="n">ShiftRanks</span><span class="p">(),</span>
+        <span class="p">),</span>
         <span class="n">rank_filter</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">RankFilter</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">monitor_thread_interval</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
         <span class="n">monitor_process_interval</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
+        <span class="n">heartbeat_interval</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
         <span class="n">progress_watchdog_interval</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
         <span class="n">soft_timeout</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">60</span><span class="p">),</span>
         <span class="n">hard_timeout</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">90</span><span class="p">),</span>
@@ -236,10 +239,11 @@
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;abort&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Abort</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;finalize&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Finalize</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;health_check&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">HealthCheck</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
-        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;rank_assignment&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">RankAssignment</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;rank_assignment&#39;</span><span class="p">,</span> <span class="n">RankAssignment</span><span class="p">)</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;rank_filter&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">RankFilter</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;monitor_thread_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;monitor_process_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;heartbeat_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;progress_watchdog_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;soft_timeout&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;hard_timeout&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
@@ -254,13 +258,25 @@
         <span class="n">enforce_value</span><span class="p">(</span><span class="n">soft_timeout</span> <span class="o">&lt;</span> <span class="n">hard_timeout</span> <span class="o">&lt;</span> <span class="n">barrier_timeout</span><span class="p">)</span>
         <span class="n">enforce_value</span><span class="p">(</span><span class="n">monitor_process_interval</span> <span class="o">&lt;</span> <span class="n">barrier_timeout</span><span class="p">)</span>
         <span class="n">enforce_value</span><span class="p">(</span><span class="n">heartbeat_timeout</span> <span class="o">&lt;</span> <span class="n">barrier_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">heartbeat_interval</span> <span class="o">&lt;</span> <span class="n">heartbeat_timeout</span><span class="p">)</span>
         <span class="n">enforce_value</span><span class="p">(</span><span class="n">monitor_process_interval</span> <span class="o">&lt;</span> <span class="n">heartbeat_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">monitor_process_interval</span> <span class="o">&lt;</span> <span class="n">soft_timeout</span><span class="p">)</span>
         <span class="n">enforce_value</span><span class="p">(</span><span class="n">monitor_thread_interval</span> <span class="o">&lt;</span> <span class="n">soft_timeout</span><span class="p">)</span>
         <span class="n">enforce_value</span><span class="p">(</span><span class="n">progress_watchdog_interval</span> <span class="o">&lt;</span> <span class="n">soft_timeout</span><span class="p">)</span>
+
         <span class="k">if</span> <span class="n">monitor_process_logfile</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">enforce_value</span><span class="p">(</span><span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">monitor_process_logfile</span><span class="p">)</span><span class="o">.</span><span class="n">is_absolute</span><span class="p">())</span>
 
         <span class="n">enforce_value</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_available</span><span class="p">())</span>
+
+        <span class="k">if</span> <span class="n">rank_filter</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+                <span class="s1">&#39;The &quot;rank_filter&quot; argument is deprecated and will be removed &#39;</span>
+                <span class="s1">&#39;in the next release. The functionality is merged into &#39;</span>
+                <span class="s1">&#39;&quot;rank_assignment&quot;.&#39;</span><span class="p">,</span>
+                <span class="ne">DeprecationWarning</span><span class="p">,</span>
+                <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+            <span class="p">)</span>
 
         <span class="k">if</span> <span class="n">store_kwargs</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">store_kwargs</span> <span class="o">=</span> <span class="p">{}</span>
@@ -275,6 +291,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_filter</span> <span class="o">=</span> <span class="n">rank_filter</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">monitor_thread_interval</span> <span class="o">=</span> <span class="n">monitor_thread_interval</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process_interval</span> <span class="o">=</span> <span class="n">monitor_process_interval</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">heartbeat_interval</span> <span class="o">=</span> <span class="n">heartbeat_interval</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog_interval</span> <span class="o">=</span> <span class="n">progress_watchdog_interval</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">soft_timeout</span> <span class="o">=</span> <span class="n">soft_timeout</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">hard_timeout</span> <span class="o">=</span> <span class="n">hard_timeout</span>
@@ -320,24 +337,28 @@
 <span class="sd">    &#39;&#39;&#39;</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">wrapper</span><span class="p">:</span> <span class="n">Wrapper</span><span class="p">):</span>
-        <span class="n">monitor_process</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="n">progress_watchdog</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="kc">None</span>
 
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">Logging</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
+            <span class="n">utils</span><span class="o">.</span><span class="n">Logging</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
             <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
             <span class="n">enforce_value</span><span class="p">(</span><span class="ow">not</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">())</span>
 
-            <span class="n">state</span> <span class="o">=</span> <span class="n">State</span><span class="p">()</span>
+            <span class="n">state</span> <span class="o">=</span> <span class="n">State</span><span class="o">.</span><span class="n">from_env</span><span class="p">()</span>
 
-            <span class="n">monitor_process</span> <span class="o">=</span> <span class="n">MonitorProcess</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span> <span class="o">=</span> <span class="n">MonitorProcess</span><span class="p">(</span>
                 <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
                 <span class="n">world_size</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
-                <span class="n">progress_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">hard_timeout</span><span class="p">,</span>
+                <span class="n">soft_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">soft_timeout</span><span class="p">,</span>
+                <span class="n">hard_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">hard_timeout</span><span class="p">,</span>
                 <span class="n">termination_grace_time</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">termination_grace_time</span><span class="p">,</span>
                 <span class="n">barrier_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
                 <span class="n">interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">monitor_process_interval</span><span class="p">,</span>
+                <span class="n">heartbeat_interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">heartbeat_interval</span><span class="p">,</span>
                 <span class="n">heartbeat_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">heartbeat_timeout</span><span class="p">,</span>
                 <span class="n">log_filename</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">monitor_process_logfile</span><span class="p">,</span>
                 <span class="n">store_factory</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">store_factory</span><span class="p">,</span>
@@ -347,49 +368,58 @@
             <span class="n">store_kwargs</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">store_kwargs</span>
             <span class="n">base_store</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">store_factory</span><span class="p">(</span><span class="o">**</span><span class="n">store_kwargs</span><span class="p">)</span>
             <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">base_store</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">store_kwargs</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
-            <span class="n">state</span><span class="o">.</span><span class="n">store</span> <span class="o">=</span> <span class="n">base_store</span>
 
             <span class="n">base_store</span><span class="o">.</span><span class="n">initial_barrier</span><span class="p">(</span>
-                <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+                <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">],</span>
                 <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
                 <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
             <span class="p">)</span>
             <span class="n">base_store</span><span class="o">.</span><span class="n">set_initial_rank</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">)</span>
-            <span class="n">monitor_process</span><span class="o">.</span><span class="n">can_create_store</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">can_create_store</span><span class="p">()</span>
 
-            <span class="n">progress_watchdog</span> <span class="o">=</span> <span class="n">ProgressWatchdog</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span> <span class="o">=</span> <span class="n">ProgressWatchdog</span><span class="p">(</span>
                 <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
-                <span class="n">connection</span><span class="o">=</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">parent_conn_time</span><span class="p">,</span>
+                <span class="n">monitor_process</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="p">,</span>
                 <span class="n">interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">progress_watchdog_interval</span><span class="p">,</span>
-                <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
             <span class="p">)</span>
-            <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
-            <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">loop_started</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
 
             <span class="bp">self</span><span class="o">.</span><span class="n">atomic_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">RLock</span><span class="p">()</span>
 
             <span class="bp">self</span><span class="o">.</span><span class="n">store</span> <span class="o">=</span> <span class="n">base_store</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span> <span class="o">=</span> <span class="n">base_store</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span> <span class="o">=</span> <span class="n">monitor_process</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">wrapper</span> <span class="o">=</span> <span class="n">wrapper</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span> <span class="o">=</span> <span class="n">progress_watchdog</span>
 
         <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
-            <span class="k">if</span> <span class="n">monitor_process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">monitor_process</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-            <span class="k">if</span> <span class="n">progress_watchdog</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-            <span class="n">Logging</span><span class="o">.</span><span class="n">deinitialize</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
             <span class="k">raise</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">shutdown</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span><span class="o">.</span><span class="n">critical_ranks</span><span class="p">:</span>
+            <span class="n">timeout</span> <span class="o">=</span> <span class="n">timedelta</span><span class="o">.</span><span class="n">max</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">timeout</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span><span class="o">.</span><span class="n">termination_barrier</span><span class="p">(</span>
+                <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">],</span>
+                <span class="n">rendezvous_count</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_world_size</span><span class="p">,</span>
+                <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+            <span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+
+        <span class="n">utils</span><span class="o">.</span><span class="n">Logging</span><span class="o">.</span><span class="n">deinitialize</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__enter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">return</span> <span class="bp">self</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__exit__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">exc_type</span><span class="p">,</span> <span class="n">exc_value</span><span class="p">,</span> <span class="n">traceback</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-        <span class="n">Logging</span><span class="o">.</span><span class="n">deinitialize</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">iteration</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
@@ -452,50 +482,27 @@
         <span class="n">wrapper</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">wrapper</span>
         <span class="n">progress_watchdog</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span>
 
-        <span class="n">state</span><span class="p">,</span> <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_assignment</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="nb">set</span><span class="p">())</span>
-        <span class="k">if</span> <span class="n">terminated_ranks</span><span class="p">:</span>
-            <span class="n">msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">terminated_ranks</span><span class="si">=}</span><span class="s1"> is not empty&#39;</span>
-            <span class="k">raise</span> <span class="n">RestartError</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+        <span class="n">rank_assignment_ctx</span> <span class="o">=</span> <span class="n">RankAssignmentCtx</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">,</span> <span class="nb">set</span><span class="p">())</span>
+        <span class="n">reassigned_ctx</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_assignment</span><span class="p">(</span><span class="n">rank_assignment_ctx</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span> <span class="o">=</span> <span class="n">reassigned_ctx</span><span class="o">.</span><span class="n">state</span>
 
-        <span class="n">state</span><span class="o">.</span><span class="n">activate_all_ranks</span><span class="p">()</span>
         <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_filter</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">state</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_filter</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
         <span class="n">state</span><span class="o">.</span><span class="n">set_distributed_vars</span><span class="p">()</span>
 
         <span class="n">monitor_process</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
-        <span class="n">monitor_thread</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="n">ret</span> <span class="o">=</span> <span class="kc">None</span>
 
         <span class="k">try</span><span class="p">:</span>
             <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
                 <span class="n">store</span> <span class="o">=</span> <span class="n">PrefixStore</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">iteration</span><span class="p">,</span> <span class="n">base_store</span><span class="p">)</span>
                 <span class="n">store</span><span class="o">.</span><span class="n">set_initial_rank</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">)</span>
-                <span class="n">state</span><span class="o">.</span><span class="n">store</span> <span class="o">=</span> <span class="n">store</span>
-                <span class="n">store</span><span class="o">.</span><span class="n">iteration_barrier</span><span class="p">(</span>
-                    <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
-                    <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
-                    <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
-                <span class="p">)</span>
                 <span class="n">monitor_process</span><span class="o">.</span><span class="n">start_iteration</span><span class="p">(</span>
                     <span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
                     <span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
                     <span class="n">state</span><span class="o">.</span><span class="n">iteration</span><span class="p">,</span>
                 <span class="p">)</span>
                 <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
-
-                <span class="n">monitor_thread</span> <span class="o">=</span> <span class="n">MonitorThread</span><span class="p">(</span>
-                    <span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="p">,</span>
-                    <span class="n">abort</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">abort</span><span class="p">,</span>
-                    <span class="n">interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">monitor_thread_interval</span><span class="p">,</span>
-                    <span class="n">abort_signal</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-                    <span class="n">progress_watchdog</span><span class="o">=</span><span class="n">progress_watchdog</span><span class="p">,</span>
-                    <span class="n">soft_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">soft_timeout</span><span class="p">,</span>
-                    <span class="n">monitor_timeout</span><span class="o">=</span><span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">5</span><span class="p">),</span>
-                    <span class="n">last_call_wait</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">last_call_wait</span><span class="p">,</span>
-                    <span class="n">atomic_lock</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">atomic_lock</span><span class="p">,</span>
-                    <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-                <span class="p">)</span>
-                <span class="n">monitor_thread</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
 
                 <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span> <span class="o">=</span> <span class="n">param_utils</span><span class="o">.</span><span class="n">substitute_param_value</span><span class="p">(</span>
                     <span class="n">fn</span><span class="p">,</span>
@@ -508,30 +515,41 @@
 
                 <span class="k">try</span><span class="p">:</span>
                     <span class="k">try</span><span class="p">:</span>
-                        <span class="n">monitor_thread</span><span class="o">.</span><span class="n">start_monitoring</span><span class="p">()</span>
+                        <span class="n">monitor_thread</span> <span class="o">=</span> <span class="n">MonitorThread</span><span class="p">(</span>
+                            <span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">(),</span>
+                            <span class="n">store</span><span class="o">=</span><span class="n">store</span><span class="p">,</span>
+                            <span class="n">abort</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">abort</span><span class="p">,</span>
+                            <span class="n">interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">monitor_thread_interval</span><span class="p">,</span>
+                            <span class="n">progress_watchdog</span><span class="o">=</span><span class="n">progress_watchdog</span><span class="p">,</span>
+                            <span class="n">soft_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">soft_timeout</span><span class="p">,</span>
+                            <span class="n">last_call_wait</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">last_call_wait</span><span class="p">,</span>
+                            <span class="n">atomic_lock</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">atomic_lock</span><span class="p">,</span>
+                            <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                        <span class="p">)</span>
+                        <span class="n">monitor_thread</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
                         <span class="k">try</span><span class="p">:</span>
                             <span class="k">try</span><span class="p">:</span>
                                 <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">initialize</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                                    <span class="n">state</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+                                    <span class="n">wrapper</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
                             <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">init_ex</span><span class="p">:</span>
                                 <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">init_ex</span><span class="p">,</span> <span class="s1">&#39;init_ex&#39;</span><span class="p">))</span>
                                 <span class="k">raise</span>
 
                             <span class="k">try</span><span class="p">:</span>
                                 <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                                    <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+                                    <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
                             <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">health_ex</span><span class="p">:</span>
-                                <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
-                                    <span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">health_ex</span><span class="p">,</span> <span class="s1">&#39;health_ex&#39;</span><span class="p">)</span>
-                                <span class="p">)</span>
+                                <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">health_ex</span><span class="p">,</span> <span class="s1">&#39;health_ex&#39;</span><span class="p">))</span>
                                 <span class="k">raise</span> <span class="n">HealthCheckError</span> <span class="kn">from</span><span class="w"> </span><span class="nn">health_ex</span>
 
-                            <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="n">Status</span><span class="o">.</span><span class="n">ACTIVE</span><span class="p">:</span>
+                            <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="n">Mode</span><span class="o">.</span><span class="n">ACTIVE</span><span class="p">:</span>
                                 <span class="n">ret</span> <span class="o">=</span> <span class="n">fn</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
-                                <span class="n">state</span><span class="o">.</span><span class="n">store</span><span class="o">.</span><span class="n">record_completed</span><span class="p">()</span>
-                            <span class="k">elif</span> <span class="n">state</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="n">Status</span><span class="o">.</span><span class="n">INACTIVE</span><span class="p">:</span>
-                                <span class="n">ret</span> <span class="o">=</span> <span class="n">spare_fn</span><span class="p">(</span>
+                                <span class="n">store</span><span class="o">.</span><span class="n">record_completed</span><span class="p">()</span>
+                            <span class="k">elif</span> <span class="n">state</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="n">Mode</span><span class="o">.</span><span class="n">INACTIVE</span><span class="p">:</span>
+                                <span class="n">ret</span> <span class="o">=</span> <span class="n">reserve_fn</span><span class="p">(</span>
                                     <span class="n">state</span><span class="p">,</span>
+                                    <span class="n">store</span><span class="p">,</span>
                                     <span class="n">progress_watchdog</span><span class="p">,</span>
                                     <span class="n">wrapper</span><span class="o">.</span><span class="n">progress_watchdog_interval</span><span class="p">,</span>
                                 <span class="p">)</span>
@@ -539,61 +557,50 @@
                                 <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
 
                             <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
-                            <span class="n">completion_timeout_chunk</span> <span class="o">=</span> <span class="p">(</span>
-                                <span class="n">wrapper</span><span class="o">.</span><span class="n">soft_timeout</span>
-                                <span class="o">-</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">progress_watchdog_interval</span>
-                            <span class="p">)</span> <span class="o">/</span> <span class="mi">2</span>
                             <span class="n">store</span><span class="o">.</span><span class="n">completion_barrier</span><span class="p">(</span>
-                                <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+                                <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">],</span>
                                 <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
                                 <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">completion_timeout</span><span class="p">,</span>
-                                <span class="n">timeout_chunk</span><span class="o">=</span><span class="n">completion_timeout_chunk</span><span class="p">,</span>
+                                <span class="n">timeout_chunk</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">progress_watchdog_interval</span><span class="p">,</span>
                             <span class="p">)</span>
-                        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">train_ex</span><span class="p">:</span>
+                        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">fn_ex</span><span class="p">:</span>
                             <span class="k">try</span><span class="p">:</span>
-                                <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">train_ex</span><span class="p">,</span> <span class="s1">&#39;train_ex&#39;</span><span class="p">))</span>
-                                <span class="n">store</span><span class="o">.</span><span class="n">record_interrupted</span><span class="p">(</span>
-                                    <span class="n">InterruptionRecord</span><span class="p">(</span>
-                                        <span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">Interruption</span><span class="o">.</span><span class="n">EXCEPTION</span>
-                                    <span class="p">)</span>
+                                <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">fn_ex</span><span class="p">,</span> <span class="s1">&#39;fn_ex&#39;</span><span class="p">))</span>
+                                <span class="n">monitor_process</span><span class="o">.</span><span class="n">record_interrupted</span><span class="p">(</span>
+                                    <span class="p">[</span><span class="n">InterruptionRecord</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">Interruption</span><span class="o">.</span><span class="n">EXCEPTION</span><span class="p">)]</span>
                                 <span class="p">)</span>
-                                <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">spin_drain</span><span class="p">()</span>
-                                <span class="n">monitor_thread</span><span class="o">.</span><span class="n">final_check_and_shutdown</span><span class="p">()</span>
+                                <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">spin_till_paused</span><span class="p">()</span>
+                                <span class="n">monitor_thread</span><span class="o">.</span><span class="n">maybe_join</span><span class="p">()</span>
                             <span class="k">except</span> <span class="n">RankShouldRestart</span> <span class="k">as</span> <span class="n">async_ex</span><span class="p">:</span>
                                 <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">async_ex</span><span class="p">,</span> <span class="s1">&#39;async_ex&#39;</span><span class="p">))</span>
                                 <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-                                <span class="k">raise</span> <span class="n">async_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">train_ex</span>
+                                <span class="k">raise</span> <span class="n">async_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">fn_ex</span>
                             <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">other_ex</span><span class="p">:</span>
-                                <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span>
-                                    <span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">other_ex</span><span class="p">,</span> <span class="s1">&#39;other_ex&#39;</span><span class="p">)</span>
-                                <span class="p">)</span>
+                                <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">other_ex</span><span class="p">,</span> <span class="s1">&#39;other_ex&#39;</span><span class="p">))</span>
                                 <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">other_ex</span>
                             <span class="k">else</span><span class="p">:</span>
-                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">train_ex</span>
-                        <span class="k">else</span><span class="p">:</span>
-                            <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">fn_ex</span>
                     <span class="k">except</span> <span class="n">RankShouldRestart</span> <span class="k">as</span> <span class="n">term_ex</span><span class="p">:</span>
                         <span class="n">log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">term_ex</span><span class="p">,</span> <span class="s1">&#39;term_ex&#39;</span><span class="p">))</span>
                         <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-                        <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">resume</span><span class="p">()</span>
+
+                        <span class="n">state</span><span class="o">.</span><span class="n">fn_exception</span> <span class="o">=</span> <span class="n">term_ex</span><span class="o">.</span><span class="n">__cause__</span>
 
                         <span class="k">try</span><span class="p">:</span>
                             <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">finalize</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                                <span class="n">wrapper</span><span class="o">.</span><span class="n">finalize</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">term_ex</span><span class="o">.</span><span class="n">__cause__</span><span class="p">)</span>
+                                <span class="n">wrapper</span><span class="o">.</span><span class="n">finalize</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
                         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">finalize_ex</span><span class="p">:</span>
-                            <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
-                                <span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">finalize_ex</span><span class="p">,</span> <span class="s1">&#39;finalize_ex&#39;</span><span class="p">)</span>
-                            <span class="p">)</span>
+                            <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">finalize_ex</span><span class="p">,</span> <span class="s1">&#39;finalize_ex&#39;</span><span class="p">))</span>
                             <span class="k">raise</span> <span class="n">finalize_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
 
                         <span class="k">try</span><span class="p">:</span>
                             <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                                <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">term_ex</span><span class="o">.</span><span class="n">__cause__</span><span class="p">)</span>
+                                <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
                         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">health_ex</span><span class="p">:</span>
                             <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">health_ex</span><span class="p">,</span> <span class="s1">&#39;health_ex&#39;</span><span class="p">))</span>
                             <span class="k">try</span><span class="p">:</span>
                                 <span class="k">raise</span> <span class="n">health_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
-                            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+                            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
                                 <span class="k">raise</span> <span class="n">HealthCheckError</span> <span class="kn">from</span><span class="w"> </span><span class="nn">health_ex</span>
                         <span class="k">else</span><span class="p">:</span>
                             <span class="k">raise</span> <span class="n">HealthCheckPassed</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
@@ -601,23 +608,23 @@
                     <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">term_ex</span><span class="p">:</span>
                         <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">term_ex</span><span class="p">,</span> <span class="s1">&#39;term_ex&#39;</span><span class="p">))</span>
                         <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
+                    <span class="k">finally</span><span class="p">:</span>
+                        <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
                 <span class="k">except</span> <span class="n">HealthCheckPassed</span> <span class="k">as</span> <span class="n">restart_ex</span><span class="p">:</span>
                     <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">restart_ex</span><span class="p">,</span> <span class="s1">&#39;restart_ex&#39;</span><span class="p">))</span>
-                    <span class="n">store</span><span class="o">.</span><span class="n">termination_barrier</span><span class="p">(</span>
-                        <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+                    <span class="n">store</span><span class="o">.</span><span class="n">iteration_barrier</span><span class="p">(</span>
+                        <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">],</span>
                         <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
                         <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
                     <span class="p">)</span>
+                    <span class="n">monitor_process</span><span class="o">.</span><span class="n">disable_sibling_monitor</span><span class="p">()</span>
+
                     <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="n">store</span><span class="o">.</span><span class="n">get_terminated_ranks</span><span class="p">()</span>
 
-                    <span class="n">state</span><span class="p">,</span> <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_assignment</span><span class="p">(</span>
-                        <span class="n">state</span><span class="p">,</span> <span class="n">terminated_ranks</span>
-                    <span class="p">)</span>
-                    <span class="k">if</span> <span class="n">terminated_ranks</span><span class="p">:</span>
-                        <span class="n">msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">terminated_ranks</span><span class="si">=}</span><span class="s1"> is not empty&#39;</span>
-                        <span class="k">raise</span> <span class="n">RestartError</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+                    <span class="n">rank_assignment_ctx</span> <span class="o">=</span> <span class="n">RankAssignmentCtx</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="p">)</span>
+                    <span class="n">reassigned_ctx</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_assignment</span><span class="p">(</span><span class="n">rank_assignment_ctx</span><span class="p">)</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span> <span class="o">=</span> <span class="n">reassigned_ctx</span><span class="o">.</span><span class="n">state</span>
 
-                    <span class="n">state</span><span class="o">.</span><span class="n">activate_all_ranks</span><span class="p">()</span>
                     <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_filter</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                         <span class="n">state</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_filter</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
                     <span class="n">state</span><span class="o">.</span><span class="n">set_distributed_vars</span><span class="p">()</span>
@@ -631,43 +638,16 @@
 
         <span class="k">except</span> <span class="ne">BaseException</span> <span class="k">as</span> <span class="n">exit_ex</span><span class="p">:</span>
             <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">exit_ex</span><span class="p">,</span> <span class="s1">&#39;exit_ex&#39;</span><span class="p">))</span>
-            <span class="k">if</span> <span class="n">monitor_thread</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-            <span class="n">store</span><span class="o">.</span><span class="n">record_interrupted</span><span class="p">(</span>
-                <span class="n">InterruptionRecord</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">Interruption</span><span class="o">.</span><span class="n">BASE_EXCEPTION</span><span class="p">)</span>
-            <span class="p">)</span>
-            <span class="n">store</span><span class="o">.</span><span class="n">record_terminated_rank</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">)</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">record_interrupted</span><span class="p">([</span><span class="n">InterruptionRecord</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">Interruption</span><span class="o">.</span><span class="n">BASE_EXCEPTION</span><span class="p">)])</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">record_terminated_ranks</span><span class="p">([</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">])</span>
 
-            <span class="n">store</span><span class="o">.</span><span class="n">termination_barrier</span><span class="p">(</span>
-                <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">iteration_barrier</span><span class="p">(</span>
+                <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">],</span>
                 <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
                 <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
             <span class="p">)</span>
+            <span class="n">monitor_process</span><span class="o">.</span><span class="n">disable_sibling_monitor</span><span class="p">()</span>
             <span class="k">raise</span> <span class="n">exit_ex</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
-            <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> clean exit&#39;</span><span class="p">)</span>
-        <span class="k">finally</span><span class="p">:</span>
-            <span class="n">initial_rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span>
-            <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
-            <span class="n">initial_world_size</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">initial_world_size</span>
-
-            <span class="k">if</span> <span class="n">initial_rank</span> <span class="ow">in</span> <span class="n">base_store</span><span class="o">.</span><span class="n">critical_ranks</span><span class="p">:</span>
-                <span class="n">base_store</span><span class="o">.</span><span class="n">record_base_terminated_rank</span><span class="p">(</span><span class="n">initial_rank</span><span class="p">)</span>
-                <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">initial_rank</span><span class="si">=}</span><span class="s1"> waiting for other ranks&#39;</span><span class="p">)</span>
-                <span class="k">while</span> <span class="p">(</span>
-                    <span class="n">base_store</span><span class="o">.</span><span class="n">get_base_terminated_count</span><span class="p">()</span>
-                    <span class="o">!=</span> <span class="n">initial_world_size</span>
-                <span class="p">):</span>
-                    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">wrapper</span><span class="o">.</span><span class="n">monitor_thread_interval</span><span class="o">.</span><span class="n">total_seconds</span><span class="p">())</span>
-                <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">initial_rank</span><span class="si">=}</span><span class="s1"> done waiting&#39;</span><span class="p">)</span>
-                <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-                <span class="n">monitor_process</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-            <span class="k">else</span><span class="p">:</span>
-                <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-                <span class="n">monitor_process</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-                <span class="n">base_store</span><span class="o">.</span><span class="n">record_base_terminated_rank</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">)</span>
-            <span class="n">Logging</span><span class="o">.</span><span class="n">deinitialize</span><span class="p">()</span>
 
         <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
         <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> returning&#39;</span><span class="p">)</span>

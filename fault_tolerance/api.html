@@ -23,7 +23,7 @@
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Config" href="api/config.html" />
-    <link rel="prev" title="Usage guide" href="usage_guide.html" /> 
+    <link rel="prev" title="FT Launcher &amp; Inprocess integration" href="integration/inprocess.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -49,6 +49,7 @@
 <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="index.html">Fault Tolerance</a><ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration Guides</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">API documentation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="api/config.html">Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/client.html">Client</a></li>
@@ -95,49 +96,36 @@
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">API documentation</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="api/config.html">Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/config.html">Config</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code></a><ul>
+<li class="toctree-l3"><a class="reference internal" href="api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args"><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig.from_args()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs"><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig.from_kwargs()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_yaml_file"><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig.from_yaml_file()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.to_yaml_file"><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig.to_yaml_file()</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="api/client.html">Client</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.HeartbeatTimeouts"><code class="docutils literal notranslate"><span class="pre">HeartbeatTimeouts</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code></a><ul>
-<li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_timeouts"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.calculate_and_set_timeouts()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_hb_timeouts"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.calculate_and_set_hb_timeouts()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.calculate_and_set_section_timeouts"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.calculate_and_set_section_timeouts()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.end_all_sections"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.end_all_sections()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.end_section"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.end_section()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.init_workload_monitoring()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.load_state_dict"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.load_state_dict()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_heartbeat"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.send_heartbeat()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.send_workload_control_request()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.shutdown_workload_monitoring"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.shutdown_workload_monitoring()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.start_section"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.start_section()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.state_dict"><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.state_dict()</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClientError"><code class="docutils literal notranslate"><span class="pre">RankMonitorClientError</span></code></a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="api/server.html">Server</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer"><code class="docutils literal notranslate"><span class="pre">RankMonitorServer</span></code></a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="api/callback.html">Callback</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code></a><ul>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_exception"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_exception()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_load_checkpoint"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_load_checkpoint()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_save_checkpoint"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_save_checkpoint()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_batch_end"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_train_batch_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_end"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_train_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_start"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_train_start()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_batch_end"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_validation_batch_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_end"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_validation_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_start"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_validation_start()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.setup"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.setup()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.teardown"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.teardown()</span></code></a></li>
-</ul>
-</li>
-<li class="toctree-l2"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams"><code class="docutils literal notranslate"><span class="pre">SimulatedFaultParams</span></code></a><ul>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams.fault_type"><code class="docutils literal notranslate"><span class="pre">SimulatedFaultParams.fault_type</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams.base_delay"><code class="docutils literal notranslate"><span class="pre">SimulatedFaultParams.base_delay</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams.rand_delay"><code class="docutils literal notranslate"><span class="pre">SimulatedFaultParams.rand_delay</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams.rank_to_fail"><code class="docutils literal notranslate"><span class="pre">SimulatedFaultParams.rank_to_fail</span></code></a></li>
-</ul>
-</li>
-</ul>
-</li>
+<li class="toctree-l1"><a class="reference internal" href="api/server.html">Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="api/callback.html">Callback</a></li>
 </ul>
 </div>
 </section>
@@ -146,7 +134,7 @@
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="usage_guide.html" class="btn btn-neutral float-left" title="Usage guide" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="integration/inprocess.html" class="btn btn-neutral float-left" title="FT Launcher &amp; Inprocess integration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
         <a href="api/config.html" class="btn btn-neutral float-right" title="Config" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 

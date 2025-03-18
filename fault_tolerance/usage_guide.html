@@ -22,7 +22,7 @@
     <script src="../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="API documentation" href="api.html" />
+    <link rel="next" title="Integration Guides" href="integration.html" />
     <link rel="prev" title="Fault Tolerance" href="index.html" /> 
 </head>
 
@@ -50,21 +50,16 @@
 <li class="toctree-l1 current"><a class="reference internal" href="index.html">Fault Tolerance</a><ul class="current">
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Usage guide</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#terms">Terms</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#ft-package-design-overview">FT Package Design Overview</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#ft-integration-guide-for-pytorch">FT Integration Guide for PyTorch</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#prerequisites">1. Prerequisites:</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#ft-configuration">2. FT configuration:</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#integration-with-a-pytorch-workload">3. Integration with a PyTorch workload:</a></li>
-</ul>
-</li>
-<li class="toctree-l3"><a class="reference internal" href="#ft-integration-guide-for-pytorch-lightning">FT Integration Guide for PyTorch Lightning</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#use-ft-launcher-to-start-the-workload">1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#add-ft-callback-to-the-ptl-trainer">2. Add FT callback to the PTL trainer</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#implementing-auto-resume">3. Implementing auto-resume</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#design-overview">Design Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#usage-overview">Usage Overview</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#ft-launcher">FT launcher</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#hang-detection">Hang detection</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#workload-control">Workload control</a></li>
 </ul>
 </li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration Guides</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
 </ul>
@@ -105,31 +100,33 @@
 <section id="terms">
 <h2>Terms<a class="headerlink" href="#terms" title="Link to this heading"></a></h2>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">PTL</span></code> is PyTorch Lightning.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Fault</span> <span class="pre">Tolerance</span></code>, <code class="docutils literal notranslate"><span class="pre">FT</span></code> is the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> package.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">FT</span> <span class="pre">callback</span></code>, <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> is a PTL callback that integrates FT with PTL.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> is a launcher tool included in FT, which is based on <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">heartbeat</span></code> is a lightweight message sent from a rank to its rank monitor that indicates that a rank is alive.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">rank</span> <span class="pre">monitor</span></code> is a special side-process started by <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> that monitors heartbeats from its rank.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">timeouts</span></code> are time intervals used by a rank monitor to detect that a rank is not alive. There are two separate timeouts: for the initial heartbeat and the subsequent heartbeats.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">section</span></code> is a user code segment with a custom name assigned.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rank</span> <span class="pre">monitor</span></code> is a special side process started by <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> that monitors its rank.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">timeouts</span></code> are time intervals used by a rank monitor to detect that a rank is not alive.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">launcher</span> <span class="pre">script</span></code> is a bash script that invokes <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PTL</span></code> is PyTorch Lightning.</p></li>
 </ul>
 </section>
-<section id="ft-package-design-overview">
-<h2>FT Package Design Overview<a class="headerlink" href="#ft-package-design-overview" title="Link to this heading"></a></h2>
+<section id="design-overview">
+<h2>Design Overview<a class="headerlink" href="#design-overview" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p>Each node runs a single <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+<li><p>FT configuration is passed to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> and propagated to other FT components.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> spawns rank monitors (once).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> spawns ranks (can also respawn if <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is greater than 0).</p></li>
 <li><p>Each rank uses <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> to connect to its monitor (<code class="docutils literal notranslate"><span class="pre">RankMonitorServer</span></code>).</p></li>
-<li><p>Each rank periodically sends heartbeats to its rank monitor (e.g. after each training and evaluation step).</p></li>
-<li><p>In case of a hang, the rank monitor detects missing heartbeats from its rank and terminates it.</p></li>
+<li><p>Each rank periodically sends updates to its rank monitor (e.g., during each training and evaluation step).</p></li>
+<li><p>In case of a hang, the rank monitor detects missing updates from its rank and terminates it.</p></li>
 <li><p>If any ranks disappear, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> detects that and terminates or restarts the workload.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> instances communicate via the <code class="docutils literal notranslate"><span class="pre">torchrun</span></code> “rendezvous” mechanism.</p></li>
 <li><p>Rank monitors do not communicate with each other.</p></li>
 </ul>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span># Processes structure on a single node.
-# NOTE: each rank has its separate rank monitor.
+# NOTE: each rank has its own separate rank monitor.
 
 [Rank_N]----(IPC)----[Rank Monitor_N]
    |                      |
@@ -141,170 +138,61 @@
 </pre></div>
 </div>
 </section>
-<section id="ft-integration-guide-for-pytorch">
-<h2>FT Integration Guide for PyTorch<a class="headerlink" href="#ft-integration-guide-for-pytorch" title="Link to this heading"></a></h2>
-<section id="prerequisites">
-<h3>1. Prerequisites:<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h3>
-<p>Run ranks using <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>. The command line is mostly compatible with <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.</p>
+<section id="usage-overview">
+<h2>Usage Overview<a class="headerlink" href="#usage-overview" title="Link to this heading"></a></h2>
+<section id="ft-launcher">
+<h3>FT launcher<a class="headerlink" href="#ft-launcher" title="Link to this heading"></a></h3>
+<p>Fault tolerance includes a launcher tool called <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>, which is based on <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>
+and supports most <code class="docutils literal notranslate"><span class="pre">torchrun</span></code> command-line parameters. FT configuration can be specified either
+via a YAML file using <code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code> or through command-line parameters
+using <code class="docutils literal notranslate"><span class="pre">--ft-param-&lt;parameter-name&gt;</span></code>.</p>
+<p>If <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, the launcher restarts failed workers.
+The restart behavior depends on the <code class="docutils literal notranslate"><span class="pre">--restart-policy</span></code> parameter, which supports two modes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">any-failed</span></code> (default)
+All workers are restarted if any worker fails.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">min-healthy</span></code>
+Workers are restarted when the number of healthy nodes (nodes where all worker processes are running)
+falls below the minimum specified in <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code>. This allows for some worker failures to be handled
+without restarting remaining workers, e.g., with the <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a>.
+For details on how <code class="docutils literal notranslate"><span class="pre">min-healthy</span></code> policy interacts with <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a> see <a class="reference internal" href="integration/inprocess.html"><span class="doc">FT Launcher &amp; Inprocess integration</span></a>.</p></li>
+</ul>
+</section>
+<section id="hang-detection">
+<h3>Hang detection<a class="headerlink" href="#hang-detection" title="Link to this heading"></a></h3>
+<p>The FT package provides two fully independent mechanisms for detecting hangs in user code.
+Users can choose the API that is best suited for their needs, or use both APIs at the same time.</p>
+<ul class="simple">
+<li><p>Heartbeats API</p></li>
+</ul>
+<p>The training script periodically sends <cite>heartbeats</cite> to the monitor.
+If no heartbeat arrives in a defined time, the workload is considered hung.
+This API is the simplest to use but might require coarse timeouts
+that need to cover a wide range of possible intervals between heartbeats.
+Please find more details in <a class="reference internal" href="integration/heartbeats.html"><span class="doc">Heartbeats API Integration</span></a>.</p>
+<ul class="simple">
+<li><p>Sections API</p></li>
+</ul>
+<p>Some parts of the training scripts are wrapped in <cite>sections</cite>.
+If any section is opened for too long, the workload is considered hung.
+The sections-based API requires more changes in the user code, but timeouts
+can be defined more precisely, and hangs can be detected quicker.
+Please find more details in <a class="reference internal" href="integration/sections.html"><span class="doc">Sections API Integration</span></a>.</p>
+</section>
+<section id="workload-control">
+<h3>Workload control<a class="headerlink" href="#workload-control" title="Link to this heading"></a></h3>
+<p>In some cases, it might be useful to control the <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> behavior based on a rank state.
+For example, if an irrecoverable error is encountered in a rank, it might be reasonable to break
+the launcher restarting loop and exit instead of restarting; for other exception types, one might
+want to exclude the current node from subsequent restart attempts. <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> exposes the
+<a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request" title="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request"><code class="xref py py-meth docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request()</span></code></a>
+API, which can be used to control the workload restarting logic implemented in the launcher.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Some clusters (e.g. SLURM) use SIGTERM as a default method of requesting a graceful workload shutdown.
-It is recommended to implement appropriate signal handling in a fault-tolerant workload.
-To avoid deadlocks and other unintended side effects, signal handling should be synchronized across all ranks.
-Please refer to the <a class="reference internal" href="examples.html"><span class="doc">train_ddp.py example</span></a> for a basic signal handling implementation.</p>
+<p>Please note that only the ft_launcher behavior is affected by this call.
+The fault tolerance package is job scheduler-agnostic,
+i.e., it does not control underlying SLURM job allocations.</p>
 </div>
-</section>
-<section id="ft-configuration">
-<h3>2. FT configuration:<a class="headerlink" href="#ft-configuration" title="Link to this heading"></a></h3>
-<p>FT configuration is passed to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>
-via YAML file <code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code> or CLI arguments <code class="docutils literal notranslate"><span class="pre">--ft-param-...</span></code>,
-from where it’s propagated to other FT components.</p>
-<dl class="simple">
-<dt>Timeouts for fault detection need to be adjusted for a given workload:</dt><dd><ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">initial_rank_heartbeat_timeout</span></code> should be long enough to allow for workload initialization.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">rank_heartbeat_timeout</span></code> should be at least as long as the longest possible interval between steps.</p></li>
-</ul>
-</dd>
-</dl>
-<p><strong>Importantly, heartbeats are not sent during checkpoint loading and saving</strong>, so time for checkpointing-related operations should be taken into account.</p>
-<p>Summary of all FT configuration items:</p>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="Link to this definition"></a></dt>
-<dd><dl>
-<dt>Configuration of fault tolerance</dt><dd><ul class="simple">
-<li><p><cite>workload_check_interval</cite> [float] periodic rank check interval (in seconds) in rank monitors.</p></li>
-<li><p><cite>initial_rank_heartbeat_timeout</cite> [float] timeout (in seconds) for the first heartbeat from a rank.</p></li>
-</ul>
-<p>Usually, it takes a bit longer for the first heartbeat to be sent, as the rank needs to initialize.
-If rank does not send the first heartbeat within <cite>initial_rank_heartbeat_timeout</cite>, failure is detected.
-If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
-- <cite>rank_heartbeat_timeout</cite> [float] timeout (in seconds) for subsequent heartbeats from a rank.
-If no rank heartbeat is received within <cite>rank_heartbeat_timeout</cite>, failure is detected.
-If None this timeout needs to be deduced and set during runtime, based on the observed heartbeat intervals.
-- <cite>safety_factor</cite> [float] when deducing the timeouts, observed heartbeat intervals are multiplied by this factor to obtain the timeouts.
-- <cite>rank_termination_signal</cite> signal used to terminate the rank when failure is detected.
-- <cite>log_level</cite> log level of fault tolerance components</p>
-</dd>
-</dl>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>workload_check_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
-<li><p><strong>initial_rank_heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>rank_heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>safety_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>)</p></li>
-<li><p><strong>rank_termination_signal</strong> (<a class="reference external" href="https://docs.python.org/3/library/signal.html#signal.Signals" title="(in Python v3.13)"><em>Signals</em></a>)</p></li>
-<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
-</ul>
-</dd>
-</dl>
-</dd></dl>
-
-</section>
-<section id="integration-with-a-pytorch-workload">
-<h3>3. Integration with a PyTorch workload:<a class="headerlink" href="#integration-with-a-pytorch-workload" title="Link to this heading"></a></h3>
-<ol class="arabic simple">
-<li><p>Initialize a <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance on each rank with <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.init_workload_monitoring()</span></code>.</p></li>
-<li><p><em>(Optional)</em> Restore the state of <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.load_state_dict()</span></code>.</p></li>
-<li><p>Periodically send heartbeats from ranks using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.send_heartbeat()</span></code>.</p></li>
-<li><p><em>(Optional)</em> After a sufficient range of heartbeat intervals has been observed, call <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.calculate_and_set_timeouts()</span></code> to estimate timeouts.</p></li>
-<li><p><em>(Optional)</em> Save the <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance’s <code class="docutils literal notranslate"><span class="pre">state_dict()</span></code> to a file so that computed timeouts can be reused in the next run.</p></li>
-<li><p>Shut down <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.shutdown_workload_monitoring()</span></code>.</p></li>
-</ol>
-</section>
-</section>
-<section id="ft-integration-guide-for-pytorch-lightning">
-<h2>FT Integration Guide for PyTorch Lightning<a class="headerlink" href="#ft-integration-guide-for-pytorch-lightning" title="Link to this heading"></a></h2>
-<p>This section describes Fault Tolerance integration with a PTL-based workload (i.e., NeMo) using <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code>.</p>
-<section id="use-ft-launcher-to-start-the-workload">
-<h3>1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload<a class="headerlink" href="#use-ft-launcher-to-start-the-workload" title="Link to this heading"></a></h3>
-<p>Fault tolerance relies on a special launcher (<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>), which is a modified <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.
-If you are using NeMo, the <a class="reference external" href="https://github.com/NVIDIA/NeMo-Framework-Launcher">NeMo-Framework-Launcher</a> can be used to generate SLURM batch scripts with the FT support.</p>
-</section>
-<section id="add-ft-callback-to-the-ptl-trainer">
-<h3>2. Add FT callback to the PTL trainer<a class="headerlink" href="#add-ft-callback-to-the-ptl-trainer" title="Link to this heading"></a></h3>
-<p>Add the FT callback to PTL callbacks.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.ptl_resiliency</span><span class="w"> </span><span class="kn">import</span> <span class="n">FaultToleranceCallback</span>
-
-<span class="n">fault_tol_cb</span> <span class="o">=</span> <span class="n">FaultToleranceCallback</span><span class="p">(</span>
-   <span class="n">autoresume</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-   <span class="n">calculate_timeouts</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-   <span class="n">logger_name</span><span class="o">=</span><span class="s2">&quot;test_logger&quot;</span><span class="p">,</span>
-   <span class="n">exp_dir</span><span class="o">=</span><span class="n">tmp_path</span><span class="p">,</span>
-<span class="p">)</span>
-
-<span class="n">trainer</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">Trainer</span><span class="p">(</span>
-   <span class="o">...</span>
-   <span class="n">callbacks</span><span class="o">=</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">fault_tol_cb</span><span class="p">],</span>
-   <span class="n">resume_from_checkpoint</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<span class="p">)</span>
-</pre></div>
-</div>
-<dl class="simple">
-<dt>Core FT callback functionality includes:</dt><dd><ul class="simple">
-<li><p>Establishing a connection with a rank monitor.</p></li>
-<li><p>Sending heartbeats during training and evaluation steps.</p></li>
-<li><p>Disconnecting from a rank monitor.</p></li>
-</ul>
-</dd>
-<dt>Optionally, it can also:</dt><dd><ul class="simple">
-<li><p>Compute timeouts that will be used instead of timeouts defined in the FT config.</p></li>
-<li><p>Create a flag file when the training is completed.</p></li>
-</ul>
-</dd>
-</dl>
-<p>FT callback initialization parameters:</p>
-<dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.__init__">
-<span class="sig-prename descclassname"><span class="pre">FaultToleranceCallback.</span></span><span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">autoresume</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">calculate_timeouts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">simulated_fault_params</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">logger_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'nemo_logger.FaultToleranceCallback'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/ptl_resiliency/fault_tolerance_callback.html#FaultToleranceCallback.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.__init__" title="Link to this definition"></a></dt>
-<dd><p>Initialize callback instance.</p>
-<p>This is a lightweight initialization. Most of the initialization is conducted in the ‘setup’ hook.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>autoresume</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to <cite>True</cite> if the FT auto-resume feature is used (e.g., there are multiple training jobs to be run).</p></li>
-<li><p><strong>calculate_timeouts</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to <cite>True</cite> if FT timeouts should be calculated based on observed heartbeat intervals.
-Calculated timeouts overwrite the timeouts from the FT config.
-Timeouts are computed at the end of a training job, if there was checkpoint loading and saving.
-For example, for training started from scratch, the timeouts are computed at the end of the second job.</p></li>
-<li><p><strong>simulated_fault_params</strong> (<a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams" title="nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.SimulatedFaultParams"><em>SimulatedFaultParams</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)"><em>dict</em></a><em>, </em><em>DictConfig</em><em>, </em><em>None</em>) – Simulated fault spec. It’s for debugging only. Defaults to None.
-Should be a <cite>SimulatedFaultParams</cite> instance or any object that can be used for SimulatedFaultParams initialization with <cite>SimulatedFaultParams(**obj)</cite>.</p></li>
-<li><p><strong>exp_dir</strong> (<em>Union</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.13)"><em>pathlib.Path</em></a><em>, </em><em>None</em><em>]</em><em>, </em><em>optional</em>) – Directory where the FT state should be saved.
-Must be available for all training jobs. NOTE: Beware that PTL can move files written to its <cite>trainer.log_dir</cite>.
-Defaults to None, in which case it defaults to <cite>trainer.log_dir/ft_state</cite>.</p></li>
-<li><p><strong>logger_name</strong> (<em>Optional</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>, </em><em>optional</em>) – Logger name to be used.
-Defaults to “nemo_logger.FaultToleranceCallback”.</p></li>
-</ul>
-</dd>
-</dl>
-</dd></dl>
-
-</section>
-<section id="implementing-auto-resume">
-<h3>3. Implementing auto-resume<a class="headerlink" href="#implementing-auto-resume" title="Link to this heading"></a></h3>
-<p>Auto-resume is a feature that simplifies running training consisting of multiple subsequent training jobs.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>Auto-resume is not a part of the FT package. It is entirely implemented in a launcher script and the <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code>.</p>
-</div>
-<p><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> exposes an “interface” that allows implementing an auto-resume launcher script. Specifically, if <code class="docutils literal notranslate"><span class="pre">autoresume=True</span></code>,
-the FT callback creates a special marker file when training is completed. The marker file location is expected to be set in the <code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> environment variable.</p>
-<dl>
-<dt>The following mechanism can be used to implement an auto-resuming launcher script:</dt><dd><ul>
-<li><p>The launcher script starts ranks with <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> should be passed to rank processes.</p></li>
-<li><p>When a <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> exits, the launcher script checks if the <code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> file was created.</p>
-<blockquote>
-<div><ul class="simple">
-<li><p>If <code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> exists, the auto-resume loop can be broken, as the training is completed.</p></li>
-<li><p>If <code class="docutils literal notranslate"><span class="pre">FAULT_TOL_FINISHED_FLAG_FILE</span></code> does not exist, the continuation job can be issued (other conditions can be checked, e.g., if the maximum number of failures is not reached).</p></li>
-</ul>
-</div></blockquote>
-</li>
-</ul>
-</dd>
-</dl>
 </section>
 </section>
 </section>
@@ -314,7 +202,7 @@ the FT callback creates a special marker file when training is completed. The ma
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="index.html" class="btn btn-neutral float-left" title="Fault Tolerance" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="api.html" class="btn btn-neutral float-right" title="API documentation" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="integration.html" class="btn btn-neutral float-right" title="Integration Guides" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

@@ -53,10 +53,10 @@
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="wrap.html">Wrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="compose.html">Compose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="state.html">State</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Initialize</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="docutils literal notranslate"><span class="pre">Initialize</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.initialize.RetryController"><code class="docutils literal notranslate"><span class="pre">RetryController</span></code></a></li>
 </ul>
 </li>
@@ -102,20 +102,6 @@
              
   <section id="module-nvidia_resiliency_ext.inprocess.initialize">
 <span id="initialize"></span><h1>Initialize<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.initialize" title="Link to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.initialize.Initialize">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.</span></span><span class="sig-name descname"><span class="pre">Initialize</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/initialize.html#Initialize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="Link to this definition"></a></dt>
-<dd><p>Abstract base class for <code class="docutils literal notranslate"><span class="pre">initialize</span></code> argument for
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code></a> is executed at the start of every restart iteration,
-including the first one. <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code></a> can raise exceptions (e.g.,
-if specific preconditions are not met). Raising a standard Python
-<a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a> triggers another restart, while raising a
-<a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a> terminates the wrapper.</p>
-<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code></a> could be composed with
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
-</dd></dl>
-
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.initialize.RetryController">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.</span></span><span class="sig-name descname"><span class="pre">RetryController</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">max_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_world_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">min_active_world_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/initialize.html#RetryController"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.initialize.RetryController" title="Link to this definition"></a></dt>

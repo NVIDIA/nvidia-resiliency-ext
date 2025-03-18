@@ -102,37 +102,28 @@
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.straggler.reporting.Report">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.straggler.reporting.</span></span><span class="sig-name descname"><span class="pre">Report</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">gpu_relative_perf_scores</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">section_relative_perf_scores</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpu_individual_perf_scores</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">section_individual_perf_scores</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_to_node</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">local_section_summaries</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">local_kernel_summaries</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">generate_report_elapsed_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gather_on_rank0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/straggler/reporting.html#Report"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.straggler.reporting.Report" title="Link to this definition"></a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<dl class="simple">
-<dt>There are 2 types of the performance scores provided in this report:</dt><dd><ul class="simple">
-<li><p>Relative performance scores (0…1) that compare the performance of the current rank to the best performing rank.</p></li>
-<li><p>Individual performance scores (0…1) that compare the performance of the current rank to the rank’s past performance.</p></li>
-</ul>
-</dd>
-</dl>
+<p>There are two types of performance scores provided in this report:
+- Relative performance scores (0…1) that compare the performance of the current rank to the best performing rank.
+- Individual performance scores (0…1) that compare the performance of the current rank to the rank’s past performance.</p>
 <p>Relative scores need inter-rank synchronization to be computed, while individual scores can be computed on each rank separately.
-All performance scores can be interpreted as a ratio of: current performance/reference performance.
-For example:</p>
-<blockquote>
-<div><ul class="simple">
-<li><p>If the relative performance score is 0.5, it means that the current rank is 2x slower than the best performing rank.</p></li>
-<li><p>If the individual performance score is 0.5, it means that the current rank is 2x slower than its best performance.</p></li>
-</ul>
-</div></blockquote>
-<p>If <cite>gather_on_rank0=True</cite>:  <cite>*_perf_scores</cite> fields contain results for all ranks (only on rank0, otherwise undefined).
-If <cite>gather_on_rank0=False</cite>:  <cite>*_perf_scores</cite> fields contain only current rank results.</p>
+All performance scores can be interpreted as a ratio of: current performance/reference performance.</p>
+<p>For example:
+- If the relative performance score is 0.5, it means that the current rank is 2x slower than the best performing rank.
+- If the individual performance score is 0.5, it means that the current rank is 2x slower than its best performance.</p>
+<p>If <cite>gather_on_rank0=True</cite>: <cite>*_perf_scores</cite> fields contain results for all ranks (only on rank0; otherwise undefined).
+If <cite>gather_on_rank0=False</cite>: <cite>*_perf_scores</cite> fields contain only current rank results.</p>
 <p>Containers can be empty if there are no results.</p>
-<ul class="simple">
-<li><p>gpu_relative_perf_scores: Rank -&gt; GPU relative performance score.</p></li>
-<li><p>section_relative_perf_scores: Section name -&gt; (Rank -&gt; Section relative performance score).</p></li>
-<li><p>gpu_individual_perf_scores: Rank -&gt; GPU individual performance score.</p></li>
-<li><p>section_individual_perf_scores: Section name -&gt; (Rank -&gt; Section individual performance score).</p></li>
-<li><p>rank_to_node: Rank -&gt; Node name, aux mapping useful for results reporting.</p></li>
-<li><p>local_section_summaries: Local (e.g. this rank) timing stats for each user defined section/context.</p></li>
-<li><p>local_kernel_summaries: Local (e.g. this rank) timing stats for each captured CUDA kernel.</p></li>
-<li><p>generate_report_elapsed_time: How long did it take to generate this report.</p></li>
-<li><p>gather_on_rank0 : Mode for results gather, if gather_on_rank0 = False,</p></li>
-<li><p>rank: Rank of the current report. None if not corresponding to any rank (i.e. gather_on_rank0=True).</p></li>
-</ul>
+<p>Attributes:
+- <cite>gpu_relative_perf_scores</cite>: Rank -&gt; GPU relative performance score.
+- <cite>section_relative_perf_scores</cite>: Section name -&gt; (Rank -&gt; Section relative performance score).
+- <cite>gpu_individual_perf_scores</cite>: Rank -&gt; GPU individual performance score.
+- <cite>section_individual_perf_scores</cite>: Section name -&gt; (Rank -&gt; Section individual performance score).
+- <cite>rank_to_node</cite>: Rank -&gt; Node name, an auxiliary mapping useful for results reporting.
+- <cite>local_section_summaries</cite>: Local (e.g., this rank) timing stats for each user-defined section/context.
+- <cite>local_kernel_summaries</cite>: Local (e.g., this rank) timing stats for each captured CUDA kernel.
+- <cite>generate_report_elapsed_time</cite>: How long it took to generate this report.
+- <cite>gather_on_rank0</cite>: Mode for results gathering.
+- <cite>rank</cite>: Rank of the current report. <cite>None</cite> if not corresponding to any rank (i.e., <cite>gather_on_rank0=True</cite>).</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">

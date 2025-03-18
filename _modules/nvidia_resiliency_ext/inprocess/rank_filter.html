@@ -93,22 +93,28 @@
 <span class="c1"># limitations under the License.</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">abc</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Optional</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">rank_assignment</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">State</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">Status</span>
 
 
 <div class="viewcode-block" id="RankFilter">
 <a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">RankFilter</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABC</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    .. note::</span>
+<span class="sd">       :py:class:`RankFilter` is deprecated and will be removed in the next</span>
+<span class="sd">       release. The functionality is merged into</span>
+<span class="sd">       :py:class:`inprocess.rank_assignment.RankAssignment`.</span>
+
 <span class="sd">    :py:class:`RankFilter` selects which ranks are active in the current</span>
 <span class="sd">    restart iteration of :py:class:`inprocess.Wrapper`.</span>
 
 <span class="sd">    Active ranks call the provided wrapped function. Inactive ranks are waiting</span>
 <span class="sd">    idle, and could serve as a pool of static, preallocated and preinitialized</span>
-<span class="sd">    spare ranks. Spare ranks would be activated in a subsequent restart</span>
+<span class="sd">    reserve ranks. Reserve ranks would be activated in a subsequent restart</span>
 <span class="sd">    iteration if previously active ranks were terminated or became unhealthy.</span>
 
 <span class="sd">    Multiple instances of :py:class:`RankFilter` could be composed with</span>
@@ -125,63 +131,83 @@
 <a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">MaxActiveWorldSize</span><span class="p">(</span><span class="n">RankFilter</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    .. note::</span>
+<span class="sd">       :py:class:`MaxActiveWorldSize` is deprecated and will be removed in the</span>
+<span class="sd">       next release. The functionality is moved to</span>
+<span class="sd">       :py:class:`inprocess.rank_assignment.MaxActiveWorldSize`.</span>
+
 <span class="sd">    :py:class:`MaxActiveWorldSize` ensures that the active world size is no</span>
 <span class="sd">    greater than the specified ``max_active_world_size``. Ranks with indices</span>
 <span class="sd">    less than the active world size are active and calling the wrapped</span>
-<span class="sd">    function, while ranks outside this range are inactive (sleeping).</span>
+<span class="sd">    function, while ranks outside this range are inactive.</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        max_active_world_size: maximum active world size, no limit if</span>
 <span class="sd">            :py:obj:`None`</span>
 <span class="sd">    &#39;&#39;&#39;</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">max_active_world_size</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">max_active_world_size</span> <span class="o">=</span> <span class="n">max_active_world_size</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">max_active_world_size</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">):</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="s1">&#39;rank_filter.MaxActiveWorldSize is deprecated and will be removed &#39;</span>
+            <span class="s1">&#39;in the next release. The functionality is moved to &#39;</span>
+            <span class="s1">&#39;rank_assignment.MaxActiveWorldSize&#39;</span><span class="p">,</span>
+            <span class="ne">DeprecationWarning</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">impl</span> <span class="o">=</span> <span class="n">rank_assignment</span><span class="o">.</span><span class="n">MaxActiveWorldSize</span><span class="p">(</span><span class="n">max_active_world_size</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">State</span><span class="p">:</span>
-        <span class="n">active_world_size</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">active_world_size</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_active_world_size</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">active_world_size</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span>
-                <span class="n">active_world_size</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_active_world_size</span>
-            <span class="p">)</span>
-        <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span> <span class="o">&lt;</span> <span class="n">active_world_size</span><span class="p">:</span>
-            <span class="n">status</span> <span class="o">=</span> <span class="n">Status</span><span class="o">.</span><span class="n">ACTIVE</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">status</span> <span class="o">=</span> <span class="n">Status</span><span class="o">.</span><span class="n">INACTIVE</span>
-
-        <span class="n">state</span><span class="o">.</span><span class="n">active_world_size</span> <span class="o">=</span> <span class="n">active_world_size</span>
-        <span class="n">state</span><span class="o">.</span><span class="n">status</span> <span class="o">=</span> <span class="n">status</span>
-        <span class="k">return</span> <span class="n">state</span></div>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">rank_assignment</span><span class="o">.</span><span class="n">RankAssignmentCtx</span><span class="p">(</span><span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="o">=</span><span class="nb">set</span><span class="p">())</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">impl</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span><span class="o">.</span><span class="n">state</span></div>
 
 
 
-<div class="viewcode-block" id="WorldSizeDivisibleBy">
-<a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.WorldSizeDivisibleBy">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">WorldSizeDivisibleBy</span><span class="p">(</span><span class="n">RankFilter</span><span class="p">):</span>
+<div class="viewcode-block" id="ActiveWorldSizeDivisibleBy">
+<a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ActiveWorldSizeDivisibleBy</span><span class="p">(</span><span class="n">RankFilter</span><span class="p">):</span>
 <span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
-<span class="sd">    :py:class:`WorldSizeDivisibleBy` ensures that the active world size is</span>
-<span class="sd">    divisible by a given number. Ranks within the adjusted world size are</span>
+<span class="sd">    .. note::</span>
+<span class="sd">       :py:class:`ActiveWorldSizeDivisibleBy` is deprecated and will be removed</span>
+<span class="sd">       in the next release. The functionality is moved to</span>
+<span class="sd">       :py:class:`inprocess.rank_assignment.ActiveWorldSizeDivisibleBy`.</span>
+
+<span class="sd">    :py:class:`ActiveWorldSizeDivisibleBy` ensures that the active world size</span>
+<span class="sd">    is divisible by a given number. Ranks within the adjusted world size are</span>
 <span class="sd">    marked as active and are calling the wrapped function, while ranks outside</span>
-<span class="sd">    this range are marked as inactive (sleeping).</span>
+<span class="sd">    this range are marked as inactive.</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        divisor: the divisor to adjust the active world size by</span>
 <span class="sd">    &#39;&#39;&#39;</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">divisor</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">divisor</span> <span class="o">=</span> <span class="n">divisor</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">divisor</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">):</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="s1">&#39;rank_filter.ActiveWorldSizeDivisibleBy is deprecated and will be &#39;</span>
+            <span class="s1">&#39;removed in the next release. The functionality is moved to &#39;</span>
+            <span class="s1">&#39;rank_assignment.ActiveWorldSizeDivisibleBy&#39;</span><span class="p">,</span>
+            <span class="ne">DeprecationWarning</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">impl</span> <span class="o">=</span> <span class="n">rank_assignment</span><span class="o">.</span><span class="n">ActiveWorldSizeDivisibleBy</span><span class="p">(</span><span class="n">divisor</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">State</span><span class="p">:</span>
-        <span class="n">divisor</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">divisor</span>
-        <span class="n">active_world_size</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">active_world_size</span> <span class="o">//</span> <span class="n">divisor</span> <span class="o">*</span> <span class="n">divisor</span>
-        <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span> <span class="o">&lt;</span> <span class="n">active_world_size</span><span class="p">:</span>
-            <span class="n">status</span> <span class="o">=</span> <span class="n">Status</span><span class="o">.</span><span class="n">ACTIVE</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">status</span> <span class="o">=</span> <span class="n">Status</span><span class="o">.</span><span class="n">INACTIVE</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">rank_assignment</span><span class="o">.</span><span class="n">RankAssignmentCtx</span><span class="p">(</span><span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="o">=</span><span class="nb">set</span><span class="p">())</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">impl</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span><span class="o">.</span><span class="n">state</span></div>
 
-        <span class="n">state</span><span class="o">.</span><span class="n">active_world_size</span> <span class="o">=</span> <span class="n">active_world_size</span>
-        <span class="n">state</span><span class="o">.</span><span class="n">status</span> <span class="o">=</span> <span class="n">status</span>
-        <span class="k">return</span> <span class="n">state</span></div>
+
+
+<div class="viewcode-block" id="WorldSizeDivisibleBy">
+<a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.WorldSizeDivisibleBy">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">WorldSizeDivisibleBy</span><span class="p">(</span><span class="n">ActiveWorldSizeDivisibleBy</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="s1">&#39;rank_filter.WorldSizeDivisibleBy is deprecated and will be &#39;</span>
+            <span class="s1">&#39;removed in the next release. The functionality is moved to &#39;</span>
+            <span class="s1">&#39;rank_assignment.ActiveWorldSizeDivisibleBy&#39;</span><span class="p">,</span>
+            <span class="ne">DeprecationWarning</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
 
 </pre></div>
 

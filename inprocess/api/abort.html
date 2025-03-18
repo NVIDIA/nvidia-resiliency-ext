@@ -53,11 +53,11 @@
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="wrap.html">Wrapper</a></li>
 <li class="toctree-l3"><a class="reference internal" href="compose.html">Compose</a></li>
+<li class="toctree-l3"><a class="reference internal" href="state.html">State</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="initialize.html">Initialize</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Abort</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.Abort"><code class="docutils literal notranslate"><span class="pre">Abort</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="docutils literal notranslate"><span class="pre">AbortTorchDistributed</span></code></a></li>
 </ul>
 </li>
@@ -102,22 +102,6 @@
              
   <section id="module-nvidia_resiliency_ext.inprocess.abort">
 <span id="abort"></span><h1>Abort<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.abort" title="Link to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.Abort">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">Abort</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#Abort"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.Abort" title="Link to this definition"></a></dt>
-<dd><p>Abstract base class for <code class="docutils literal notranslate"><span class="pre">abort</span></code> argument for
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
-<p>An instance of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">Abort</span></code></a> is triggered by a separate monitoring
-thread within <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code> as part of the termination
-mechanism when a fault is detected. Its primary purpose is to unblock the
-main thread, which might be waiting for results from other distributed
-ranks that are either already terminated or unresponsive. For example, this
-could occur during a distributed collective operation attempting to
-communicate with a terminated rank.</p>
-<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">Abort</span></code></a> could be composed with
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
-</dd></dl>
-
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">AbortTorchDistributed</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#AbortTorchDistributed"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="Link to this definition"></a></dt>

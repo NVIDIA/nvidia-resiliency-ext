@@ -1,0 +1,225 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Asynchronous Pytorch Distributed Checkpoint save with optimized FileSystemWriter &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" />
+    <link rel="next" title="Asynchronous PyTorch torch.save with the Core utility" href="torch_ckpt.html" />
+    <link rel="prev" title="Asynchronous FileSystemWriter Implementation" href="filesystem_async.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Async Checkpointing</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="core.html">Asynchronous Checkpoint Core Utilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="filesystem_async.html">Asynchronous FileSystemWriter Implementation</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Asynchronous Pytorch Distributed Checkpoint save with optimized <cite>FileSystemWriter</cite></a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize"><code class="docutils literal notranslate"><span class="pre">save_state_dict_async_finalize()</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan"><code class="docutils literal notranslate"><span class="pre">save_state_dict_async_plan()</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_md_reuse"><code class="docutils literal notranslate"><span class="pre">verify_global_md_reuse()</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="torch_ckpt.html">Asynchronous PyTorch <cite>torch.save</cite> with the Core utility</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Async Checkpointing</a></li>
+          <li class="breadcrumb-item"><a href="../api.html">API documentation</a></li>
+      <li class="breadcrumb-item active">Asynchronous Pytorch Distributed Checkpoint save with optimized <cite>FileSystemWriter</cite></li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../../_sources/checkpointing/async/api/state_dict_saver.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="module-nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver">
+<span id="asynchronous-pytorch-distributed-checkpoint-save-with-optimized-filesystemwriter"></span><h1>Asynchronous Pytorch Distributed Checkpoint save with optimized <cite>FileSystemWriter</cite><a class="headerlink" href="#module-nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver" title="Link to this heading"></a></h1>
+<p>State dict saver for PyT Distributed format allowing asynchronous save.</p>
+<dl class="py function">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize">
+<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">save_state_dict_async_finalize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">storage_writer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_metadata</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dist_wrapper</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#save_state_dict_async_finalize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize" title="Link to this definition"></a></dt>
+<dd><p>Finalization of save_state_dict_async_plan.</p>
+<p>The input arguments are the same as the save_state_dict_async_plan output,
+the <cite>write_results</cite> are retrieved from the storage_writer.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>storage_writer</strong> (<a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><em>FileSystemWriterAsync</em></a>) – storage writer used for planning</p></li>
+<li><p><strong>global_metadata</strong> (<em>Metadata</em>) – metadata created during planning</p></li>
+<li><p><strong>dist_wrapper</strong> (<em>_DistWrapper</em>) – distributed wrapper created during planning</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>None</p>
+</dd>
+</dl>
+<p>Returns: None</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan">
+<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">save_state_dict_async_plan</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">storage_writer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">process_group</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">coordinator_rank</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">planner</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cached_ckpt_structure</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">loaded_all_plans</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#save_state_dict_async_plan"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan" title="Link to this definition"></a></dt>
+<dd><p>First stage of asynchronously saving a state dict to storage.</p>
+<p>This is an async adaptation of <cite>torch.distributed.checkpoint.state_dict_saver</cite>.
+To support async save, the process is split into three stages:</p>
+<ol class="arabic simple">
+<li><p><strong>Planning</strong></p></li>
+<li><p><strong>Actual saving</strong> (must be asynchronous)</p></li>
+<li><p><strong>Finalization</strong></p></li>
+</ol>
+<p>The planning step is handled by this function and follows several steps as described in
+the [PyTorch documentation](<a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner">https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner</a>).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>state_dict</strong> (<em>STATE_DICT_TYPE</em>) – The state dict to save.</p></li>
+<li><p><strong>storage_writer</strong> (<a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><em>FileSystemWriterAsync</em></a>) – The storage writer.
+Currently, only an instance of <cite>FileSystemWriterAsync</cite> is supported.</p></li>
+<li><p><strong>process_group</strong> (<em>dist.ProcessGroup</em><em>, </em><em>optional</em>) – The process group used for save planning.</p></li>
+<li><p><strong>coordinator_rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – The coordinator rank for planning. Defaults to 0.</p></li>
+<li><p><strong>planner</strong> (<em>SavePlanner</em><em>, </em><em>optional</em>) – The save planner for the <cite>torch.distributed.checkpoint</cite> format.</p></li>
+<li><p><strong>cached_ckpt_structure</strong> (<em>Tuple</em><em>[</em><em>SavePlan</em><em>, </em><em>SavePlan</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>]</em><em>, </em><em>optional</em>) – A tuple containing:
+- <cite>cached_central_plan</cite> (SavePlan): A globally coordinated save plan cached in the previous iteration.
+- <cite>cached_local_plan</cite> (SavePlan): A local plan cached in the previous iteration.
+- <cite>validated_cache_reuse</cite> (bool): Whether global metadata and the planning dict are consistent over iterations.</p></li>
+<li><p><strong>loaded_all_plans</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.6)"><em>SavePlan</em></a><em>] </em><em>| </em><em>None</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><ul class="simple">
+<li><p>The storage writer (same as input).</p></li>
+<li><p>Metadata from planning (or <cite>None</cite> if cached global metadata is reused).</p></li>
+<li><p>The distributed wrapper used for planning.</p></li>
+</ul>
+</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Tuple</p>
+</dd>
+</dl>
+<p>The return value of this function should be passed as input to
+<cite>save_state_dict_async_finalize</cite>, along with <cite>cached_plan</cite>, to skip <cite>reduce_scatter</cite> during planning.</p>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_md_reuse">
+<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">verify_global_md_reuse</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">loaded_all_plans</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">local_plan</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dist_wrapper</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#verify_global_md_reuse"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_md_reuse" title="Link to this definition"></a></dt>
+<dd><dl class="simple">
+<dt>Verifies that global metadata reuse is possible by checking the loaded plans from the</dt><dd><p>checkpoint are consistent, which means we have the same settings when resuming training.</p>
+</dd>
+</dl>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>loaded_all_plans</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.6)"><em>SavePlan</em></a><em>]</em>) – List[SavePlan], The loaded plans from the checkpoint
+(stored in checkpoint metadata).</p></li>
+<li><p><strong>local_plan</strong> (<a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.6)"><em>SavePlan</em></a>) – SavePlan, The local save plan.</p></li>
+<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – Current process rank.</p></li>
+<li><p><strong>dist_wrapper</strong> (<em>_DistWrapper</em>) – distributed wrapper created during planning</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+<p>Returns: True iff the global metadata reuse is possible.</p>
+</dd></dl>
+
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="filesystem_async.html" class="btn btn-neutral float-left" title="Asynchronous FileSystemWriter Implementation" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="torch_ckpt.html" class="btn btn-neutral float-right" title="Asynchronous PyTorch torch.save with the Core utility" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
