@@ -1,5 +1,4 @@
 # NVIDIA Resiliency Extension
-**[|Documentation|](https://nvidia.github.io/nvidia-resiliency-ext/)**
 
 The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused solutions for PyTorch-based workloads.
 
