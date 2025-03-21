@@ -1,6 +1,10 @@
 # NVIDIA Resiliency Extension
+**[|Documentation|](https://nvidia.github.io/nvidia-resiliency-ext/)**
 
 The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused solutions for PyTorch-based workloads.
+
+<img src="/docs/source/media/NVRx-Core-Features.png" alt="Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks" width="800" height="600">
+
 
 ## Core Components and Capabilities
 
