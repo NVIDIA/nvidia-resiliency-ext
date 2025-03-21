@@ -4,9 +4,8 @@ nvidia-resiliency-ext v0.3.0
 **nvidia-resiliency-ext** is a set of tools developed by NVIDIA to improve large-scale distributed training resiliency.
 
 .. image:: /media/nvrx_docs_source.png
-++   :width: 500
-++   :alt: Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks.
-++
+   :width: 500
+   :alt: Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks.
 
 Features
 --------
