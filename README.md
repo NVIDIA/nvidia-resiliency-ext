@@ -27,7 +27,6 @@ The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused so
 - **[PyTorch Lightning Callbacks](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/integration/ptl.rst)**
   - Facilitating seamless NVRx integration with PyTorch Lightning.
 
-
 ## Installation
 
 ### From sources
