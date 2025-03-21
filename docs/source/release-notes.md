@@ -10,13 +10,13 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
 - ARM based host CPU support 
 - In-process & In-job restart 
     - Hierarchical in-process and in-job restart support  
-    - Warm spare support 
-    - Detect user application error and avoid restarting 
+    - Warm spare support  
 - Health checks 
     - GPU health check based on NVML 
     - NIC 
 - Checkpointing
     - Existing capabilities that used to be part of Megatron Core is refactored to be part of NVRx. The checkpointing feature will be maintained as part of NVRx, and Megatron Core and NeMo will use the code from NVRx in the future.
+    - Added support for checkpoint metadata caching to improve performance for subsequent checkpoints
 
 ### Known Issues & Limitations
 
