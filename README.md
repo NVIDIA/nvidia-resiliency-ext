@@ -3,29 +3,29 @@
 
 The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused solutions for PyTorch-based workloads.
 
-<img src="/docs/source/media/NVRx-Core-Features.png" alt="Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks" width="900" height="400">
+<img src="/docs/source/media/NVRx-Core-Features.png" alt="Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks" width="950" height="400">
 
 
 ## Core Components and Capabilities
 
-- **Fault Tolerance**
+- **[Fault Tolerance](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/index.rst)**
   - Detection of hung ranks.  
   - Restarting training in-job, without the need to reallocate SLURM nodes.
 
-- **In-Process Restarting**
+- **[In-Process Restarting](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/inprocess/index.rst)**
   - Detecting failures and enabling quick recovery.
 
-- **Async Checkpointing**
+- **[Async Checkpointing](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/async/index.rst)**
   - Providing an efficient framework for asynchronous checkpointing.
 
-- **Local Checkpointing**
+- **[Local Checkpointing](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/local/index.rst)**
   - Providing an efficient framework for local checkpointing.
 
-- **Straggler Detection**
+- **[Straggler Detection](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/straggler_det/index.rst)**
   - Monitoring GPU and CPU performance of ranks.  
   - Identifying slower ranks that may impede overall training efficiency.
 
-- **PyTorch Lightning Callbacks**
+- **[PyTorch Lightning Callbacks](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/integration/ptl.rst)**
   - Facilitating seamless NVRx integration with PyTorch Lightning.
 
 ## Installation
