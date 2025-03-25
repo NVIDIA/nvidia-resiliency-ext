@@ -92,10 +92,10 @@ git push -u origin <local-branch>:<remote-branch>
      ```bash
      $ gpg --full-generate-key
      ```
-    	  * Select: RSA and RSA (default)
-	  * Choose a key size: 4096
-	  * Set an expiration date (or use default: no expiration)
-	  * Provide your full name and email (must match your Git settings)
+     * Select: RSA and RSA (default)
+     * Choose a key size: 4096
+     * Set an expiration date (or use default: no expiration)
+     * Provide your full name and email (must match your Git settings)
   
   3. After generation, list your keys. Find the GPG key ID (it looks like ABCD1234EFGH5678).
      
