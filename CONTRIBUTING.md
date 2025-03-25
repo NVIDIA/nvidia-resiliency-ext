@@ -88,33 +88,41 @@ git push -u origin <local-branch>:<remote-branch>
     
 * To sign your Git commits, follow these steps:
   1. Generate a GPG Key (if you don’t have one). Run the following command to generate a new GPG key:
+     
      ```bash
      $ gpg --full-generate-key
      ```
-    * Select: RSA and RSA (default)
+    	  * Select: RSA and RSA (default)
 	  * Choose a key size: 4096
 	  * Set an expiration date (or use default: no expiration)
 	  * Provide your full name and email (must match your Git settings)
-
-  2. After generation, list your keys. Find the GPG key ID (it looks like ABCD1234EFGH5678).
+  
+  3. After generation, list your keys. Find the GPG key ID (it looks like ABCD1234EFGH5678).
+     
      ```bash
      $ gpg --list-secret-keys --keyid-format=long
      ```
-  3. Configure Git to Use Your GPG Key. Run the following commands that tell Git to sign all commits by default.
+     
+  5. Configure Git to Use Your GPG Key. Run the following commands that tell Git to sign all commits by default.
+     
      ```bash
      $ git config --global user.signingkey ABCD1234EFGH5678
      $ git config --global commit.gpgsign true
      ```
-  4. Export and add the GPG Key to GitHub/GitLab.
+     
+  7. Export and add the GPG Key to GitHub/GitLab.
+     
      * Export the public key:
      ```bash
      $ gpg --armor --export ABCD1234EFGH5678
      ```
+     
      * Copy the output and add it to your GitHub/GitLab under:
        * GitHub: Settings → SSH and GPG keys → New GPG Key
        * GitLab: Preferences → GPG Keys
 
 * Now, to sign off on a commit you simply use the `--signoff` (or `-s`) option when committing your changes:
+  
   ```bash
   $ git commit -s -m "Add cool feature."
   ```
