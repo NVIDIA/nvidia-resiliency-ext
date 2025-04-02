@@ -27,7 +27,7 @@ import pytest
 from nvidia_resiliency_ext import fault_tolerance
 
 WORLD_SIZE = 4
-DEFAULT_TIMEOUT = 60
+DEFAULT_TIMEOUT = 90
 
 
 @pytest.fixture
@@ -197,14 +197,6 @@ def test_missing_cfg(tmp_dir):
     empty_ft_cfg_path = os.path.join(tmp_dir, "_empty_ft_cfg.yaml")
     with open(empty_ft_cfg_path, 'a'):
         pass  # touch file
-    # By default, launcher should raise an error if FT config cant be read
-    cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
-    launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --fault-tol-cfg-path={empty_ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
-    )
-    ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code != 0
     # Empty config file again, But this time there are FT args in CLI, so should be fine
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (

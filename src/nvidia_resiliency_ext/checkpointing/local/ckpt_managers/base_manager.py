@@ -24,28 +24,23 @@ It uses a state_dict interface, requiring users to adjust the state_dict as need
 with MCore facilitating these modifications.
 """
 
-import gc
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Optional, Tuple
 
-from nvidia_resiliency_ext.common.device_utils import get_xla_model
 import torch
 
+from ...async_ckpt.core import AsyncRequest
+from ...utils import _disable_gc, debug_time
 from ..base_state_dict import TensorAwareStateDict
 from ..replication.group_utils import GroupWrapper
 from ..replication.strategies import ReplicationStrategy
-from ..replication.utils import debug_time
-from ...async_ckpt.core import AsyncRequest
-from ...utils import _disable_gc
 
 logger = logging.getLogger(__name__)
 
 CkptID = Tuple[int, int, Any]
-
-xm = get_xla_model()
 
 class CheckpointingException(Exception):
     """Base checkpointing related exception"""
@@ -77,13 +72,12 @@ class BaseCheckpointManager(ABC):
         self.session_id = session_id
         self._rank = None
         self.group = group
-        assert xm is None or torch.distributed.get_backend(group=group) == "gloo"
 
     @property
     def rank(self):
         if self._rank is None:
             if torch.distributed.is_initialized():
-                self._rank = torch.distributed.get_rank(group=self.group)
+                self._rank = torch.distributed.get_rank()
             else:
                 logger.warning("Torch distributed backend has not been initialized.")
                 self._rank = 0
@@ -95,7 +89,7 @@ class BaseCheckpointManager(ABC):
         Each rank assigns its own distinct ID.
 
         Args:
-            iteration (int): The iteration number.
+            iteration (int): The global iteration number.
 
         Returns:
             A unique checkpoint ID.
@@ -129,7 +123,7 @@ class BaseCheckpointManager(ABC):
         for the specified iteration.
 
         Args:
-            iteration : The iteration number for which the checkpoint was successfully saved.
+            iteration : The global iteration number for which the checkpoint was successfully saved
         """
         pass
 
@@ -138,7 +132,7 @@ class BaseCheckpointManager(ABC):
         """Removes invalid checkpoints that could not be saved due to a failure.
 
         Args:
-            iteration : The iteration number for which the checkpoint failed to save.
+            iteration : The global iteration number for which the checkpoint failed to save.
         """
 
     @debug_time('BaseCheckpointManager._load_fn', logger)
@@ -152,20 +146,24 @@ class BaseCheckpointManager(ABC):
     @_disable_gc()
     def _save_fn(self, id_to_state_dict):
         for ckpt_id, state_dict in id_to_state_dict.items():
-            self._save(state_dict, ckpt_id)
+            try:
+                self._save(state_dict, ckpt_id)
+            except Exception as e:
+                logging.error(f"Exception caught during saving {ckpt_id}: {e}", exc_info=True)
+                raise
         logger.debug(f'Finish saving {ckpt_id}')
 
     @debug_time('BaseCheckpointManager.find_latest', logger)
     def find_latest(self):
         """
-        Searches for the most recent complete checkpoint and returns its iteration number.
+        Searches for the most recent complete checkpoint and returns its global iteration number.
 
         If no complete checkpoints are found, the method returns -1.
 
         All training ranks have to call this method at once.
 
         Returns:
-            int: The iteration number of the most recent complete checkpoint,
+            int: The global iteration number of the most recent complete checkpoint,
             or -1 if no checkpoints are available.
         """
         if self.latest_iteration != -1:
@@ -175,14 +173,22 @@ class BaseCheckpointManager(ABC):
             logger.debug(f'Using cached latest_iteration: {self.latest_iteration} in find_latest')
             return self.latest_iteration
         group_wrapper = GroupWrapper(group=self.group)
-        self.globally_available_ids = group_wrapper.all_gather_object(self._my_ckpt_ids())
+
+        locally_available_ids = self._my_ckpt_ids()
+        if self.repl_strategy is None:
+            # if replication is disabled we cannot send other ranks' shards,
+            # so for our purposes they are considered unavailable
+            locally_available_ids = [id_ for id_ in locally_available_ids if id_[1] == self.rank]
+        # TODO: filter available IDs in case replication is enabled (but for example its' parameters have changed since)
+
+        self.globally_available_ids = group_wrapper.all_gather_object(locally_available_ids)
 
         # Maps each iteration to a corresponding set of ranks
         checkpoint_coverage_map = defaultdict(set)
         for ids in self.globally_available_ids:
             for ckpt_id in ids:
                 iteration, rank, session_id = ckpt_id
-                assert type(iteration) == int
+                assert type(iteration) is int
                 assert session_id == self.session_id
                 checkpoint_coverage_map[iteration].add(rank)
 
@@ -242,7 +248,7 @@ class BaseCheckpointManager(ABC):
 
         Args:
             state_dict (dict): The state dictionary to be saved.
-            iteration (int): The iteration number for identifying the checkpoint.
+            iteration (int): The global iteration (global_step) number identifying the checkpoint.
             is_async (bool): Whether to perform the save operation asynchronously.
 
         Returns:
@@ -267,26 +273,35 @@ class BaseCheckpointManager(ABC):
         save_fn = self._save_fn
         self.latest_iteration = -1  # invalidate latest_iteration
 
+        @debug_time("finalize_fn", logger)
         def finalize_fn():
+            # ThreadPoolExecutor creation takes ~0.0001s, so recreating it per save is fine.
+            executor = ThreadPoolExecutor(max_workers=1)
             validated_latest_iteration = self.find_latest()  # TODO optimize
             self.latest_iteration = -1  # invalidate latest_iteration
             if validated_latest_iteration < iteration:
-                # TODO Execute cleanup in a separate process
-                self._cleanup_failed_save(iteration)
+                if is_async:
+                    executor.submit(self._cleanup_failed_save, iteration)
+                    executor.shutdown(wait=False)  # Do not wait for the task to finish
+                else:
+                    self._cleanup_failed_save(iteration)
                 raise CheckpointingException(
                     f"Failure during saving local checkpoint from iteration {iteration}"
                     f" (last valid iteration is {validated_latest_iteration})"
                 )
             else:
                 if validated_latest_iteration == iteration:
-                    logging.info(f"Succesfully saved local checkpoint from iteration {iteration}")
+                    logging.info(f"Successfully saved local checkpoint from iteration {iteration}")
                 else:
-                    logging.info(
+                    logger.warning(
                         f"WARNING: during saving iteration {iteration} "
                         f"found valid checkpoint from iteration {validated_latest_iteration}"
                     )
-                # TODO Execute cleanup in a separate process
-                self._cleanup(iteration)
+                if is_async:
+                    executor.submit(self._cleanup, iteration)
+                    executor.shutdown(wait=False)  # Do not wait for the task to finish
+                else:
+                    self._cleanup(iteration)
 
         if is_async:
             # we must wait for D2H to complete before returning control to the training

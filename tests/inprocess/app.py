@@ -32,9 +32,11 @@ from typing import Optional
 
 from nvidia_resiliency_ext.common.device_utils import (
     get_current_device, 
-    get_distributed_init_method, 
-    get_xla_model
+    get_distributed_init_method
 )
+
+if 'TORCH_CPP_LOG_LEVEL' not in os.environ:
+    os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 
 import torch
 import torch.nn as nn
@@ -42,8 +44,6 @@ from packaging import version
 
 import nvidia_resiliency_ext.inprocess as inprocess
 import nvidia_resiliency_ext.inprocess.tools as tools
-
-xm = get_xla_model()
 
 os.environ['MASTER_ADDR'] = 'localhost'
 os.environ['MASTER_PORT'] = '29500'
@@ -74,6 +74,7 @@ def parse_args(namespace=None, allow_extras=True):
     inproc.add_argument('--progress-watchdog-int', default=0.01, type=float)
     inproc.add_argument('--monitor-thread-int', default=0.01, type=float)
     inproc.add_argument('--monitor-process-int', default=0.01, type=float)
+    inproc.add_argument('--heartbeat-int', default=1, type=float)
     inproc.add_argument('--soft-timeout', default=60, type=float)
     inproc.add_argument('--hard-timeout', default=90, type=float)
     inproc.add_argument('--heartbeat-timeout', default=30, type=float)
@@ -131,9 +132,7 @@ def parse_args(namespace=None, allow_extras=True):
         type=lambda s: logging._nameToLevel[s.upper()],
         default=logging.INFO,
     )
-    train.add_argument(
-        '--mode', type=lambda s: Mode[s.upper()], default=Mode.SPIN
-    )
+    train.add_argument('--mode', type=lambda s: Mode[s.upper()], default=Mode.SPIN)
 
     args, extras = parser.parse_known_args(namespace=namespace)
     if not allow_extras:
@@ -152,13 +151,12 @@ def parse_args(namespace=None, allow_extras=True):
 
 
 class Fault(enum.Enum):
-    CPU = enum.auto()
-    GPU = enum.auto()
+    GPU_ERROR = enum.auto()
     EXC = enum.auto()
-    KILL = enum.auto()
-    TERM = enum.auto()
-    EXIT = enum.auto()
-    ABORT = enum.auto()
+    SIGKILL = enum.auto()
+    SIGTERM = enum.auto()
+    SYS_EXIT = enum.auto()
+    OS_ABORT = enum.auto()
 
 
 class Mode(enum.Enum):
@@ -175,18 +173,12 @@ def maybe_trigger_fault(rank, world_size, args, group:Optional[torch.distributed
 
     # range starts from keep_alive because first keep_alive ranks can't fail,
     # typically keep_alive = 1 because rank 0 hosts TCPStore
-    ranks_to_trigger = random.sample(
-        range(args.keep_alive, world_size), num_ranks_to_trigger
-    )
+    ranks_to_trigger = random.sample(range(args.keep_alive, world_size), num_ranks_to_trigger)
 
-    if (
-        args.check_fault
-        and torch.distributed.is_available()
-        and torch.distributed.is_initialized()
-    ):
+    if args.check_fault and torch.distributed.is_available() and torch.distributed.is_initialized():
         all_ranks_to_trigger = [None] * world_size
         torch.distributed.all_gather_object(
-            all_ranks_to_trigger, ranks_to_trigger, group=group
+            all_ranks_to_trigger, ranks_to_trigger
         )
 
         for other_ranks_to_trigger in all_ranks_to_trigger:
@@ -205,28 +197,23 @@ def maybe_trigger_fault(rank, world_size, args, group:Optional[torch.distributed
         log.info(f'{rank=} triggers {fault=}')
 
         if fault == Fault.GPU:
-            b = torch.ones(1, dtype=torch.int64).to(device=get_current_device())
-            a = torch.ones(1, dtype=torch.int64).to(device=get_current_device())
-            a[b] = 0
-
-        elif fault == Fault.CPU:
-            b = torch.ones(1, dtype=torch.int64)
-            a = torch.ones(1, dtype=torch.int64)
+            b = torch.ones(1, dtype=torch.int64).cuda()
+            a = torch.ones(1, dtype=torch.int64).cuda()
             a[b] = 0
 
         elif fault == Fault.EXC:
             raise InjectedException
 
-        elif fault == Fault.EXIT:
+        elif fault == Fault.SYS_EXIT:
             sys.exit(0)
 
-        elif fault == Fault.KILL:
+        elif fault == Fault.SIGKILL:
             os.kill(os.getpid(), signal.SIGKILL)
 
-        elif fault == Fault.TERM:
+        elif fault == Fault.SIGTERM:
             os.kill(os.getpid(), signal.SIGTERM)
 
-        elif fault == Fault.ABORT:
+        elif fault == Fault.OS_ABORT:
             os.abort()
 
 
@@ -247,34 +234,6 @@ class RankFilter(logging.Filter):
             return True
 
 
-class AdaptiveFormatter(logging.Formatter):
-    def __init__(self, fmt, datefmt=None):
-        super().__init__(fmt, datefmt)
-        self.max_widths = {}
-
-    def format(self, record):
-        # Dynamically adjust the widths based on the record content
-        formatted = super().format(record)
-        parts = formatted.split('|')
-
-        # Update maximum widths for each part
-        for index, part in enumerate(parts[:-1]):
-            current_width = len(part)
-            if index not in self.max_widths:
-                self.max_widths[index] = current_width
-            else:
-                if current_width > self.max_widths[index]:
-                    self.max_widths[index] = current_width
-
-        # Apply padding for alignment
-        padded_parts = [
-            part.ljust(self.max_widths.get(index, 0))
-            for index, part in enumerate(parts)
-        ]
-
-        return '|'.join(padded_parts)
-
-
 def training_main():
     args = parse_args(allow_extras=False)
 
@@ -290,10 +249,9 @@ def training_main():
     )
     rank_filter = RankFilter(rank, '***', args.traceback)
     console = logging.StreamHandler(sys.stderr)
-    format = (
-        "%(asctime)s | %(levelname)s | %(name)s | %(rank)-3s | %(message)s"
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(name)-28s | %(rank)-3s | %(message)s"
     )
-    formatter = AdaptiveFormatter(format)
     console.setFormatter(formatter)
     console.addFilter(rank_filter)
     console.setLevel(args.log)
@@ -323,27 +281,22 @@ def training_main():
         ),
         finalize=None,
         health_check=inprocess.Compose(
-            inprocess.health_check.CudaHealthCheck(
-                timedelta(seconds=args.health_timeout)
-            ),
+            inprocess.health_check.CudaHealthCheck(timedelta(seconds=args.health_timeout)),
             inprocess.health_check.FaultCounter(args.max_rank_faults),
         ),
         rank_assignment=inprocess.Compose(
+            inprocess.rank_assignment.ActiveWorldSizeDivisibleBy(args.world_size_div),
+            inprocess.rank_assignment.MaxActiveWorldSize(args.max_world_size),
             inprocess.rank_assignment.ShiftRanks(),
-            inprocess.rank_assignment.FilterGroupedByKey(
-                key_or_fn=lambda rank, _: rank // args.groupsize,
+            inprocess.rank_assignment.FilterCountGroupedByKey(
+                key_or_fn=lambda state: state.rank // args.groupsize,
                 condition=lambda count: count == args.groupsize,
             ),
         ),
-        rank_filter=inprocess.Compose(
-            inprocess.rank_filter.MaxActiveWorldSize(args.max_world_size),
-            inprocess.rank_filter.WorldSizeDivisibleBy(args.world_size_div),
-        ),
         monitor_thread_interval=timedelta(seconds=args.monitor_thread_int),
         monitor_process_interval=timedelta(seconds=args.monitor_process_int),
-        progress_watchdog_interval=timedelta(
-            seconds=args.progress_watchdog_int
-        ),
+        heartbeat_interval=timedelta(seconds=args.heartbeat_int),
+        progress_watchdog_interval=timedelta(seconds=args.progress_watchdog_int),
         soft_timeout=timedelta(seconds=args.soft_timeout),
         hard_timeout=timedelta(seconds=args.hard_timeout),
         heartbeat_timeout=timedelta(seconds=args.heartbeat_timeout),
@@ -371,25 +324,20 @@ def train(
     if call_wrapper is not None:
         iteration = call_wrapper.iteration
     else:
-        iteration = None
+        iteration = 0
 
     if args.last_iteration is not None and args.last_iteration == iteration:
         return
 
-    logging.info(f'*** starting {iteration=} {world_size=} ***')
+    logging.critical(f'*** starting {iteration=} {world_size=} ***')
 
     if args.faulthandler:
-        faulthandler.register(
-            signal.SIGTERM, file=open(f'/tmp/fault_{rank}.log', 'w')
-        )
+        faulthandler.register(signal.SIGTERM, file=open(f'/tmp/fault_{rank}.log', 'w'))
 
     if args.ignore_sigterm:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
-    if iteration is not None:
-        random.seed(args.seed + iteration)
-    else:
-        random.seed(args.seed)
+    random.seed(args.seed + iteration)
 
     if args.backend == 'gloo':
         device = torch.device('cpu')
@@ -474,15 +422,15 @@ def train(
         log_interval = args.log_interval
         sync_interval = args.sync_interval
 
-        model = nn.Sequential(
-            *[nn.Linear(hidden, hidden, bias=False) for _ in range(layers)]
-        ).to(device)
+        model = nn.Sequential(*[nn.Linear(hidden, hidden, bias=False) for _ in range(layers)]).to(
+            device
+        )
         opt = torch.optim.Adam(model.parameters(), lr=1e-6)
 
         if args.distributed:
             model = torch.nn.parallel.DistributedDataParallel(model)
 
-        iteration = 0
+        train_iter = 0
         if device.type == 'cuda':
             torch.cuda.synchronize()
         timer = time.perf_counter()
@@ -494,17 +442,17 @@ def train(
             out = model(inp)
             out.backward(torch.ones_like(out))
             opt.step()
-            iteration += 1
+            train_iter += 1
 
-            if iteration % sync_interval == (sync_interval - 1):
+            if train_iter % sync_interval == (sync_interval - 1):
                 if device.type == 'cuda':
                     torch.cuda.synchronize()
 
-            if iteration % log_interval == (log_interval - 1):
+            if train_iter % log_interval == (log_interval - 1):
                 if device.type == 'cuda':
                     torch.cuda.synchronize()
                 elapsed = (time.perf_counter() - timer) / log_interval * 1000
-                print(f'{rank=} {iteration=} {elapsed=}')
+                print(f'{rank=} {train_iter=} {elapsed=}')
                 timer = time.perf_counter()
 
 
@@ -522,10 +470,9 @@ def main():
     )
     rank_filter = RankFilter(rank, '***', args.traceback)
     console = logging.StreamHandler(sys.stderr)
-    format = (
-        "%(asctime)s | %(levelname)s | %(name)s | %(rank)-3s | %(message)s"
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(name)-28s | %(rank)-3s | %(message)s"
     )
-    formatter = AdaptiveFormatter(format)
     console.setFormatter(formatter)
     console.addFilter(rank_filter)
     console.setLevel(args.log)
@@ -564,7 +511,7 @@ def main():
         for rank, p in enumerate(procs):
             p.join()
         log.info('all processes joined')
-    except:
+    except Exception:
         log.info('killing processes')
         for rank, p in enumerate(procs):
             p.kill()

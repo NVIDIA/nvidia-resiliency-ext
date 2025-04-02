@@ -371,15 +371,23 @@ class Detector:
         callable_ids: List[CallableId],
         profile_cuda: bool = True,
     ):
-        """Each time fn (fn = getattr(callable_id.obj, callable_id.name)) is
-        called, it will do the following:
-        with straggler.Detector.detection_section(str(callable_id)):
-            fn(*args,**kwargs)
+        """
+        Each time `fn` (where `fn = getattr(callable_id.obj, callable_id.name)`) is called, the following will occur:
+
+        .. code-block:: python
+
+            with straggler.Detector.detection_section(str(callable_id)):
+                fn(*args, **kwargs)
 
         Args:
-            callable_ids (List[CallableId]) : list of callables to wrap with detection context
-            profile_cuda (bool, optional): If true, CUDA kernels launched under this section will be captured and used to compute rank "GPU performance score". Defaults to True.
+            callable_ids (List[CallableId]):
+                A list of callables to wrap with the detection context.
+
+            profile_cuda (bool, optional):
+                If `True`, CUDA kernels launched under this section will be captured
+                and used to compute the rank's "GPU performance score". Defaults to `True`.
         """
+
         cls.original_callables = {}
         for callable_id in callable_ids:
             original = getattr(callable_id.obj, callable_id.name)

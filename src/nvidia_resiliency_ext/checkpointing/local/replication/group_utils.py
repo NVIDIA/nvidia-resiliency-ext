@@ -23,23 +23,19 @@ from itertools import islice
 from typing import Dict, List, Optional, Tuple, TypeVar, Union
 
 from nvidia_resiliency_ext.common.device_utils import (
-    get_current_device,
-    get_xla_model
+    get_current_device
 )
 
 import torch
 import torch.distributed as dist
 
+from ...utils import debug_msg, debug_time
 from ..base_state_dict import TensorAwareStateDict
 from ._torch_future import recv_object_list, send_object_list
 from .torch_device_utils import TensorPlaceholder
-from .utils import debug_time, debug_msg
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
-
-
-xm = get_xla_model()
 
 @dataclass(frozen=True)
 class ExchangePlanEntry:
@@ -165,7 +161,10 @@ class GroupWrapper:
     def __init__(self, group: Optional[ProcessGroupLike]=None):
         """Initializes the GroupWrapper with an optional process group."""
         self._group = group
-        assert xm is None or self.backend == "gloo"
+        if dist.get_backend(group=group) == dist.Backend.GLOO:
+            self.comm_device = torch.device("cpu")
+        else:
+            self.comm_device = get_current_device()
 
     @staticmethod
     def wrap(group: ProcessGroupLike) -> GroupWrapper:
@@ -351,8 +350,7 @@ class GroupWrapper:
         """Broadcasts data from the current process to all processes in the group."""
         
         tensor_device = tensor.device
-        comm_device = get_current_device() if xm is None else torch.device("cpu")
-        tensor.to(device=comm_device)
+        tensor.to(device=self.comm_device)
         dist.broadcast(tensor, src=src, group=self.group)
         tensor.to(device=tensor_device)
 
@@ -408,9 +406,8 @@ class GroupWrapper:
         log_data = {"data_sent": sum(ten.nbytes for ten in tensor_data)}
         # TODO: count object size without repickling
         self.send_object(state_dict, dst)
-        comm_device = get_current_device() if xm is None else torch.device("cpu")
         for ten in tensor_data:
-            ten = ten.to(device=comm_device)
+            ten = ten.to(device=self.comm_device)
             dist.send(ten, dst, group=self.group)
         state_dict.insert_tensors(tensor_data)
         return log_data
@@ -460,8 +457,7 @@ class GroupWrapper:
         hollow_ckpt.init_tensors()
         for ten in hollow_ckpt.tensors:
             ten_device = ten.device
-            comm_device = get_current_device() if xm is None else torch.device("cpu")
-            comm_tensor = torch.empty_like(ten, device=comm_device)
+            comm_tensor = torch.empty_like(ten, device=self.comm_device)
             dist.recv(comm_tensor, src, group=self.group)
             ten.copy_(comm_tensor.to(device=ten_device))
         log_data = {"data_recv": sum(ten.nbytes for ten in hollow_ckpt.tensors)}

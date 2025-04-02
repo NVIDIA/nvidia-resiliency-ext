@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import contextlib
-import gc
 import os
 import socket
 import sys
@@ -116,10 +115,6 @@ def distributed_worker(
 
     worker_fn(**kwargs)
 
-    # `destroy_process_group` hangs were observed in CI
-    # use GC collect and barrier to mitigate the issue
-    gc.collect()
-    torch.distributed.barrier()
     torch.distributed.destroy_process_group()
 
     sys.exit(0)

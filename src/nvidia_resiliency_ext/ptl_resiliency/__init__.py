@@ -13,5 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .fault_tolerance_callback import FaultToleranceCallback, SimulatedFaultParams  # noqa: F401
+from ._utils import SimulatedFaultParams  # noqa: F401
+from .fault_tolerance_callback import FaultToleranceCallback  # noqa: F401
+from .fault_tolerance_sections_callback import FaultToleranceSectionsCallback  # noqa: F401
 from .straggler_det_callback import StragglerDetectionCallback  # noqa: F401

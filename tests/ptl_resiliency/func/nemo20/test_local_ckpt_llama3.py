@@ -22,16 +22,15 @@ The key parts is the implementation of MCore specific HierarchicalCheckpointIO
 import argparse
 import logging
 import socket
-
 from dataclasses import dataclass
-from typing import Iterable, Dict, Any, Optional, Callable
+from typing import Any, Callable, Dict, Optional
 
 import torch
 from lightning_fabric.plugins import CheckpointIO
 from lightning_fabric.utilities.types import _PATH
+from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
-from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 from nemo import lightning as nl
 from nemo.collections import llm
 from nemo.collections.common.tokenizers import SentencePieceTokenizer
@@ -40,8 +39,8 @@ from nemo.collections.llm.gpt.model.llama import Llama3Config, LlamaModel
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils.callbacks.dist_ckpt_io import (
-    AsyncFinalizableCheckpointIO,
     AsyncCompatibleCheckpointIO,
+    AsyncFinalizableCheckpointIO,
 )
 
 from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
@@ -56,8 +55,8 @@ from nvidia_resiliency_ext.checkpointing.local.replication.strategies import (
 )
 from nvidia_resiliency_ext.fault_tolerance.dict_utils import dict_list_map_inplace
 from nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback import (
-    LocalCheckpointCallback,
     HierarchicalCheckpointIO,
+    LocalCheckpointCallback,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +70,9 @@ class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleChe
         local_ckpt_manager (BaseCheckpointManager): local checkpoint manager used to store the local checkpoints
         get_global_ckpt_iteration_fn (Callable[[_PATH], int]): a function that retrieves the iteration of a global checkpoint
             that will be compared with local checkpoint iteration in order to decide which to resume from.
+        async_save (bool, optional): enables asynchronous save. Passed down to the local checkpoint
+            manager unless overriden with `local_ckpt_options` in `_save_local_checkpoint`.
+            If True, MCoreHierarchicalCheckpointIO must be wrapped with `AsyncFinalizableCheckpointIO` wrapper
         local_ckpt_algo (str, optional): local checkpoint save algorithm. See MCoreTensorAwareStateDict for details.
             By default, uses a fully parallel save and load algorithm ('fully_parallel`).
         parallelization_group (ProcessGroup, optional): save/load parallelization group
@@ -83,11 +85,14 @@ class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleChe
         wrapped_checkpoint_io: CheckpointIO,
         local_ckpt_manager: BaseCheckpointManager,
         get_global_ckpt_iteration_fn: Callable[[_PATH], int],
+        async_save: bool = False,
         local_ckpt_algo: str = 'fully_parallel',
         parallelization_group: Optional[torch.distributed.ProcessGroup] = None,
         allow_cache: bool = False,
     ):
-        super().__init__(wrapped_checkpoint_io, local_ckpt_manager, get_global_ckpt_iteration_fn)
+        super().__init__(
+            wrapped_checkpoint_io, local_ckpt_manager, get_global_ckpt_iteration_fn, async_save
+        )
         self.local_ckpt_algo = local_ckpt_algo
         self.parallelization_group = parallelization_group
         self.cached_metadata = None
@@ -109,7 +114,7 @@ class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleChe
 
         def to_cpu(x):
             if isinstance(x, torch.Tensor) and x.device.type != 'cpu':
-                logger.debug(f'Moving CUDA tensor to CPU')
+                logger.debug('Moving CUDA tensor to CPU')
                 x = x.to('cpu', non_blocking=True)
             return x
 
@@ -119,12 +124,15 @@ class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleChe
         return state_dict_for_save
 
     def from_tensor_aware_state_dict(
-        self, tensor_aware_checkpoint: TensorAwareStateDict, sharded_state_dict=None
+        self, tensor_aware_checkpoint: TensorAwareStateDict, sharded_state_dict=None, strict=None
     ):
         """Unwraps MCoreTensorAwareStateDict to a plain state dict."""
         assert isinstance(
             tensor_aware_checkpoint, MCoreTensorAwareStateDict
         ), f'Unexpected tensor aware state dict type: {type(tensor_aware_checkpoint)}'
+        if strict is not None:
+            logger.warning('MCoreTensorAwareStateDict does not yet support the "strict" argument.')
+
         return tensor_aware_checkpoint.to_state_dict(
             sharded_state_dict,
             algo=self.local_ckpt_algo,
@@ -133,7 +141,7 @@ class MCoreHierarchicalCheckpointIO(HierarchicalCheckpointIO, AsyncCompatibleChe
 
 
 @dataclass
-class Llama3Config36M(Llama3Config):
+class Llama3Config145M(Llama3Config):
     rotary_base: int = 500_000
     seq_length: int = 8192
     num_layers: int = 2
@@ -262,7 +270,7 @@ def main():
         tokenizer=SentencePieceTokenizer(model_path=args.tokenizer_path),
     )
 
-    model = LlamaModel(config=Llama3Config36M())
+    model = LlamaModel(config=Llama3Config145M())
 
     checkpoint_callback = ModelCheckpoint(
         save_last=True,
@@ -278,10 +286,7 @@ def main():
     use_local_ckpt = args.local_checkpoint_interval is not None
     if use_local_ckpt:
         callbacks.append(
-            LocalCheckpointCallback(
-                every_n_train_steps=args.local_checkpoint_interval,
-                async_save=args.async_save,
-            )
+            LocalCheckpointCallback(every_n_train_steps=args.local_checkpoint_interval)
         )
 
     trainer = get_trainer(args, callbacks=callbacks, async_save=args.async_save)
@@ -298,7 +303,7 @@ def main():
         if args.num_nodes > 1:
             repl_strategy = LazyCliqueReplicationStrategy()
         else:
-            print_rank0('Single node run - replication wil be disabled.')
+            print('Single node run - replication wil be disabled.')
             repl_strategy = None
 
         local_ckpt_manager = LocalCheckpointManager(
@@ -309,7 +314,7 @@ def main():
         # by passing `lambda s: 0` global checkpoint iteration retrieval function.
         # In practice global iteration should be extracted from global ckpt path.
         hierarchical_checkpointing_io = MCoreHierarchicalCheckpointIO(
-            checkpoint_io, local_ckpt_manager, lambda s: 0
+            checkpoint_io, local_ckpt_manager, lambda s: 0, async_save=args.async_save
         )
 
         if args.async_save:

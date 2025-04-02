@@ -14,10 +14,26 @@
 # limitations under the License.
 
 """
-Demo of fault tolerance with DDP training
-"""
+Demo of DDP training with fault tolerance, using FT package sections API
 
+It should be run with `ft_launcher`. E.g.
+`ft_launcher --nproc-per-node=2 --fault-tol-cfg-path=./examples/fault_tolerance/fault_tol_cfg_sections.yaml examples/fault_tolerance/train_ddp_sections_api.py --device=cpu`
+
+This example uses following custom FT sections
+- 'init' - covers workload initialization
+- 'step' - covers training/evaluation step (fwd/bwd, loss calculation etc)
+- 'checkpoint' - covers checkpoint saving
+
+Timeout for each section is calculated when enough data is collected.
+FT "out-of-section" timeout is calculated when the training run ends normally.
+FT state is saved in a JSON file.
+
+This example allows to simulate a training fault:
+- selected rank hung
+- selected rank terminated
+"""
 import argparse
+import json
 import logging
 import os
 import random
@@ -68,14 +84,9 @@ class Model(nn.Module):
 
 
 def parse_args():
-    def tuple_type(strings):
-        strings = strings.replace("(", "").replace(")", "")
-        mapped_int = map(int, strings.split(","))
-        return tuple(mapped_int)
-
     def fault_desc(strings):
         parts = strings.split(",")
-        assert len(parts) == 2
+        assert len(parts) == 2, "Fault description must be in format 'fault,delay'"
         return {'fault': parts[0], 'delay': float(parts[1])}
 
     parser = argparse.ArgumentParser(
@@ -97,12 +108,8 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda',
                         choices=['cpu', 'cuda'],
                         help='Device')
-    
-    parser.add_argument('--interrupt_at', type=tuple_type, nargs='*',
-                        help='Manual interruption after (epoch, iteration), '
-                        'for testing only')
     parser.add_argument('--save_interval', type=int, default=-1,
-                        help='Interval for saving periodic checkpoints')
+                        help='Interval for saving periodic checkpoints.')
     parser.add_argument('--logging_interval', type=int, default=1,
                         help='Interval for log entries')
     parser.add_argument('--log_all_ranks', action='store_true',
@@ -111,23 +118,13 @@ def parse_args():
                         help='Output dir')
     parser.add_argument('--checkpoint_fname', type=str, default='checkpoint.pt',
                         help='Name of a checkpoint file')
-    
     parser.add_argument('--local_rank', type=int,
                         default=os.getenv('LOCAL_RANK', 0))
-    parser.add_argument('--init_distributed_method', type=str, default='tcp',
-                        help='Init distributed group with TCP store ("tcp") or file store ("file")')
-
     parser.add_argument('--simulated_fault', type=fault_desc,
                         help='Description of a fault to be simulated')
     # fmt: on
 
     args = parser.parse_args()
-
-    if args.interrupt_at:
-        args.interrupt_at = set(args.interrupt_at)
-    else:
-        args.interrupt_at = set()
-
     return args
 
 
@@ -139,7 +136,7 @@ def load_checkpoint(path):
         map_location['cuda:0'] = f'cuda:{torch.cuda.current_device()}'
 
     logging.info(f'Loading checkpoint from {path}')
-    checkpoint = torch.load(path, map_location=map_location)
+    checkpoint = torch.load(path, map_location=map_location, weights_only=True)
     return checkpoint
 
 
@@ -151,11 +148,14 @@ def save_checkpoint(
     output_dir,
     checkpoint_fname,
 ):
+    # Checkpointing is wrapped into "checkpoint" FT section
+    # NOTE: FT state is not stored in the checkpoint, but in a separate JSON file
+    ft_client.start_section('checkpoint')
+
     state = {
         'progress': progress,
         'model_state': model.state_dict(),
         'optimizer_state': optimizer.state_dict(),
-        'ft_state': ft_client.state_dict(),
     }
 
     checkpoint_path = os.path.join(output_dir, checkpoint_fname)
@@ -165,6 +165,40 @@ def save_checkpoint(
             logging.info(f'Saving checkpoint to {checkpoint_path}')
             torch.save(state, checkpoint_path)
 
+    ft_client.end_section('checkpoint')
+
+
+def maybe_load_ft_state(path):
+    # Load FT state from JSON file
+    if os.path.exists(path):
+        logging.info(f'FT state loading from: {path}')
+        with open(path, 'r') as f:
+            return json.load(f)
+    else:
+        logging.info(f'FT state file not found at: {path}')
+        return None
+
+
+def save_ft_state(ft_client, path):
+    # Save FT state into a JSON file
+    with dist_utils.sync_workers() as rank:
+        if rank == 0:
+            logging.info(f'Saving FT state into: {path}')
+            ft_state = ft_client.state_dict()
+            with open(path, 'w') as f:
+                json.dump(ft_state, f)
+
+
+def update_ft_section_timeouts(ft_client, selected_sections, calc_out_of_section, ft_state_path):
+    # Update FT timeouts and save the FT state
+    logging.info(
+        f'Updating FT section timeouts for: {selected_sections} will update out-of-section: {calc_out_of_section}'
+    )
+    ft_client.calculate_and_set_section_timeouts(
+        selected_sections=selected_sections, calc_out_of_section=calc_out_of_section
+    )
+    save_ft_state(ft_client, ft_state_path)
+
 
 def training_loop(
     ft_client,
@@ -173,27 +207,23 @@ def training_loop(
     optimizer,
     device,
     dataloader,
-    sampler,
     progress,
     args,
 ):
-    epoch_idx = progress['epoch_idx']
+    # Training epoch implementation
 
-    # NOTE: torch.utils.data.DistributedSampler must be prepared for current epoch
-    # need to do it before starting iteration
-    sampler.start_sample_idx = progress['iter_idx'] * args.batch
-    sampler.set_epoch(epoch_idx)
+    epoch_idx = progress['epoch_idx']
 
     para_model.train()
 
     last_log_time = time.monotonic()
 
+    num_iters_made = 0
+
     for iter_idx, x in enumerate(dataloader, start=progress['iter_idx']):
-        if ft_client.timeouts.are_valid is False and epoch_idx == 1 and iter_idx == 1:
-            # after 0th epoch is completed and we've done 0th iteration of the 1st epoch,
-            # we can calculate and set timeouts. this is a good moment to do so,
-            # because now we've seen the possibly long interval where checkpoint was saved.
-            ft_client.calculate_and_set_timeouts()
+
+        # fwd/bwd and optimizer step are wrapped into "step" FT section
+        ft_client.start_section('step')
 
         optimizer.zero_grad()
         x = x.to(device)
@@ -217,13 +247,13 @@ def training_loop(
 
         progress['iter_idx'] = iter_idx + 1
 
-        ft_client.send_heartbeat()
         optimizer.step()
+
+        ft_client.end_section('step')
 
         # Whether to do a periodic checkpointing
         periodic_save = iter_idx % args.save_interval == args.save_interval - 1
-
-        if periodic_save or (epoch_idx, iter_idx) in args.interrupt_at:
+        if periodic_save:
             save_checkpoint(
                 progress=progress,
                 model=model,
@@ -232,21 +262,31 @@ def training_loop(
                 output_dir=args.output_dir,
                 checkpoint_fname=args.checkpoint_fname,
             )
-            if (epoch_idx, iter_idx) in args.interrupt_at:
-                logging.info('Manual interruption, exiting')
-                sys.exit(0)
+
+        num_iters_made += 1
+
+    return num_iters_made
 
 
 def validation_loop(ft_client, model, val_dataloader, epoch_idx, device):
+
+    # Validation epoch implementation
+
     total_val_loss = 0
     model.eval()
 
     for iter_idx, x in enumerate(val_dataloader):
+
+        # fwd and loss are wrapped into "step" FT section
+        # 'step' section is used for both: training and eval steps
+        ft_client.start_section('step')
+
         x = x.to(device)
         y = model(x)
         loss = y.mean().item()
         total_val_loss += loss
-        ft_client.send_heartbeat()
+
+        ft_client.end_section('step')
 
     logging.info(
         f'CHECK VAL SUMMARY: epoch: {epoch_idx:4d} ' f'loss: {total_val_loss / (iter_idx + 1)}'
@@ -262,9 +302,7 @@ def _cancel_simulated_fault():
     _sim_fault_canceled = True
 
 
-def _setup_simulated_fault(ft_client, fault_desc, device):
-    # FIXME: hanging rank with SIGTSTP results in rank monitor
-    # blocked when trying to receive the data in _on_ipc_data_from_rank
+def _setup_simulated_fault(fault_desc, device):
 
     global _sim_fault_is_set
     _sim_fault_is_set = True  # should be True on all ranks
@@ -335,32 +373,17 @@ def main():
     random.seed(123)
 
     if args.device == 'cuda':
-        if torch.cuda.is_available():
-            device = torch.device('cuda')
-            torch.cuda.set_device(args.local_rank)
-        else:
-            raise RuntimeError("Selected 'cuda' device but torch.cuda is not available.")
+        device = torch.device('cuda')
+        torch.cuda.set_device(args.local_rank)
     elif args.device == 'cpu':
         device = torch.device('cpu')
     else:
         raise RuntimeError('Unknown device')
 
-    if int(os.getenv('WORLD_SIZE', '1')) == 1:
-        raise RuntimeError('This example supports only multi-gpu training')
-
     os.makedirs(args.output_dir, exist_ok=True)
 
-    if args.init_distributed_method == 'tcp':
-        # NOTE: when runing tests with tcp init method we noticed
-        # occasional "address already in use" errors, after workload
-        # is restarted
-        dist_utils.init_distributed_with_tcp_store(device)
-    elif args.init_distributed_method == 'file':
-        dist_utils.init_distributed_with_file_store(device, store_file_dir=args.output_dir)
-    else:
-        raise RuntimeError(
-            f"--init_distributed_method should be ['tcp','file'] it is {args.init_distributed_method}"
-        )
+    dist_utils.init_distributed_with_tcp_store(device)
+    rank = dist_utils.get_rank()
 
     if args.log_all_ranks:
         log_file_name = f'train_log_rank_{dist_utils.get_rank()}.log'
@@ -372,18 +395,15 @@ def main():
     # exists. Results from a single training run (potentially with many
     # restarts from a checkpoint) are stored in a single log file.
     log_utils.setup_logging(args.log_all_ranks, filename=log_file_path, filemode='a')
+
     logging.info(args)
-
-    rank = dist_utils.get_rank()
-
     logging.info(f"SLURM_JOB_ID={os.getenv('SLURM_JOB_ID','<none>')} RANK={rank} PID={os.getpid()}")
 
     # Dummy datasets
     train_dataset = Dataset(args.train_dataset_size, args.hidden)
     val_dataset = Dataset(args.val_dataset_size, args.hidden)
 
-    # ResumableDistributedSampler is needed to skip consumed samples
-    train_sampler = dist_utils.ResumableDistributedSampler(
+    train_sampler = torch.utils.data.DistributedSampler(
         train_dataset,
         drop_last=True,
     )
@@ -408,23 +428,34 @@ def main():
     ft_client = fault_tolerance.RankMonitorClient()
     ft_client.init_workload_monitoring()
 
-    checkpoint = None
+    # try to load FT state from a JSON file
+    ft_state_path = os.path.join(args.output_dir, 'ft_state.json')
+    ft_state = maybe_load_ft_state(ft_state_path)
+    if ft_state:
+        ft_client.load_state_dict(ft_state)
+
+    # Open "init" FT section that covers workload initialization
+    ft_client.start_section('init')
+
+    is_checkpoint_loaded = False
 
     # try to load checkpoint from disk
     if os.path.exists(checkpoint_path):
         checkpoint = load_checkpoint(checkpoint_path)
         if checkpoint:
             logging.info(f'Checkpoint was loaded from file: {checkpoint_path}')
+            is_checkpoint_loaded = True
+            model.load_state_dict(checkpoint['model_state'])
+            optimizer.load_state_dict(checkpoint['optimizer_state'])
+            progress.update(checkpoint['progress'])
 
-    if checkpoint:
-        model.load_state_dict(checkpoint['model_state'])
-        optimizer.load_state_dict(checkpoint['optimizer_state'])
-        ft_client.load_state_dict(checkpoint['ft_state'])
-        progress.update(checkpoint['progress'])
-        # Return with zero exit code if model is already fully trained.
-        if progress['epoch_idx'] == args.epochs:
-            logging.info('Training finished.')
-            sys.exit(0)
+    # Return with zero exit code if model is already fully trained.
+    if progress['epoch_idx'] == args.epochs:
+        ft_client.end_section('init')  # explicitly end "init" section, to avoid FT warning
+        ft_client.shutdown_workload_monitoring()
+        torch.distributed.destroy_process_group()
+        logging.info('Training finished.')
+        sys.exit(0)
 
     train_dataloader = torch.utils.data.DataLoader(
         dataset=train_dataset,
@@ -462,20 +493,32 @@ def main():
         model, device_ids=device_ids, output_device=output_device
     )
 
+    # "init" FT section ends here
+    ft_client.end_section('init')
+
+    if is_checkpoint_loaded:
+        # init time can be longer if there was checkpoint loading
+        # so we update "init" secton timeout if a checkpoint was loaded
+        update_ft_section_timeouts(ft_client, ['init'], False, ft_state_path)
+
     # Iteration over epochs, notice that it starts from 'epoch_idx'
     # which was previously loaded from the checkpoint
     for epoch_idx in range(progress['epoch_idx'], args.epochs):
-        training_loop(
+
+        num_tr_iters_made = training_loop(
             ft_client,
             para_model,
             model,
             optimizer,
             device,
             train_dataloader,
-            train_sampler,
             progress,
             args,
         )
+
+        # If there were some training iterations observed, update "step" section timeout
+        if num_tr_iters_made > 0:
+            update_ft_section_timeouts(ft_client, ['step'], False, ft_state_path)
 
         # epoch_idx is incremented because the current epoch is finished
         # and potential resume from this checkpoint should start a new training epoch.
@@ -495,18 +538,25 @@ def main():
             checkpoint_fname=args.checkpoint_fname,
         )
 
+        # Update checkpointing section timeout after checkpoint saving was seen
+        update_ft_section_timeouts(ft_client, ['checkpoint'], False, ft_state_path)
+
         # NOTE: SIGTERM is used by SLURM to initiate graceful job termination
         # if _any_ rank received SIGTERM, we leave the main loop
         if dist_utils.is_true_on_any_rank(_signal_received):
             logging.info('Leaving the main loop, due to SIGTERM')
             break
 
-        # Setup simulated fault as soon as we have valid timeouts
-        if args.simulated_fault and not _sim_fault_is_set and ft_client.timeouts.are_valid:
-            _setup_simulated_fault(ft_client, args.simulated_fault, device)
+        # Setup simulated fault
+        if args.simulated_fault and not _sim_fault_is_set:
+            _setup_simulated_fault(args.simulated_fault, device)
 
     _cancel_simulated_fault()
+
+    # update "out-of-section" FT timeout when the training run ends normally
+    update_ft_section_timeouts(ft_client, [], True, ft_state_path)
     ft_client.shutdown_workload_monitoring()
+    torch.distributed.destroy_process_group()
     logging.info('Leaving main, ret_code=0')
     sys.exit(0)
 

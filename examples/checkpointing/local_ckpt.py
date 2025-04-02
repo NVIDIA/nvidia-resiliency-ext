@@ -1,8 +1,6 @@
 import argparse
 import logging
-import os
 import shutil
-from typing import Union
 
 import torch
 import torch.distributed as dist
@@ -41,7 +39,15 @@ def parse_args():
         '--replication',
         action='store_true',
         help="If set, replication of local checkpoints is enabled"
-        "Needs to be enabled on all ranks."
+        "Needs to be enabled on all ranks.",
+    )
+    parser.add_argument(
+        '--persistent_queue',
+        action='store_true',
+        help=(
+            "Enables a persistent version of AsyncCallsQueue. "
+            "Effective only when --async_save is set."
+        ),
     )
     parser.add_argument(
         '--replication_jump',
@@ -138,6 +144,12 @@ def load(args, ckpt_manager):
 
 def main():
     args = parse_args()
+    assert (
+        not args.persistent_queue or args.async_save
+    ), "--persistent_queue requires --async_save to be enabled."
+    assert (
+        not args.persistent_queue or not args.replication
+    ), "persistent_queue is currently incompatible with replication due to object pickling issues."
     logging.info(f'{args}')
 
     # Initialize the distributed backend
@@ -148,7 +160,7 @@ def main():
 
     # Instantiate checkpointing classess needed for local checkpointing
     ckpt_manager = create_checkpoint_manager(args)
-    async_queue = AsyncCallsQueue() if args.async_save else None
+    async_queue = AsyncCallsQueue(persistent=args.persistent_queue) if args.async_save else None
 
     iteration = 123  # training iteration (used as training state id)
 
@@ -160,6 +172,7 @@ def main():
 
         logging.info("Finalize TASD checkpoint saving.")
         async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+        async_queue.close()  # Explicitly close queue (optional)
 
     # Synchronize processes to ensure all have completed the saving
     dist.barrier()

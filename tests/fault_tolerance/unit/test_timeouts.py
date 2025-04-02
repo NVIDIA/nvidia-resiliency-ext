@@ -26,6 +26,7 @@ import pytest
 import torch
 
 import nvidia_resiliency_ext.fault_tolerance as fault_tolerance
+from nvidia_resiliency_ext.fault_tolerance.data import FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR
 
 from .utils import multiprocessing_execute_join, multiprocessing_execute_start
 
@@ -51,6 +52,12 @@ def tmp_dir():
     shutil.rmtree(temp_dir)
 
 
+def _set_rmon_socket_env_var_for_this_rank():
+    rank = os.environ["RANK"]
+    ipc_sock_path = f"{tempfile.gettempdir()}/_rmon_r{rank}.socket"
+    os.environ[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR] = ipc_sock_path
+
+
 @contextlib.contextmanager
 def rank_monitors_running(ft_cfg, mp_ctx):
     rank_monitors = []
@@ -58,7 +65,10 @@ def rank_monitors_running(ft_cfg, mp_ctx):
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx)
+            ipc_sock_path = f"{tempfile.gettempdir()}/_rmon_r{rank}.socket"
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
+                cfg=ft_cfg, ipc_socket_path=ipc_sock_path, is_restarter_logger=False, mp_ctx=mp_ctx
+            )
             rank_monitors.append(p)
             os.environ["RANK"] = ''
 
@@ -79,16 +89,17 @@ def _rank_main_1st_run(*args, tmp_dir, **kwargs):
     """
 
     _install_signal_handler()
+    _set_rmon_socket_env_var_for_this_rank()
 
     rank_mon_cli = fault_tolerance.RankMonitorClient()
 
     # timeouts info is not availabe until initialized
-    assert rank_mon_cli.timeouts is None
+    assert rank_mon_cli.hb_timeouts is None
 
     rank_mon_cli.init_workload_monitoring()
 
-    assert rank_mon_cli.timeouts.are_valid is False
-    assert rank_mon_cli.timeouts.were_calculated is None
+    assert rank_mon_cli.hb_timeouts.are_valid is False
+    assert rank_mon_cli.hb_timeouts.were_calculated is False
 
     rank = torch.distributed.get_rank()
     time.sleep(rank * 0.4)
@@ -96,44 +107,51 @@ def _rank_main_1st_run(*args, tmp_dir, **kwargs):
 
     # not enough data to calculate timeouts
     with pytest.raises(fault_tolerance.RankMonitorClientError):
-        rank_mon_cli.calculate_and_set_timeouts()
+        rank_mon_cli.calculate_and_set_hb_timeouts()
     # non-throwing version, should return False if not enough data
-    assert rank_mon_cli.calculate_and_set_timeouts(skip_if_not_ready=True) is False
+    assert rank_mon_cli.calculate_and_set_hb_timeouts(skip_if_not_ready=True) is False
 
     # timeouts can be calculated after 2nd timeout
     rank_mon_cli.send_heartbeat()
     # timeouts were not re-calculated yet
-    assert rank_mon_cli.timeouts.are_valid is False
-    assert rank_mon_cli.timeouts.were_calculated is None
+    assert rank_mon_cli.hb_timeouts.are_valid is False
+    assert rank_mon_cli.hb_timeouts.were_calculated is False
 
     # calculate initial timeouts, that should be overwritten with the next estimate at the end
-    rank_mon_cli.calculate_and_set_timeouts()
-    assert rank_mon_cli.timeouts.are_valid is True
-    assert rank_mon_cli.timeouts.were_calculated is True
+    rank_mon_cli.calculate_and_set_hb_timeouts()
+    assert rank_mon_cli.hb_timeouts.are_valid is True
+    assert rank_mon_cli.hb_timeouts.were_calculated is True
 
     for i in range(4):
         rank_mon_cli.send_heartbeat()
         time.sleep(rank * 0.2)
 
     # final timeouts estimate, should overwrite the initial one
-    rank_mon_cli.calculate_and_set_timeouts()
-    assert rank_mon_cli.timeouts.are_valid is True
-    assert rank_mon_cli.timeouts.were_calculated is True
+    rank_mon_cli.calculate_and_set_hb_timeouts()
+    assert rank_mon_cli.hb_timeouts.are_valid is True
+    assert rank_mon_cli.hb_timeouts.were_calculated is True
 
     # NOTE: do not check calculated timeout values,
     # because initial iteration(s) take longer than the rest
     # and it's hard to predict the exact values.
 
     # Dump timeouts to a file, so that it can be checked in the 2nd run.
-    state = {
-        'rmon_cli_state': rank_mon_cli.state_dict(),
-        'timeouts1_initial': rank_mon_cli.timeouts.initial,
-        'timeouts1_subsequent': rank_mon_cli.timeouts.subsequent,
-    }
+    if rank == 0:
+        state = {
+            'rmon_cli_state': rank_mon_cli.state_dict(),
+            'timeouts1_initial': rank_mon_cli.hb_timeouts.initial,
+            'timeouts1_subsequent': rank_mon_cli.hb_timeouts.subsequent,
+        }
 
-    dest_file = os.path.join(tmp_dir, TIMEOUTS_FILENAME)
-    with open(dest_file, "w") as f:
-        json.dump(state, f)
+        dest_file = os.path.join(tmp_dir, TIMEOUTS_FILENAME)
+        with open(dest_file, "w") as f:
+            json.dump(state, f)
+
+    # Ensure that all ranks have the same state
+    gathered = [None] * TEST_WORLD_SIZE
+    torch.distributed.all_gather_object(gathered, rank_mon_cli.state_dict())
+    for i in range(1, TEST_WORLD_SIZE):
+        assert gathered[i] == gathered[0]
 
     sys.exit(0)
 
@@ -144,11 +162,12 @@ def _rank_main_2nd_run(*args, tmp_dir, **kwargs):
     """
 
     _install_signal_handler()
+    _set_rmon_socket_env_var_for_this_rank()
 
     rank_mon_cli = fault_tolerance.RankMonitorClient()
 
     # timeouts info is not availabe until initialized
-    assert rank_mon_cli.timeouts is None
+    assert rank_mon_cli.hb_timeouts is None
 
     # load state from 1st run
     src_file = os.path.join(tmp_dir, TIMEOUTS_FILENAME)
@@ -160,23 +179,23 @@ def _rank_main_2nd_run(*args, tmp_dir, **kwargs):
     rank_mon_cli.send_heartbeat()
 
     # check if the timeouts are restored correctly
-    assert rank_mon_cli.timeouts.are_valid is True
-    assert rank_mon_cli.timeouts.were_calculated is True
+    assert rank_mon_cli.hb_timeouts.are_valid is True
+    assert rank_mon_cli.hb_timeouts.were_calculated is True
 
-    assert rank_mon_cli.timeouts.initial == pytest.approx(state['timeouts1_initial'], rel=0.01)
-    assert rank_mon_cli.timeouts.subsequent == pytest.approx(
+    assert rank_mon_cli.hb_timeouts.initial == pytest.approx(state['timeouts1_initial'], rel=0.01)
+    assert rank_mon_cli.hb_timeouts.subsequent == pytest.approx(
         state['timeouts1_subsequent'], rel=0.01
     )
 
-    # send a few heartbeats one after another and re-calculate the timeouts
-    # timeouts should be reduced, as EMA is used to merge old and new values
+    # send a few heartbeats one after another and re-calculate the timeouts,
+    # timeouts should be lower, as new values were merged with older ones
     rank_mon_cli.send_heartbeat()
     rank_mon_cli.send_heartbeat()
     rank_mon_cli.send_heartbeat()
-    rank_mon_cli.calculate_and_set_timeouts()
+    rank_mon_cli.calculate_and_set_hb_timeouts()
 
-    assert rank_mon_cli.timeouts.initial < state['timeouts1_initial']
-    assert rank_mon_cli.timeouts.subsequent < state['timeouts1_subsequent']
+    assert rank_mon_cli.hb_timeouts.initial < state['timeouts1_initial']
+    assert rank_mon_cli.hb_timeouts.subsequent < state['timeouts1_subsequent']
 
     sys.exit(0)
 
@@ -187,11 +206,12 @@ def _rank_main_3nd_run(*args, tmp_dir, **kwargs):
     """
 
     _install_signal_handler()
+    _set_rmon_socket_env_var_for_this_rank()
 
     rank_mon_cli = fault_tolerance.RankMonitorClient()
 
     # timeouts info is not availabe until initialized
-    assert rank_mon_cli.timeouts is None
+    assert rank_mon_cli.hb_timeouts is None
 
     # load state from 1st run
     src_file = os.path.join(tmp_dir, TIMEOUTS_FILENAME)
@@ -202,11 +222,11 @@ def _rank_main_3nd_run(*args, tmp_dir, **kwargs):
     rank_mon_cli.load_state_dict(state['rmon_cli_state'])
 
     # check if the timeouts are restored correctly
-    assert rank_mon_cli.timeouts.are_valid is True
-    assert rank_mon_cli.timeouts.were_calculated is True
+    assert rank_mon_cli.hb_timeouts.are_valid is True
+    assert rank_mon_cli.hb_timeouts.were_calculated is True
 
-    assert rank_mon_cli.timeouts.initial == pytest.approx(state['timeouts1_initial'], rel=0.01)
-    assert rank_mon_cli.timeouts.subsequent == pytest.approx(
+    assert rank_mon_cli.hb_timeouts.initial == pytest.approx(state['timeouts1_initial'], rel=0.01)
+    assert rank_mon_cli.hb_timeouts.subsequent == pytest.approx(
         state['timeouts1_subsequent'], rel=0.01
     )
 

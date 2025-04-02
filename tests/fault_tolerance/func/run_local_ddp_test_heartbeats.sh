@@ -16,7 +16,7 @@
 #!/bin/bash
 
 NUM_TESTS=4
-RES_DIR="./local_ddp_test_results"
+RES_DIR="./ddp_test_heartbeats_results"
 WORLD_SIZE=8
 TORCH_PORT=12321
 WORKLOAD_MONITOR_PORT=11223
@@ -46,6 +46,34 @@ function assert_not_in_log {
     fi
 }
 
+function assert_restarter_sequence_is_correct {
+   log_file="$1"
+   with_restarts="$2"
+   restarter_log_file="${log_file}.restarter.txt"
+   grep -oP '\[NestedRestarter\].*$' ${log_file} > ${restarter_log_file}
+   RESTARTER_PATT=''
+   if [ "$with_restarts" == "1" ] ; then
+      # subsequent runs have 1 or more interruptions
+      RESTARTER_PATT+='\[NestedRestarter\] name=\[InJob\] state=initialize\s*'
+      RESTARTER_PATT+='(?:\[NestedRestarter\] name=\[InJob\] state=handling stage=starting\s*'
+      RESTARTER_PATT+='(?:\[NestedRestarter\] name=\[InJob\] state=handling stage=processing\s*)*'
+      RESTARTER_PATT+='\[NestedRestarter\] name=\[InJob\] state=handling stage=completed\s*)+'
+      # final sequence when leaving, spurious but harmless, should be eliminated in the future
+      RESTARTER_PATT+='\[NestedRestarter\] name=\[InJob\] state=handling stage=starting\s*'
+      RESTARTER_PATT+='(?:\[NestedRestarter\] name=\[InJob\] state=handling stage=processing\s*)*'
+      RESTARTER_PATT+='\[NestedRestarter\] name=\[InJob\] state=aborted\s*'
+   else
+      RESTARTER_PATT+='\[NestedRestarter\] name=\[InJob\] state=initialize\s*'
+      RESTARTER_PATT+='\[NestedRestarter\] name=\[InJob\] state=handling stage=starting\s*'
+      RESTARTER_PATT+='(?:\[NestedRestarter\] name=\[InJob\] state=handling stage=processing\s*)*'
+      RESTARTER_PATT+='\[NestedRestarter\] name=\[InJob\] state=aborted\s*'
+   fi
+   if ! grep -qPzo "${RESTARTER_PATT}" ${restarter_log_file} ; then
+      echo "The log file does not contain expected NestedRestarter logs sequence."
+      exit 1
+   fi
+}
+
 for i in `seq ${NUM_TESTS}`
 do
    echo "### Starting TEST ${i}/${NUM_TESTS} ###"
@@ -54,9 +82,8 @@ do
    echo "TEST ${i}, run ${training_parts_num}"
 
    # launch the training
-   TRAIN_CMD="examples/fault_tolerance/train_ddp.py "
+   TRAIN_CMD="examples/fault_tolerance/train_ddp_heartbeats_api.py "
    TRAIN_CMD+=" --device cuda "
-   TRAIN_CMD+=" --init_distributed_method tcp "
    TRAIN_CMD+=" --output_dir ${RES_DIR}/output_$i "
    TRAIN_CMD+=" --logging_interval=100 "
    
@@ -74,10 +101,14 @@ do
    # on ft_launcher to terminate the rank; but ft_launcher has large default
    # timeout between SIGTERM and SIGKILL so the test takes long time. 
    # as a workaround, we reduce the term timeout 
+   # Need to specify --rdzv-backend= and --rdzv-endpoint= as there are some NCCL initialization
+   # race conditions when Torch Elastic uses shared TCP store, which is the default with the laucher
+   # standalone mode. Context: https://github.com/pytorch/pytorch/issues/143574
    echo "Launching ${WORLD_SIZE} x \"${TRAIN_CMD}\" with ft launcher..."
 
    ft_launcher --nproc-per-node=${WORLD_SIZE} --max-restarts=${MAX_RESTARTS} \
-      --fault-tol-cfg-path="examples/fault_tolerance/fault_tol_cfg.yaml" --term-timeout=15 \
+      --rdzv-backend=c10d --rdzv-endpoint=localhost:0 --ft-param-restart_check_interval=0.5 \
+      --fault-tol-cfg-path="examples/fault_tolerance/fault_tol_cfg_heartbeats.yaml" --term-timeout=15 \
       ${TRAIN_CMD} 2>&1 | tee -a ${RES_DIR}/output_$i/log.log
 
    if [ $? -ne 0 ]
@@ -91,15 +122,17 @@ do
    if [ "${i}" -eq "1" ]
    then
       assert_not_in_log "${RES_DIR}/output_$i/log.log" "Simulating fault"
+      assert_restarter_sequence_is_correct "${RES_DIR}/output_$i/log.log" 0
    else
       assert_log_contains "${RES_DIR}/output_$i/log.log" "Simulating fault"
+      assert_restarter_sequence_is_correct "${RES_DIR}/output_$i/log.log" 1
    fi
 
    # Timeouts should be updated during each run
-   assert_log_contains "${RES_DIR}/output_$i/log.log" "Updated timeouts"
+   assert_log_contains "${RES_DIR}/output_$i/log.log" "Updated heartbeat timeouts"
    # Training should be completed after each run
    assert_log_contains "${RES_DIR}/output_$i/log.log" "Leaving main"
-
+   
 done
 
 # Check if results number is OK, 

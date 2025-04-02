@@ -55,6 +55,18 @@ class TestCompose(unittest.TestCase):
         ret = composed()
         self.assertEqual(ret, 1)
 
+    def test_init_arg(self):
+        class Fn:
+            def __init__(self, arg):
+                self.arg = arg
+
+            def __call__(self):
+                return self.arg
+
+        composed = inprocess.Compose(Fn(1))
+        ret = composed()
+        self.assertEqual(ret, 1)
+
     def test_no_return_warns(self):
         class Fn:
             def __call__(self, x):

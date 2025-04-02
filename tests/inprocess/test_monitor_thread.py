@@ -30,9 +30,7 @@ class TestException(Exception):
 class TestAsyncRaise(unittest.TestCase):
     def test(self):
         def run():
-            inprocess.monitor_thread.async_raise(
-                threading.main_thread().ident, TestException
-            )
+            inprocess.monitor_thread.async_raise(threading.main_thread().ident, TestException)
 
         thread = threading.Thread(target=run)
         with self.assertRaises(TestException):
@@ -43,16 +41,12 @@ class TestAsyncRaise(unittest.TestCase):
         def run(start_event, event):
             start_event.wait()
             while not event.is_set():
-                inprocess.monitor_thread.async_raise(
-                    threading.main_thread().ident, TestException
-                )
+                inprocess.monitor_thread.async_raise(threading.main_thread().ident, TestException)
 
         for _ in range(iterations):
             stop_event = threading.Event()
             start_event = threading.Event()
-            thread = threading.Thread(
-                target=run, args=(start_event, stop_event)
-            )
+            thread = threading.Thread(target=run, args=(start_event, stop_event))
             thread.start()
 
             try:
@@ -77,16 +71,12 @@ class TestAsyncRaise(unittest.TestCase):
         def run(start_event, event):
             start_event.wait()
             while not event.is_set():
-                inprocess.monitor_thread.async_raise(
-                    threading.main_thread().ident, TestException
-                )
+                inprocess.monitor_thread.async_raise(threading.main_thread().ident, TestException)
 
         for _ in range(iterations):
             stop_event = threading.Event()
             start_event = threading.Event()
-            thread = threading.Thread(
-                target=run, args=(start_event, stop_event)
-            )
+            thread = threading.Thread(target=run, args=(start_event, stop_event))
             thread.start()
 
             try:
@@ -111,9 +101,7 @@ class TestAsyncRaise(unittest.TestCase):
 
 
 class TestAsyncReRaise(unittest.TestCase):
-    @unittest.mock.patch.object(
-        sys, 'unraisablehook', new=lambda *args, **kwargs: None
-    )
+    @unittest.mock.patch.object(sys, 'unraisablehook', new=lambda *args, **kwargs: None)
     def test_context_manager(self):
         class Foo:
             def __del__(self):
@@ -131,9 +119,7 @@ class TestAsyncReRaise(unittest.TestCase):
 
         self.assertEqual(original_hook, sys.unraisablehook)
 
-    @unittest.mock.patch.object(
-        sys, 'unraisablehook', new=lambda *args, **kwargs: None
-    )
+    @unittest.mock.patch.object(sys, 'unraisablehook', new=lambda *args, **kwargs: None)
     def test_decorator(self):
         class Foo:
             def __del__(self):

@@ -16,18 +16,17 @@
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import List, Mapping, Sequence, Tuple, TypeVar, Generic, Optional
+from typing import Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar
 
-from nvidia_resiliency_ext.common.device_utils import get_local_device_count, get_xla_model
+from nvidia_resiliency_ext.common.device_utils import get_local_device_count
 import torch
 
+from ...utils import debug_msg, debug_time
 from ..base_state_dict import TensorAwareStateDict
 from .group_utils import ExchangePlan, GroupWrapper, ProcessGroupLike, parse_group_sequence
-from .utils import debug_time, debug_msg, zip_strict
+from .utils import zip_strict
 
 logger = logging.getLogger(__name__)
-
-xm = get_xla_model()
 
 class NoReplicasAvailableError(Exception):
     """Exception raised when no replicas are available for a requested ID."""
@@ -235,7 +234,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
             replication_factor=replication_factor,
             world_size=torch.distributed.get_world_size(),
         )
-        backend = None if xm is None else "gloo"
+        backend = torch.distributed.Backend.GLOO
         repl_process_groups: List[torch.distributed.ProcessGroup] = [
             torch.distributed.new_group(ranks=g, backend=backend) for g in repl_process_groups_ranks
         ]
@@ -324,6 +323,7 @@ class LazyCliqueReplicationStrategy(LazyReplicationStrategyBuilder[CliqueReplica
         replication_factor (int, optional): `F` in the formula above. Denotes the number of
             ranks storing replicas of a given rank's data.
     """
+
     def __init__(
         self, replication_jump: int = 0, replication_factor: int = 2
     ):

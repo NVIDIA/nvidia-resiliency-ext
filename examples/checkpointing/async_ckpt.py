@@ -1,8 +1,6 @@
 import argparse
 import logging
 import os
-import shutil
-from typing import Union
 
 import torch
 import torch.distributed as dist
@@ -13,12 +11,22 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsync
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO)
 
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Local Checkpointing Basic Example',
+        description='Async Checkpointing Basic Example',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-
+    parser.add_argument(
+        '--ckpt_dir',
+        default="/tmp/test_async_ckpt/",
+        help="Checkpoint directory for async checkpoints",
+    )
+    parser.add_argument(
+        '--persistent_queue',
+        action='store_true',
+        help="Enables a persistent version of AsyncCallsQueue.",
+    )
     return parser.parse_args()
 
 
@@ -55,6 +63,15 @@ def init_distributed_backend(backend="nccl"):
         raise
 
 
+def cleanup(ckpt_dir):
+    if dist.get_rank() == 0:
+        logging.info(f"Cleaning up checkpoint directory: {ckpt_dir}")
+        for item in os.listdir(ckpt_dir):
+            for file_item in os.scandir(ckpt_dir):
+                if file_item.is_file():
+                    os.remove(file_item.path)
+
+
 def main():
     args = parse_args()
     logging.info(f'{args}')
@@ -64,25 +81,29 @@ def main():
 
     # Instantiate the model and move to CUDA
     model = SimpleModel().to("cuda")
-
+    org_sd = model.state_dict()
     # Define checkpoint directory and manager
-    ckpt_dir = "/tmp/test_local_checkpointing/ckpt.pt"
-  
-    ckpt_impl = TorchAsyncCheckpoint()
+    ckpt_dir = args.ckpt_dir
+    if not os.path.isdir(ckpt_dir):
+        raise Exception(f"{ckpt_dir} directory doesn't exists")
+    ckpt_file_name = f"{ckpt_dir}/ckpt_rank{torch.distributed.get_rank()}.pt"
 
-    ckpt_impl.async_save(model.state_dict(), ckpt_dir + "ckpt.pt")
+    ckpt_impl = TorchAsyncCheckpoint(persistent_queue=args.persistent_queue)
 
-    ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
+    ckpt_impl.async_save(org_sd, ckpt_file_name)
 
-    torch.load(ckpt_dir, ckpt_dir)
+    ckpt_impl.finalize_async_save(blocking=True, no_dist=True, terminate=True)
+
+    loaded_sd = torch.load(ckpt_file_name, map_location="cuda")
+
+    for k in loaded_sd.keys():
+        assert torch.equal(loaded_sd[k], org_sd[k]), f"loaded_sd[{k}] != org_sd[{k}]"
 
     # Synchronize processes to ensure all have completed the loading
     dist.barrier()
-    
+
     # Clean up checkpoint directory only on rank 0
-    if dist.get_rank() == 0:
-        logging.info(f"Cleaning up checkpoint directory: {ckpt_dir}")
-        shutil.rmtree(ckpt_dir)
+    cleanup(ckpt_dir)
 
 
 if __name__ == "__main__":

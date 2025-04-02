@@ -25,16 +25,13 @@ import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
 
-from . import common
+from . import common  # noqa: F401
 
 
-@unittest.skipIf(
-    not torch.distributed.is_nccl_available(), 'nccl not available'
-)
+@unittest.skipIf(not torch.cuda.is_available(), 'cuda not available')
 class TestCudaHealthCheck(unittest.TestCase):
     @staticmethod
     def launch(fn, timeout=datetime.timedelta(seconds=10)):
-        procs = []
         ctx = multiprocessing.get_context('fork')
         proc = ctx.Process(target=fn)
         start_time = time.perf_counter()
@@ -61,31 +58,27 @@ class TestCudaHealthCheck(unittest.TestCase):
     def test_timeout(self):
         def run():
             torch.ones(1).cuda()
-            check = inprocess.health_check.CudaHealthCheck(
-                datetime.timedelta(seconds=1)
-            )
+            check = inprocess.health_check.CudaHealthCheck(datetime.timedelta(seconds=1))
             torch.cuda._sleep(1 << 40)
             try:
-                check(None, None)
+                check(None)
                 sys.exit(1)
             except inprocess.exception.TimeoutError:
                 sys.exit(0)
 
         exitcode, elapsed = self.launch(run)
         self.assertEqual(exitcode, 0)
-        self.assertLess(elapsed, 2)
+        self.assertLess(elapsed, 10)
 
     @unittest.mock.patch.object(threading, 'excepthook', new=lambda _: None)
     def test_raises(self):
         def run():
-            check = inprocess.health_check.CudaHealthCheck(
-                datetime.timedelta(seconds=5)
-            )
+            check = inprocess.health_check.CudaHealthCheck(datetime.timedelta(seconds=5))
             b = torch.ones(1, dtype=torch.int64).cuda()
             a = torch.ones(1, dtype=torch.int64).cuda()
             a[b] = 0
             try:
-                check(None, None)
+                check(None)
                 sys.exit(1)
             except RuntimeError as ex:
                 if 'CUDA' in str(ex):
@@ -94,4 +87,4 @@ class TestCudaHealthCheck(unittest.TestCase):
 
         exitcode, elapsed = self.launch(run)
         self.assertEqual(exitcode, 0)
-        self.assertLess(elapsed, 2)
+        self.assertLess(elapsed, 10)

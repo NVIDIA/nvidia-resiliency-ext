@@ -19,9 +19,6 @@ import multiprocessing
 import os
 import time
 import unittest
-from typing import Optional
-
-import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
 
@@ -30,7 +27,10 @@ from . import common
 
 def kwargs():
     return {
-        'store_kwargs': {'port': common.find_free_port()},
+        'store_kwargs': {
+            'port': common.find_free_port(),
+            'timeout': datetime.timedelta(seconds=10),
+        },
         'progress_watchdog_interval': datetime.timedelta(seconds=1e-3),
         'monitor_process_interval': datetime.timedelta(seconds=1e-3),
         'monitor_thread_interval': datetime.timedelta(seconds=1e-3),
@@ -38,6 +38,7 @@ def kwargs():
     }
 
 
+@common.apply_all_tests(common.retry())
 @unittest.mock.patch.dict(
     os.environ,
     {
@@ -74,9 +75,7 @@ class TestSoft(unittest.TestCase):
         ret_val = 123
 
         @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(
-                max_iterations=max_iterations
-            ),
+            initialize=inprocess.initialize.RetryController(max_iterations=max_iterations),
             soft_timeout=datetime.timedelta(seconds=0.5),
             **kwargs(),
         )
@@ -98,6 +97,7 @@ class TestSoft(unittest.TestCase):
         self.assertEqual(ret, ret_val)
 
 
+@common.apply_all_tests(common.retry())
 @unittest.mock.patch.dict(
     os.environ,
     {

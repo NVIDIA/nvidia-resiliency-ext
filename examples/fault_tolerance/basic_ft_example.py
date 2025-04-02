@@ -100,13 +100,13 @@ def main(rank, world_size):
     # FT: initialize the client
     ft_client = ft.RankMonitorClient()
     ft_client.init_workload_monitoring()
-    print_on_rank0(f"FT initialized. Timeouts: {ft_client.timeouts}")
+    print_on_rank0(f"FT initialized. Timeouts: {ft_client.hb_timeouts}")
     # FT: load state (calculated timeouts)
     if os.path.exists("ft_state.json"):
         with open("ft_state.json", "r") as f:
             ft_state = json.load(f)
             ft_client.load_state_dict(ft_state)
-        print_on_rank0(f"FT timeouts {ft_client.timeouts} loaded from ft_state.json")
+        print_on_rank0(f"FT timeouts {ft_client.hb_timeouts} loaded from ft_state.json")
 
     # Dataset and DataLoader with DistributedSampler
     dataset = SimpleDataset(size=DATASET_LEN)
@@ -136,11 +136,11 @@ def main(rank, world_size):
             ft_client.send_heartbeat()
         print_on_rank0(f"Epoch {epoch} complete. Loss: {loss.item()}")
         # FT: calculate and set new timeouts
-        ft_client.calculate_and_set_timeouts()
+        ft_client.calculate_and_set_hb_timeouts()
         # FT: save the state (calculated timeouts)
         with open("ft_state.json", "w") as f:
             json.dump(ft_client.state_dict(), f)
-        print_on_rank0(f"FT timeouts {ft_client.timeouts} saved to ft_state.json")
+        print_on_rank0(f"FT timeouts {ft_client.hb_timeouts} saved to ft_state.json")
 
     # FT: shutdown the client
     ft_client.shutdown_workload_monitoring()

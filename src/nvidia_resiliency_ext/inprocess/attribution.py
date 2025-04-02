@@ -27,6 +27,7 @@ class Interruption(enum.Enum):
     HARD_TIMEOUT = enum.auto()
     TERMINATED = enum.auto()
     UNRESPONSIVE = enum.auto()
+    MONITOR_PROCESS_EXCEPTION = enum.auto()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -53,10 +54,8 @@ def format_interruption_records(records):
     msg = ', '.join(
         (
             f'{interruption} on {ranks=}'
-            for interruption, group in itertools.groupby(
-                records, key=lambda r: r.interruption
-            )
-            for ranks in [[elem.rank for elem in group]]
+            for interruption, group in itertools.groupby(records, key=lambda r: r.interruption)
+            for ranks in [set([elem.rank for elem in group])]
         )
     )
     return msg

@@ -23,6 +23,15 @@ from nvidia_resiliency_ext.common.device_utils import (
 
 import torch
 from typing import Tuple
+from datetime import timedelta
+from typing import Tuple
+
+import torch
+from torch._C._distributed_c10d import PrefixStore
+from torch.distributed import rendezvous
+
+from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
+
 
 
 class Utils:
@@ -62,9 +71,60 @@ class Utils:
         else:
             Utils.rank = rank
 
+
 class TestModel(torch.nn.Module):
     def __init__(self, size: Tuple, ntensor: int) -> None:
         super().__init__()
         for i in range(ntensor):
-            self.register_parameter(f"param_{i}",
-                                    torch.nn.Parameter(torch.rand(size, device=get_current_device())))
+            self.register_parameter(
+                f"param_{i}",
+                torch.nn.Parameter(
+                    torch.rand(size, device=get_current_device())
+                ),
+            )
+
+
+class SimpleTensorAwareStateDict(TensorAwareStateDict):
+    def __init__(self, iteration, tensor_num=1000):
+        self._tensors = [
+            torch.empty((128, 128), device='cuda').random_() for _ in range(tensor_num)
+        ]
+        self.iteration = iteration
+
+    def pop_tensors(self):
+        raise NotImplementedError
+
+    @property
+    def tensors(self):
+        raise NotImplementedError
+
+    def tensors_to_orig_device(self):
+        raise NotImplementedError
+
+    def is_hollow(self) -> bool:
+        raise NotImplementedError
+
+    def insert_tensors(self, tensor_data):
+        raise NotImplementedError
+
+    def init_tensors(self):
+        raise NotImplementedError
+
+    def copy_tensors_to_cpu(self, non_blocking=False):
+        for i, ten in enumerate(self._tensors):
+            self._tensors[i] = ten.to("cpu")
+
+    def restore_tensor_device(self, non_blocking=False):
+        for i, ten in enumerate(self._tensors):
+            self._tensors[i] = ten.to(device=get_current_device())
+
+    def to_state_dict(self):
+        raise NotImplementedError
+
+    def __eq__(self, other):
+        if len(self._tensors) != len(other._tensors):
+            return False
+        for self_ten, other_ten in zip(self._tensors, other._tensors):
+            if not torch.equal(self_ten, other_ten):
+                return False
+        return self.iteration == other.iteration

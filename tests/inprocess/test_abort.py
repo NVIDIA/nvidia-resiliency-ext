@@ -18,18 +18,20 @@ import datetime
 import multiprocessing
 import unittest
 
-from nvidia_resiliency_ext.common.device_utils import get_current_device, get_distributed_backend, get_distributed_init_method, get_xla_model
+from nvidia_resiliency_ext.common.device_utils import (
+    get_current_device, 
+    get_distributed_backend, 
+    get_distributed_init_method
+)
+
 import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
 
 from . import common
 
-xm = get_xla_model()
-
-@unittest.skipIf(
-    not torch.distributed.is_nccl_available(), 'nccl not available'
-)
+@common.apply_all_tests(common.retry())
+@unittest.skipIf(not torch.cuda.is_available(), 'cuda not available')
 class TestAbort(unittest.TestCase):
     @staticmethod
     def launch(fn, world_size=2, timeout=datetime.timedelta(seconds=10)):
@@ -56,7 +58,7 @@ class TestAbort(unittest.TestCase):
             device = get_current_device()
             store = torch.distributed.TCPStore(
                 host_name='localhost',
-                port=29500,
+                port=29501,
                 is_master=(rank == 0),
                 timeout=datetime.timedelta(seconds=5),
             ) if torch.cuda.is_available() else None

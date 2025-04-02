@@ -78,7 +78,7 @@ def send_object_list(object_list, dst, group:Optional[torch.distributed.ProcessG
     .. note:: For NCCL-based process groups, internal tensor representations
         of objects must be moved to the GPU device before communication takes
         place. In this case, the device used is given by
-        ``torch.cuda.current_device()`` and it is the user's responsibility to
+        ``get_current_device()`` and it is the user's responsibility to
         ensure that this is set so that each rank has an individual GPU, via
         ``torch.cuda.set_device()``.
 
@@ -170,7 +170,7 @@ def recv_object_list(object_list, src=None, group:Optional[torch.distributed.Pro
     .. note:: For NCCL-based process groups, internal tensor representations
         of objects must be moved to the GPU device before communication takes
         place. In this case, the device used is given by
-        ``torch.cuda.current_device()`` and it is the user's responsibility to
+        ``get_current_device()`` and it is the user's responsibility to
         ensure that this is set so that each rank has an individual GPU, via
         ``torch.cuda.set_device()``.
 

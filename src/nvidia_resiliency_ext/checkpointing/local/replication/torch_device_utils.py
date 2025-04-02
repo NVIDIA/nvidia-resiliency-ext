@@ -23,7 +23,7 @@ def get_default_device_from_type(device_type: str) -> torch.device:
     """Returns the default PyTorch device based on the specified device type.
 
     This function maps a device type string to the corresponding PyTorch device.
-    It supports both "cpu", "cuda" and "xla" types
+    It supports "cpu", "cuda" and "xla" types
 
     Args:
         device_type (str): The type of device to retrieve. Should be either "cpu", "cuda", or "xla".

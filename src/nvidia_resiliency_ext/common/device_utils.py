@@ -38,7 +38,6 @@ def get_current_device() -> torch.device:
 
     return __current_device
 
-
 def get_current_device_type() -> str:
     global __current_device_type
 

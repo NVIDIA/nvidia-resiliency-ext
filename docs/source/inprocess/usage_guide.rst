@@ -11,10 +11,10 @@ functionality provided by the :py:class:`Wrapper`.
 Requirements
 ------------
 In-process restart functionality requires `PyPI PyTorch
-<https://pypi.org/project/torch/>`_ v2.5.1 or `PyTorch NGC Container
-<https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch>`_ versions
-24.07 through 24.10. For further limitations and compatibility details, refer
-to the :ref:`Known issues <known_issues>` section.
+<https://pypi.org/project/torch/>`_ v2.5.1 through v2.6.0 or `PyTorch NGC
+Container <https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch>`_
+versions 24.07 through 24.10. For further limitations and compatibility
+details, refer to the :ref:`Known issues <known_issues>` section.
 
 Requirements for the wrapped function
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -24,29 +24,35 @@ Requirements for the wrapped function
   :py:func:`multiprocessing.set_start_method()` or ``MPI_Init``, to ensure that
   the function can be executed multiple times in the same process without
   issues.
+
     - The function will automatically retry on any failure, meaning it will be
       called again with the same set of input arguments; extra caution is
       needed if the function accepts mutable arguments that might be modified
       during its execution, as these changes could affect subsequent retries.
+
 - All operations that wait on results from NCCL kernels, or synchronize with
   the GPU, need to release Python `Global Interpreter Lock
   <https://docs.python.org/3/glossary.html#term-global-interpreter-lock>`_
   (GIL).
+
     - If the Python GIL is not released when a fault occurs, the graceful
       restart procedure cannot proceed. This is because the procedure runs in a
       separate Python thread, which is blocked from execution due to the GIL
       being held. As a result, hung ranks must be forcibly terminated using the
       :ref:`hard timeout <hard_timeout>` mechanism (``SIGKILL``). These
       terminated ranks will not rejoin the distributed job upon restart.
+
 - The function does not suppress :py:exc:`BaseException`. If the wrapped
   function catches a :py:exc:`BaseException`, it must re-raise it to ensure it
   propagates to the outer scope.
+
 - The function is responsible for initialization of PyTorch distributed backend
   (:py:func:`torch.distributed.init_process_group()`); the initialization needs
   to read `standard PyTorch distributed variables
   <https://pytorch.org/docs/stable/distributed.html#environment-variable-initialization>`_
   (``RANK``, ``WORLD_SIZE``, ``MASTER_ADDR``, ``MASTER_PORT`` and
   ``LOCAL_RANK``) from the environment.
+
 - it's heavily recommended for the wrapped function to load the state affected
   by distributed collectives from a checkpoint on every restart (e.g. load
   weights of a model); outputs of distributed collectives are likely to become
@@ -62,6 +68,7 @@ Requirements for the execution environment
   timeout, use the ``timeout`` argument when calling
   :py:func:`torch.distributed.init_process_group()` with the ``backend``
   parameter set to ``"nccl"``
+
 - The job scheduler must not terminate the entire job if a faulty rank exits
   early or if the main process is terminated; instead, it should wait until all
   user-launched processes have fully exited before ending the distributed job.
@@ -74,6 +81,7 @@ Restrictions
   a distributed store by subclassing from
   :py:class:`nvidia_resiliency_ext.inprocess.store.StoreMixin` and passing the subclass as
   ``store_factory`` argument to the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`
+
 - blocking calls issued by the main process are generally not recoverable if
   they hang, except for NCCL collectives or functions waiting on them; NCCL
   collectives are asynchronously aborted by a separate monitoring thread that
@@ -97,10 +105,9 @@ purposes only and may omit certain implementation details.
   distributed_store = store_factory(**store_kwargs)
   initial_barrier()
   rank_assignment()
-  rank_filter()
+  rank_filter()  # deprecated
   
   while True:
-      iteration_barrier()
       initialize()
       health_check()
       try:
@@ -113,11 +120,13 @@ purposes only and may omit certain implementation details.
           abort()
           finalize()
           health_check()
-          termination_barrier()
+          iteration_barrier()
           rank_assignment()
-          rank_filter()
+          rank_filter()  # deprecated
       else:
           break
+
+  termination_barrier()
 
 Distributed execution behavior
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -135,15 +144,18 @@ as a rank failure, triggering a restart of the wrapped function on all
 distributed ranks.
 
 The restart :py:class:`Wrapper` incorporates additional distributed barriers to
-ensure proper synchronization: ``iteration_barrier`` (executed at the start of
-each restart iteration), and ``termination_barrier`` (executed before rank
-reassignment and filtering). These barriers are designed to be transparent to
-the user, requiring no modifications to the wrapped function or assumptions
+ensure proper synchronization: ``iteration_barrier`` (executed before rank
+reassignment and filtering), and ``termination_barrier`` (executed before
+exiting from the wrapped scope). These barriers are designed to be transparent
+to the user, requiring no modifications to the wrapped function or assumptions
 about the execution environment. They operate seamlessly to maintain
 distributed consistency and coordination.
 
+Rank assignment and filtering
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 Rank assignment
-~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^
 The :py:class:`Wrapper` needs to ensure that the wrapped function is restarted
 with a consecutive sequence of integer rank indices, from ``0`` to 
 ``WORLD_SIZE - 1``, as some of the ranks from previous iteration may have been
@@ -161,9 +173,10 @@ For example:
 
     rank_assignment = (
         inprocess.Compose(
+            inprocess.rank_assignment.ActivateAllRanks(),
             inprocess.rank_assignment.ShiftRanks(),
-            inprocess.rank_assignment.FilterGroupedByKey(
-                key_or_fn=lambda rank, _: rank // 8,
+            inprocess.rank_assignment.FilterCountGroupedByKey(
+                key_or_fn=lambda state: state.rank // 8,
                 condition=lambda count: count == 8,
             ),
         ),
@@ -175,30 +188,40 @@ terminated, the entire group is terminated. The remaining healthy ranks are
 then reassigned by shifting left to close any gaps, forming a new sequence
 of consecutive integers from ``0`` up to the updated ``world size``.
 
-Rank filter
-~~~~~~~~~~~
-By default, all active ranks are calling the wrapped function. This behavior
-can be customized by providing a :py:class:`nvidia_resiliency_ext.inprocess.rank_filter.RankFilter`
-instance as ``rank_filter`` argument for the :py:class:`Wrapper`.
-:py:class:`RankFilter` selects which ranks are active in the current restart
-iteration. Active ranks call the wrapped function. Inactive ranks are waiting
-idle, and could serve as a static, preallocated and preinitialized pool of
-spare ranks. Spare ranks would be activated in a subsequent restart iteration
-if previously active ranks were terminated or became unhealthy.
+Rank filtering
+^^^^^^^^^^^^^^
+The :py:class:`Wrapper` categorizes distributed ranks into two groups:
 
-Multiple rank filters could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose` to
-achieve the desired behavior. For example:
+1. active ranks, which are calling the wrapped function
+2. inactive ranks, which are waiting idle, and could serve as a static,
+   preallocated and preinitialized pool of reserve ranks; reserve ranks would
+   be activated in a subsequent restart iteration if previously active ranks
+   were terminated or became unhealthy
+
+Rank filtering is a process of selecting active and inactive ranks within a
+given restart iteration, and is performed by
+:py:class:`nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment` instance passed as
+``rank_assignment`` argument to the :py:class:`Wrapper`.
+
+Multiple :py:class:`nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter` or
+:py:class:`nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment` instances can be composed
+using :py:class:`nvidia_resiliency_ext.inprocess.Compose` to achieve the desired behavior. Typically,
+all :py:class:`RankFilter` instances should follow any
+:py:class:`RankAssignment` steps that recalculate rank indices or adjust the
+world size. For example:
 
 .. code-block:: python
 
-    rank_filter=inprocess.Compose(
-        inprocess.rank_filter.WorldSizeDivisibleBy(M),
-        inprocess.rank_filter.MaxActiveWorldSize(N),
+    rank_assignment=inprocess.Compose(
+        inprocess.rank_assignment.ActiveWorldSizeDivisibleBy(M),
+        inprocess.rank_assignment.MaxActiveWorldSize(N),
+        inprocess.rank_assignment.ShiftRanks(),
     ),
 
-ensures that the active world size visible to the wrapped function is the
-largest multiple of ``M`` that is not greater than ``N``. The remaining ranks
-would be inactive and serve as spares.
+shifts all healthy ranks to the left to fill gaps created by terminated ranks,
+and then ensures that the active world size visible to the wrapped function is
+the largest multiple of ``M`` that is not greater than ``N``. The remaining
+healthy ranks would be inactive and serve as a reserve.
 
 Initialize
 ~~~~~~~~~~
@@ -227,6 +250,7 @@ procedure across all ranks to ensure a consistent recovery process:
   :py:class:`nvidia_resiliency_ext.inprocess.abort.Abort` from a separate Python thread; by default,
   this operation is equivalent to calling
   :py:func:`torch.distributed.destroy_process_group()`,
+
 - next the :py:class:`Wrapper` raises asynchronous Python exception within the
   wrapped function; this exception interrupts the execution of the wrapped
   function, allowing control to return to the :py:class:`Wrapper` which then
@@ -309,6 +333,7 @@ There are two methods to record progress:
 
   - this method is always active and protects against hangs in calls that block
     Python interpreter, even in case when a blocking call released GIL, 
+
   - it doesn't protect against while-true-like livelocks, where the interpreter
     keeps executing new bytecode instructions but doesn't make meaningful
     forward progress
@@ -320,9 +345,11 @@ There are two methods to record progress:
   - the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` inspects the signature of the wrapped
     function for an argument annotated with the type
     :py:class:`nvidia_resiliency_ext.inprocess.CallWrapper`,
+
   - if such an argument is present, the :py:class:`Wrapper` injects an instance
     of :py:class:`nvidia_resiliency_ext.inprocess.CallWrapper` into the function, enabling it to call
     :py:meth:`inprocess.CallWrapper.ping` within its scope,
+
   - the timeout for the manual heartbeat is activated after the first call to
     the :py:meth:`inprocess.CallWrapper.ping` method.
 
@@ -464,28 +491,30 @@ application raises a Python exception on any distributed rank.
 +===========+========================================================+==============================================================================+
 | NCCL/PyT  | :py:func:`torch.distributed.destroy_process_group()`   | ~0.5s + 0.01s * num pending NCCL kernels                                     |
 +-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
-| CUDA/user | drain all pending CUDA kernels                         | ~training iteration                                                          |
-+-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
-| Wrapper   | query TCPStore for any faults                          | ``monitor_thread_interval``                                                  |
+| CUDA/user | complete pending CUDA kernels                          | ~training iteration                                                          |
 +-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
 | Wrapper   | wait for concurrent faults on other ranks              | ``last_call_wait``                                                           |
 +-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
 | Wrapper   | execute ``rank_assignment``                            | ~0.5s                                                                        |
 +-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
-| Wrapper   | 3x TCPStore-based barrier                              | 0.5s @ 16k ranks                                                             |
+| Wrapper   | TCPStore-based barrier                                 | 0.5s @ 16k ranks                                                             |
 +-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
-| Wrapper   | ``(H)`` detect GIL-holding hang                        | ``hard_timeout`` + ``monitor_process_interval`` + ``termination_grace_time`` |
-+-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
-| Wrapper   | ``(H)`` detect GIL-released hang                       | ``soft_timeout`` + ``monitor_thread_interval``                               |
+| user      | execute user-provided ``initialize``                   | N/A                                                                          |
 +-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
 | user      | execute user-provided ``finalize``                     | N/A                                                                          |
 +-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
 | user      | execute user-provided ``health_check``                 | N/A                                                                          |
 +-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
+| Wrapper   | ``(H)`` detect GIL-released hang                       | ``soft_timeout`` + ``monitor_process_interval``                              |
++-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
+| Wrapper   | ``(H)`` detect GIL-holding hang                        | ``hard_timeout`` + ``monitor_process_interval`` + ``termination_grace_time`` |
++-----------+--------------------------------------------------------+------------------------------------------------------------------------------+
 
 The latency for executing :py:func:`torch.distributed.destroy_process_group`
 assumes that NCCL collective kernel termination interval was optimized. See
-:ref:`Known issues <known_issues>` for more details.
+:ref:`Known issues <known_issues>` for more details. The latency for completing
+all pending CUDA kernels assumes that the training loop performs
+synchronization with the GPU at least once per training iteration.
 
 .. _known_issues:
 
@@ -498,6 +527,7 @@ Known issues
    remaining ranks would wait till :py:class:`ProcessGroupGloo` timeout is
    exceeded; a workaround is to specify a short timeout for the ``gloo``
    backend to enable faster restarts.
+
 2. NCCL collective kernel termination is implemented by periodically checking a
    flag residing in mapped memory, and exiting from the kernel if the flag is
    set. Interval of checking for this flag is controlled by
@@ -509,6 +539,7 @@ Known issues
    executed or are pending. A workaround is to decrease the interval to
    ``10000`` and rebuild NCCL. This issue will be addressed in future NCCL
    versions.
+
 3. To perform a restart, the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` needs to wait for
    completion of all executing and pending CUDA kernels. This is implemented
    with a GPU synchronization, and is a part of
@@ -516,19 +547,31 @@ Known issues
    to complete could increase the restart latency if many CUDA kernels are
    pending execution. A workaround is to periodically synchronize with the GPU
    from the wrapped function to reduce the depth of pending kernels queue.
+
 4. Support for NVLink SHARP (NVLS) in NCCL must be disabled by setting the
    ``NCCL_NVLS_ENABLE`` environment variable to ``0``.
+
 5. NCCL net plugins must be disabled by setting ``NCCL_NET_PLUGIN`` environment
    variable to ``"none"``. This issue will be addressed in future NCCL
-   versions.
+   versions. 
+
 6. :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` is not fully compatible with
    :py:func:`torch.distributed.run`. :py:func:`torch.distributed.run`
    automatically terminates all worker processes if any one of them fails, in
    this case :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` can only recover from transient
    faults that don't cause termination of worker processes.
+
 7. By default, PyTorch NCCL Watchdog forcefully terminates the process if NCCL
    call returns an error, or if CUDA context was corrupted. Forceful
    termination of the worker process prevents :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`
    from restarting the wrapper function. A workaround is to set
    ``TORCH_NCCL_RETHROW_CUDA_ERRORS`` environment variable to ``0``, to avoid
    rethrowing CUDA and NCCL errors in PyTorch NCCL Watchdog.
+
+8. The :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` class uses
+   :py:meth:`torch.distributed.Store.wait` to detect events in the distributed
+   key-value store within its monitoring loops. Because these loops often
+   advance to the next iteration after an expected timeout, PyTorch emits a
+   warning every time :py:meth:`wait` times out, cluttering the output. To
+   suppress these warnings, set the ``TORCH_CPP_LOG_LEVEL`` environment
+   variable to ``error`` or ``fatal`` before importing ``torch``.

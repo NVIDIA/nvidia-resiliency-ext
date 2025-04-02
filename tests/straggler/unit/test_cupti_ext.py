@@ -14,11 +14,10 @@
 # limitations under the License.
 
 from nvidia_resiliency_ext.common.device_utils import get_current_device
+import nvrx_cupti_module as cupti_module  # type: ignore
 import pytest
 import torch
 import torch.nn as nn
-
-from nvidia_resiliency_ext.straggler import cupti_module
 
 
 def test_basic_kernel_tracking():

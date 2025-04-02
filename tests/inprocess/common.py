@@ -14,7 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import collections
 import contextlib
 import faulthandler
 import functools
@@ -23,7 +22,6 @@ import itertools
 import logging
 import multiprocessing
 import os
-import random
 import socket
 import sys
 import tempfile
@@ -32,10 +30,12 @@ import time
 import traceback
 import types
 import unittest
+import warnings
 from enum import Enum
 from functools import wraps
-from typing import Any, Callable, List, NamedTuple, Optional, Tuple
+from typing import List
 
+import packaging.version
 import torch
 
 if level := os.getenv('LOG', None):
@@ -53,14 +53,80 @@ os.environ['NCCL_NVLS_ENABLE'] = '0'
 os.environ['NCCL_NET_PLUGIN'] = '"none"'
 
 
-def find_free_port(host='localhost'):
-    with contextlib.closing(
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    ) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((host, 0))
-        _, port = sock.getsockname()
-        return port
+@contextlib.contextmanager
+def silence_deprecation_warnings():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        yield
+
+
+def torch_older_than(version):
+    torch_version = packaging.version.Version(torch.__version__)
+    return torch_version < packaging.version.Version(version)
+
+
+def find_free_port():
+    try:
+        with contextlib.closing(socket.socket(socket.AF_INET6, socket.SOCK_STREAM)) as sock6:
+            sock6.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Bind to IPv6 loopback address and port 0 => ephemeral port
+            sock6.bind(('::1', 0))
+            # get the assigned port from the 4-tuple (host, port, flowinfo, scopeid)
+            _, port, _, _ = sock6.getsockname()
+            return port
+    except OSError:
+        # If anything goes wrong with IPv6, fall back to IPv4
+        with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock4:
+            sock4.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Bind to IPv4 loopback address and port 0 => ephemeral port
+            sock4.bind(('127.0.0.1', 0))
+            # get the assigned port from the 2-tuple (host, port)
+            _, port = sock4.getsockname()
+            return port
+
+
+def apply_all_tests(decorator):
+    def class_decorator(cls):
+        # 1) Decorate all test methods in the current class
+        for attr_name, attr_value in vars(cls).items():
+            if callable(attr_value) and attr_name.startswith('test'):
+                setattr(cls, attr_name, decorator(attr_value))
+
+        # 2) Prepare to decorate test methods in any future subclasses
+        original_init_subclass = getattr(cls, '__init_subclass__', None)
+
+        @classmethod
+        def new_init_subclass(subclass, **kwargs):
+            if original_init_subclass:
+                original_init_subclass(**kwargs)
+
+            for s_attr_name, s_attr_value in vars(subclass).items():
+                if callable(s_attr_value) and s_attr_name.startswith('test'):
+                    setattr(subclass, s_attr_name, decorator(s_attr_value))
+
+        cls.__init_subclass__ = new_init_subclass
+        return cls
+
+    return class_decorator
+
+
+def retry(max_attempts=5, delay=1):
+    def outer_wrapper(func):
+        @functools.wraps(func)
+        def inner_wrapper(*args, **kwargs):
+            for i in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as ex:
+                    if i == max_attempts - 1:
+                        raise
+                    traceback.print_exception(type(ex), ex, ex.__traceback__)
+                    time.sleep(delay)
+                    print(f'Retrying {func.__qualname__}')
+
+        return inner_wrapper
+
+    return outer_wrapper
 
 
 def is_port_available(port, host='localhost'):
@@ -140,7 +206,6 @@ def subtests(params):
         @functools.wraps(func)
         def inner_wrapper(*args, **kwargs):
             self, *rest = args
-            signature = inspect.signature(func)
 
             for param in params:
                 with self.subTest(**param):
@@ -148,11 +213,7 @@ def subtests(params):
                     current_kwargs.update(param)
 
                     if os.getenv('VERBOSE', False):
-                        test = (
-                            self._subtest
-                            if self._subtest is not None
-                            else self
-                        )
+                        test = self._subtest if self._subtest is not None else self
                         print(test)
 
                     func(*args, **current_kwargs)
@@ -197,9 +258,7 @@ def instantiate_parametrized_tests(generic_cls):
             def instantiated_test(self, param_kwargs=param_kwargs):
                 test(self, **param_kwargs)
 
-            assert not hasattr(
-                generic_cls, name
-            ), f'Redefinition of test {name}'
+            assert not hasattr(generic_cls, name), f'Redefinition of test {name}'
             setattr(generic_cls, name, instantiated_test)
 
         for (
@@ -207,9 +266,7 @@ def instantiate_parametrized_tests(generic_cls):
             test_suffix,
             param_kwargs,
             decorator_fn,
-        ) in class_attr.parametrize_fn(
-            class_attr, generic_cls=generic_cls, device_cls=None
-        ):
+        ) in class_attr.parametrize_fn(class_attr, generic_cls=generic_cls, device_cls=None):
             full_name = f'{test.__name__}_{test_suffix}'
 
             # Apply decorators based on full param kwargs.
@@ -284,9 +341,7 @@ class _TestParametrizer:
             # Do composition with the product of args.
             old_parametrize_fn = fn.parametrize_fn
             new_parametrize_fn = self._parametrize_test
-            fn.parametrize_fn = compose_parametrize_fns(
-                old_parametrize_fn, new_parametrize_fn
-            )
+            fn.parametrize_fn = compose_parametrize_fns(old_parametrize_fn, new_parametrize_fn)
         else:
             fn.parametrize_fn = self._parametrize_test
         return fn
@@ -332,9 +387,7 @@ def compose_parametrize_fns(old_parametrize_fn, new_parametrize_fn):
                         'Parametrization over the same parameter by multiple '
                         'parametrization decorators is not supported. For '
                         'test "{}", the following parameters are handled '
-                        'multiple times: {}'.format(
-                            test.__name__, redundant_params
-                        )
+                        'multiple times: {}'.format(test.__name__, redundant_params)
                     )
                 full_param_kwargs = {**old_param_kwargs, **new_param_kwargs}
                 merged_test_name = '{}{}{}'.format(
@@ -343,12 +396,8 @@ def compose_parametrize_fns(old_parametrize_fn, new_parametrize_fn):
                     old_test_name,
                 )
 
-                def merged_decorator_fn(
-                    param_kwargs, old_dec_fn=old_dec_fn, new_dec_fn=new_dec_fn
-                ):
-                    return list(old_dec_fn(param_kwargs)) + list(
-                        new_dec_fn(param_kwargs)
-                    )
+                def merged_decorator_fn(param_kwargs, old_dec_fn=old_dec_fn, new_dec_fn=new_dec_fn):
+                    return list(old_dec_fn(param_kwargs)) + list(new_dec_fn(param_kwargs))
 
                 yield (
                     new_test,
@@ -457,9 +506,7 @@ class parametrize(_TestParametrizer):
     '''
 
     def __init__(self, arg_str, arg_values, name_fn=None):
-        self.arg_names: List[str] = [
-            s.strip() for s in arg_str.split(',') if s != ''
-        ]
+        self.arg_names: List[str] = [s.strip() for s in arg_str.split(',') if s != '']
         self.arg_values = arg_values
         self.name_fn = name_fn
 
@@ -482,10 +529,7 @@ class parametrize(_TestParametrizer):
 
     def _default_subtest_name(self, idx, values):
         return '_'.join(
-            [
-                self._formatted_str_repr(idx, a, v)
-                for a, v in zip(self.arg_names, values)
-            ]
+            [self._formatted_str_repr(idx, a, v) for a, v in zip(self.arg_names, values)]
         )
 
     def _get_subtest_name(self, idx, values, explicit_name=None):
@@ -536,9 +580,7 @@ class parametrize(_TestParametrizer):
 
                 param_kwargs = dict(zip(self.arg_names, values))
 
-                test_name = self._get_subtest_name(
-                    idx, values, explicit_name=maybe_name
-                )
+                test_name = self._get_subtest_name(idx, values, explicit_name=maybe_name)
 
                 def decorator_fn(_, decorators=decorators):
                     return decorators
@@ -640,16 +682,13 @@ class MultiProcessTestCase(unittest.TestCase):
     def _event_listener(parent_pipe, signal_pipe, rank: int):
         logger.info('Starting event listener thread for rank %s', rank)
         while True:
-            ready_pipes = multiprocessing.connection.wait(
-                [parent_pipe, signal_pipe]
-            )
+            ready_pipes = multiprocessing.connection.wait([parent_pipe, signal_pipe])
 
             if parent_pipe in ready_pipes:
 
                 if parent_pipe.closed:
                     logger.info(
-                        'Pipe closed for process %s, stopping event listener '
-                        'thread',
+                        'Pipe closed for process %s, stopping event listener ' 'thread',
                         rank,
                     )
                     return
@@ -672,9 +711,7 @@ class MultiProcessTestCase(unittest.TestCase):
                 return
 
     @classmethod
-    def _run(
-        cls, rank: int, test_name: str, file_name: str, parent_pipe
-    ) -> None:
+    def _run(cls, rank: int, test_name: str, file_name: str, parent_pipe) -> None:
         self = cls(test_name)
         self.rank = rank
         self.file_name = file_name
@@ -686,9 +723,7 @@ class MultiProcessTestCase(unittest.TestCase):
 
     def run_test(self, test_name: str, parent_pipe) -> None:
         # Start event listener thread.
-        signal_recv_pipe, signal_send_pipe = torch.multiprocessing.Pipe(
-            duplex=False
-        )
+        signal_recv_pipe, signal_send_pipe = torch.multiprocessing.Pipe(duplex=False)
         event_listener_thread = threading.Thread(
             target=MultiProcessTestCase._event_listener,
             args=(parent_pipe, signal_recv_pipe, self.rank),
@@ -715,10 +750,9 @@ class MultiProcessTestCase(unittest.TestCase):
                 str(se),
             )
             sys.exit(-1)
-        except Exception as e:
+        except Exception:
             logger.error(
-                'Caught exception: \n%s exiting '
-                'process %s with exit code: %s',
+                'Caught exception: \n%s exiting ' 'process %s with exit code: %s',
                 traceback.format_exc(),
                 self.rank,
                 MultiProcessTestCase.TEST_ERROR_EXIT_CODE,
@@ -745,8 +779,7 @@ class MultiProcessTestCase(unittest.TestCase):
                     pipes.append((i, pipe))
                 except ConnectionError as e:
                     logger.error(
-                        f'Encountered error while trying to get traceback for '
-                        f'process {i}: {e}'
+                        f'Encountered error while trying to get traceback for ' f'process {i}: {e}'
                     )
 
         # Wait for results.
@@ -756,25 +789,19 @@ class MultiProcessTestCase(unittest.TestCase):
                 if pipe.poll(5):
                     if pipe.closed:
                         logger.info(
-                            f'Pipe closed for process {rank}, cannot retrieve '
-                            f'traceback'
+                            f'Pipe closed for process {rank}, cannot retrieve ' f'traceback'
                         )
                         continue
 
                     traceback = pipe.recv()
                     logger.error(
-                        f'Process {rank} timed out with traceback: '
-                        f'\n\n{traceback}',
+                        f'Process {rank} timed out with traceback: ' f'\n\n{traceback}',
                     )
                 else:
-                    logger.error(
-                        f'Could not retrieve traceback for timed out process:'
-                        f'{rank}'
-                    )
+                    logger.error(f'Could not retrieve traceback for timed out process:' f'{rank}')
             except ConnectionError as e:
                 logger.error(
-                    f'Encountered error while trying to get traceback for '
-                    f'process {rank}: {e}'
+                    f'Encountered error while trying to get traceback for ' f'process {rank}: {e}'
                 )
 
     def _join_processes(self, fn) -> None:
@@ -792,9 +819,7 @@ class MultiProcessTestCase(unittest.TestCase):
                             f'Process {i} terminated with exit code '
                             f'{p.exitcode}, terminating remaining processes.'
                         )
-                        active_children = (
-                            torch.multiprocessing.active_children()
-                        )
+                        active_children = torch.multiprocessing.active_children()
                         for ac in active_children:
                             ac.terminate()
                         subprocess_error = True
@@ -810,10 +835,7 @@ class MultiProcessTestCase(unittest.TestCase):
                 elapsed = time.time() - start_time
                 if elapsed > timeout:
                     self._get_timedout_process_traceback()
-                    print(
-                        f'Timing out after {timeout} seconds and killing'
-                        f'subprocesses.'
-                    )
+                    print(f'Timing out after {timeout} seconds and killing' f'subprocesses.')
                     for p in self.processes:
                         p.terminate()
                     break
@@ -822,10 +844,7 @@ class MultiProcessTestCase(unittest.TestCase):
 
             elapsed_time = time.time() - start_time
 
-            if (
-                self.skip_all_return_code_checks
-                or fn in self.skip_return_code_checks
-            ):
+            if self.skip_all_return_code_checks or fn in self.skip_return_code_checks:
                 self._check_no_test_errors(elapsed_time)
             else:
                 self._check_return_codes(elapsed_time)
@@ -840,9 +859,7 @@ class MultiProcessTestCase(unittest.TestCase):
         '''
         for i, p in enumerate(self.processes):
             if p.exitcode is None:
-                raise RuntimeError(
-                    f'Process {i} timed out after {elapsed_time} seconds'
-                )
+                raise RuntimeError(f'Process {i} timed out after {elapsed_time} seconds')
             self.assertNotEqual(self.TEST_ERROR_EXIT_CODE, p.exitcode)
 
     def _check_return_codes(self, elapsed_time) -> None:
@@ -852,9 +869,7 @@ class MultiProcessTestCase(unittest.TestCase):
         '''
         # If no processes are spawned, there is nothing to check.
         if not self.processes:
-            logger.warning(
-                'Note: no subprocesses were spawned, test was likely skipped.'
-            )
+            logger.warning('Note: no subprocesses were spawned, test was likely skipped.')
             return
 
         first_process = self.processes[0]
@@ -874,13 +889,10 @@ class MultiProcessTestCase(unittest.TestCase):
             for i, process in errored_processes:
                 # Get error from pipe.
                 error_message = self.pid_to_pipe[process.pid].recv()
-                error += (
-                    'Process {} exited with error code {} and '
-                    'exception:\n{}\n'.format(
-                        i,
-                        MultiProcessTestCase.TEST_ERROR_EXIT_CODE,
-                        error_message,
-                    )
+                error += 'Process {} exited with error code {} and ' 'exception:\n{}\n'.format(
+                    i,
+                    MultiProcessTestCase.TEST_ERROR_EXIT_CODE,
+                    error_message,
                 )
 
             raise RuntimeError(error)
@@ -889,16 +901,13 @@ class MultiProcessTestCase(unittest.TestCase):
         for i, p in enumerate(self.processes):
             if p.exitcode is None:
                 raise RuntimeError(
-                    f'Process {i} terminated or timed out after '
-                    f'{elapsed_time} seconds'
+                    f'Process {i} terminated or timed out after ' f'{elapsed_time} seconds'
                 )
             self.assertEqual(
                 p.exitcode,
                 first_process.exitcode,
                 msg='Expect process {} exit code to match Process 0 exit code '
-                'of {}, but got {}'.format(
-                    i, first_process.exitcode, p.exitcode
-                ),
+                'of {}, but got {}'.format(i, first_process.exitcode, p.exitcode),
             )
         self.assertEqual(
             first_process.exitcode,

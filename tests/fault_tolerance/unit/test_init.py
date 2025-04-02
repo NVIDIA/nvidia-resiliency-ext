@@ -17,6 +17,7 @@ import contextlib
 import os
 import signal
 import sys
+import tempfile
 import time
 
 import pytest
@@ -24,6 +25,7 @@ import torch
 import torch.multiprocessing as mp
 
 from nvidia_resiliency_ext import fault_tolerance
+from nvidia_resiliency_ext.fault_tolerance.data import FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR
 
 from .utils import multiprocessing_execute_join, multiprocessing_execute_start
 
@@ -51,6 +53,12 @@ def _install_signal_handler():
     signal.signal(FT_TERM_SIGNAL, __sighandler)
 
 
+def _set_rmon_socket_env_var_for_this_rank():
+    rank = os.environ["RANK"]
+    ipc_sock_path = f"{tempfile.gettempdir()}/_rmon_r{rank}.socket"
+    os.environ[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR] = ipc_sock_path
+
+
 @pytest.fixture(autouse=True)
 def _run_rank_monitors_fixture():
     ft_cfg = _get_ft_test_config()
@@ -60,7 +68,13 @@ def _run_rank_monitors_fixture():
     try:
         for rank in range(TEST_WORLD_SIZE):
             os.environ["RANK"] = str(rank)
-            p = fault_tolerance.RankMonitorServer.run_in_subprocess(ft_cfg, rank, mp_ctx_spawn)
+            ipc_sock_path = f"{tempfile.gettempdir()}/_rmon_r{rank}.socket"
+            p = fault_tolerance.RankMonitorServer.run_in_subprocess(
+                cfg=ft_cfg,
+                ipc_socket_path=ipc_sock_path,
+                is_restarter_logger=False,
+                mp_ctx=mp_ctx_spawn,
+            )
             rank_monitors.append(p)
             os.environ["RANK"] = ''
 
@@ -80,6 +94,7 @@ def _rank_main_all_ranks_initialized(*args, **kwargs):
     # Expected result:
     # - clean exit, no failure detected
     _install_signal_handler()
+    _set_rmon_socket_env_var_for_this_rank()
     rank_mon_cli = fault_tolerance.RankMonitorClient()
     rank_mon_cli.init_workload_monitoring()
     sys.exit(0)
@@ -92,6 +107,7 @@ def _rank_main_no_initial_heartbeat_from_rank_0(*args, **kwargs):
     # Expected result:
     # - workload failure detected, rank 0 is terminated by rank monitor
     _install_signal_handler()
+    _set_rmon_socket_env_var_for_this_rank()
     rank_mon_cli = fault_tolerance.RankMonitorClient()
     rank_mon_cli.init_workload_monitoring()
 
@@ -109,6 +125,7 @@ def _rank_main_no_initial_heartbeats(*args, **kwargs):
     # Expected result:
     # - workload failure detected, all ranks terminated by rank monitors
     _install_signal_handler()
+    _set_rmon_socket_env_var_for_this_rank()
     rank_mon_cli = fault_tolerance.RankMonitorClient()
     rank_mon_cli.init_workload_monitoring()
     time.sleep(WORKLOAD_TIMEOUT + 1)

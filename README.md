@@ -2,26 +2,29 @@
 
 The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused solutions for PyTorch-based workloads.
 
+<img src="/docs/source/media/nvrx_core_features.png" alt="Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks" width="950" height="350">
+
+
 ## Core Components and Capabilities
 
-- **Fault Tolerance**
+- **[Fault Tolerance](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/index.rst)**
   - Detection of hung ranks.  
   - Restarting training in-job, without the need to reallocate SLURM nodes.
 
-- **In-Process Restarting**
+- **[In-Process Restarting](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/inprocess/index.rst)**
   - Detecting failures and enabling quick recovery.
 
-- **Async Checkpointing**
+- **[Async Checkpointing](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/async/index.rst)**
   - Providing an efficient framework for asynchronous checkpointing.
 
-- **Local Checkpointing**
+- **[Local Checkpointing](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/local/index.rst)**
   - Providing an efficient framework for local checkpointing.
 
-- **Straggler Detection**
+- **[Straggler Detection](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/straggler_det/index.rst)**
   - Monitoring GPU and CPU performance of ranks.  
   - Identifying slower ranks that may impede overall training efficiency.
 
-- **PyTorch Lightning Callbacks**
+- **[PyTorch Lightning Callbacks](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/integration/ptl.rst)**
   - Facilitating seamless NVRx integration with PyTorch Lightning.
 
 ## Installation
@@ -37,17 +40,15 @@ The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused so
 
 ### Platform Support
 
-| Category            | Supported Versions / Requirements            |
-|---------------------|----------------------------------------------|
-| Architecture         | x86_64                                      |
-| Operating System     | Ubuntu 22.04                                |
-| Python Version       | >= 3.10, < 3.13                             |
-| PyTorch Version      | 2.3+                                        |
-| CUDA & CUDA Toolkit  | 12.5+                                       |
-| NVML Driver          | 550 or later                                |
-| NCCL Version         | 2.21.5+                                     |
-
-**Note**: The package is designed to support Python >= 3.10, CUDA >= 11.8, PyTorch >= 2.0 and Ubuntu 20.04, but the recommended and tested environment for production is Python >= 3.10, < 3.13, CUDA 12.5+, and Ubuntu 22.04.
+| Category             | Supported Versions / Requirements                                          |
+|----------------------|----------------------------------------------------------------------------|
+| Architecture         | x86_64, arm64                                                              |
+| Operating System     | Ubuntu 22.04, 24.04                                                        |
+| Python Version       | >= 3.10, < 3.13                                                            |
+| PyTorch Version      | >= 2.3.1 (injob & chkpt), 2.5.1 & 2.6.0 (inprocess)                        |
+| CUDA & CUDA Toolkit  | >= 12.5 (12.8 required for GPU health check)                               |
+| NVML Driver          | >= 535 (570 required for GPU health check)                                 |
+| NCCL Version         | >= 2.21.5 (injob & chkpt), >= 2.21.5 and <= 2.22.3 or 2.26.2 (inprocess)   |
 
 ## Usage
 

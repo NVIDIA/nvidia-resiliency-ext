@@ -10,7 +10,6 @@ on:
 
 jobs:
   lint:
-    if: false # Temporarily disable linter
     runs-on: ubuntu-latest
 
     steps:
