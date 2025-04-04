@@ -17,8 +17,9 @@ import dataclasses
 import time
 from typing import Optional, Sequence
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
-
+from . import dist_utils
 
 @dataclasses.dataclass
 class ReportIntervalTracker:
@@ -40,7 +41,7 @@ class ReportIntervalTracker:
     step_times: Sequence[float] = dataclasses.field(default_factory=list)
     profiling_interval: int = 1
 
-    def _gather_report_interval(self):
+    def _gather_report_interval(self, group:Optional[torch.distributed.ProcessGroup]=None):
         """
         Gathers the report interval across all distributed processes and sets the maximum interval.
         """
@@ -49,9 +50,10 @@ class ReportIntervalTracker:
         step_times = torch.tensor(self.step_times, dtype=torch.float32)
         median_step_time = torch.median(step_times)
 
-        gathered_interval = (self.time_interval / median_step_time).to(torch.cuda.current_device())
+        comm_device = dist_utils.get_device_for_backend(group)
+        gathered_interval = (self.time_interval / median_step_time).to(comm_device)
         if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(gathered_interval, op=torch.distributed.ReduceOp.MAX)
+            torch.distributed.all_reduce(gathered_interval, op=torch.distributed.ReduceOp.MAX, group=group)
         # it makes no sense to report more frequently than the profiling interval
         self.iter_interval = int(max(gathered_interval.item(), self.profiling_interval))
 

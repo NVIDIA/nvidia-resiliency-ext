@@ -27,6 +27,7 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 
 
@@ -82,7 +83,7 @@ def async_raise_exception(tid, delay, callback):
 def raise_gpu_error(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    device = torch.device(torch.cuda.current_device())
+    device = get_current_device()
     log.critical(f'raising GPU error on {device}')
     if callback is not None:
         callback()
@@ -196,7 +197,7 @@ def inject_fault(
             thread = threading.Thread(target=lock_gil, args=(delay, callback), daemon=True)
             thread.start()
         elif fault == Fault.GPU_SLEEP:
-            device = torch.cuda.current_device()
+            device = get_current_device()
             thread = threading.Thread(target=gpu_sleep, args=(delay, device, callback), daemon=True)
             thread.start()
         elif fault == Fault.SEGFAULT:

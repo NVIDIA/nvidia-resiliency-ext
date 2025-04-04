@@ -18,6 +18,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import pytest
 import torch.distributed as dist
 
