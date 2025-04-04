@@ -77,7 +77,7 @@ git push -u origin <local-branch>:<remote-branch>
   * Atleast one NVRx engineer will be assigned for the review.
   * While under review, mark your PRs as work-in-progress by prefixing the PR title with [WIP].
 
-4. Since there is no CI/CD process in place yet, the PR will be accepted and the corresponding issue closed only after adequate testing has been completed, manually, by the developer and/or NVRx engineer reviewing the code.
+4. With CI/CD process in place, the PR will be accepted and the corresponding issue closed only after adequate testing has been completed, manually, by the developer and NVRx engineer reviewing the code.
 
 
 #### Signing Your Work
@@ -85,8 +85,44 @@ git push -u origin <local-branch>:<remote-branch>
 * We require that all contributors "sign-off" on their commits. This certifies that the contribution is your original work, or you have rights to submit it under the same license, or a compatible license.
 
   * Any contribution which contains commits that are not Signed-Off will not be accepted.
+    
+* To sign your Git commits, follow these steps:
+  1. Generate a GPG Key (if you don’t have one). Run the following command to generate a new GPG key:
+     
+     ```bash
+     $ gpg --full-generate-key
+     ```
+     * Select: RSA and RSA (default)
+     * Choose a key size: 4096
+     * Set an expiration date (or use default: no expiration)
+     * Provide your full name and email (must match your Git settings)
+  
+  3. After generation, list your keys. Find the GPG key ID (it looks like ABCD1234EFGH5678).
+     
+     ```bash
+     $ gpg --list-secret-keys --keyid-format=long
+     ```
+     
+  5. Configure Git to Use Your GPG Key. Run the following commands that tell Git to sign all commits by default.
+     
+     ```bash
+     $ git config --global user.signingkey ABCD1234EFGH5678
+     $ git config --global commit.gpgsign true
+     ```
+     
+  7. Export and add the GPG Key to GitHub/GitLab.
+     
+     * Export the public key:
+     ```bash
+     $ gpg --armor --export ABCD1234EFGH5678
+     ```
+     
+     * Copy the output and add it to your GitHub/GitLab under:
+       * GitHub: Settings → SSH and GPG keys → New GPG Key
+       * GitLab: Preferences → GPG Keys
 
-* To sign off on a commit you simply use the `--signoff` (or `-s`) option when committing your changes:
+* Now, to sign off on a commit you simply use the `--signoff` (or `-s`) option when committing your changes:
+  
   ```bash
   $ git commit -s -m "Add cool feature."
   ```
