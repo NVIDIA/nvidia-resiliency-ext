@@ -10,7 +10,7 @@ functionality provided by the :py:class:`Wrapper`.
 
 Requirements
 ------------
-In-process restart functionality requires `PyPI PyTorch
+In-process restart functionality requires `NCCL <https://docs.nvidia.com/deeplearning/nccl/release-notes/rel_2-26-2.html/>`_ v2.26.2 or higher, `PyPI PyTorch
 <https://pypi.org/project/torch/>`_ v2.5.1 through v2.6.0 or `PyTorch NGC
 Container <https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch>`_
 versions 24.07 through 24.10. For further limitations and compatibility
@@ -88,6 +88,8 @@ Restrictions
   calls :py:class:`nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed`; users can specify
   additional :py:class:`nvidia_resiliency_ext.inprocess.abort.Abort` subclasses to asynchronously
   abort blocking calls from other software components.
+
+- to avoid deadlocks, please make sure there’s a single NCCL communicator associated with a single PyTorch distributed process group. PyTorch aborts the communicators sequentially if there are multiple NCCL communicators per process group. Please refer to this `PR <https://github.com/pytorch/pytorch/pull/150690>`_ for the deadlock issue details and make sure you've an updated version of PyTorch with the fix supporting NCCL group abort.  
 
 
 Functionality overview
