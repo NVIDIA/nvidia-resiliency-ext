@@ -45,6 +45,10 @@ class Timestamp:
 
 
 class ProgressWatchdog(threading.Thread):
+
+    # Lock to protect shared buffer access
+    _buffer_lock = threading.Lock()
+
     @staticmethod
     @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
     def get_automatic_timestamp(data_ptr: ctypes.c_void_p) -> int:
@@ -54,8 +58,9 @@ class ProgressWatchdog(threading.Thread):
             ctypes.POINTER(ctypes.c_int64),
         )
 
-        timestamp_ptr.contents.value = time.monotonic()
-        num_completed_ptr.contents.value = (num_completed_ptr.contents.value + 1) % MAX_PENDING
+        with ProgressWatchdog._buffer_lock:
+            timestamp_ptr.contents.value = time.monotonic()
+            num_completed_ptr.contents.value = (num_completed_ptr.contents.value + 1) % MAX_PENDING
         return 0
 
     def __init__(
@@ -109,8 +114,9 @@ class ProgressWatchdog(threading.Thread):
             ctypes.POINTER(ctypes.c_int64),
         )
 
-        timestamp_ptr.contents.value = self.timestamp.auto
-        num_completed_ptr.contents.value = 0
+        with self._buffer_lock:
+            timestamp_ptr.contents.value = self.timestamp.auto
+            num_completed_ptr.contents.value = 0
 
         while not self.should_stop.is_set():
             # Wait for either interval timeout or an event signal
@@ -120,7 +126,10 @@ class ProgressWatchdog(threading.Thread):
             # If pause requested, synchronize and set paused
             if self.pause_requested.is_set():
                 # Wait until all scheduled are completed
-                while self.num_scheduled != num_completed_ptr.contents.value:
+                while True:
+                    with self._buffer_lock:
+                        if self.num_scheduled == num_completed_ptr.contents.value:
+                            break
                     time.sleep(self.switch_interval.total_seconds())
 
                 # Now we are synchronized
@@ -140,8 +149,9 @@ class ProgressWatchdog(threading.Thread):
             # Normal operation: schedule pending call
             adding_status = add_pending_call(self.get_automatic_timestamp, ctypes.addressof(buffer))
             if adding_status == 0:
-                self.num_scheduled = (self.num_scheduled + 1) % MAX_PENDING
-                self.timestamp.auto = timestamp_ptr.contents.value
+                with self._buffer_lock:
+                    self.num_scheduled = (self.num_scheduled + 1) % MAX_PENDING
+                    self.timestamp.auto = timestamp_ptr.contents.value
                 self.send()
 
     def pause_and_synchronize(self):
