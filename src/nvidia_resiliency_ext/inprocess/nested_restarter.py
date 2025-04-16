@@ -17,10 +17,25 @@
 import logging
 import dataclasses
 from typing import Optional
+from ..fault_tolerance.rank_monitor_server import RankMonitorLogger
 
 from .callback import Callback
 from .state import FrozenState
 
+class NestedRestarterLogger(RankMonitorLogger):
+    """Logger used in the nested restarter process"""
+
+    def __init__(self):
+        super().__init__(name="InprocessRestarter", is_restarter_logger=True)
+
+    def _setup_logger(self):
+        self.setLevel(self.level)
+        ch = logging.StreamHandler()
+        ch.setLevel(self.level)
+        formatter = logging.Formatter(f"[%(asctime)s] [%(levelname)s] [{self.name}@{self.hostname}] %(message)s")
+        ch.setFormatter(formatter)
+        self.addHandler(ch)
+        self.propagate = False
 
 @dataclasses.dataclass
 class NestedRestarter(Callback):
@@ -30,13 +45,17 @@ class NestedRestarter(Callback):
 
     restarter_state: str
     restarter_stage: Optional[str] = None
+    logger: NestedRestarterLogger = dataclasses.field(default_factory=NestedRestarterLogger)
+    rank_set: bool = False
 
     def __call__(self, state: FrozenState) -> FrozenState:
-        log = logging.getLogger(__name__)
+        if not self.rank_set:
+            self.logger.set_connected_rank(state.rank)
+            self.rank_set = True
         msg = f'[NestedRestarter] name=[InProcess] state={self.restarter_state}'
         if self.restarter_stage is not None:
             msg += f" stage={self.restarter_stage}"
-        log.info(msg)
+        self.logger.log_for_restarter(msg)
 
         return state
 
