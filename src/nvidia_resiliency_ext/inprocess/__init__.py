@@ -18,3 +18,5 @@ from . import exception, finalize, health_check, initialize, monitor_thread, ran
 from .compose import Compose
 from .state import FrozenState, Mode, State
 from .wrap import CallWrapper, Wrapper
+
+from . import nested_restarter
