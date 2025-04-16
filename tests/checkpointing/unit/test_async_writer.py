@@ -30,12 +30,20 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     save_state_dict_async_finalize,
     save_state_dict_async_plan,
 )
+from nvidia_resiliency_ext.checkpointing.msc.filesystem_msc import MultiStorageFileSystemReader
 
 from . import TempNamedDir
 from .test_utilities import TestModel, Utils
 
 
 class TestAsyncSave:
+
+    def setup_method(self, method):
+        Utils.set_world_size(1)
+
+    def teardown_method(self, method):
+        Utils.set_world_size()
+
     def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
         """Creates an async save request with a finalization step."""
         save_fn, preload_fn, save_args = writer.get_save_function_and_args()
@@ -48,10 +56,10 @@ class TestAsyncSave:
         return AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
 
     def async_save_checkpoint(
-        self, checkpoint_dir, state_dict, planner, async_queue, thread_count=1
+        self, checkpoint_dir, state_dict, planner, async_queue, thread_count=1, use_msc=False
     ):
         """Performs an asynchronous model checkpoint save."""
-        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count)
+        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count, use_msc=use_msc)
         coordinator_rank = 0
 
         save_state_dict_ret, *_ = save_state_dict_async_plan(
@@ -68,17 +76,30 @@ class TestAsyncSave:
             planner=planner,
         )
 
-    def load_checkpoint(self, checkpoint_dir, state_dict):
+    def load_checkpoint(self, checkpoint_dir, state_dict, use_msc=False):
         """Loads a checkpoint into the given state_dict."""
+        if use_msc:
+            storage_reader = MultiStorageFileSystemReader(checkpoint_dir)
+        else:
+            storage_reader = FileSystemReader(checkpoint_dir)
+
         load(
             state_dict=state_dict,
-            storage_reader=FileSystemReader(checkpoint_dir),
+            storage_reader=storage_reader,
             planner=DefaultLoadPlanner(),
         )
         return state_dict
 
     def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt):
         """Verifies that async checkpointing produces the same results as sync checkpointing."""
+        self.perform_save_and_load(tmp_path_dist_ckpt)
+
+    def test_async_is_equivalent_to_sync_msc(self, tmp_path_dist_ckpt):
+        """Verifies that async checkpointing produces the same results as sync checkpointing with MSC."""
+        self.perform_save_and_load(tmp_path_dist_ckpt, use_msc=True)
+
+    def perform_save_and_load(self, tmp_path_dist_ckpt, use_msc=False):
+        """Performs a save and load of a model checkpoint."""
         Utils.initialize_distributed()
         model = TestModel((1024, 1024), 10)
         async_queue = AsyncCallsQueue()
@@ -91,7 +112,9 @@ class TestAsyncSave:
             planner = DefaultSavePlanner()
 
             # Perform async and sync saves
-            self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
+            self.async_save_checkpoint(
+                async_ckpt_dir, state_dict, planner, async_queue, use_msc=use_msc
+            )
             self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
 
             # Finalize async saves

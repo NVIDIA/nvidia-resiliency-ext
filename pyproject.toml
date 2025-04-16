@@ -40,6 +40,7 @@ pyyaml = "*"
 pynvml = ">=12.0.0"
 nvidia-ml-py = ">=12.570.86"
 defusedxml = "*"
+multi-storage-client = ">=0.18.0"
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
