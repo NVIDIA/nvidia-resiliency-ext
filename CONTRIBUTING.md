@@ -121,14 +121,16 @@ git push -u origin <local-branch>:<remote-branch>
        * GitHub: Settings → SSH and GPG keys → New GPG Key
        * GitLab: Preferences → GPG Keys
 
-* Now, to sign off on a commit you simply use the `--signoff` (or `-s`) option when committing your changes:
+* Now, to sign off on a commit you simply use the `--gpg-sign` (or `-S`) option when committing your changes:
   
   ```bash
-  $ git commit -s -m "Add cool feature."
+  $ git commit -S -m "Add cool feature."
   ```
-  This will append the following to your commit message:
-  ```
-  Signed-off-by: Your Name <your@email.com>
+  
+  This will sign the commit message, which can be verified by running:
+
+  ```bash
+  $ git log --show-signature"
   ```
 
 * Full text of the DCO:
