@@ -19,7 +19,7 @@
 # GPU performance scores are printed at regular intervals
 # You can try "nvidia-smi -i <GPU idx> -lgc 800" to slow down some GPUs and see the effect.
 #
-#This example saves the output to the disk in /opt/nvidia/straggler-reports/ which is already mounted into the container.
+# This example saves the output to the disk in /opt/nvidia/straggler-reports/ which is already mounted into the container.
 
 import argparse
 import os
@@ -37,6 +37,7 @@ from nvidia_resiliency_ext import straggler
 from threading import Thread
 from queue import Queue
 
+
 class AsyncReportWriter:
     def __init__(self, filename):
         self.filename = filename
@@ -44,10 +45,10 @@ class AsyncReportWriter:
         self.worker = Thread(target=self._write_worker)
         self.worker.daemon = True
         self.worker.start()
-    
+
     def add_report(self, formatted_report):
         self.queue.put(formatted_report)
-    
+
     def _write_worker(self):
         while True:
             file_report = self.queue.get()
@@ -84,7 +85,7 @@ def train(args) -> None:
 
     dist.init_process_group(backend="nccl")
     rank = dist.get_rank()
-    #The filename in practice will be dynamic. The filename `job_12345` is only for presentation.
+    # The filename in practice will be dynamic. The filename `job_12345` is only for presentation.
     if rank == 0:
         report_writer = AsyncReportWriter("/opt/nvidia/straggler-reports/job_12345.jsonl")
 
@@ -151,8 +152,8 @@ def train(args) -> None:
                         "batch": batch_idx,
                         "performance_data": {
                             "relative_scores": report.gpu_relative_perf_scores,
-                            "individual_scores": report.gpu_individual_perf_scores
-                        }
+                            "individual_scores": report.gpu_individual_perf_scores,
+                        },
                     }
                     report_writer.add_report(formatted_report)
 
@@ -177,11 +178,8 @@ def main() -> None:
 
     args: argparse.Namespace = parser.parse_args()
 
-
     straggler.Detector.initialize(gather_on_rank0=True)
 
-    
-   
     lc = pet.LaunchConfig(
         min_nodes=1,
         max_nodes=1,
