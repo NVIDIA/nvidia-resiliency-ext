@@ -22,10 +22,13 @@
 # This example saves the output to the disk in /opt/nvidia/straggler-reports/ which is already mounted into the container.
 
 import argparse
+import json
 import os
 import time
 import uuid
-import json
+from queue import Queue
+from threading import Thread
+
 import torch
 import torch.distributed as dist
 import torch.distributed.launcher as pet
@@ -33,9 +36,8 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
+
 from nvidia_resiliency_ext import straggler
-from threading import Thread
-from queue import Queue
 
 
 class AsyncReportWriter:
