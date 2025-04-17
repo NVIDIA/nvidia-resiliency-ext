@@ -70,7 +70,12 @@
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="#restart-latency">Restart latency</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#known-issues">Known issues</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#known-issues">Known issues</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id5">PyTorch</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id6">NCCL</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#cuda">CUDA</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
@@ -118,10 +123,12 @@ outlines the requirements, features, and limitations of the in-process restart
 functionality provided by the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>.</p>
 <section id="requirements">
 <h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading"></a></h2>
-<p>In-process restart functionality requires <a class="reference external" href="https://pypi.org/project/torch/">PyPI PyTorch</a> v2.5.1 through v2.6.0 or <a class="reference external" href="https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch">PyTorch NGC
-Container</a>
-versions 24.07 through 24.10. For further limitations and compatibility
-details, refer to the <a class="reference internal" href="#known-issues"><span class="std std-ref">Known issues</span></a> section.</p>
+<p>In-process restart functionality requires
+<a class="reference external" href="https://pypi.org/project/torch/">PyTorch</a> v2.5.1 or higher
+and
+<a class="reference external" href="https://github.com/NVIDIA/nccl">NCCL</a> v2.26.2 or higher
+For further limitations and compatibility details, refer to the <a class="reference internal" href="#known-issues"><span class="std std-ref">Known
+issues</span></a> section.</p>
 <section id="requirements-for-the-wrapped-function">
 <h3>Requirements for the wrapped function<a class="headerlink" href="#requirements-for-the-wrapped-function" title="Link to this heading"></a></h3>
 <ul>
@@ -521,9 +528,12 @@ distributed workers to avoid creating a communication bottleneck.</p>
 </section>
 <section id="progress-watchdog">
 <h4>Progress Watchdog<a class="headerlink" href="#progress-watchdog" title="Link to this heading"></a></h4>
-<p>The Monitor Thread runs as a separate <a class="reference external" href="https://docs.python.org/3/library/threading.html#threading.Thread" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">threading.Thread</span></code></a> and is
-responsible for issuing automatic heartbeats and receiving manual heartbeats to
-track the workload’s progress.</p>
+<p>The Progress Watchdog runs as a separate <a class="reference external" href="https://docs.python.org/3/library/threading.html#threading.Thread" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">threading.Thread</span></code></a> and is
+responsible for issuing automatic heartbeats to check if the main thread of the
+Python interpreter keeps executing new bytecode instructions and receiving,
+optional, manual heartbeats from the workload to track its progress. Refer to
+<a class="reference internal" href="#reporting-progress"><span class="std std-ref">Reporting progress</span></a> for more details about automatic
+and manual heartbeats.</p>
 <p>The execution interval is governed by the <code class="docutils literal notranslate"><span class="pre">progress_watchdog_interval</span></code>
 parameter of the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>. The execution involves only the
 node-local inter-process communication, and the interval does not need to be
@@ -621,6 +631,8 @@ synchronization with the GPU at least once per training iteration.</p>
 </section>
 <section id="known-issues">
 <span id="id4"></span><h2>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading"></a></h2>
+<section id="id5">
+<h3>PyTorch<a class="headerlink" href="#id5" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
 <li><p><code class="xref py py-class docutils literal notranslate"><span class="pre">torch.distributed.ProcessGroupGloo</span></code> doesn’t offer <code class="docutils literal notranslate"><span class="pre">_shutdown()</span></code>
 method to terminate pending Gloo collectives (<a class="reference external" href="https://github.com/pytorch/pytorch/issues/130345">pytorch/#130345</a>); if a rank
@@ -628,28 +640,13 @@ participating in a Gloo collective stops making forward progress, the
 remaining ranks would wait till <code class="xref py py-class docutils literal notranslate"><span class="pre">ProcessGroupGloo</span></code> timeout is
 exceeded; a workaround is to specify a short timeout for the <code class="docutils literal notranslate"><span class="pre">gloo</span></code>
 backend to enable faster restarts.</p></li>
-<li><p>NCCL collective kernel termination is implemented by periodically checking a
-flag residing in mapped memory, and exiting from the kernel if the flag is
-set. Interval of checking for this flag is controlled by
-<code class="docutils literal notranslate"><span class="pre">NCCL_SPINS_BEFORE_CHECK_ABORT</span></code> value specified in
-<a class="reference external" href="https://github.com/NVIDIA/nccl/blob/2ea4ee94bfb04c886c79ccae60ac9961000fdee2/src/device/primitives.h#L15">nccl/src/device/primitives.h:15</a>.
-The current value of <code class="docutils literal notranslate"><span class="pre">NCCL_SPINS_BEFORE_CHECK_ABORT=1000000</span></code> may be too
-high to quickly terminate NCCL if multiple collective kernels are being
-executed or are pending. A workaround is to decrease the interval to
-<code class="docutils literal notranslate"><span class="pre">10000</span></code> and rebuild NCCL. This issue will be addressed in future NCCL
-versions.</p></li>
-<li><p>To perform a restart, the <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> needs to wait for
-completion of all executing and pending CUDA kernels. This is implemented
-with a GPU synchronization, and is a part of
-<a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck</span></code></a>. Waiting for CUDA kernels
-to complete could increase the restart latency if many CUDA kernels are
-pending execution. A workaround is to periodically synchronize with the GPU
-from the wrapped function to reduce the depth of pending kernels queue.</p></li>
-<li><p>Support for NVLink SHARP (NVLS) in NCCL must be disabled by setting the
-<code class="docutils literal notranslate"><span class="pre">NCCL_NVLS_ENABLE</span></code> environment variable to <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p></li>
-<li><p>NCCL net plugins must be disabled by setting <code class="docutils literal notranslate"><span class="pre">NCCL_NET_PLUGIN</span></code> environment
-variable to <code class="docutils literal notranslate"><span class="pre">&quot;none&quot;</span></code>. This issue will be addressed in future NCCL
-versions.</p></li>
+<li><p>The <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> class uses
+<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.Store.wait" title="(in PyTorch v2.6)"><code class="xref py py-meth docutils literal notranslate"><span class="pre">torch.distributed.Store.wait()</span></code></a> to detect events in the distributed
+key-value store within its monitoring loops. Because these loops often
+advance to the next iteration after an expected timeout, PyTorch emits a
+warning every time <code class="xref py py-meth docutils literal notranslate"><span class="pre">wait()</span></code> times out, cluttering the output. To
+suppress these warnings, set the <code class="docutils literal notranslate"><span class="pre">TORCH_CPP_LOG_LEVEL</span></code> environment
+variable to <code class="docutils literal notranslate"><span class="pre">error</span></code> or <code class="docutils literal notranslate"><span class="pre">fatal</span></code> before importing <code class="docutils literal notranslate"><span class="pre">torch</span></code>.</p></li>
 <li><p><a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> is not fully compatible with
 <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.run()</span></code>. <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.run()</span></code>
 automatically terminates all worker processes if any one of them fails, in
@@ -661,14 +658,35 @@ termination of the worker process prevents <a class="reference internal" href="a
 from restarting the wrapper function. A workaround is to set
 <code class="docutils literal notranslate"><span class="pre">TORCH_NCCL_RETHROW_CUDA_ERRORS</span></code> environment variable to <code class="docutils literal notranslate"><span class="pre">0</span></code>, to avoid
 rethrowing CUDA and NCCL errors in PyTorch NCCL Watchdog.</p></li>
-<li><p>The <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> class uses
-<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.Store.wait" title="(in PyTorch v2.6)"><code class="xref py py-meth docutils literal notranslate"><span class="pre">torch.distributed.Store.wait()</span></code></a> to detect events in the distributed
-key-value store within its monitoring loops. Because these loops often
-advance to the next iteration after an expected timeout, PyTorch emits a
-warning every time <code class="xref py py-meth docutils literal notranslate"><span class="pre">wait()</span></code> times out, cluttering the output. To
-suppress these warnings, set the <code class="docutils literal notranslate"><span class="pre">TORCH_CPP_LOG_LEVEL</span></code> environment
-variable to <code class="docutils literal notranslate"><span class="pre">error</span></code> or <code class="docutils literal notranslate"><span class="pre">fatal</span></code> before importing <code class="docutils literal notranslate"><span class="pre">torch</span></code>.</p></li>
+<li><p>PyTorch pairwise distributed process groups for P2P communication using
+<a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.send" title="(in PyTorch v2.6)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.send()</span></code></a>, <a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.recv" title="(in PyTorch v2.6)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.recv()</span></code></a> (and
+similar functions) need to be created and initialized explicitly at the
+Python level with <a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#torch.distributed.new_group" title="(in PyTorch v2.6)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.new_group()</span></code></a>. Aborting PyTorch
+NCCL backend with implicitly created P2P communicators may lead to hangs if
+PyTorch doesn’t contain the fix implemented in <a class="reference external" href="https://github.com/pytorch/pytorch/pull/150690">pytorch/#150690</a>.</p></li>
+<li><p>PyTorch may raise segmentation fault if distributed backend is aborted while
+the first iteration of a backward pass is in progress (<a class="reference external" href="https://github.com/pytorch/pytorch/issues/149418">pytorch/#149418</a>).</p></li>
 </ol>
+</section>
+<section id="id6">
+<h3>NCCL<a class="headerlink" href="#id6" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>Support for NVLink SHARP (NVLS) in NCCL must be disabled by setting the
+<code class="docutils literal notranslate"><span class="pre">NCCL_NVLS_ENABLE</span></code> environment variable to <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p></li>
+</ol>
+</section>
+<section id="cuda">
+<h3>CUDA<a class="headerlink" href="#cuda" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>To perform a restart, the <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> needs to wait for
+completion of all executing and pending CUDA kernels. This is implemented
+with a GPU synchronization, and is a part of
+<a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck</span></code></a>. Waiting for CUDA kernels
+to complete could increase the restart latency if many CUDA kernels are
+pending execution. A workaround is to periodically synchronize with the GPU
+from the wrapped function to reduce the depth of pending kernels queue.</p></li>
+</ol>
+</section>
 </section>
 </section>
 
