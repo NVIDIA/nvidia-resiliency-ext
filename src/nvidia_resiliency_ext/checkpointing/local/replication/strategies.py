@@ -18,6 +18,7 @@ import random
 from abc import ABC, abstractmethod
 from typing import Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar
 
+from nvidia_resiliency_ext.common.device_utils import get_local_device_count
 import torch
 
 from ...utils import debug_msg, debug_time
@@ -26,7 +27,6 @@ from .group_utils import ExchangePlan, GroupWrapper, ProcessGroupLike, parse_gro
 from .utils import zip_strict
 
 logger = logging.getLogger(__name__)
-
 
 class NoReplicasAvailableError(Exception):
     """Exception raised when no replicas are available for a requested ID."""
@@ -190,7 +190,7 @@ class CliqueReplicationStrategy(ReplicationStrategy):
     @classmethod
     @debug_time('CliqueReplicationStrategy.from_replication_params', logger)
     def from_replication_params(
-        cls, replication_jump: int = torch.cuda.device_count(), replication_factor: int = 2
+        cls, replication_jump: int = 0, replication_factor: int = 2
     ) -> 'CliqueReplicationStrategy':
         """Instantiates process groups necessary for checkpoint replication.
 
@@ -225,14 +225,18 @@ class CliqueReplicationStrategy(ReplicationStrategy):
             replication_factor (int, optional): `F` in the formula above. Denotes the number of
                 ranks storing replicas of a given rank's data.
         """
+        if replication_jump == 0:
+            replication_jump = get_local_device_count()
+
         logger.debug(f'Initializing {cls.__name__}')
         repl_process_groups_ranks: List[List[int]] = parse_group_sequence(
             replication_jump=replication_jump,
             replication_factor=replication_factor,
             world_size=torch.distributed.get_world_size(),
         )
+        backend = torch.distributed.Backend.GLOO
         repl_process_groups: List[torch.distributed.ProcessGroup] = [
-            torch.distributed.new_group(g) for g in repl_process_groups_ranks
+            torch.distributed.new_group(ranks=g, backend=backend) for g in repl_process_groups_ranks
         ]
         my_process_group = GroupWrapper.from_list_of_groups(repl_process_groups)
         return cls(my_process_group, target_device="cpu")
@@ -321,9 +325,12 @@ class LazyCliqueReplicationStrategy(LazyReplicationStrategyBuilder[CliqueReplica
     """
 
     def __init__(
-        self, replication_jump: int = torch.cuda.device_count(), replication_factor: int = 2
+        self, replication_jump: int = 0, replication_factor: int = 2
     ):
         super().__init__()
+        if replication_jump == 0:
+            replication_jump = get_local_device_count()
+
         self.replication_jump = replication_jump
         self.replication_factor = replication_factor
 

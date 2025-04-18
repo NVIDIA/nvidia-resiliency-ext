@@ -211,14 +211,14 @@ class FileSystemWriterAsync(FileSystemWriter):
                 (item, tensor.to("cpu", non_blocking=non_blocking)) for item, tensor in tensor_data
             ]
             result.append((file_name, storage_key, (bytes_data, tensor_data)))
-        if non_blocking:
+        if non_blocking and torch.cuda.is_available():
             torch.cuda.synchronize()
         return result
 
     @staticmethod
     @_disable_gc()
     def write_preloaded_data_multiproc(
-        transform_list: List[_StorageWriterTransforms],
+        transform_list: List,
         rank: int,
         write_buckets: List[WriteBucket],
         global_results_queue: mp.Queue,
