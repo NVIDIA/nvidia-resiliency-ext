@@ -27,7 +27,7 @@ from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwar
 class Utils:
 
     world_size = torch.cuda.device_count()
-    rank = int(os.environ['LOCAL_RANK'])
+    rank = int(os.environ.get('LOCAL_RANK', 0))
     inited = False
     store = None
 
@@ -71,7 +71,7 @@ class Utils:
             torch.distributed.destroy_process_group()
 
         if rank is None:
-            Utils.rank = int(os.environ['LOCAL_RANK'])
+            Utils.rank = int(os.environ.get('LOCAL_RANK', 0))
             if Utils.rank >= Utils.world_size:
                 Utils.rank = -1
         else:
