@@ -448,9 +448,12 @@ distributed workers to avoid creating a communication bottleneck.
 
 Progress Watchdog
 ^^^^^^^^^^^^^^^^^
-The Monitor Thread runs as a separate :py:class:`threading.Thread` and is
-responsible for issuing automatic heartbeats and receiving manual heartbeats to
-track the workload's progress.
+The Progress Watchdog runs as a separate :py:class:`threading.Thread` and is
+responsible for issuing automatic heartbeats to check if the main thread of the
+Python interpreter keeps executing new bytecode instructions and receiving,
+optional, manual heartbeats from the workload to track its progress. Refer to
+:ref:`Reporting progress <reporting_progress>` for more details about automatic
+and manual heartbeats.
 
 The execution interval is governed by the ``progress_watchdog_interval``
 parameter of the :py:class:`Wrapper`. The execution involves only the
@@ -528,7 +531,10 @@ synchronization with the GPU at least once per training iteration.
 
 Known issues
 ------------
-1. :py:class:`torch.distributed.ProcessGroupGloo` doesn't offer ``_shutdown()``
+
+PyTorch
+~~~~~~~
+#. :py:class:`torch.distributed.ProcessGroupGloo` doesn't offer ``_shutdown()``
    method to terminate pending Gloo collectives (`pytorch/#130345
    <https://github.com/pytorch/pytorch/issues/130345>`_); if a rank
    participating in a Gloo collective stops making forward progress, the
@@ -536,50 +542,50 @@ Known issues
    exceeded; a workaround is to specify a short timeout for the ``gloo``
    backend to enable faster restarts.
 
-2. NCCL collective kernel termination is implemented by periodically checking a
-   flag residing in mapped memory, and exiting from the kernel if the flag is
-   set. Interval of checking for this flag is controlled by
-   ``NCCL_SPINS_BEFORE_CHECK_ABORT`` value specified in
-   `nccl/src/device/primitives.h:15
-   <https://github.com/NVIDIA/nccl/blob/2ea4ee94bfb04c886c79ccae60ac9961000fdee2/src/device/primitives.h#L15>`_.
-   The current value of ``NCCL_SPINS_BEFORE_CHECK_ABORT=1000000`` may be too
-   high to quickly terminate NCCL if multiple collective kernels are being
-   executed or are pending. A workaround is to decrease the interval to
-   ``10000`` and rebuild NCCL. This issue will be addressed in future NCCL
-   versions.
-
-3. To perform a restart, the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` needs to wait for
-   completion of all executing and pending CUDA kernels. This is implemented
-   with a GPU synchronization, and is a part of
-   :py:class:`nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck`. Waiting for CUDA kernels
-   to complete could increase the restart latency if many CUDA kernels are
-   pending execution. A workaround is to periodically synchronize with the GPU
-   from the wrapped function to reduce the depth of pending kernels queue.
-
-4. Support for NVLink SHARP (NVLS) in NCCL must be disabled by setting the
-   ``NCCL_NVLS_ENABLE`` environment variable to ``0``.
-
-5. NCCL net plugins must be disabled by setting ``NCCL_NET_PLUGIN`` environment
-   variable to ``"none"``. This issue will be addressed in future NCCL
-   versions. 
-
-6. :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` is not fully compatible with
-   :py:func:`torch.distributed.run`. :py:func:`torch.distributed.run`
-   automatically terminates all worker processes if any one of them fails, in
-   this case :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` can only recover from transient
-   faults that don't cause termination of worker processes.
-
-7. By default, PyTorch NCCL Watchdog forcefully terminates the process if NCCL
-   call returns an error, or if CUDA context was corrupted. Forceful
-   termination of the worker process prevents :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`
-   from restarting the wrapper function. A workaround is to set
-   ``TORCH_NCCL_RETHROW_CUDA_ERRORS`` environment variable to ``0``, to avoid
-   rethrowing CUDA and NCCL errors in PyTorch NCCL Watchdog.
-
-8. The :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` class uses
+#. The :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` class uses
    :py:meth:`torch.distributed.Store.wait` to detect events in the distributed
    key-value store within its monitoring loops. Because these loops often
    advance to the next iteration after an expected timeout, PyTorch emits a
    warning every time :py:meth:`wait` times out, cluttering the output. To
    suppress these warnings, set the ``TORCH_CPP_LOG_LEVEL`` environment
    variable to ``error`` or ``fatal`` before importing ``torch``.
+
+#. :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` is not fully compatible with
+   :py:func:`torch.distributed.run`. :py:func:`torch.distributed.run`
+   automatically terminates all worker processes if any one of them fails, in
+   this case :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` can only recover from transient
+   faults that don't cause termination of worker processes.
+
+#. By default, PyTorch NCCL Watchdog forcefully terminates the process if NCCL
+   call returns an error, or if CUDA context was corrupted. Forceful
+   termination of the worker process prevents :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`
+   from restarting the wrapper function. A workaround is to set
+   ``TORCH_NCCL_RETHROW_CUDA_ERRORS`` environment variable to ``0``, to avoid
+   rethrowing CUDA and NCCL errors in PyTorch NCCL Watchdog.
+
+#. PyTorch pairwise distributed process groups for P2P communication using
+   :py:func:`torch.distributed.send`, :py:func:`torch.distributed.recv` (and
+   similar functions) need to be created and initialized explicitly at the
+   Python level with :py:func:`torch.distributed.new_group`. Aborting PyTorch
+   NCCL backend with implicitly created P2P communicators may lead to hangs if
+   PyTorch doesn't contain the fix implemented in `pytorch/#150690
+   <https://github.com/pytorch/pytorch/pull/150690>`_.
+
+#. PyTorch may raise segmentation fault if distributed backend is aborted while
+   the first iteration of a backward pass is in progress (`pytorch/#149418
+   <https://github.com/pytorch/pytorch/issues/149418>`_).
+
+NCCL
+~~~~
+#. Support for NVLink SHARP (NVLS) in NCCL must be disabled by setting the
+   ``NCCL_NVLS_ENABLE`` environment variable to ``0``.
+
+CUDA
+~~~~
+#. To perform a restart, the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper` needs to wait for
+   completion of all executing and pending CUDA kernels. This is implemented
+   with a GPU synchronization, and is a part of
+   :py:class:`nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck`. Waiting for CUDA kernels
+   to complete could increase the restart latency if many CUDA kernels are
+   pending execution. A workaround is to periodically synchronize with the GPU
+   from the wrapped function to reduce the depth of pending kernels queue.
