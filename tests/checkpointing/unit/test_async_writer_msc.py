@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import filecmp
+import subprocess
 
 import torch
 from torch.distributed.checkpoint import (
     DefaultLoadPlanner,
     DefaultSavePlanner,
-    FileSystemReader,
     FileSystemWriter,
     load,
     state_dict_saver,
@@ -35,7 +35,18 @@ from . import TempNamedDir
 from .test_utilities import TestModel, Utils
 
 
-class TestAsyncSave:
+class TestAsyncSaveWithMSC:
+
+    def setup_method(self, method):
+        Utils.set_world_size(1)
+        # Install the multi-storage-client package
+        subprocess.run(['pip', 'install', 'multi-storage-client'], check=True)
+
+    def teardown_method(self, method):
+        Utils.set_world_size()
+        # Remove the multi-storage-client package
+        subprocess.run(['pip', 'uninstall', '-y', 'multi-storage-client'], check=True)
+
     def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
         """Creates an async save request with a finalization step."""
         save_fn, preload_fn, save_args = writer.get_save_function_and_args()
@@ -51,7 +62,7 @@ class TestAsyncSave:
         self, checkpoint_dir, state_dict, planner, async_queue, thread_count=1
     ):
         """Performs an asynchronous model checkpoint save."""
-        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count)
+        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count, use_msc=True)
         coordinator_rank = 0
 
         save_state_dict_ret, *_ = save_state_dict_async_plan(
@@ -70,9 +81,13 @@ class TestAsyncSave:
 
     def load_checkpoint(self, checkpoint_dir, state_dict):
         """Loads a checkpoint into the given state_dict."""
+        from nvidia_resiliency_ext.checkpointing.msc.filesystem_msc import (
+            MultiStorageFileSystemReader,
+        )
+
         load(
             state_dict=state_dict,
-            storage_reader=FileSystemReader(checkpoint_dir),
+            storage_reader=MultiStorageFileSystemReader(checkpoint_dir),
             planner=DefaultLoadPlanner(),
         )
         return state_dict

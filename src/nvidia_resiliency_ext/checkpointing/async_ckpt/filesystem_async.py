@@ -27,7 +27,6 @@ from pathlib import Path
 from time import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import multistorageclient as msc
 import psutil
 import torch
 from torch import multiprocessing as mp
@@ -349,6 +348,8 @@ class FileSystemWriterAsync(FileSystemWriter):
         try:
             file_name, storage_key, (bytes_data, tensor_data) = write_bucket
             if use_msc:
+                import multistorageclient as msc
+
                 open_file = msc.open
             else:
                 open_file = open
@@ -450,6 +451,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         path = os.path.join(self.checkpoint_dir, ".metadata")
         if self.use_msc:
+            import multistorageclient as msc
+
             open_file = msc.open
         else:
             open_file = open
@@ -461,6 +464,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     def prepare_local_plan(self, plan: SavePlan) -> SavePlan:
         if self.use_msc:
+            import multistorageclient as msc
+
             msc.os.makedirs(str(self.checkpoint_dir), exist_ok=True)
         else:
             os.makedirs(self.checkpoint_dir, exist_ok=True)

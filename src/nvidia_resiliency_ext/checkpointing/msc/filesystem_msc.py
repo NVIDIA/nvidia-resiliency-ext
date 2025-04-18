@@ -22,7 +22,11 @@ from concurrent.futures import ThreadPoolExecutor
 from time import time
 from typing import IO, Dict, List, Union, cast
 
-import multistorageclient as msc
+try:
+    import multistorageclient as msc
+except ModuleNotFoundError:
+    msc = None
+
 import torch
 from torch.distributed._shard._utils import narrow_tensor_by_index
 from torch.distributed.checkpoint import StorageReader
