@@ -17,9 +17,12 @@
 import logging
 import dataclasses
 from typing import Optional
+
+from .initialize import Initialize
+from .abort import Abort
+
 from ..fault_tolerance.rank_monitor_server import RankMonitorLogger
 
-from .callback import Callback
 from .state import FrozenState
 
 class NestedRestarterLogger(RankMonitorLogger):
@@ -38,7 +41,7 @@ class NestedRestarterLogger(RankMonitorLogger):
         self.propagate = False
 
 @dataclasses.dataclass
-class NestedRestarter(Callback):
+class NestedRestarterCallback:
     r'''
     Callback for logging the NVRx nested restarter integration.
     '''
@@ -48,42 +51,46 @@ class NestedRestarter(Callback):
     restarter_state: str
     restarter_stage: Optional[str] = None
     logger: NestedRestarterLogger = dataclasses.field(default=_shared_logger)
-    rank_set: bool = False
+    special_rank: int = 0
 
     def __call__(self, state: FrozenState) -> FrozenState:
-        if not self.rank_set:
-            self.logger.set_connected_rank(state.rank)
-            self.rank_set = True
-        msg = f'active_rank={state.active_rank} [NestedRestarter] name=[InProcess] state={self.restarter_state}'
-        if self.restarter_stage is not None:
-            msg += f" stage={self.restarter_stage}"
-        self.logger.log_for_restarter(msg)
+
+        if state.initial_rank == self.special_rank:
+            self.logger.set_connected_rank(state.initial_rank)
+            msg = f'active_rank={state.active_rank} [NestedRestarter] name=[InProcess] state={self.restarter_state}'
+            if self.restarter_stage is not None:
+                msg += f" stage={self.restarter_stage}"
+
+            self.logger.log_for_restarter(msg)
 
         return state
 
 @dataclasses.dataclass
-class NestedRestarterInitialize(NestedRestarter):
+class NestedRestarterHandlingCompleted(Initialize, NestedRestarterCallback):
+
     restarter_state: str = 'initialize'
+    restarter_stage: str = None
+
+    def __init__(self, special_rank: int = 0):
+        self._called_once = False
+        self.special_rank = special_rank
+        self.logger = NestedRestarterCallback._shared_logger
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+
+        # Apply the callback functionality
+        state = NestedRestarterCallback.__call__(self, state)
+
+        if not self._called_once:
+            self._called_once = True
+            self.restarter_state = 'handling'
+            self.restarter_stage = 'completed'
 
 @dataclasses.dataclass
-class NestedRestarterFinalized(NestedRestarter):
-    restarter_state: str = 'finalized'
-
-@dataclasses.dataclass
-class NestedRestarterAborted(NestedRestarter):
-    restarter_state: str = 'aborted'
-
-@dataclasses.dataclass
-class NestedRestarterHandlingStarting(NestedRestarter):
+class NestedRestarterHandlingStarting(Abort, NestedRestarterCallback):
     restarter_state: str = 'handling'
     restarter_stage: str = 'starting'
 
-@dataclasses.dataclass
-class NestedRestarterHandlingProcessing(NestedRestarter):
-    restarter_state: str = 'handling'
-    restarter_stage: str = 'processing'
+    def __call__(self, state: FrozenState) -> FrozenState:
+        return NestedRestarterCallback.__call__(self, state)
 
-@dataclasses.dataclass
-class NestedRestarterHandlingCompleted(NestedRestarter):
-    restarter_state: str = 'handling'
-    restarter_stage: str = 'completed'
