@@ -32,15 +32,6 @@ class NestedRestarterLogger(RankMonitorLogger):
     def __init__(self):
         super().__init__(name="InprocessRestarter", is_restarter_logger=True)
 
-    def _setup_logger(self):
-        self.setLevel(self.level)
-        ch = logging.StreamHandler()
-        ch.setLevel(self.level)
-        formatter = logging.Formatter(f"[%(asctime)s] [%(levelname)s] [{self.name}@{self.hostname}] %(message)s")
-        ch.setFormatter(formatter)
-        self.addHandler(ch)
-        self.propagate = False
-
 @dataclasses.dataclass
 class NestedRestarterCallback:
     r'''
@@ -58,7 +49,7 @@ class NestedRestarterCallback:
 
         if state.initial_rank == self.special_rank:
             self.logger.set_connected_rank(state.initial_rank)
-            msg = f'active_rank={state.active_rank} [NestedRestarter] name=[InProcess] state={self.restarter_state}'
+            msg = f'[NestedRestarter] name=[InProcess] state={self.restarter_state}'
             if self.restarter_stage is not None:
                 msg += f" stage={self.restarter_stage}"
 
