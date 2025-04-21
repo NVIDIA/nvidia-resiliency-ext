@@ -43,16 +43,18 @@ class NestedRestarter(Callback):
     Callback for logging the NVRx nested restarter integration.
     '''
 
+    _shared_logger = NestedRestarterLogger()
+
     restarter_state: str
     restarter_stage: Optional[str] = None
-    logger: NestedRestarterLogger = dataclasses.field(default_factory=NestedRestarterLogger)
+    logger: NestedRestarterLogger = dataclasses.field(default=_shared_logger)
     rank_set: bool = False
 
     def __call__(self, state: FrozenState) -> FrozenState:
         if not self.rank_set:
             self.logger.set_connected_rank(state.rank)
             self.rank_set = True
-        msg = f'[NestedRestarter] name=[InProcess] state={self.restarter_state}'
+        msg = f'active_rank={state.active_rank} [NestedRestarter] name=[InProcess] state={self.restarter_state}'
         if self.restarter_stage is not None:
             msg += f" stage={self.restarter_stage}"
         self.logger.log_for_restarter(msg)
