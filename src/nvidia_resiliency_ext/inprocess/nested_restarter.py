@@ -14,23 +14,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import dataclasses
 from typing import Optional
 
-from .initialize import Initialize
+from ..fault_tolerance.rank_monitor_server import RankMonitorLogger
 from .abort import Abort
 from .callback_completion import CompletionCallback
 from .callback_terminate import TerminateCallback
-from ..fault_tolerance.rank_monitor_server import RankMonitorLogger
-
+from .initialize import Initialize
 from .state import FrozenState
+
 
 class NestedRestarterLogger(RankMonitorLogger):
     """Logger used in the nested restarter process"""
 
     def __init__(self):
         super().__init__(name="InprocessRestarter", is_restarter_logger=True)
+
 
 @dataclasses.dataclass
 class NestedRestarterCallback:
@@ -57,6 +57,7 @@ class NestedRestarterCallback:
 
         return state
 
+
 @dataclasses.dataclass
 class NestedRestarterHandlingCompleted(Initialize, NestedRestarterCallback):
 
@@ -78,6 +79,7 @@ class NestedRestarterHandlingCompleted(Initialize, NestedRestarterCallback):
             self.restarter_state = 'handling'
             self.restarter_stage = 'completed'
 
+
 @dataclasses.dataclass
 class NestedRestarterHandlingStarting(Abort, NestedRestarterCallback):
     restarter_state: str = 'handling'
@@ -86,12 +88,14 @@ class NestedRestarterHandlingStarting(Abort, NestedRestarterCallback):
     def __call__(self, state: FrozenState) -> FrozenState:
         return NestedRestarterCallback.__call__(self, state)
 
+
 @dataclasses.dataclass
 class NestedRestarterFinalized(CompletionCallback, NestedRestarterCallback):
     restarter_state: str = 'finalized'
 
     def __call__(self, state: FrozenState) -> FrozenState:
         return NestedRestarterCallback.__call__(self, state)
+
 
 @dataclasses.dataclass
 class NestedRestarterAborted(TerminateCallback, NestedRestarterCallback):

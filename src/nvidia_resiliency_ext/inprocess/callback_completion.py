@@ -15,10 +15,9 @@
 # limitations under the License.
 
 import abc
-from typing import Optional
 
-from . import exception
 from .state import FrozenState
+
 
 class CompletionCallback(abc.ABC):
     r'''

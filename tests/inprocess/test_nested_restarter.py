@@ -14,33 +14,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
 import io
 import logging
-import multiprocessing
-import os
-import socket
-import sys
-import unittest
-from unittest.mock import MagicMock, patch
 import re
+import unittest
 
-import torch
-
-import nvidia_resiliency_ext.inprocess as inprocess
 from nvidia_resiliency_ext.inprocess.nested_restarter import (
     NestedRestarterCallback,
     NestedRestarterHandlingCompleted,
     NestedRestarterHandlingStarting,
     NestedRestarterLogger,
 )
-from nvidia_resiliency_ext.inprocess.state import FrozenState, State
+from nvidia_resiliency_ext.inprocess.state import State
 
 from . import common
 
-# Test if output matches regex:
-            # - '^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+)\s+stage\=(?P<stage>[a-zA-Z]+).*$'
-            # - '^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+).*$'
 
 @common.apply_all_tests(common.retry())
 class TestNestedRestarterLogging(unittest.TestCase):
@@ -54,7 +42,7 @@ class TestNestedRestarterLogging(unittest.TestCase):
             active_rank=0,
             active_world_size=2,
             initial_rank=0,
-            initial_world_size=2
+            initial_world_size=2,
         ).freeze()
 
         # Capture log output
@@ -75,9 +63,7 @@ class TestNestedRestarterLogging(unittest.TestCase):
 
         # Create a callback with state only
         callback = NestedRestarterCallback(
-            restarter_state="initialize",
-            logger=self.logger,
-            special_rank=0
+            restarter_state="initialize", logger=self.logger, special_rank=0
         )
 
         # Execute the callback
@@ -94,14 +80,16 @@ class TestNestedRestarterLogging(unittest.TestCase):
     def test_callback_log_matches_state_and_stage_regex(self):
         """Test that callback logs match regex pattern with state and stage"""
         # Define the regex pattern for state and stage
-        state_stage_regex = r'^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+)\s+stage\=(?P<stage>[a-zA-Z]+).*$'
+        state_stage_regex = (
+            r'^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+)\s+stage\=(?P<stage>[a-zA-Z]+).*$'
+        )
 
         # Create a callback with both state and stage
         callback = NestedRestarterCallback(
             restarter_state="handling",
             restarter_stage="starting",
             logger=self.logger,
-            special_rank=0
+            special_rank=0,
         )
 
         # Execute the callback
@@ -112,7 +100,9 @@ class TestNestedRestarterLogging(unittest.TestCase):
 
         # Check if the log message matches the regex
         match = re.search(state_stage_regex, log_output, re.MULTILINE)
-        self.assertIsNotNone(match, f"Log output doesn't match the state and stage regex: {log_output}")
+        self.assertIsNotNone(
+            match, f"Log output doesn't match the state and stage regex: {log_output}"
+        )
         self.assertEqual(match.group('state'), "handling")
         self.assertEqual(match.group('stage'), "starting")
 
@@ -123,14 +113,18 @@ class TestNestedRestarterLogging(unittest.TestCase):
         handling_completed.logger = self.logger
 
         # Call twice to test both state transitions
-        handling_completed(self.state)  # First call, transitions from initialize to handling/completed
+        handling_completed(
+            self.state
+        )  # First call, transitions from initialize to handling/completed
 
         # Get the log output
         log_output = self.log_capture.getvalue()
 
         # Define the regex patterns
         state_regex = r'^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+).*$'
-        state_stage_regex = r'^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+)\s+stage\=(?P<stage>[a-zA-Z]+).*$'
+        state_stage_regex = (
+            r'^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+)\s+stage\=(?P<stage>[a-zA-Z]+).*$'
+        )
 
         # Check for initial state (should be 'initialize' first)
         first_match = re.search(state_regex, log_output, re.MULTILINE)
@@ -150,7 +144,9 @@ class TestNestedRestarterLogging(unittest.TestCase):
 
         # Now it should have state 'handling' and stage 'completed'
         second_match = re.search(state_stage_regex, log_output, re.MULTILINE)
-        self.assertIsNotNone(second_match, f"Log output doesn't match the state and stage regex: {log_output}")
+        self.assertIsNotNone(
+            second_match, f"Log output doesn't match the state and stage regex: {log_output}"
+        )
         self.assertEqual(second_match.group('state'), "handling")
         self.assertEqual(second_match.group('stage'), "completed")
 
@@ -167,11 +163,15 @@ class TestNestedRestarterLogging(unittest.TestCase):
         log_output = self.log_capture.getvalue()
 
         # Define the regex pattern
-        state_stage_regex = r'^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+)\s+stage\=(?P<stage>[a-zA-Z]+).*$'
+        state_stage_regex = (
+            r'^.*NestedRestarter.*state\=(?P<state>[a-zA-Z]+)\s+stage\=(?P<stage>[a-zA-Z]+).*$'
+        )
 
         # Check if the log message matches the regex
         match = re.search(state_stage_regex, log_output, re.MULTILINE)
-        self.assertIsNotNone(match, f"Log output doesn't match the state and stage regex: {log_output}")
+        self.assertIsNotNone(
+            match, f"Log output doesn't match the state and stage regex: {log_output}"
+        )
         self.assertEqual(match.group('state'), "handling")
         self.assertEqual(match.group('stage'), "starting")
 
