@@ -20,7 +20,8 @@ from typing import Optional
 
 from .initialize import Initialize
 from .abort import Abort
-
+from .callback_completion import CompletionCallback
+from .callback_terminate import TerminateCallback
 from ..fault_tolerance.rank_monitor_server import RankMonitorLogger
 
 from .state import FrozenState
@@ -94,3 +95,16 @@ class NestedRestarterHandlingStarting(Abort, NestedRestarterCallback):
     def __call__(self, state: FrozenState) -> FrozenState:
         return NestedRestarterCallback.__call__(self, state)
 
+@dataclasses.dataclass
+class NestedRestarterFinalized(CompletionCallback, NestedRestarterCallback):
+    restarter_state: str = 'finalized'
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        return NestedRestarterCallback.__call__(self, state)
+
+@dataclasses.dataclass
+class NestedRestarterAborted(TerminateCallback, NestedRestarterCallback):
+    restarter_state: str = 'aborted'
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        return NestedRestarterCallback.__call__(self, state)
