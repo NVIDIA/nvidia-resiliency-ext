@@ -177,8 +177,11 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument("--report-interval", type=int, default=300)
-    parser.add_argument("--report-path", type=str, default="/opt/nvidia/straggler-reports/job_12345.jsonl",
-        help="Path to save the straggler detection report"
+    parser.add_argument(
+        "--report-path",
+        type=str,
+        default="/opt/nvidia/straggler-reports/job_12345.jsonl",
+        help="Path to save the straggler detection report",
     )
 
     args: argparse.Namespace = parser.parse_args()
