@@ -43,6 +43,7 @@ from nvidia_resiliency_ext import straggler
 class AsyncReportWriter:
     def __init__(self, filename):
         self.filename = filename
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         self.queue = Queue()
         self.worker = Thread(target=self._write_worker)
         self.worker.daemon = True
@@ -89,7 +90,7 @@ def train(args) -> None:
     rank = dist.get_rank()
     # The filename in practice will be dynamic. The filename `job_12345` is only for presentation.
     if rank == 0:
-        report_writer = AsyncReportWriter("/opt/nvidia/straggler-reports/job_12345.jsonl")
+        report_writer = AsyncReportWriter(args.report_path)
 
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
@@ -177,6 +178,9 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument("--report-interval", type=int, default=300)
+    parser.add_argument("--report-path", type=str, default="/opt/nvidia/straggler-reports/job_12345.jsonl",
+        help="Path to save the straggler detection report"
+    )
 
     args: argparse.Namespace = parser.parse_args()
 
