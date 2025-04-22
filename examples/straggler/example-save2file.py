@@ -88,7 +88,6 @@ def train(args) -> None:
 
     dist.init_process_group(backend="nccl")
     rank = dist.get_rank()
-    # The filename in practice will be dynamic. The filename `job_12345` is only for presentation.
     if rank == 0:
         report_writer = AsyncReportWriter(args.report_path)
 
