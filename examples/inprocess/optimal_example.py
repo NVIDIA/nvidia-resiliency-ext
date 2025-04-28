@@ -115,20 +115,15 @@ def parse_args():
         help='logging level',
     )
 
+    parser.add_argument(
+        '--nested-restarter',
+        action='store_true',
+        help='extra logging for the nested restarter',
+    )
+
     return parser.parse_args()
 
 
-# TCPStore created by the Wrapper uses ``(MASTER_PORT + 1)`` port for the
-# internal Wrapper's TCPStore to avoid conflicts with application's TCPStore
-# listening on ``(MASTER_PORT + 2)``, and with a TCPStore created by
-# ``torch.distributed.run`` listening on ``MASTER_PORT``.
-#
-# An instance of ``inprocess.CallWrapper` is automatically injected into
-# wrapped function arguments when Wrapper is invoked.
-@inprocess.Wrapper(
-    store_kwargs={'port': int(os.getenv('MASTER_PORT', 29500)) + 1},
-    health_check=inprocess.health_check.CudaHealthCheck(),
-)
 def train(
     base_store,
     model,
@@ -263,9 +258,34 @@ def main():
         use_libuv=True,
     )
 
+    # TCPStore created by the Wrapper uses ``(MASTER_PORT + 1)`` port for the
+    # internal Wrapper's TCPStore to avoid conflicts with application's TCPStore
+    # listening on ``(MASTER_PORT + 2)``, and with a TCPStore created by
+    # ``torch.distributed.run`` listening on ``MASTER_PORT``.
+    #
+    wrapper_kwargs = {
+        'store_kwargs': {'port': int(os.getenv('MASTER_PORT', 29500)) + 1},
+        'health_check': inprocess.health_check.CudaHealthCheck(),
+    }
+
+    if args.nested_restarter:
+        wrapper_kwargs['initialize'] = inprocess.nested_restarter.NestedRestarterHandlingCompleted()
+        wrapper_kwargs['abort'] = inprocess.Compose(
+            inprocess.abort.AbortTorchDistributed(),
+            inprocess.nested_restarter.NestedRestarterHandlingStarting(),
+        )
+        wrapper_kwargs['completion_callback'] = (
+            inprocess.nested_restarter.NestedRestarterFinalized()
+        )
+        wrapper_kwargs['terminate_callback'] = inprocess.nested_restarter.NestedRestarterAborted()
+
+    # An instance of ``inprocess.CallWrapper` is automatically injected into
+    # wrapped function arguments when Wrapper is invoked.
+    wrapped_train = inprocess.Wrapper(**wrapper_kwargs)(train)
+
     # Call the wrapped function.
-    # ``train()`` is automatically restarted to recover from faults.
-    train(store, model, opt, backend, device, timeout, args)
+    # ``wrapped_train()`` is automatically restarted to recover from faults.
+    wrapped_train(store, model, opt, backend, device, timeout, args)
 
 
 if __name__ == '__main__':
