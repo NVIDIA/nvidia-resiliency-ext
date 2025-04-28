@@ -19,22 +19,22 @@ import abc
 from .state import FrozenState
 
 
-class TerminateCallback(abc.ABC):
+class Terminate(abc.ABC):
     r'''
     Abstract base class for ``global_finalize_failure`` argument for
     :py:class:`inprocess.Wrapper`.
 
-    :py:class:`TerminateCallback` is executed by any unterminated rank when
+    :py:class:`Terminate` is executed by any unterminated rank when
     that rank terminates.
 
-    Multiple instances of :py:class:`TerminateCallback` could be composed with
+    Multiple instances of :py:class:`Terminate` could be composed with
     :py:class:`inprocess.Compose` to achieve the desired behavior.
     '''
 
     @abc.abstractmethod
     def __call__(self, state: FrozenState) -> FrozenState:
         r'''
-        Implementation of a :py:class:`TerminateCallback`.
+        Implementation of a :py:class:`Terminate`.
 
         Args:
             state: read-only :py:class:`Wrapper` state

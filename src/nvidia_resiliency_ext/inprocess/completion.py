@@ -19,22 +19,22 @@ import abc
 from .state import FrozenState
 
 
-class CompletionCallback(abc.ABC):
+class Completion(abc.ABC):
     r'''
     Abstract base class for ``global_finalize_success`` argument for
     :py:class:`inprocess.Wrapper`.
 
-    :py:class:`CompletionCallback` is executed by any unterminated rank when
+    :py:class:`Completion` is executed by any unterminated rank when
     it has completed the workload wrapped by inprocess.
 
-    Multiple instances of :py:class:`CompletionCallback` could be composed with
+    Multiple instances of :py:class:`Completion` could be composed with
     :py:class:`inprocess.Compose` to achieve the desired behavior.
     '''
 
     @abc.abstractmethod
     def __call__(self, state: FrozenState) -> FrozenState:
         r'''
-        Implementation of a :py:class:`CompletionCallback`.
+        Implementation of a :py:class:`Completion`.
 
         Args:
             state: read-only :py:class:`Wrapper` state
