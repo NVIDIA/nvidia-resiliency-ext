@@ -100,7 +100,7 @@
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.</span></span><span class="sig-name descname"><span class="pre">FileSystemWriterAsync</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">separation_hint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.FileSystemWriter" title="(in PyTorch v2.6)"><code class="xref py py-class docutils literal notranslate"><span class="pre">FileSystemWriter</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.FileSystemWriter" title="(in PyTorch v2.7)"><code class="xref py py-class docutils literal notranslate"><span class="pre">FileSystemWriter</span></code></a></p>
 <p>Async-enabled implementation of FileSystemWriter using file I/O.</p>
 <p>This class does not spawn the async process itself but relies on an external async mechanism.</p>
 <p><strong>Flow:</strong></p>
@@ -126,6 +126,7 @@
 at the cost of increases memory usage. Additionally, if this parameter is set to True, it’s the expectation
 that the stager is maintained and re-used for multiple dcp.async_save calls. Default to False.</p></li>
 <li><p><strong>overwrite</strong> – Whether to allow overwriting existing checkpoints. Defaults to True.</p></li>
+<li><p><strong>_extensions</strong> – Extensions to apply to output streams (EXPERIMENTAL)</p></li>
 <li><p><strong>separation_hint</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
 </ul>
 </dd>
@@ -191,7 +192,7 @@ This function should be self-contained.</p></li>
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.6)"><em>SavePlan</em></a></p>
+<dd class="field-odd"><p><a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.7)"><em>SavePlan</em></a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -237,12 +238,12 @@ This function should be self-contained.</p></li>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>plan</strong> (<a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.6)"><em>SavePlan</em></a>)</p></li>
-<li><p><strong>planner</strong> (<a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner" title="(in PyTorch v2.6)"><em>SavePlanner</em></a>)</p></li>
+<li><p><strong>plan</strong> (<a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.7)"><em>SavePlan</em></a>)</p></li>
+<li><p><strong>planner</strong> (<a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner" title="(in PyTorch v2.7)"><em>SavePlanner</em></a>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://pytorch.org/docs/stable/futures.html#torch.futures.Future" title="(in PyTorch v2.6)"><em>Future</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<em>WriteResult</em>]]</p>
+<dd class="field-even"><p><a class="reference external" href="https://pytorch.org/docs/stable/futures.html#torch.futures.Future" title="(in PyTorch v2.7)"><em>Future</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<em>WriteResult</em>]]</p>
 </dd>
 </dl>
 </dd></dl>
@@ -260,7 +261,7 @@ This function should be self-contained.</p></li>
 to the proxy checkpoint process.</p></li>
 <li><p><strong>count_queue</strong> (<em>mp.JoinableQueue</em>) – queue to marks worker task as completed</p></li>
 <li><p><strong>use_fsync</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – if True, calls os.fsync at the end of saving</p></li>
-<li><p><strong>transform_list</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.13)"><em>Any</em></a><em>]</em>)</p></li>
+<li><p><strong>transform_list</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><em>_StorageWriterTransforms</em><em>]</em>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
@@ -289,7 +290,7 @@ To prevent this, we disable the GC explicitly for this function with _disable_gc
 <li><p><strong>write_buckets</strong> (<em>List</em><em>[</em><em>WriteBucket</em><em>]</em>) – write plan</p></li>
 <li><p><strong>global_results_queue</strong> (<em>mp.Queue</em>) – mp.Queue to collect Dict[List[WriteResults]]
 (or an Exception) from parallel write processes to the main training process</p></li>
-<li><p><strong>transform_list</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.13)"><em>Any</em></a><em>]</em>)</p></li>
+<li><p><strong>transform_list</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><em>_StorageWriterTransforms</em><em>]</em>)</p></li>
 <li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
 </ul>
 </dd>

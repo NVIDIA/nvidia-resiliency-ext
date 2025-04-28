@@ -55,13 +55,7 @@
 <li class="toctree-l3"><a class="reference internal" href="compose.html">Compose</a></li>
 <li class="toctree-l3"><a class="reference internal" href="state.html">State</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_assignment.html">Rank Assignment</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Rank Filter</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy"><code class="docutils literal notranslate"><span class="pre">ActiveWorldSizeDivisibleBy</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize"><code class="docutils literal notranslate"><span class="pre">MaxActiveWorldSize</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter"><code class="docutils literal notranslate"><span class="pre">RankFilter</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.WorldSizeDivisibleBy"><code class="docutils literal notranslate"><span class="pre">WorldSizeDivisibleBy</span></code></a></li>
-</ul>
-</li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Rank Filter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="initialize.html">Initialize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="abort.html">Abort</a></li>
 <li class="toctree-l3"><a class="reference internal" href="finalize.html">Finalize</a></li>
@@ -103,73 +97,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="module-nvidia_resiliency_ext.inprocess.rank_filter">
-<span id="rank-filter"></span><h1>Rank Filter<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.rank_filter" title="Link to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_filter.</span></span><span class="sig-name descname"><span class="pre">ActiveWorldSizeDivisibleBy</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">divisor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_filter.html#ActiveWorldSizeDivisibleBy"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy" title="Link to this definition"></a></dt>
-<dd><div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy" title="nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActiveWorldSizeDivisibleBy</span></code></a> is deprecated and will be removed
-in the next release. The functionality is moved to
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.rank_assignment.ActiveWorldSizeDivisibleBy</span></code>.</p>
-</div>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy" title="nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActiveWorldSizeDivisibleBy</span></code></a> ensures that the active world size
-is divisible by a given number. Ranks within the adjusted world size are
-marked as active and are calling the wrapped function, while ranks outside
-this range are marked as inactive.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>divisor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – the divisor to adjust the active world size by</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_filter.</span></span><span class="sig-name descname"><span class="pre">MaxActiveWorldSize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">max_active_world_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_filter.html#MaxActiveWorldSize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize" title="Link to this definition"></a></dt>
-<dd><div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize" title="nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize"><code class="xref py py-class docutils literal notranslate"><span class="pre">MaxActiveWorldSize</span></code></a> is deprecated and will be removed in the
-next release. The functionality is moved to
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.rank_assignment.MaxActiveWorldSize</span></code>.</p>
-</div>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize" title="nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize"><code class="xref py py-class docutils literal notranslate"><span class="pre">MaxActiveWorldSize</span></code></a> ensures that the active world size is no
-greater than the specified <code class="docutils literal notranslate"><span class="pre">max_active_world_size</span></code>. Ranks with indices
-less than the active world size are active and calling the wrapped
-function, while ranks outside this range are inactive.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>max_active_world_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em> | </em><em>None</em>) – maximum active world size, no limit if
-<a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">None</span></code></a></p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_filter.RankFilter">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_filter.</span></span><span class="sig-name descname"><span class="pre">RankFilter</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_filter.html#RankFilter"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter" title="Link to this definition"></a></dt>
-<dd><div class="admonition note">
-<p class="admonition-title">Note</p>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter" title="nvidia_resiliency_ext.inprocess.rank_filter.RankFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code></a> is deprecated and will be removed in the next
-release. The functionality is merged into
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.rank_assignment.RankAssignment</span></code>.</p>
-</div>
-<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter" title="nvidia_resiliency_ext.inprocess.rank_filter.RankFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code></a> selects which ranks are active in the current
-restart iteration of <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
-<p>Active ranks call the provided wrapped function. Inactive ranks are waiting
-idle, and could serve as a pool of static, preallocated and preinitialized
-reserve ranks. Reserve ranks would be activated in a subsequent restart
-iteration if previously active ranks were terminated or became unhealthy.</p>
-<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter" title="nvidia_resiliency_ext.inprocess.rank_filter.RankFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code></a> could be composed with
-<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.rank_filter.WorldSizeDivisibleBy">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_filter.</span></span><span class="sig-name descname"><span class="pre">WorldSizeDivisibleBy</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_filter.html#WorldSizeDivisibleBy"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.rank_filter.WorldSizeDivisibleBy" title="Link to this definition"></a></dt>
-<dd></dd></dl>
-
+  <section id="rank-filter">
+<h1>Rank Filter<a class="headerlink" href="#rank-filter" title="Link to this heading"></a></h1>
 </section>
 
 

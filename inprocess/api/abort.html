@@ -57,10 +57,7 @@
 <li class="toctree-l3"><a class="reference internal" href="rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="initialize.html">Initialize</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Abort</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="docutils literal notranslate"><span class="pre">AbortTorchDistributed</span></code></a></li>
-</ul>
-</li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Abort</a></li>
 <li class="toctree-l3"><a class="reference internal" href="finalize.html">Finalize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="health_check.html">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="exception.html">Exceptions</a></li>
@@ -100,18 +97,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="module-nvidia_resiliency_ext.inprocess.abort">
-<span id="abort"></span><h1>Abort<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.abort" title="Link to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">AbortTorchDistributed</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#AbortTorchDistributed"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="Link to this definition"></a></dt>
-<dd><p>Aborts PyTorch distributed collectives, and destroys all PyTorch
-distributed process groups.</p>
-<p>This functionality is implemented by invoking
-<code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.destroy_process_group()</span></code> in a separate Python
-thread for each distributed group that has been created.</p>
-</dd></dl>
-
+  <section id="abort">
+<h1>Abort<a class="headerlink" href="#abort" title="Link to this heading"></a></h1>
 </section>
 
 

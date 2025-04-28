@@ -52,10 +52,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage Guide</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="wrap.html">Wrapper</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Compose</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.Compose"><code class="docutils literal notranslate"><span class="pre">Compose</span></code></a></li>
-</ul>
-</li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Compose</a></li>
 <li class="toctree-l3"><a class="reference internal" href="state.html">State</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
@@ -100,31 +97,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="module-nvidia_resiliency_ext.inprocess">
-<span id="compose"></span><h1>Compose<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess" title="Link to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.Compose">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.</span></span><span class="sig-name descname"><span class="pre">Compose</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">instances</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/compose.html#Compose"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.Compose" title="Link to this definition"></a></dt>
-<dd><p>Performs functional composition (chaining) of multiple callable class
-instances.</p>
-<p>Output of the previous callable is passed as input to the next callable,
-and the output of the last callable is returned as the final output of a
-<a class="reference internal" href="#nvidia_resiliency_ext.inprocess.Compose" title="nvidia_resiliency_ext.inprocess.Compose"><code class="xref py py-class docutils literal notranslate"><span class="pre">Compose</span></code></a> instance.</p>
-<p>Constructed <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.Compose" title="nvidia_resiliency_ext.inprocess.Compose"><code class="xref py py-class docutils literal notranslate"><span class="pre">Compose</span></code></a> object is an instance of the lowest common
-ancestor in <a class="reference external" href="https://docs.python.org/3/glossary.html#term-method-resolution-order">method resolution order</a> of
-all input callable class instances.</p>
-<p>Example:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">composed</span> <span class="o">=</span> <span class="n">Compose</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">c</span><span class="p">)</span>
-<span class="n">ret</span> <span class="o">=</span> <span class="n">composed</span><span class="p">(</span><span class="n">arg</span><span class="p">)</span>  <span class="c1"># is equivalent to ret = a(b(c(arg)))</span>
-</pre></div>
-</div>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>instances</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable" title="(in Python v3.13)"><em>Callable</em></a><em>[</em><em>[</em><em>T</em><em>]</em><em>, </em><em>T</em><em>]</em>)</p>
-</dd>
-</dl>
-</dd></dl>
-
+  <section id="compose">
+<h1>Compose<a class="headerlink" href="#compose" title="Link to this heading"></a></h1>
 </section>
 
 

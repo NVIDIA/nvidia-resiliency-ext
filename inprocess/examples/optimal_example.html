@@ -208,161 +208,181 @@
 <span class="linenos">115</span>        <span class="n">help</span><span class="o">=</span><span class="s1">&#39;logging level&#39;</span><span class="p">,</span>
 <span class="linenos">116</span>    <span class="p">)</span>
 <span class="linenos">117</span>
-<span class="linenos">118</span>    <span class="k">return</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">()</span>
-<span class="linenos">119</span>
-<span class="linenos">120</span>
-<span class="linenos">121</span><span class="c1"># TCPStore created by the Wrapper uses ``(MASTER_PORT + 1)`` port for the</span>
-<span class="linenos">122</span><span class="c1"># internal Wrapper&#39;s TCPStore to avoid conflicts with application&#39;s TCPStore</span>
-<span class="linenos">123</span><span class="c1"># listening on ``(MASTER_PORT + 2)``, and with a TCPStore created by</span>
-<span class="linenos">124</span><span class="c1"># ``torch.distributed.run`` listening on ``MASTER_PORT``.</span>
-<span class="linenos">125</span><span class="c1">#</span>
-<span class="linenos">126</span><span class="c1"># An instance of ``inprocess.CallWrapper` is automatically injected into</span>
-<span class="linenos">127</span><span class="c1"># wrapped function arguments when Wrapper is invoked.</span>
-<span class="linenos">128</span><span class="nd">@inprocess</span><span class="o">.</span><span class="n">Wrapper</span><span class="p">(</span>
-<span class="linenos">129</span>    <span class="n">store_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;port&#39;</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s1">&#39;MASTER_PORT&#39;</span><span class="p">,</span> <span class="mi">29500</span><span class="p">))</span> <span class="o">+</span> <span class="mi">1</span><span class="p">},</span>
-<span class="linenos">130</span>    <span class="n">health_check</span><span class="o">=</span><span class="n">inprocess</span><span class="o">.</span><span class="n">health_check</span><span class="o">.</span><span class="n">CudaHealthCheck</span><span class="p">(),</span>
-<span class="linenos">131</span><span class="p">)</span>
-<span class="linenos">132</span><span class="k">def</span><span class="w"> </span><span class="nf">train</span><span class="p">(</span>
-<span class="linenos">133</span>    <span class="n">base_store</span><span class="p">,</span>
-<span class="linenos">134</span>    <span class="n">model</span><span class="p">,</span>
-<span class="linenos">135</span>    <span class="n">opt</span><span class="p">,</span>
-<span class="linenos">136</span>    <span class="n">backend</span><span class="p">,</span>
-<span class="linenos">137</span>    <span class="n">device</span><span class="p">,</span>
-<span class="linenos">138</span>    <span class="n">timeout</span><span class="p">,</span>
-<span class="linenos">139</span>    <span class="n">args</span><span class="p">,</span>
-<span class="linenos">140</span>    <span class="n">call_wrapper</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">inprocess</span><span class="o">.</span><span class="n">CallWrapper</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="linenos">141</span><span class="p">):</span>
-<span class="linenos">142</span>    <span class="k">global</span> <span class="n">raise_timestamp</span>
-<span class="linenos">143</span>    <span class="k">if</span> <span class="n">raise_timestamp</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<span class="linenos">144</span>        <span class="n">restart_latency</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter</span><span class="p">()</span> <span class="o">-</span> <span class="n">raise_timestamp</span>
-<span class="linenos">145</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;restart latency: </span><span class="si">{</span><span class="n">restart_latency</span><span class="si">:</span><span class="s1">.3f</span><span class="si">}</span><span class="s1">s&#39;</span><span class="p">)</span>
-<span class="linenos">146</span>    <span class="n">raise_timestamp</span> <span class="o">=</span> <span class="kc">None</span>
-<span class="linenos">147</span>
-<span class="linenos">148</span>    <span class="n">log_interval</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">log_interval</span>
-<span class="linenos">149</span>    <span class="n">chkpt_interval</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">chkpt_interval</span>
-<span class="linenos">150</span>
-<span class="linenos">151</span>    <span class="n">rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;RANK&#39;</span><span class="p">])</span>
-<span class="linenos">152</span>    <span class="n">world_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;WORLD_SIZE&#39;</span><span class="p">])</span>
+<span class="linenos">118</span>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span>
+<span class="linenos">119</span>        <span class="s1">&#39;--nested-restarter&#39;</span><span class="p">,</span>
+<span class="linenos">120</span>        <span class="n">action</span><span class="o">=</span><span class="s1">&#39;store_true&#39;</span><span class="p">,</span>
+<span class="linenos">121</span>        <span class="n">help</span><span class="o">=</span><span class="s1">&#39;extra logging for the nested restarter&#39;</span><span class="p">,</span>
+<span class="linenos">122</span>    <span class="p">)</span>
+<span class="linenos">123</span>
+<span class="linenos">124</span>    <span class="k">return</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">()</span>
+<span class="linenos">125</span>
+<span class="linenos">126</span>
+<span class="linenos">127</span><span class="k">def</span><span class="w"> </span><span class="nf">train</span><span class="p">(</span>
+<span class="linenos">128</span>    <span class="n">base_store</span><span class="p">,</span>
+<span class="linenos">129</span>    <span class="n">model</span><span class="p">,</span>
+<span class="linenos">130</span>    <span class="n">opt</span><span class="p">,</span>
+<span class="linenos">131</span>    <span class="n">backend</span><span class="p">,</span>
+<span class="linenos">132</span>    <span class="n">device</span><span class="p">,</span>
+<span class="linenos">133</span>    <span class="n">timeout</span><span class="p">,</span>
+<span class="linenos">134</span>    <span class="n">args</span><span class="p">,</span>
+<span class="linenos">135</span>    <span class="n">call_wrapper</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">inprocess</span><span class="o">.</span><span class="n">CallWrapper</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="linenos">136</span><span class="p">):</span>
+<span class="linenos">137</span>    <span class="k">global</span> <span class="n">raise_timestamp</span>
+<span class="linenos">138</span>    <span class="k">if</span> <span class="n">raise_timestamp</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<span class="linenos">139</span>        <span class="n">restart_latency</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter</span><span class="p">()</span> <span class="o">-</span> <span class="n">raise_timestamp</span>
+<span class="linenos">140</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;restart latency: </span><span class="si">{</span><span class="n">restart_latency</span><span class="si">:</span><span class="s1">.3f</span><span class="si">}</span><span class="s1">s&#39;</span><span class="p">)</span>
+<span class="linenos">141</span>    <span class="n">raise_timestamp</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="linenos">142</span>
+<span class="linenos">143</span>    <span class="n">log_interval</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">log_interval</span>
+<span class="linenos">144</span>    <span class="n">chkpt_interval</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">chkpt_interval</span>
+<span class="linenos">145</span>
+<span class="linenos">146</span>    <span class="n">rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;RANK&#39;</span><span class="p">])</span>
+<span class="linenos">147</span>    <span class="n">world_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;WORLD_SIZE&#39;</span><span class="p">])</span>
+<span class="linenos">148</span>
+<span class="linenos">149</span>    <span class="c1"># Create a new Store by adding a prefix based on the current inprocess</span>
+<span class="linenos">150</span>    <span class="c1"># restart iteration. PrefixStore wraps the baseline TCPStore which is</span>
+<span class="linenos">151</span>    <span class="c1"># reused for all restart iterations</span>
+<span class="linenos">152</span>    <span class="n">store</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">PrefixStore</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">call_wrapper</span><span class="o">.</span><span class="n">iteration</span><span class="p">),</span> <span class="n">base_store</span><span class="p">)</span>
 <span class="linenos">153</span>
-<span class="linenos">154</span>    <span class="c1"># Create a new Store by adding a prefix based on the current inprocess</span>
-<span class="linenos">155</span>    <span class="c1"># restart iteration. PrefixStore wraps the baseline TCPStore which is</span>
-<span class="linenos">156</span>    <span class="c1"># reused for all restart iterations</span>
-<span class="linenos">157</span>    <span class="n">store</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">PrefixStore</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">call_wrapper</span><span class="o">.</span><span class="n">iteration</span><span class="p">),</span> <span class="n">base_store</span><span class="p">)</span>
-<span class="linenos">158</span>
-<span class="linenos">159</span>    <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">init_process_group</span><span class="p">(</span>
-<span class="linenos">160</span>        <span class="n">backend</span><span class="p">,</span>
-<span class="linenos">161</span>        <span class="n">store</span><span class="o">=</span><span class="n">store</span><span class="p">,</span>
-<span class="linenos">162</span>        <span class="n">rank</span><span class="o">=</span><span class="n">rank</span><span class="p">,</span>
-<span class="linenos">163</span>        <span class="n">world_size</span><span class="o">=</span><span class="n">world_size</span><span class="p">,</span>
-<span class="linenos">164</span>        <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
-<span class="linenos">165</span>    <span class="p">)</span>
-<span class="linenos">166</span>    <span class="n">model_ddp</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">parallel</span><span class="o">.</span><span class="n">DistributedDataParallel</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
-<span class="linenos">167</span>
-<span class="linenos">168</span>    <span class="n">iteration</span> <span class="o">=</span> <span class="mi">0</span>
-<span class="linenos">169</span>    <span class="n">loss</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">))</span>
-<span class="linenos">170</span>    <span class="n">checkpoint_path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">path</span><span class="p">)</span> <span class="o">/</span> <span class="s1">&#39;checkpoint.pt&#39;</span>
-<span class="linenos">171</span>
-<span class="linenos">172</span>    <span class="c1"># Application loads state from the latest checkpoint on every restart</span>
-<span class="linenos">173</span>    <span class="c1"># iteration of the wrapped function.</span>
-<span class="linenos">174</span>    <span class="k">if</span> <span class="n">checkpoint_path</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
-<span class="linenos">175</span>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">)</span>
-<span class="linenos">176</span>        <span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s1">&#39;model&#39;</span><span class="p">])</span>
-<span class="linenos">177</span>        <span class="n">opt</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s1">&#39;opt&#39;</span><span class="p">])</span>
-<span class="linenos">178</span>        <span class="n">torch</span><span class="o">.</span><span class="n">set_rng_state</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s1">&#39;rng&#39;</span><span class="p">])</span>
-<span class="linenos">179</span>        <span class="n">iteration</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s1">&#39;iteration&#39;</span><span class="p">]</span>
+<span class="linenos">154</span>    <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">init_process_group</span><span class="p">(</span>
+<span class="linenos">155</span>        <span class="n">backend</span><span class="p">,</span>
+<span class="linenos">156</span>        <span class="n">store</span><span class="o">=</span><span class="n">store</span><span class="p">,</span>
+<span class="linenos">157</span>        <span class="n">rank</span><span class="o">=</span><span class="n">rank</span><span class="p">,</span>
+<span class="linenos">158</span>        <span class="n">world_size</span><span class="o">=</span><span class="n">world_size</span><span class="p">,</span>
+<span class="linenos">159</span>        <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+<span class="linenos">160</span>    <span class="p">)</span>
+<span class="linenos">161</span>    <span class="n">model_ddp</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">parallel</span><span class="o">.</span><span class="n">DistributedDataParallel</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="linenos">162</span>
+<span class="linenos">163</span>    <span class="n">iteration</span> <span class="o">=</span> <span class="mi">0</span>
+<span class="linenos">164</span>    <span class="n">loss</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="s1">&#39;nan&#39;</span><span class="p">))</span>
+<span class="linenos">165</span>    <span class="n">checkpoint_path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">path</span><span class="p">)</span> <span class="o">/</span> <span class="s1">&#39;checkpoint.pt&#39;</span>
+<span class="linenos">166</span>
+<span class="linenos">167</span>    <span class="c1"># Application loads state from the latest checkpoint on every restart</span>
+<span class="linenos">168</span>    <span class="c1"># iteration of the wrapped function.</span>
+<span class="linenos">169</span>    <span class="k">if</span> <span class="n">checkpoint_path</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
+<span class="linenos">170</span>        <span class="n">checkpoint</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">)</span>
+<span class="linenos">171</span>        <span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s1">&#39;model&#39;</span><span class="p">])</span>
+<span class="linenos">172</span>        <span class="n">opt</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s1">&#39;opt&#39;</span><span class="p">])</span>
+<span class="linenos">173</span>        <span class="n">torch</span><span class="o">.</span><span class="n">set_rng_state</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">[</span><span class="s1">&#39;rng&#39;</span><span class="p">])</span>
+<span class="linenos">174</span>        <span class="n">iteration</span> <span class="o">=</span> <span class="n">checkpoint</span><span class="p">[</span><span class="s1">&#39;iteration&#39;</span><span class="p">]</span>
+<span class="linenos">175</span>
+<span class="linenos">176</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">seed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<span class="linenos">177</span>        <span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">seed</span> <span class="o">+</span> <span class="n">iteration</span> <span class="o">*</span> <span class="n">world_size</span> <span class="o">+</span> <span class="n">rank</span><span class="p">)</span>
+<span class="linenos">178</span>    <span class="k">else</span><span class="p">:</span>
+<span class="linenos">179</span>        <span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">perf_counter_ns</span><span class="p">())</span>
 <span class="linenos">180</span>
-<span class="linenos">181</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">seed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<span class="linenos">182</span>        <span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">seed</span> <span class="o">+</span> <span class="n">iteration</span> <span class="o">*</span> <span class="n">world_size</span> <span class="o">+</span> <span class="n">rank</span><span class="p">)</span>
-<span class="linenos">183</span>    <span class="k">else</span><span class="p">:</span>
-<span class="linenos">184</span>        <span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">perf_counter_ns</span><span class="p">())</span>
-<span class="linenos">185</span>
-<span class="linenos">186</span>    <span class="k">for</span> <span class="n">iteration</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">iteration</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">total_iterations</span><span class="p">):</span>
-<span class="linenos">187</span>
-<span class="linenos">188</span>        <span class="c1"># Application periodically saves a checkpoint. The checkpoint allows</span>
-<span class="linenos">189</span>        <span class="c1"># the application to continue from previous state after a restart.</span>
-<span class="linenos">190</span>        <span class="k">if</span> <span class="n">iteration</span> <span class="o">%</span> <span class="n">chkpt_interval</span> <span class="o">==</span> <span class="n">chkpt_interval</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
-<span class="linenos">191</span>            <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
-<span class="linenos">192</span>            <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-<span class="linenos">193</span>                <span class="n">checkpoint</span> <span class="o">=</span> <span class="p">{</span>
-<span class="linenos">194</span>                    <span class="s1">&#39;model&#39;</span><span class="p">:</span> <span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span>
-<span class="linenos">195</span>                    <span class="s1">&#39;opt&#39;</span><span class="p">:</span> <span class="n">opt</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span>
-<span class="linenos">196</span>                    <span class="s1">&#39;rng&#39;</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">get_rng_state</span><span class="p">(),</span>
-<span class="linenos">197</span>                    <span class="s1">&#39;iteration&#39;</span><span class="p">:</span> <span class="n">iteration</span><span class="p">,</span>
-<span class="linenos">198</span>                <span class="p">}</span>
-<span class="linenos">199</span>                <span class="c1"># Saving the checkpoint is performed within atomic() context</span>
-<span class="linenos">200</span>                <span class="c1"># manager to ensure that the main thread won&#39;t execute</span>
-<span class="linenos">201</span>                <span class="c1"># torch.save while a restart procedure is in progress.</span>
-<span class="linenos">202</span>                <span class="k">with</span> <span class="n">call_wrapper</span><span class="o">.</span><span class="n">atomic</span><span class="p">():</span>
-<span class="linenos">203</span>                    <span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="n">checkpoint_path</span><span class="p">)</span>
+<span class="linenos">181</span>    <span class="k">for</span> <span class="n">iteration</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">iteration</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">total_iterations</span><span class="p">):</span>
+<span class="linenos">182</span>
+<span class="linenos">183</span>        <span class="c1"># Application periodically saves a checkpoint. The checkpoint allows</span>
+<span class="linenos">184</span>        <span class="c1"># the application to continue from previous state after a restart.</span>
+<span class="linenos">185</span>        <span class="k">if</span> <span class="n">iteration</span> <span class="o">%</span> <span class="n">chkpt_interval</span> <span class="o">==</span> <span class="n">chkpt_interval</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
+<span class="linenos">186</span>            <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
+<span class="linenos">187</span>            <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<span class="linenos">188</span>                <span class="n">checkpoint</span> <span class="o">=</span> <span class="p">{</span>
+<span class="linenos">189</span>                    <span class="s1">&#39;model&#39;</span><span class="p">:</span> <span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span>
+<span class="linenos">190</span>                    <span class="s1">&#39;opt&#39;</span><span class="p">:</span> <span class="n">opt</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span>
+<span class="linenos">191</span>                    <span class="s1">&#39;rng&#39;</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">get_rng_state</span><span class="p">(),</span>
+<span class="linenos">192</span>                    <span class="s1">&#39;iteration&#39;</span><span class="p">:</span> <span class="n">iteration</span><span class="p">,</span>
+<span class="linenos">193</span>                <span class="p">}</span>
+<span class="linenos">194</span>                <span class="c1"># Saving the checkpoint is performed within atomic() context</span>
+<span class="linenos">195</span>                <span class="c1"># manager to ensure that the main thread won&#39;t execute</span>
+<span class="linenos">196</span>                <span class="c1"># torch.save while a restart procedure is in progress.</span>
+<span class="linenos">197</span>                <span class="k">with</span> <span class="n">call_wrapper</span><span class="o">.</span><span class="n">atomic</span><span class="p">():</span>
+<span class="linenos">198</span>                    <span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">checkpoint</span><span class="p">,</span> <span class="n">checkpoint_path</span><span class="p">)</span>
+<span class="linenos">199</span>
+<span class="linenos">200</span>        <span class="c1"># Randomly trigger an example fault</span>
+<span class="linenos">201</span>        <span class="k">if</span> <span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">()</span> <span class="o">&lt;</span> <span class="n">args</span><span class="o">.</span><span class="n">fault_prob</span><span class="p">:</span>
+<span class="linenos">202</span>            <span class="n">raise_timestamp</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter</span><span class="p">()</span>
+<span class="linenos">203</span>            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;example fault at </span><span class="si">{</span><span class="n">iteration</span><span class="si">=}</span><span class="s1"> from </span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
 <span class="linenos">204</span>
-<span class="linenos">205</span>        <span class="c1"># Randomly trigger an example fault</span>
-<span class="linenos">206</span>        <span class="k">if</span> <span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">()</span> <span class="o">&lt;</span> <span class="n">args</span><span class="o">.</span><span class="n">fault_prob</span><span class="p">:</span>
-<span class="linenos">207</span>            <span class="n">raise_timestamp</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">perf_counter</span><span class="p">()</span>
-<span class="linenos">208</span>            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;example fault at </span><span class="si">{</span><span class="n">iteration</span><span class="si">=}</span><span class="s1"> from </span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
-<span class="linenos">209</span>
-<span class="linenos">210</span>        <span class="n">inp</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">rand</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">size</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
-<span class="linenos">211</span>        <span class="n">model</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
-<span class="linenos">212</span>        <span class="n">out</span> <span class="o">=</span> <span class="n">model_ddp</span><span class="p">(</span><span class="n">inp</span><span class="p">)</span>
-<span class="linenos">213</span>        <span class="n">loss</span> <span class="o">=</span> <span class="n">out</span><span class="o">.</span><span class="n">square</span><span class="p">()</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
-<span class="linenos">214</span>        <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
-<span class="linenos">215</span>        <span class="n">opt</span><span class="o">.</span><span class="n">step</span><span class="p">()</span>
-<span class="linenos">216</span>        <span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
-<span class="linenos">217</span>
-<span class="linenos">218</span>        <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">iteration</span> <span class="o">%</span> <span class="n">log_interval</span> <span class="o">==</span> <span class="n">log_interval</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
-<span class="linenos">219</span>            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">iteration</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
-<span class="linenos">220</span>
-<span class="linenos">221</span>
-<span class="linenos">222</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-<span class="linenos">223</span>    <span class="n">args</span> <span class="o">=</span> <span class="n">parse_args</span><span class="p">()</span>
-<span class="linenos">224</span>    <span class="n">logging</span><span class="o">.</span><span class="n">basicConfig</span><span class="p">(</span>
-<span class="linenos">225</span>        <span class="nb">format</span><span class="o">=</span><span class="s2">&quot;</span><span class="si">%(asctime)s</span><span class="s2"> | </span><span class="si">%(levelname)s</span><span class="s2"> | </span><span class="si">%(name)s</span><span class="s2"> | </span><span class="si">%(message)s</span><span class="s2">&quot;</span><span class="p">,</span>
-<span class="linenos">226</span>        <span class="n">level</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">log_level</span><span class="p">,</span>
-<span class="linenos">227</span>    <span class="p">)</span>
-<span class="linenos">228</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">args</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
-<span class="linenos">229</span>
-<span class="linenos">230</span>    <span class="n">local_rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;LOCAL_RANK&#39;</span><span class="p">])</span>
-<span class="linenos">231</span>
-<span class="linenos">232</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">device</span> <span class="o">==</span> <span class="s1">&#39;cuda&#39;</span><span class="p">:</span>
-<span class="linenos">233</span>        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">local_rank</span><span class="p">)</span>
-<span class="linenos">234</span>        <span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s1">&#39;cuda&#39;</span><span class="p">)</span>
-<span class="linenos">235</span>        <span class="n">backend</span> <span class="o">=</span> <span class="s1">&#39;nccl&#39;</span>
-<span class="linenos">236</span>        <span class="n">timeout</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">150</span><span class="p">)</span>
-<span class="linenos">237</span>    <span class="k">elif</span> <span class="n">args</span><span class="o">.</span><span class="n">device</span> <span class="o">==</span> <span class="s1">&#39;cpu&#39;</span><span class="p">:</span>
-<span class="linenos">238</span>        <span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s1">&#39;cpu&#39;</span><span class="p">)</span>
-<span class="linenos">239</span>        <span class="n">backend</span> <span class="o">=</span> <span class="s1">&#39;gloo&#39;</span>
-<span class="linenos">240</span>        <span class="n">timeout</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
-<span class="linenos">241</span>    <span class="k">else</span><span class="p">:</span>
-<span class="linenos">242</span>        <span class="k">raise</span> <span class="ne">RuntimeError</span>
-<span class="linenos">243</span>
-<span class="linenos">244</span>    <span class="c1"># All objects created in ``main()`` are constructed only once, and reused</span>
-<span class="linenos">245</span>    <span class="c1"># for all restart iterations.</span>
-<span class="linenos">246</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">seed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<span class="linenos">247</span>        <span class="n">torch</span><span class="o">.</span><span class="n">manual_seed</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">seed</span><span class="p">)</span>
-<span class="linenos">248</span>    <span class="n">model</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span><span class="p">(</span>
-<span class="linenos">249</span>        <span class="o">*</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">size</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">layers</span><span class="p">)]</span>
-<span class="linenos">250</span>    <span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
-<span class="linenos">251</span>    <span class="n">opt</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">Adam</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="n">lr</span><span class="o">=</span><span class="mf">1e-5</span><span class="p">)</span>
-<span class="linenos">252</span>
-<span class="linenos">253</span>    <span class="c1"># TCPStore uses ``(MASTER_PORT + 2)`` to avoid conflicts with TCPStore</span>
-<span class="linenos">254</span>    <span class="c1"># created by ``torch.distributed.run`` and listening on ``MASTER_PORT``,</span>
-<span class="linenos">255</span>    <span class="c1"># and Wrapper&#39;s TCPStore listening on ``(MASTER_PORT + 1)``</span>
-<span class="linenos">256</span>    <span class="n">store</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">TCPStore</span><span class="p">(</span>
-<span class="linenos">257</span>        <span class="n">host_name</span><span class="o">=</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;MASTER_ADDR&#39;</span><span class="p">],</span>
-<span class="linenos">258</span>        <span class="n">port</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;MASTER_PORT&#39;</span><span class="p">])</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span>
-<span class="linenos">259</span>        <span class="n">world_size</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;WORLD_SIZE&#39;</span><span class="p">]),</span>
-<span class="linenos">260</span>        <span class="n">is_master</span><span class="o">=</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;RANK&#39;</span><span class="p">])</span> <span class="o">==</span> <span class="mi">0</span><span class="p">),</span>
-<span class="linenos">261</span>        <span class="n">multi_tenant</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<span class="linenos">262</span>        <span class="n">wait_for_workers</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<span class="linenos">263</span>        <span class="n">use_libuv</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<span class="linenos">264</span>    <span class="p">)</span>
-<span class="linenos">265</span>
-<span class="linenos">266</span>    <span class="c1"># Call the wrapped function.</span>
-<span class="linenos">267</span>    <span class="c1"># ``train()`` is automatically restarted to recover from faults.</span>
-<span class="linenos">268</span>    <span class="n">train</span><span class="p">(</span><span class="n">store</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">opt</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
-<span class="linenos">269</span>
+<span class="linenos">205</span>        <span class="n">inp</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">rand</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">size</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+<span class="linenos">206</span>        <span class="n">model</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
+<span class="linenos">207</span>        <span class="n">out</span> <span class="o">=</span> <span class="n">model_ddp</span><span class="p">(</span><span class="n">inp</span><span class="p">)</span>
+<span class="linenos">208</span>        <span class="n">loss</span> <span class="o">=</span> <span class="n">out</span><span class="o">.</span><span class="n">square</span><span class="p">()</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+<span class="linenos">209</span>        <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
+<span class="linenos">210</span>        <span class="n">opt</span><span class="o">.</span><span class="n">step</span><span class="p">()</span>
+<span class="linenos">211</span>        <span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span>
+<span class="linenos">212</span>
+<span class="linenos">213</span>        <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">iteration</span> <span class="o">%</span> <span class="n">log_interval</span> <span class="o">==</span> <span class="n">log_interval</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
+<span class="linenos">214</span>            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">iteration</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">loss</span><span class="o">.</span><span class="n">item</span><span class="p">()</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
+<span class="linenos">215</span>
+<span class="linenos">216</span>
+<span class="linenos">217</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+<span class="linenos">218</span>    <span class="n">args</span> <span class="o">=</span> <span class="n">parse_args</span><span class="p">()</span>
+<span class="linenos">219</span>    <span class="n">logging</span><span class="o">.</span><span class="n">basicConfig</span><span class="p">(</span>
+<span class="linenos">220</span>        <span class="nb">format</span><span class="o">=</span><span class="s2">&quot;</span><span class="si">%(asctime)s</span><span class="s2"> | </span><span class="si">%(levelname)s</span><span class="s2"> | </span><span class="si">%(name)s</span><span class="s2"> | </span><span class="si">%(message)s</span><span class="s2">&quot;</span><span class="p">,</span>
+<span class="linenos">221</span>        <span class="n">level</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">log_level</span><span class="p">,</span>
+<span class="linenos">222</span>    <span class="p">)</span>
+<span class="linenos">223</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">args</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+<span class="linenos">224</span>
+<span class="linenos">225</span>    <span class="n">local_rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;LOCAL_RANK&#39;</span><span class="p">])</span>
+<span class="linenos">226</span>
+<span class="linenos">227</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">device</span> <span class="o">==</span> <span class="s1">&#39;cuda&#39;</span><span class="p">:</span>
+<span class="linenos">228</span>        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">local_rank</span><span class="p">)</span>
+<span class="linenos">229</span>        <span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s1">&#39;cuda&#39;</span><span class="p">)</span>
+<span class="linenos">230</span>        <span class="n">backend</span> <span class="o">=</span> <span class="s1">&#39;nccl&#39;</span>
+<span class="linenos">231</span>        <span class="n">timeout</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">150</span><span class="p">)</span>
+<span class="linenos">232</span>    <span class="k">elif</span> <span class="n">args</span><span class="o">.</span><span class="n">device</span> <span class="o">==</span> <span class="s1">&#39;cpu&#39;</span><span class="p">:</span>
+<span class="linenos">233</span>        <span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s1">&#39;cpu&#39;</span><span class="p">)</span>
+<span class="linenos">234</span>        <span class="n">backend</span> <span class="o">=</span> <span class="s1">&#39;gloo&#39;</span>
+<span class="linenos">235</span>        <span class="n">timeout</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<span class="linenos">236</span>    <span class="k">else</span><span class="p">:</span>
+<span class="linenos">237</span>        <span class="k">raise</span> <span class="ne">RuntimeError</span>
+<span class="linenos">238</span>
+<span class="linenos">239</span>    <span class="c1"># All objects created in ``main()`` are constructed only once, and reused</span>
+<span class="linenos">240</span>    <span class="c1"># for all restart iterations.</span>
+<span class="linenos">241</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">seed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<span class="linenos">242</span>        <span class="n">torch</span><span class="o">.</span><span class="n">manual_seed</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">seed</span><span class="p">)</span>
+<span class="linenos">243</span>    <span class="n">model</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span><span class="p">(</span>
+<span class="linenos">244</span>        <span class="o">*</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">size</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">layers</span><span class="p">)]</span>
+<span class="linenos">245</span>    <span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+<span class="linenos">246</span>    <span class="n">opt</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">Adam</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="n">lr</span><span class="o">=</span><span class="mf">1e-5</span><span class="p">)</span>
+<span class="linenos">247</span>
+<span class="linenos">248</span>    <span class="c1"># TCPStore uses ``(MASTER_PORT + 2)`` to avoid conflicts with TCPStore</span>
+<span class="linenos">249</span>    <span class="c1"># created by ``torch.distributed.run`` and listening on ``MASTER_PORT``,</span>
+<span class="linenos">250</span>    <span class="c1"># and Wrapper&#39;s TCPStore listening on ``(MASTER_PORT + 1)``</span>
+<span class="linenos">251</span>    <span class="n">store</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">TCPStore</span><span class="p">(</span>
+<span class="linenos">252</span>        <span class="n">host_name</span><span class="o">=</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;MASTER_ADDR&#39;</span><span class="p">],</span>
+<span class="linenos">253</span>        <span class="n">port</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;MASTER_PORT&#39;</span><span class="p">])</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span>
+<span class="linenos">254</span>        <span class="n">world_size</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;WORLD_SIZE&#39;</span><span class="p">]),</span>
+<span class="linenos">255</span>        <span class="n">is_master</span><span class="o">=</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;RANK&#39;</span><span class="p">])</span> <span class="o">==</span> <span class="mi">0</span><span class="p">),</span>
+<span class="linenos">256</span>        <span class="n">multi_tenant</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="linenos">257</span>        <span class="n">wait_for_workers</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="linenos">258</span>        <span class="n">use_libuv</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="linenos">259</span>    <span class="p">)</span>
+<span class="linenos">260</span>
+<span class="linenos">261</span>    <span class="c1"># TCPStore created by the Wrapper uses ``(MASTER_PORT + 1)`` port for the</span>
+<span class="linenos">262</span>    <span class="c1"># internal Wrapper&#39;s TCPStore to avoid conflicts with application&#39;s TCPStore</span>
+<span class="linenos">263</span>    <span class="c1"># listening on ``(MASTER_PORT + 2)``, and with a TCPStore created by</span>
+<span class="linenos">264</span>    <span class="c1"># ``torch.distributed.run`` listening on ``MASTER_PORT``.</span>
+<span class="linenos">265</span>    <span class="c1">#</span>
+<span class="linenos">266</span>    <span class="n">wrapper_kwargs</span> <span class="o">=</span> <span class="p">{</span>
+<span class="linenos">267</span>        <span class="s1">&#39;store_kwargs&#39;</span><span class="p">:</span> <span class="p">{</span><span class="s1">&#39;port&#39;</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s1">&#39;MASTER_PORT&#39;</span><span class="p">,</span> <span class="mi">29500</span><span class="p">))</span> <span class="o">+</span> <span class="mi">1</span><span class="p">},</span>
+<span class="linenos">268</span>        <span class="s1">&#39;health_check&#39;</span><span class="p">:</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">health_check</span><span class="o">.</span><span class="n">CudaHealthCheck</span><span class="p">(),</span>
+<span class="linenos">269</span>    <span class="p">}</span>
 <span class="linenos">270</span>
-<span class="linenos">271</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s1">&#39;__main__&#39;</span><span class="p">:</span>
-<span class="linenos">272</span>    <span class="n">main</span><span class="p">()</span>
+<span class="linenos">271</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">nested_restarter</span><span class="p">:</span>
+<span class="linenos">272</span>        <span class="n">wrapper_kwargs</span><span class="p">[</span><span class="s1">&#39;initialize&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterHandlingCompleted</span><span class="p">()</span>
+<span class="linenos">273</span>        <span class="n">wrapper_kwargs</span><span class="p">[</span><span class="s1">&#39;abort&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
+<span class="linenos">274</span>            <span class="n">inprocess</span><span class="o">.</span><span class="n">abort</span><span class="o">.</span><span class="n">AbortTorchDistributed</span><span class="p">(),</span>
+<span class="linenos">275</span>            <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterHandlingStarting</span><span class="p">(),</span>
+<span class="linenos">276</span>        <span class="p">)</span>
+<span class="linenos">277</span>        <span class="n">wrapper_kwargs</span><span class="p">[</span><span class="s1">&#39;completion_callback&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
+<span class="linenos">278</span>            <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterFinalized</span><span class="p">()</span>
+<span class="linenos">279</span>        <span class="p">)</span>
+<span class="linenos">280</span>        <span class="n">wrapper_kwargs</span><span class="p">[</span><span class="s1">&#39;terminate_callback&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterAborted</span><span class="p">()</span>
+<span class="linenos">281</span>
+<span class="linenos">282</span>    <span class="c1"># An instance of ``inprocess.CallWrapper` is automatically injected into</span>
+<span class="linenos">283</span>    <span class="c1"># wrapped function arguments when Wrapper is invoked.</span>
+<span class="linenos">284</span>    <span class="n">wrapped_train</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">Wrapper</span><span class="p">(</span><span class="o">**</span><span class="n">wrapper_kwargs</span><span class="p">)(</span><span class="n">train</span><span class="p">)</span>
+<span class="linenos">285</span>
+<span class="linenos">286</span>    <span class="c1"># Call the wrapped function.</span>
+<span class="linenos">287</span>    <span class="c1"># ``wrapped_train()`` is automatically restarted to recover from faults.</span>
+<span class="linenos">288</span>    <span class="n">wrapped_train</span><span class="p">(</span><span class="n">store</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">opt</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+<span class="linenos">289</span>
+<span class="linenos">290</span>
+<span class="linenos">291</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s1">&#39;__main__&#39;</span><span class="p">:</span>
+<span class="linenos">292</span>    <span class="n">main</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>
