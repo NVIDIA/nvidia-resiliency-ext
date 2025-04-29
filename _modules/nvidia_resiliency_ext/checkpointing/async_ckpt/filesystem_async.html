@@ -95,6 +95,7 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pickle</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">queue</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">functools</span><span class="w"> </span><span class="kn">import</span> <span class="n">partial</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">heapq</span><span class="w"> </span><span class="kn">import</span> <span class="n">heappop</span><span class="p">,</span> <span class="n">heappush</span>
@@ -109,6 +110,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">multiprocessing</span> <span class="k">as</span> <span class="n">mp</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileSystemWriter</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.filesystem</span><span class="w"> </span><span class="kn">import</span> <span class="n">DEFAULT_SUFFIX</span><span class="p">,</span> <span class="n">_StoragePrefix</span><span class="p">,</span> <span class="n">_write_item</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.metadata</span><span class="w"> </span><span class="kn">import</span> <span class="n">Metadata</span>
 
 <span class="k">try</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.filesystem</span><span class="w"> </span><span class="kn">import</span> <span class="n">_StorageWriterTransforms</span>
@@ -157,8 +159,13 @@
 <span class="sd">    (intermediate state is stored as writer attributes).</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="n">separation_hint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
-        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">PathLike</span><span class="p">],</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="n">separation_hint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span>
+    <span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span> <span class="o">=</span> <span class="n">path</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">use_msc</span> <span class="o">=</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;use_msc&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">single_file_per_rank</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span>
                 <span class="s1">&#39;single_file_per_rank flag not supported for FileSystemWriterAsync&#39;</span>
@@ -241,7 +248,11 @@
                 <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">bytes_data</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">tensor_data</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
                     <span class="n">file_name</span> <span class="o">=</span> <span class="n">gen_file</span><span class="p">(</span><span class="n">prefix</span><span class="o">=</span><span class="n">group_name</span><span class="p">)</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
-                        <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span> <span class="o">/</span> <span class="n">file_name</span><span class="p">,</span> <span class="n">file_name</span><span class="p">,</span> <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">))</span>
+                        <span class="p">(</span>
+                            <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="n">file_name</span><span class="p">),</span>
+                            <span class="n">file_name</span><span class="p">,</span>
+                            <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">),</span>
+                        <span class="p">)</span>
                     <span class="p">)</span>
 
         <span class="c1"># Check if there is anything to write on this rank</span>
@@ -274,7 +285,7 @@
             <span class="k">return</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="p">()</span>
         <span class="n">transform_list</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">transforms</span><span class="p">]</span> <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;transforms&#39;</span><span class="p">)</span> <span class="k">else</span> <span class="p">[]</span>
         <span class="k">return</span> <span class="p">(</span>
-            <span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">write_preloaded_data_multiproc</span><span class="p">,</span> <span class="n">transform_list</span><span class="p">),</span>
+            <span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">write_preloaded_data_multiproc</span><span class="p">,</span> <span class="n">transform_list</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_msc</span><span class="p">),</span>
             <span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">preload_tensors</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">,</span> <span class="kc">True</span><span class="p">),</span>
             <span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">(),</span> <span class="bp">self</span><span class="o">.</span><span class="n">write_buckets</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span><span class="p">],</span>
         <span class="p">)</span></div>
@@ -310,6 +321,7 @@
     <span class="nd">@_disable_gc</span><span class="p">()</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">write_preloaded_data_multiproc</span><span class="p">(</span>
         <span class="n">transform_list</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">_StorageWriterTransforms</span><span class="p">],</span>
+        <span class="n">use_msc</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
         <span class="n">rank</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
         <span class="n">write_buckets</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteBucket</span><span class="p">],</span>
         <span class="n">global_results_queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Queue</span><span class="p">,</span>
@@ -345,10 +357,22 @@
         <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">write_bucket</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">):</span>
             <span class="k">try</span><span class="p">:</span>
                 <span class="n">count_queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">i</span><span class="p">)</span>
+
+                <span class="n">kwargs</span> <span class="o">=</span> <span class="p">{</span>
+                    <span class="s1">&#39;local_proc_idx&#39;</span><span class="p">:</span> <span class="n">i</span><span class="p">,</span>
+                    <span class="s1">&#39;write_bucket&#39;</span><span class="p">:</span> <span class="n">write_bucket</span><span class="p">,</span>
+                    <span class="s1">&#39;results_queue&#39;</span><span class="p">:</span> <span class="n">local_results_queue</span><span class="p">,</span>
+                    <span class="s1">&#39;count_queue&#39;</span><span class="p">:</span> <span class="n">count_queue</span><span class="p">,</span>
+                    <span class="s1">&#39;use_fsync&#39;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
+                <span class="p">}</span>
+
+                <span class="k">if</span> <span class="n">use_msc</span><span class="p">:</span>
+                    <span class="n">kwargs</span><span class="p">[</span><span class="s1">&#39;use_msc&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">use_msc</span>
+
                 <span class="n">p_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
                     <span class="n">ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span>
                         <span class="n">target</span><span class="o">=</span><span class="n">partial</span><span class="p">(</span><span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">write_preloaded_data</span><span class="p">,</span> <span class="n">transform_list</span><span class="p">),</span>
-                        <span class="n">args</span><span class="o">=</span><span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">write_bucket</span><span class="p">,</span> <span class="n">local_results_queue</span><span class="p">,</span> <span class="n">count_queue</span><span class="p">,</span> <span class="kc">True</span><span class="p">),</span>
+                        <span class="n">kwargs</span><span class="o">=</span><span class="n">kwargs</span><span class="p">,</span>
                     <span class="p">)</span>
                 <span class="p">)</span>
             <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
@@ -407,6 +431,7 @@
         <span class="n">results_queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">SimpleQueue</span><span class="p">,</span>
         <span class="n">count_queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">,</span>
         <span class="n">use_fsync</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="o">**</span><span class="n">kwargs</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Performs actual data saving to storage.</span>
@@ -424,11 +449,18 @@
         <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">local_proc_idx</span><span class="si">}</span><span class="s1"> started&#39;</span><span class="p">)</span>
         <span class="n">mem_before</span> <span class="o">=</span> <span class="n">_process_memory</span><span class="p">()</span>
+        <span class="n">use_msc</span> <span class="o">=</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;use_msc&#39;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
 
         <span class="n">local_results</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="n">file_name</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">,</span> <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">write_bucket</span>
-            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">file_name</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">stream</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">use_msc</span><span class="p">:</span>
+                <span class="kn">import</span><span class="w"> </span><span class="nn">multistorageclient</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">msc</span>
+
+                <span class="n">open_file</span> <span class="o">=</span> <span class="n">msc</span><span class="o">.</span><span class="n">open</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">open_file</span> <span class="o">=</span> <span class="nb">open</span>
+            <span class="k">with</span> <span class="n">open_file</span><span class="p">(</span><span class="n">file_name</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">stream</span><span class="p">:</span>
                 <span class="k">for</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">data</span> <span class="ow">in</span> <span class="n">bytes_data</span><span class="p">:</span>
                     <span class="n">local_results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
                         <span class="n">_write_item</span><span class="p">(</span><span class="o">*</span><span class="n">transform_list</span><span class="p">,</span> <span class="n">stream</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">)</span>
@@ -441,7 +473,10 @@
                     <span class="p">)</span>
 
                 <span class="k">if</span> <span class="n">use_fsync</span><span class="p">:</span>
-                    <span class="n">os</span><span class="o">.</span><span class="n">fsync</span><span class="p">(</span><span class="n">stream</span><span class="o">.</span><span class="n">fileno</span><span class="p">())</span>
+                    <span class="k">if</span> <span class="n">use_msc</span><span class="p">:</span>
+                        <span class="n">stream</span><span class="o">.</span><span class="n">fsync</span><span class="p">()</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">os</span><span class="o">.</span><span class="n">fsync</span><span class="p">(</span><span class="n">stream</span><span class="o">.</span><span class="n">fileno</span><span class="p">())</span>
             <span class="n">local_output</span> <span class="o">=</span> <span class="p">(</span><span class="n">local_proc_idx</span><span class="p">,</span> <span class="n">local_results</span><span class="p">)</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">local_proc_idx</span><span class="si">}</span><span class="s1"> failed&#39;</span><span class="p">)</span>
@@ -514,6 +549,64 @@
         <span class="k">return</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span>
             <span class="n">local_plan</span><span class="p">,</span> <span class="n">storage_data</span><span class="o">=</span><span class="n">_StoragePrefix</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;__</span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">_&quot;</span><span class="p">)</span>
         <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.finish">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.finish">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">finish</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">metadata</span><span class="p">:</span> <span class="n">Metadata</span><span class="p">,</span> <span class="n">results</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteResult</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Finish the checkpointing process.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            metadata (Metadata): metadata to save</span>
+<span class="sd">            results (List[List[WriteResult]]): results to save</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_msc</span><span class="p">:</span>
+            <span class="kn">import</span><span class="w"> </span><span class="nn">multistorageclient</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">msc</span>
+
+            <span class="n">storage_md</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">()</span>
+            <span class="k">for</span> <span class="n">wr_list</span> <span class="ow">in</span> <span class="n">results</span><span class="p">:</span>
+                <span class="n">storage_md</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">wr</span><span class="o">.</span><span class="n">index</span><span class="p">:</span> <span class="n">wr</span><span class="o">.</span><span class="n">storage_data</span> <span class="k">for</span> <span class="n">wr</span> <span class="ow">in</span> <span class="n">wr_list</span><span class="p">})</span>
+
+            <span class="n">metadata</span><span class="o">.</span><span class="n">storage_data</span> <span class="o">=</span> <span class="n">storage_md</span>
+            <span class="n">metadata</span><span class="o">.</span><span class="n">storage_meta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage_meta</span><span class="p">()</span>
+
+            <span class="n">path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;.metadata&quot;</span><span class="p">)</span>
+
+            <span class="k">with</span> <span class="n">msc</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">metadata_file</span><span class="p">:</span>
+                <span class="n">pickle</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">metadata_file</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">results</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.prepare_local_plan">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_local_plan">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">prepare_local_plan</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">plan</span><span class="p">:</span> <span class="n">SavePlan</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SavePlan</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Prepare the local plan for the checkpointing process.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_msc</span><span class="p">:</span>
+            <span class="kn">import</span><span class="w"> </span><span class="nn">multistorageclient</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">msc</span>
+
+            <span class="n">msc</span><span class="o">.</span><span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">),</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">prepare_local_plan</span><span class="p">(</span><span class="n">plan</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">plan</span></div>
+
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">checkpoint_id</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">PathLike</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        return the checkpoint_id that will be used to save the checkpoint.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">)</span>
+
+<div class="viewcode-block" id="FileSystemWriterAsync.validate_checkpoint_id">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.validate_checkpoint_id">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">validate_checkpoint_id</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">checkpoint_id</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">PathLike</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">True</span></div>
 </div>
 
 
