@@ -367,22 +367,20 @@
 <span class="linenos">274</span>            <span class="n">inprocess</span><span class="o">.</span><span class="n">abort</span><span class="o">.</span><span class="n">AbortTorchDistributed</span><span class="p">(),</span>
 <span class="linenos">275</span>            <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterHandlingStarting</span><span class="p">(),</span>
 <span class="linenos">276</span>        <span class="p">)</span>
-<span class="linenos">277</span>        <span class="n">wrapper_kwargs</span><span class="p">[</span><span class="s1">&#39;completion_callback&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
-<span class="linenos">278</span>            <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterFinalized</span><span class="p">()</span>
-<span class="linenos">279</span>        <span class="p">)</span>
-<span class="linenos">280</span>        <span class="n">wrapper_kwargs</span><span class="p">[</span><span class="s1">&#39;terminate_callback&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterAborted</span><span class="p">()</span>
-<span class="linenos">281</span>
-<span class="linenos">282</span>    <span class="c1"># An instance of ``inprocess.CallWrapper` is automatically injected into</span>
-<span class="linenos">283</span>    <span class="c1"># wrapped function arguments when Wrapper is invoked.</span>
-<span class="linenos">284</span>    <span class="n">wrapped_train</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">Wrapper</span><span class="p">(</span><span class="o">**</span><span class="n">wrapper_kwargs</span><span class="p">)(</span><span class="n">train</span><span class="p">)</span>
-<span class="linenos">285</span>
-<span class="linenos">286</span>    <span class="c1"># Call the wrapped function.</span>
-<span class="linenos">287</span>    <span class="c1"># ``wrapped_train()`` is automatically restarted to recover from faults.</span>
-<span class="linenos">288</span>    <span class="n">wrapped_train</span><span class="p">(</span><span class="n">store</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">opt</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
-<span class="linenos">289</span>
-<span class="linenos">290</span>
-<span class="linenos">291</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s1">&#39;__main__&#39;</span><span class="p">:</span>
-<span class="linenos">292</span>    <span class="n">main</span><span class="p">()</span>
+<span class="linenos">277</span>        <span class="n">wrapper_kwargs</span><span class="p">[</span><span class="s1">&#39;completion&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterFinalized</span><span class="p">()</span>
+<span class="linenos">278</span>        <span class="n">wrapper_kwargs</span><span class="p">[</span><span class="s1">&#39;terminate&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">nested_restarter</span><span class="o">.</span><span class="n">NestedRestarterAborted</span><span class="p">()</span>
+<span class="linenos">279</span>
+<span class="linenos">280</span>    <span class="c1"># An instance of ``inprocess.CallWrapper` is automatically injected into</span>
+<span class="linenos">281</span>    <span class="c1"># wrapped function arguments when Wrapper is invoked.</span>
+<span class="linenos">282</span>    <span class="n">wrapped_train</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">Wrapper</span><span class="p">(</span><span class="o">**</span><span class="n">wrapper_kwargs</span><span class="p">)(</span><span class="n">train</span><span class="p">)</span>
+<span class="linenos">283</span>
+<span class="linenos">284</span>    <span class="c1"># Call the wrapped function.</span>
+<span class="linenos">285</span>    <span class="c1"># ``wrapped_train()`` is automatically restarted to recover from faults.</span>
+<span class="linenos">286</span>    <span class="n">wrapped_train</span><span class="p">(</span><span class="n">store</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">opt</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">timeout</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+<span class="linenos">287</span>
+<span class="linenos">288</span>
+<span class="linenos">289</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s1">&#39;__main__&#39;</span><span class="p">:</span>
+<span class="linenos">290</span>    <span class="n">main</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>
