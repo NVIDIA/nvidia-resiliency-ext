@@ -19,6 +19,7 @@ import os
 import pathlib
 from typing import Optional, Union
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 
 from ._utils import (

@@ -18,12 +18,17 @@ import datetime
 import multiprocessing
 import unittest
 
+from nvidia_resiliency_ext.common.device_utils import (
+    get_current_device, 
+    get_distributed_backend, 
+    get_distributed_init_method
+)
+
 import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
 
 from . import common
-
 
 @common.apply_all_tests(common.retry())
 @unittest.skipIf(not torch.cuda.is_available(), 'cuda not available')
@@ -50,29 +55,36 @@ class TestAbort(unittest.TestCase):
 
         def run(rank, world_size, barrier):
             abort = inprocess.abort.AbortTorchDistributed()
-
+            device = get_current_device()
             store = torch.distributed.TCPStore(
                 host_name='localhost',
                 port=29501,
                 is_master=(rank == 0),
                 timeout=datetime.timedelta(seconds=5),
-            )
-            torch.cuda.set_device(rank)
-            device = torch.device('cuda')
-            torch.distributed.init_process_group(
-                backend='nccl', store=store, rank=rank, world_size=world_size
-            )
+            ) if torch.cuda.is_available() else None
+            if store is not None:
+                torch.distributed.init_process_group(
+                    backend='nccl', store=store, rank=rank, world_size=world_size
+                )
+            else:
+                torch.distributed.init_process_group(
+                    backend=get_distributed_backend(), 
+                    init_method=get_distributed_init_method(),
+                    rank=rank, world_size=world_size
+                )
             barrier.wait()
             size = 128
             t1 = torch.ones(size, device=device)
             t2 = torch.ones(size, device=device)
-            default_group = torch.distributed.distributed_c10d._get_default_group()
+            default_group = torch.distributed.group.WORLD
             torch.distributed.all_reduce(t1, group=default_group)
-            torch.cuda.synchronize()
-            new_group = torch.distributed.new_group([0])
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            new_group = torch.distributed.new_group([0], backend=get_distributed_backend())
             if rank == 0:
                 torch.distributed.all_reduce(t2, group=new_group)
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
             for i in range(3):
                 if rank == 0:
@@ -84,7 +96,8 @@ class TestAbort(unittest.TestCase):
                 if i == 2 and rank == 0:
                     abort(None)
                     break
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
         exitcodes = self.launch(run)
         self.assertTrue(all(ec == 0 for ec in exitcodes), exitcodes)
