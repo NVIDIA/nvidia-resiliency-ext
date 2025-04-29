@@ -274,10 +274,8 @@ def main():
             inprocess.abort.AbortTorchDistributed(),
             inprocess.nested_restarter.NestedRestarterHandlingStarting(),
         )
-        wrapper_kwargs['completion_callback'] = (
-            inprocess.nested_restarter.NestedRestarterFinalized()
-        )
-        wrapper_kwargs['terminate_callback'] = inprocess.nested_restarter.NestedRestarterAborted()
+        wrapper_kwargs['completion'] = inprocess.nested_restarter.NestedRestarterFinalized()
+        wrapper_kwargs['terminate'] = inprocess.nested_restarter.NestedRestarterAborted()
 
     # An instance of ``inprocess.CallWrapper` is automatically injected into
     # wrapped function arguments when Wrapper is invoked.

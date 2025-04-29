@@ -15,8 +15,7 @@
 # limitations under the License.
 
 from . import (
-    callback_completion,
-    callback_terminate,
+    completion,
     exception,
     finalize,
     health_check,
@@ -25,6 +24,7 @@ from . import (
     nested_restarter,
     rank_assignment,
     state,
+    terminate,
 )
 from .compose import Compose
 from .state import FrozenState, Mode, State

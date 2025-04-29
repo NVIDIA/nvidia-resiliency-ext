@@ -19,10 +19,10 @@ from typing import Optional
 
 from ..fault_tolerance.rank_monitor_server import RankMonitorLogger
 from .abort import Abort
-from .callback_completion import CompletionCallback
-from .callback_terminate import TerminateCallback
+from .completion import Completion
 from .initialize import Initialize
 from .state import FrozenState
+from .terminate import Terminate
 
 
 class NestedRestarterLogger(RankMonitorLogger):
@@ -90,7 +90,7 @@ class NestedRestarterHandlingStarting(Abort, NestedRestarterCallback):
 
 
 @dataclasses.dataclass
-class NestedRestarterFinalized(CompletionCallback, NestedRestarterCallback):
+class NestedRestarterFinalized(Completion, NestedRestarterCallback):
     restarter_state: str = 'finalized'
 
     def __call__(self, state: FrozenState) -> FrozenState:
@@ -98,7 +98,7 @@ class NestedRestarterFinalized(CompletionCallback, NestedRestarterCallback):
 
 
 @dataclasses.dataclass
-class NestedRestarterAborted(TerminateCallback, NestedRestarterCallback):
+class NestedRestarterAborted(Terminate, NestedRestarterCallback):
     restarter_state: str = 'aborted'
 
     def __call__(self, state: FrozenState) -> FrozenState:
