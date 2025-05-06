@@ -146,7 +146,7 @@ Currently, only an instance of <cite>FileSystemWriterAsync</cite> is supported.<
 - <cite>cached_central_plan</cite> (SavePlan): A globally coordinated save plan cached in the previous iteration.
 - <cite>cached_local_plan</cite> (SavePlan): A local plan cached in the previous iteration.
 - <cite>validated_cache_reuse</cite> (bool): Whether global metadata and the planning dict are consistent over iterations.</p></li>
-<li><p><strong>loaded_all_plans</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.7)"><em>SavePlan</em></a><em>] </em><em>| </em><em>None</em>)</p></li>
+<li><p><strong>loaded_all_plans</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.7)"><em>SavePlan</em></a><em>] </em><em>| </em><em>None</em>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
@@ -175,9 +175,9 @@ Currently, only an instance of <cite>FileSystemWriterAsync</cite> is supported.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>loaded_all_plans</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.7)"><em>SavePlan</em></a><em>]</em>) – List[SavePlan], The loaded plans from the checkpoint
+<li><p><strong>loaded_all_plans</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.7)"><em>SavePlan</em></a><em>]</em>) – List[SavePlan], The loaded plans from the checkpoint
 (stored in checkpoint metadata).</p></li>
-<li><p><strong>local_plan</strong> (<a class="reference external" href="https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.7)"><em>SavePlan</em></a>) – SavePlan, The local save plan.</p></li>
+<li><p><strong>local_plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.7)"><em>SavePlan</em></a>) – SavePlan, The local save plan.</p></li>
 <li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – Current process rank.</p></li>
 <li><p><strong>dist_wrapper</strong> (<em>_DistWrapper</em>) – distributed wrapper created during planning</p></li>
 </ul>
