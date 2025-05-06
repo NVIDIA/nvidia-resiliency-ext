@@ -102,3 +102,20 @@ class AbortTorchDistributed(Abort):
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
         return state
+
+
+class AbortTransformerEngine(Abort):
+    r'''
+    Aborts TransformerEngine Userbuffer.
+
+    '''
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        try:
+            import transformer_engine.pytorch as te
+        except Exception:
+            pass
+        else:
+            te.module.base.destroy_ub()
+
+        return state
