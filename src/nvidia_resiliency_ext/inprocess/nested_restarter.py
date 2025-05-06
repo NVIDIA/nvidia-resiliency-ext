@@ -79,6 +79,8 @@ class NestedRestarterHandlingCompleted(Initialize, NestedRestarterCallback):
             self.restarter_state = 'handling'
             self.restarter_stage = 'completed'
 
+        return state
+
 
 @dataclasses.dataclass
 class NestedRestarterHandlingStarting(Abort, NestedRestarterCallback):
