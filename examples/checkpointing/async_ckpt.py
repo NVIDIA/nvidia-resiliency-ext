@@ -66,10 +66,9 @@ def init_distributed_backend(backend="nccl"):
 def cleanup(ckpt_dir):
     if dist.get_rank() == 0:
         logging.info(f"Cleaning up checkpoint directory: {ckpt_dir}")
-        for item in os.listdir(ckpt_dir):
-            for file_item in os.scandir(ckpt_dir):
-                if file_item.is_file():
-                    os.remove(file_item.path)
+        for file_item in os.scandir(ckpt_dir):
+            if file_item.is_file():
+                os.remove(file_item.path)
 
 
 def main():
@@ -86,7 +85,7 @@ def main():
     ckpt_dir = args.ckpt_dir
     if not os.path.isdir(ckpt_dir):
         raise Exception(f"{ckpt_dir} directory doesn't exists")
-    ckpt_file_name = f"{ckpt_dir}/ckpt_rank{torch.distributed.get_rank()}.pt"
+    ckpt_file_name = os.path.join(ckpt_dir, f"ckpt_rank{torch.distributed.get_rank()}.pt")
 
     ckpt_impl = TorchAsyncCheckpoint(persistent_queue=args.persistent_queue)
 
