@@ -21,7 +21,7 @@ Each CheckpointManager handles tasks such as:
     - saving and loading checkpoints using the implemented backend.
 
 It uses a state_dict interface, requiring users to adjust the state_dict as needed,
-with MCore facilitating these modifications.
+with the caller responsible for facilitating these modifications.
 """
 
 import logging
