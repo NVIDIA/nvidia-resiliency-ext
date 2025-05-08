@@ -33,6 +33,7 @@ import torch
 class Fault(enum.Enum):
     GPU_ERROR = enum.auto()
     GPU_SLEEP = enum.auto()
+    WORKLOAD_EXC = enum.auto()
     ASYNC_EXC = enum.auto()
     SIGNAL_EXC = enum.auto()
     OS_ABORT = enum.auto()
@@ -69,6 +70,27 @@ def termination_signal_handler(signum, frame):
     if not sys.is_finalizing():
         raise InjectedException
 
+workload_raise_event = threading.Event()
+
+def workload_exception(delay, callback):
+    time.sleep(delay)
+    log = logging.getLogger(__name__)
+    log.critical('raising workload exception')
+    if callback is not None:
+        callback()
+    workload_raise_event.set()
+
+def maybe_raise_workload_exception():
+    """
+    Called in a workload as partner to workload_exception.
+
+    When the workload_exception is triggered, a sentinel is set
+    and if a workload calls this function, it can raise a gentle
+    exception.
+    """
+    if workload_raise_event.is_set():
+        workload_raise_event.clear()
+        raise InjectedException
 
 def async_raise_exception(tid, delay, callback):
     time.sleep(delay)
@@ -176,6 +198,9 @@ def inject_fault(
                 args=(threading.main_thread().ident, delay, callback),
                 daemon=True,
             )
+            thread.start()
+        elif fault == Fault.WORKLOAD_EXC:
+            thread = threading.Thread(target=workload_exception, args=(delay, callback), daemon=True)
             thread.start()
         elif fault == Fault.SIGNAL_EXC:
             signal.signal(signal.SIGUSR1, termination_signal_handler)
