@@ -194,7 +194,7 @@ user-launched processes have fully exited before ending the distributed job.</p>
 </section>
 <section id="restrictions">
 <h2>Restrictions<a class="headerlink" href="#restrictions" title="Link to this heading"></a></h2>
-<ul class="simple">
+<ul>
 <li><p>node failure on rank 0 causes termination of the entire job; by default, rank
 0 hosts internal <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.html#torch.distributed.TCPStore" title="(in PyTorch v2.7)"><code class="xref py py-class docutils literal notranslate"><span class="pre">torch.distributed.TCPStore</span></code></a> to allow
 communication between ranks, users may specify a different implementation of
@@ -207,6 +207,18 @@ collectives are asynchronously aborted by a separate monitoring thread that
 calls <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code>; users can specify
 additional <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code> subclasses to asynchronously
 abort blocking calls from other software components.</p></li>
+<li><p>when using <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine</span></code> composed with
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code>, the
+<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code> should be
+the first abort in the composition chain.  In <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.compose.Compose</span></code>,
+the last callback in the chain is executed first, so the following composition is recommended:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">abort</span><span class="o">.</span><span class="n">AbortTransformerEngine</span><span class="p">(),</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">abort</span><span class="o">.</span><span class="n">AbortTorchDistributed</span><span class="p">(),</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</li>
 </ul>
 </section>
 <section id="functionality-overview">
