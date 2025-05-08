@@ -104,6 +104,9 @@ def main():
     # Clean up checkpoint directory only on rank 0
     cleanup(ckpt_dir)
 
+    # Ensure NCCL process group is properly destroyed
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 if __name__ == "__main__":
     main()
