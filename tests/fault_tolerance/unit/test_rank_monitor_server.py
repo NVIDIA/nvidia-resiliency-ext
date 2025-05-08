@@ -4,7 +4,7 @@ import socket
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import torch
 import torch.multiprocessing
