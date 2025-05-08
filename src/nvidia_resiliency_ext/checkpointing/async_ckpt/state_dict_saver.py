@@ -30,7 +30,6 @@ from torch.distributed.checkpoint.utils import _DistWrapper, _get_failure_dict
 
 if TYPE_CHECKING:
     from .filesystem_async import FileSystemWriterAsync
-    from .torch import MCoreSavePlanner
 
 
 logger = getLogger(__name__)
@@ -55,7 +54,7 @@ def save_state_dict_async_plan(
     storage_writer: 'FileSystemWriterAsync',
     process_group: Optional[dist.ProcessGroup] = None,
     coordinator_rank: int = 0,
-    planner: Optional[Union[SavePlanner, 'MCoreSavePlanner']] = None,
+    planner: Optional[Union[SavePlanner, DefaultSavePlanner]] = None,
     cached_ckpt_structure: Optional[Tuple[SavePlan, SavePlan, bool]] = None,
     loaded_all_plans: Optional[List[SavePlan]] = None,
 ) -> Tuple[Tuple['FileSystemWriterAsync', Union[Metadata, None], _DistWrapper], SavePlan, bool]:

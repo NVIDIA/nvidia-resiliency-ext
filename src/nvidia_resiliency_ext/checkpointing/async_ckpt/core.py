@@ -399,6 +399,9 @@ class PersistentAsyncCaller(AsyncCaller):
             self.process.join()
             self.process = None
 
+    def __del__(self):
+        pass
+
     @staticmethod
     @_disable_gc()
     def async_loop(
