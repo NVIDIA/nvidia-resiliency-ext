@@ -90,6 +90,19 @@ Restrictions
   additional :py:class:`nvidia_resiliency_ext.inprocess.abort.Abort` subclasses to asynchronously
   abort blocking calls from other software components.
 
+- when using :py:class:`nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine` composed with
+  :py:class:`nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed`, the
+  :py:class:`nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed` should be
+  the first abort in the composition chain.  In :py:class:`nvidia_resiliency_ext.inprocess.compose.Compose`,
+  the last callback in the chain is executed first, so the following composition is recommended:
+
+  .. code-block:: python
+
+    inprocess.Compose(
+        inprocess.abort.AbortTransformerEngine(),
+        inprocess.abort.AbortTorchDistributed(),
+    )
+
 
 Functionality overview
 ----------------------
