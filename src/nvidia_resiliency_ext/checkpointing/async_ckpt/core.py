@@ -80,7 +80,7 @@ class AsyncRequest(NamedTuple):
         """
         if self.async_fn is not None:
             self.async_fn(*self.async_fn_args)
-        torch.distributed.barrier(device_ids=[self.rank])
+        torch.distributed.barrier()
         for finalize_fn in self.finalize_fns:
             finalize_fn()
 
