@@ -280,9 +280,13 @@
 <span class="linenos">188</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cleaning up checkpoint directory: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 <span class="linenos">189</span>        <span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="p">)</span>
 <span class="linenos">190</span>
-<span class="linenos">191</span>
-<span class="linenos">192</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-<span class="linenos">193</span>    <span class="n">main</span><span class="p">()</span>
+<span class="linenos">191</span>    <span class="c1"># Ensure NCCL process group is properly destroyed</span>
+<span class="linenos">192</span>    <span class="k">if</span> <span class="n">dist</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">():</span>
+<span class="linenos">193</span>        <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
+<span class="linenos">194</span>
+<span class="linenos">195</span>
+<span class="linenos">196</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<span class="linenos">197</span>    <span class="n">main</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>
