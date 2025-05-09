@@ -393,7 +393,8 @@
 <span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Process</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
         <span class="c1"># main queue to deliver `AsyncRequest` from host to the ckpt worker</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">()</span>
@@ -519,6 +520,10 @@
 <div class="viewcode-block" id="PersistentAsyncCaller.close">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.close">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Wait on the left async requests and terminate the PersistentAsyncCaller</span>
+
+<span class="sd">        Signals the PersistentAsyncCaller by sending a &#39;DONE&#39; message to make it terminated</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Destroying Async Caller&quot;</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s1">&#39;DONE&#39;</span><span class="p">)</span>

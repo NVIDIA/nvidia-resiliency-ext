@@ -404,7 +404,8 @@ to get aligned with the training rank’s logging level</p></li>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.close">
 <span class="sig-name descname"><span class="pre">close</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#PersistentAsyncCaller.close"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.close" title="Link to this definition"></a></dt>
-<dd><p>Terminate the async caller at exit of an application or some termination conditions</p>
+<dd><p>Wait on the left async requests and terminate the PersistentAsyncCaller</p>
+<p>Signals the PersistentAsyncCaller by sending a ‘DONE’ message to make it terminated</p>
 </dd></dl>
 
 <dl class="py method">

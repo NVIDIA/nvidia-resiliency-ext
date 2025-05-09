@@ -165,6 +165,8 @@
 </li>
       <li><a href="checkpointing/local/api/base_ckpt_manager.html#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager.CheckpointingException">CheckpointingException</a>
 </li>
+      <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache">CheckpointMetadataCache (class in nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver)</a>
+</li>
       <li><a href="checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy">CliqueReplicationStrategy (class in nvidia_resiliency_ext.checkpointing.local.replication.strategies)</a>
 </li>
       <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller.close">close() (nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller method)</a>
@@ -267,10 +269,18 @@
         <li><a href="straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.generate_report">(nvidia_resiliency_ext.straggler.straggler.Detector class method)</a>
 </li>
       </ul></li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.generate_report_if_interval_elapsed">generate_report_if_interval_elapsed() (nvidia_resiliency_ext.straggler.straggler.Detector class method)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.get_cache_metadata">get_cache_metadata() (nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache method)</a>
+</li>
+      <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.get_metadata_caching_status">get_metadata_caching_status() (in module nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver)</a>
+
+      <ul>
+        <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.get_metadata_caching_status">(nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache method)</a>
+</li>
+      </ul></li>
       <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.get_num_unfinalized_calls">get_num_unfinalized_calls() (nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue method)</a>
 </li>
       <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.get_save_function_and_args">get_save_function_and_args() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync method)</a>
@@ -290,6 +300,8 @@
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="straggler_det/api/reporting.html#nvidia_resiliency_ext.straggler.reporting.Report.identify_stragglers">identify_stragglers() (nvidia_resiliency_ext.straggler.reporting.Report method)</a>
+</li>
+      <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.init_checkpoint_metadata_cache">init_checkpoint_metadata_cache() (in module nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver)</a>
 </li>
       <li><a href="checkpointing/local/api/base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict.init_tensors">init_tensors() (nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict method)</a>
 
@@ -566,13 +578,15 @@
       </ul></li>
       <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn">preload_fn (nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest attribute)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors">preload_tensors() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync static method)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_decentralized_global_plan">prepare_decentralized_global_plan() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync method)</a>
 </li>
       <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_local_plan">prepare_local_plan() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync method)</a>
+</li>
+      <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.prepare_save_state_dict_ret">prepare_save_state_dict_ret() (nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache method)</a>
 </li>
       <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_write_data">prepare_write_data() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync method)</a>
 </li>
@@ -672,11 +686,15 @@
 </li>
       <li><a href="straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.scores_to_compute">scores_to_compute (nvidia_resiliency_ext.straggler.straggler.Detector attribute)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_heartbeat">send_heartbeat() (nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient method)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request">send_workload_control_request() (nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient method)</a>
+</li>
+      <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.set_cache_metadata">set_cache_metadata() (nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache method)</a>
+</li>
+      <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.set_cached_global_metadata">set_cached_global_metadata() (nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache method)</a>
 </li>
       <li><a href="straggler_det/api/straggler.html#nvidia_resiliency_ext.straggler.straggler.Detector.shutdown">shutdown() (nvidia_resiliency_ext.straggler.straggler.Detector class method)</a>
 </li>

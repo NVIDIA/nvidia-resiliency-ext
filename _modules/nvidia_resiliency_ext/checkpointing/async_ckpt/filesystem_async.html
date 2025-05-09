@@ -93,6 +93,7 @@
 
 <span class="sd">&quot;&quot;&quot; Storage writer for PyT Distributed format allowing asynchronous save. &quot;&quot;&quot;</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">pickle</span>
@@ -133,8 +134,9 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">_get_write_results_queue</span><span class="p">():</span>
     <span class="k">global</span> <span class="n">_results_queue</span>
     <span class="k">if</span> <span class="n">_results_queue</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
-        <span class="n">_results_queue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Manager</span><span class="p">()</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;fork&#39;</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">_disable_gc</span><span class="p">():</span>
+            <span class="n">_results_queue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Manager</span><span class="p">()</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
     <span class="k">return</span> <span class="n">_results_queue</span>
 
 
@@ -454,6 +456,17 @@
         <span class="n">local_results</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="n">file_name</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">,</span> <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">write_bucket</span>
+            <span class="n">extra_kwargs</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="n">write_fn</span> <span class="o">=</span> <span class="n">_write_item</span>
+            <span class="k">if</span> <span class="s2">&quot;serialization_format&quot;</span> <span class="ow">in</span> <span class="n">inspect</span><span class="o">.</span><span class="n">signature</span><span class="p">(</span><span class="n">_write_item</span><span class="p">)</span><span class="o">.</span><span class="n">parameters</span><span class="p">:</span>
+                <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.filesystem</span><span class="w"> </span><span class="kn">import</span> <span class="n">SerializationFormat</span>
+
+                <span class="n">extra_kwargs</span><span class="p">[</span><span class="s1">&#39;serialization_format&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">SerializationFormat</span><span class="o">.</span><span class="n">TORCH_SAVE</span>
+
+            <span class="k">if</span> <span class="s2">&quot;transforms&quot;</span> <span class="ow">in</span> <span class="n">inspect</span><span class="o">.</span><span class="n">signature</span><span class="p">(</span><span class="n">_write_item</span><span class="p">)</span><span class="o">.</span><span class="n">parameters</span><span class="p">:</span>
+                <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">transform_list</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">1</span>
+                <span class="n">write_fn</span> <span class="o">=</span> <span class="n">partial</span><span class="p">(</span><span class="n">_write_item</span><span class="p">,</span> <span class="o">*</span><span class="n">transform_list</span><span class="p">)</span>
+
             <span class="k">if</span> <span class="n">use_msc</span><span class="p">:</span>
                 <span class="kn">import</span><span class="w"> </span><span class="nn">multistorageclient</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">msc</span>
 
@@ -463,13 +476,13 @@
             <span class="k">with</span> <span class="n">open_file</span><span class="p">(</span><span class="n">file_name</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">stream</span><span class="p">:</span>
                 <span class="k">for</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">data</span> <span class="ow">in</span> <span class="n">bytes_data</span><span class="p">:</span>
                     <span class="n">local_results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
-                        <span class="n">_write_item</span><span class="p">(</span><span class="o">*</span><span class="n">transform_list</span><span class="p">,</span> <span class="n">stream</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">)</span>
+                        <span class="n">write_fn</span><span class="p">(</span><span class="n">stream</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">,</span> <span class="o">**</span><span class="n">extra_kwargs</span><span class="p">)</span>
                     <span class="p">)</span>
 
                 <span class="k">for</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="n">tensor_data</span><span class="p">:</span>
                     <span class="k">assert</span> <span class="n">tensor</span><span class="o">.</span><span class="n">is_cpu</span>
                     <span class="n">local_results</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
-                        <span class="n">_write_item</span><span class="p">(</span><span class="o">*</span><span class="n">transform_list</span><span class="p">,</span> <span class="n">stream</span><span class="p">,</span> <span class="n">tensor</span><span class="p">,</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">)</span>
+                        <span class="n">write_fn</span><span class="p">(</span><span class="n">stream</span><span class="p">,</span> <span class="n">tensor</span><span class="p">,</span> <span class="n">write_item</span><span class="p">,</span> <span class="n">storage_key</span><span class="p">,</span> <span class="o">**</span><span class="n">extra_kwargs</span><span class="p">)</span>
                     <span class="p">)</span>
 
                 <span class="k">if</span> <span class="n">use_fsync</span><span class="p">:</span>
