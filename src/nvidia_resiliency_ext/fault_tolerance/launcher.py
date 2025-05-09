@@ -12,6 +12,8 @@
 # - Changed shutdown logic
 # - security fix for watchdog_file_path
 
+import asyncio
+
 # fmt: off
 import collections
 import contextlib
@@ -78,7 +80,11 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
-from nvidia_resiliency_ext.fault_tolerance.utils import patched_method, terminate_mp_processes
+from nvidia_resiliency_ext.fault_tolerance.utils import (
+    patched_method,
+    terminate_mp_processes,
+    write_obj_to_ipc_stream,
+)
 
 logging.basicConfig(
     level=os.getenv('FT_LAUNCHER_LOGLEVEL', 'INFO'),
@@ -217,7 +223,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         exit_barrier_timeout: float = 300,
         log_line_prefix_template: Optional[str] = None,
         term_timeout: float = 1800,
-        workers_stop_timeout: float = 30, 
+        workers_stop_timeout: float = 30,
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
     ):
@@ -544,6 +550,24 @@ class LocalElasticAgent(SimpleElasticAgent):
     @prof
     def _stop_workers(self, worker_group: WorkerGroup) -> None:
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
+
+        # Send close message to rank monitors
+        for local_rank, rmon_proc in self._local_rank_to_rmon.items():
+            try:
+                launcher_to_rmon_socket = f"{tempfile.gettempdir()}/_ft_launcher{rmon_proc.pid}_to_rmon.socket"
+                if os.path.exists(launcher_to_rmon_socket):
+                    async def send_close_msg():
+                        reader, writer = await asyncio.open_unix_connection(launcher_to_rmon_socket)
+                        try:
+                            await write_obj_to_ipc_stream("close_worker_ipc_connection", writer)
+                        finally:
+                            writer.close()
+                            await writer.wait_closed()
+
+                    asyncio.run(send_close_msg())
+            except Exception as e:
+                logger.warning(f"Failed to send close message to rank monitor {local_rank}: {e}")
+
         self._shutdown(timeout=self._workers_stop_timeout)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator

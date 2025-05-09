@@ -73,6 +73,8 @@ class RankMonitorStateMachine:
             pass  # we are already aborted from in-job, ingnore following handle_ipc_connection_lost
         elif self.state == RankMonitorState.UNINITIALIZED:
             pass  # ignore in case of not yet initialized state
+        elif self.state == RankMonitorState.FINALIZED:
+            pass  # ignore in case of finalized state
         else:
             raise AssertionError(
                 f"Unexpected handle_ipc_connection_lost all, current state: {self.state}"
@@ -120,7 +122,9 @@ class RankMonitorStateMachine:
                 RankMonitorState.FINALIZED,
             ],
             RankMonitorState.ABORTED: [RankMonitorState.FINALIZED],
-            RankMonitorState.FINALIZED: [],
+            RankMonitorState.FINALIZED: [
+                RankMonitorState.FINALIZED,
+            ],
         }
         return new_state in allowed_transitions[self.state]
 

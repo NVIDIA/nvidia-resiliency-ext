@@ -22,6 +22,7 @@ import os
 import signal
 import socket
 import sys
+import tempfile
 import time
 import traceback
 from typing import Mapping, Optional
@@ -143,6 +144,11 @@ class RankMonitorServer:
         self.health_checker = GPUHealthCheck(
             interval=self.cfg.node_health_check_interval, on_failure=self._handle_unhealthy_node
         )
+        self.current_writer = None
+        self.launcher_ipc_socket_path = (
+            f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_to_rmon.socket"
+        )
+        self.launcher_server = None
 
         if self.cfg.enable_nic_monitor:
             self.logger.info("Enable NIC health monitoring.")
@@ -304,6 +310,29 @@ class RankMonitorServer:
         if self.connection_lock.locked():
             self.connection_lock.release()
 
+    async def _handle_launcher_ipc_connection(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Handle IPC connection from the launcher."""
+        try:
+            while True:
+                msg = await read_obj_from_ipc_stream(reader)
+                if msg == "close_worker_ipc_connection":
+                    self.logger.info(
+                        "Received request from launcher to close worker IPC connection"
+                    )
+                    await self.close_current_connection()
+                else:
+                    self.logger.warning(f"Received unknown message from launcher: {msg}")
+        except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
+            # Valid stream close exceptions.
+            pass
+        except Exception as e:
+            self.logger.error(f"Error handling launcher IPC connection: {e}")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
     async def _handle_ipc_connection(self, reader, writer):
         if not self.is_closing:
             try:
@@ -315,6 +344,7 @@ class RankMonitorServer:
                     self.connection_lock.acquire(),
                     RankMonitorServer.RANK_MONITOR_INIT_TIMEOUT,
                 )
+                self.current_writer = writer
                 while msg := await read_obj_from_ipc_stream(reader):
                     if isinstance(msg, AuthkeyMsg):
                         await self._handle_authkey_msg(msg, writer)
@@ -328,12 +358,18 @@ class RankMonitorServer:
                         await self._handle_section_msg(msg, writer)
                     else:
                         raise AssertionError(f"Unknown msg type: {type(msg)}")
+            except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
+                # Valid stream close exceptions.
+                pass
             except Exception:
                 self.logger.error(f"Exception in _handle_ipc_connection: {traceback.format_exc()}")
-            self._handle_ipc_connection_lost()
-            assert not self.connection_lock.locked()
+            finally:
+                self.current_writer = None
+                self._handle_ipc_connection_lost()
+                assert not self.connection_lock.locked()
         else:
             self.logger.warning("Ignored incoming connection: service is shutting down.")
+
         with contextlib.suppress(Exception):
             writer.close()
             await writer.wait_closed()
@@ -345,6 +381,7 @@ class RankMonitorServer:
         if not self.is_closing:
             self.is_closing = True
             self.server.close()
+            self.launcher_server.close()
 
     def _is_hb_timeout_elapsed(self, curr_time) -> bool:
         is_elapsed = False
@@ -435,6 +472,14 @@ class RankMonitorServer:
             self.ipc_socket_path,
         )
 
+        # Start launcher IPC server
+        if os.path.exists(self.launcher_ipc_socket_path):
+            os.unlink(self.launcher_ipc_socket_path)
+        self.launcher_server = await asyncio.start_unix_server(
+            self._handle_launcher_ipc_connection,
+            self.launcher_ipc_socket_path,
+        )
+
         # Periodic checks
         asyncio.get_running_loop().create_task(self._periodic_rank_check())
 
@@ -448,14 +493,16 @@ class RankMonitorServer:
         self.rank_monitor_ready_event.set()
 
         try:
-            async with self.server:
-                await self.server.serve_forever()
-                await self.server.wait_closed()
+            async with self.server, self.launcher_server:
+                await asyncio.gather(
+                    self.server.serve_forever(), self.launcher_server.serve_forever()
+                )
         except asyncio.exceptions.CancelledError:
             self.logger.debug("server.serve_forever() cancelled.")
         finally:
             with contextlib.suppress(Exception):
                 os.unlink(self.ipc_socket_path)
+                os.unlink(self.launcher_ipc_socket_path)
 
     @staticmethod
     def run(
@@ -510,3 +557,11 @@ class RankMonitorServer:
             )
 
         return rank_monitor_process
+
+    async def close_current_connection(self):
+        if self.current_writer is not None:
+            self.current_writer.close()
+            await self.current_writer.wait_closed()
+            self.logger.debug("Closed current IPC connection")
+        else:
+            self.logger.warning("No active connection to close")
