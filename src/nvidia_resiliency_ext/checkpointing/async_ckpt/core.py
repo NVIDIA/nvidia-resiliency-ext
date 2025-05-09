@@ -274,7 +274,8 @@ class PersistentAsyncCaller(AsyncCaller):
     """
 
     def __init__(self):
-        super().__init__()
+        self.process: mp.Process = None
+        self.start_time: Optional[float] = None
         ctx = mp.get_context('spawn')
         # main queue to deliver `AsyncRequest` from host to the ckpt worker
         self.queue: mp.JoinableQueue = ctx.JoinableQueue()
@@ -392,6 +393,10 @@ class PersistentAsyncCaller(AsyncCaller):
         return is_done
 
     def close(self):
+        """Wait on the left async requests and terminate the PersistentAsyncCaller
+
+        Signals the PersistentAsyncCaller by sending a 'DONE' message to make it terminated
+        """
         logger.info(f"PersistentAsyncCaller: {self.rank}, Destroying Async Caller")
         if self.process:
             self.queue.put('DONE')
