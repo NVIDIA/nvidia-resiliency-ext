@@ -15,6 +15,7 @@
 
 """ Storage writer for PyT Distributed format allowing asynchronous save. """
 import dataclasses
+import inspect
 import logging
 import os
 import pickle
@@ -55,8 +56,9 @@ _results_queue = None
 def _get_write_results_queue():
     global _results_queue
     if _results_queue is None:
-        ctx = mp.get_context('spawn')
-        _results_queue = ctx.Manager().Queue()
+        ctx = mp.get_context('fork')
+        with _disable_gc():
+            _results_queue = ctx.Manager().Queue()
     return _results_queue
 
 
@@ -360,6 +362,17 @@ class FileSystemWriterAsync(FileSystemWriter):
         local_results = []
         try:
             file_name, storage_key, (bytes_data, tensor_data) = write_bucket
+            extra_kwargs = {}
+            write_fn = _write_item
+            if "serialization_format" in inspect.signature(_write_item).parameters:
+                from torch.distributed.checkpoint.filesystem import SerializationFormat
+
+                extra_kwargs['serialization_format'] = SerializationFormat.TORCH_SAVE
+
+            if "transforms" in inspect.signature(_write_item).parameters:
+                assert len(transform_list) <= 1
+                write_fn = partial(_write_item, *transform_list)
+
             if use_msc:
                 import multistorageclient as msc
 
@@ -369,13 +382,13 @@ class FileSystemWriterAsync(FileSystemWriter):
             with open_file(file_name, "wb") as stream:
                 for write_item, data in bytes_data:
                     local_results.append(
-                        _write_item(*transform_list, stream, data, write_item, storage_key)
+                        write_fn(stream, data, write_item, storage_key, **extra_kwargs)
                     )
 
                 for write_item, tensor in tensor_data:
                     assert tensor.is_cpu
                     local_results.append(
-                        _write_item(*transform_list, stream, tensor, write_item, storage_key)
+                        write_fn(stream, tensor, write_item, storage_key, **extra_kwargs)
                     )
 
                 if use_fsync:
