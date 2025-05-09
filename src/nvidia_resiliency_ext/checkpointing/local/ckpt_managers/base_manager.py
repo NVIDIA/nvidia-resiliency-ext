@@ -21,7 +21,7 @@ Each CheckpointManager handles tasks such as:
     - saving and loading checkpoints using the implemented backend.
 
 It uses a state_dict interface, requiring users to adjust the state_dict as needed,
-with MCore facilitating these modifications.
+with the caller responsible for facilitating these modifications.
 """
 
 import logging
@@ -313,5 +313,5 @@ class BaseCheckpointManager(ABC):
         save_fn(*save_args)
         # Wait so everyone is done (necessary)
         if torch.distributed.is_initialized():
-            torch.distributed.barrier()
+            torch.distributed.barrier(device_ids=[self.rank])
         finalize_fn()
