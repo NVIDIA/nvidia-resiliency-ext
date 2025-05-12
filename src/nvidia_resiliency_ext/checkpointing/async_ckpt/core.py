@@ -168,8 +168,9 @@ class AsyncCaller(ABC):
         """Terminate the async caller at exit of an application or some termination conditions"""
         logger.info(f"AsyncCaller: {torch.distributed.get_rank(group=self.group)}, Destroying Async Caller")
 
+    @abstractmethod
     def __del__(self):
-        self.close()
+        raise NotImplementedError("This should be implemented")
 
 
 class TemporalAsyncCaller(AsyncCaller):
@@ -245,12 +246,22 @@ class TemporalAsyncCaller(AsyncCaller):
         is_alive = int(self.process.is_alive()) if self.process is not None else 0
         is_done = not is_alive if no_dist else self.sync_all_async_calls(is_alive)
 
-        if not is_done and blocking:
+        if is_done or blocking:
+            # Process join is called in the following cases
+            # 1. blocking == True -> regardless of is_done
+            # 2. blocking == False (non-blocking)
+            #    -> is_done == True: async requests on all ranks are identified to be finished
+            #    `self.close()` makes sure the async callers terminated
             self.close()
             is_done = True
         return is_done
 
     def close(self):
+        """For TemporalAsyncCaller, this method is called explictly in `is_current_async_calls_done`
+
+        This method make sure the TemporalAsyncCaller terminated
+        with all its assigned async request completed
+        """
         if self.process:
             logger.debug(f"rank: {self.rank}, joining self.process")
             self.process.join()
@@ -261,6 +272,9 @@ class TemporalAsyncCaller(AsyncCaller):
             )
             self.start_time = None
 
+    def __del__(self):
+        pass
+
 
 class PersistentAsyncCaller(AsyncCaller):
     """Wrapper around mp.Process that ensures correct semantic of distributed finalization.
@@ -270,6 +284,9 @@ class PersistentAsyncCaller(AsyncCaller):
 
     def __init__(self, group:Optional[torch.distributed.ProcessGroup]=None):
         super().__init__(group=group)
+
+        self.process: mp.Process = None
+        self.start_time: Optional[float] = None
         ctx = mp.get_context('spawn')
         # main queue to deliver `AsyncRequest` from host to the ckpt worker
         self.queue: mp.JoinableQueue = ctx.JoinableQueue()
@@ -387,12 +404,19 @@ class PersistentAsyncCaller(AsyncCaller):
         return is_done
 
     def close(self):
+        """Wait on the left async requests and terminate the PersistentAsyncCaller
+
+        Signals the PersistentAsyncCaller by sending a 'DONE' message to make it terminated
+        """
         logger.info(f"PersistentAsyncCaller: {self.rank}, Destroying Async Caller")
         if self.process:
             self.queue.put('DONE')
             self.queue.join()
             self.process.join()
             self.process = None
+
+    def __del__(self):
+        pass
 
     @staticmethod
     @_disable_gc()
@@ -507,13 +531,11 @@ class AsyncCallsQueue:
         # Backward compatibility for local checkpointing built with the old AsyncRequest
         if len(async_request._fields) != len(AsyncRequest._fields):
             async_request = AsyncRequest(**async_request._asdict())
-
-        async_request = async_request._replace(call_idx=self.call_idx)
-        finalize_fns = async_request.finalize_fns
-        async_request = async_request._replace(finalize_fns=None)
         async_request = async_request.freeze()
-        async_caller.schedule_async_call(async_request)
-        self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, finalize_fns))
+        async_caller.schedule_async_call(
+            async_request._replace(call_idx=self.call_idx, finalize_fns=[])
+        )
+        self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, async_request))
         return self.call_idx
 
     def maybe_finalize_async_calls(self, blocking=False, no_dist=False) -> List[int]:
@@ -537,16 +559,13 @@ class AsyncCallsQueue:
             if not next_async_done:
                 break
             with debug_time("finalize", logger):
-                call_idx, _, finalize_fns = self.async_calls.popleft()
-                if not no_dist:
-                    ten = torch.tensor(
-                        [call_idx], dtype=torch.int, device=self.comm_device
-                    )
-                    torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX, group=self.group)
-                    assert ten.item() == call_idx, 'Unmatched async calls. '
-                    'That probably means not all ranks are participating in async finalization'
-                for finalize_fn in finalize_fns:
+                call_idx, _, async_request = self.async_calls.popleft()
+                for finalize_fn in async_request.finalize_fns:
                     finalize_fn()
+                ten = torch.tensor([call_idx], dtype=torch.int, device=self.comm_device)
+                torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX, group=self.group)
+                assert ten.item() == call_idx, 'Unmatched async calls. '
+                'That probably means not all ranks are participating in async finalization'
                 call_idx_finalized.append(call_idx)
         return call_idx_finalized
 

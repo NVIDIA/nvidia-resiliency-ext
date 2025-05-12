@@ -32,6 +32,7 @@ import torch
 from . import param_utils, utils
 from .abort import Abort, AbortTorchDistributed
 from .attribution import Interruption, InterruptionRecord
+from .completion import Completion
 from .compose import Compose
 from .exception import HealthCheckError, InternalError
 from .finalize import Finalize
@@ -45,6 +46,7 @@ from .rank_assignment import ActivateAllRanks, RankAssignment, RankAssignmentCtx
 from .rank_filter import RankFilter
 from .state import Mode, State
 from .store import PrefixStore, StoreMixin, TCPStore
+from .terminate import Terminate
 from .utils import log_exc
 
 
@@ -152,6 +154,8 @@ class Wrapper:
         termination_grace_time: datetime.timedelta = timedelta(seconds=5),
         monitor_process_logfile: Optional[str] = None,
         enabled: bool = True,
+        completion: Optional[Completion] = None,
+        terminate: Optional[Terminate] = None,
     ):
         enforce_subclass('store_factory', StoreMixin)
         enforce_type('store_kwargs', (dict, type(None)))
@@ -174,6 +178,8 @@ class Wrapper:
         enforce_type('termination_grace_time', datetime.timedelta)
         enforce_type('monitor_process_logfile', (str, type(None)))
         enforce_type('enabled', bool)
+        enforce_type('completion', (Completion, type(None)))
+        enforce_type('terminate', (Terminate, type(None)))
 
         enforce_value(soft_timeout < hard_timeout < barrier_timeout)
         enforce_value(monitor_process_interval < barrier_timeout)
@@ -222,6 +228,8 @@ class Wrapper:
         self.termination_grace_time = termination_grace_time
         self.monitor_process_logfile = monitor_process_logfile
         self.enabled = enabled
+        self.completion = completion
+        self.terminate = terminate
 
     def __call__(self, fn):
         if not self.enabled:
@@ -548,6 +556,7 @@ class CallWrapper:
                 state.advance()
 
         except BaseException as exit_ex:
+
             log.critical(log_exc(state, exit_ex, 'exit_ex'))
             store.record_interrupted([InterruptionRecord(state.rank, Interruption.BASE_EXCEPTION)])
             store.record_terminated_ranks([state.rank])
@@ -558,7 +567,21 @@ class CallWrapper:
                 timeout=wrapper.barrier_timeout,
             )
             monitor_process.disable_sibling_monitor()
+
+            try:
+                if wrapper.terminate is not None:
+                    wrapper.terminate(state.freeze())
+            except Exception as terminate_ex:
+                log.error(log_exc(state, terminate_ex, 'terminate_ex'))
+                raise terminate_ex from exit_ex
+
             raise exit_ex
+
+        try:
+            if wrapper.completion is not None:
+                wrapper.completion(state.freeze())
+        except Exception as completion_ex:
+            log.error(log_exc(state, completion_ex, 'completion_ex'))
 
         rank = state.rank
         log.debug(f'{rank=} returning')

@@ -25,7 +25,7 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
@@ -34,6 +34,7 @@ import torch
 class Fault(enum.Enum):
     GPU_ERROR = enum.auto()
     GPU_SLEEP = enum.auto()
+    WORKLOAD_EXC = enum.auto()
     ASYNC_EXC = enum.auto()
     SIGNAL_EXC = enum.auto()
     OS_ABORT = enum.auto()
@@ -47,6 +48,47 @@ class Fault(enum.Enum):
 
 class InjectedException(Exception):
     pass
+
+
+# Define the multiprocessing context at module level
+ctx = multiprocessing.get_context('fork')
+_registered_faults = {}
+
+
+def register_fault(fault_name_or_enum: Union[str, Fault], handler: Callable):
+    """
+    Register a fault type and its handler.
+
+    Args:
+        fault_name_or_enum: Either a string name for a new fault or an existing Fault enum
+        handler: Lambda function that implements the fault injection
+
+    Returns:
+        The Fault enum (either existing or newly created)
+    """
+    if isinstance(fault_name_or_enum, Fault):
+        # Using an existing enum
+        fault_enum = fault_name_or_enum
+    else:
+        # Add the new fault to the Fault enum
+        new_fault = enum.auto()
+        Fault._value2member_map_[new_fault] = fault_enum = type(Fault)(
+            fault_name_or_enum, new_fault
+        )
+        Fault._member_names_.append(fault_name_or_enum)
+        Fault._member_map_[fault_name_or_enum] = fault_enum
+
+    # Register the handler
+    _registered_faults[fault_enum] = handler
+
+    return fault_enum
+
+
+def dispatch_fault_injection(fault, delay, callback):
+    if fault in _registered_faults:
+        _registered_faults[fault](delay, callback)
+    else:
+        raise RuntimeError(f"Unknown fault type: {fault}")
 
 
 def async_raise(tid, exc_type):
@@ -71,6 +113,38 @@ def termination_signal_handler(signum, frame):
         raise InjectedException
 
 
+def workload_exception(delay, callback):
+    time.sleep(delay)
+    log = logging.getLogger(__name__)
+    log.critical('raising workload exception')
+    if callback is not None:
+        callback()
+    workload_raise_event.set()
+
+
+# Register the workload exception fault
+workload_raise_event = threading.Event()
+register_fault(
+    Fault.WORKLOAD_EXC,
+    lambda delay, callback: threading.Thread(
+        target=workload_exception, args=(delay, callback), daemon=True
+    ).start(),
+)
+
+
+def maybe_raise_workload_exception():
+    """
+    Called in a workload as partner to workload_exception.
+
+    When the workload_exception is triggered, a sentinel is set
+    and if a workload calls this function, it can raise a gentle
+    exception.
+    """
+    if workload_raise_event.is_set():
+        workload_raise_event.clear()
+        raise InjectedException
+
+
 def async_raise_exception(tid, delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
@@ -78,6 +152,17 @@ def async_raise_exception(tid, delay, callback):
     if callback is not None:
         callback()
     async_raise(tid, InjectedException)
+
+
+# Register the async exception fault
+register_fault(
+    Fault.ASYNC_EXC,
+    lambda delay, callback: threading.Thread(
+        target=async_raise_exception,
+        args=(threading.main_thread().ident, delay, callback),
+        daemon=True,
+    ).start(),
+)
 
 
 def raise_gpu_error(delay, callback):
@@ -92,6 +177,17 @@ def raise_gpu_error(delay, callback):
     a[b] = 0
 
 
+# Register GPU error fault
+register_fault(
+    Fault.GPU_ERROR,
+    lambda delay, callback: threading.Thread(
+        target=raise_gpu_error,
+        args=(delay, callback),
+        daemon=True,
+    ).start(),
+)
+
+
 def gpu_sleep(delay, device, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
@@ -100,6 +196,15 @@ def gpu_sleep(delay, device, callback):
         callback()
     torch.cuda.set_device(device)
     torch.cuda._sleep(1 << 62)
+
+
+# Register GPU sleep fault
+register_fault(
+    Fault.GPU_SLEEP,
+    lambda delay, callback: threading.Thread(
+        target=gpu_sleep, args=(delay, torch.cuda.current_device(), callback), daemon=True
+    ).start(),
+)
 
 
 def lock_gil(delay, callback):
@@ -111,6 +216,15 @@ def lock_gil(delay, callback):
     re.match(r'(a?){40}a{40}', 'a' * 40)
 
 
+# Register lock GIL fault
+register_fault(
+    Fault.LOCK_GIL,
+    lambda delay, callback: threading.Thread(
+        target=lock_gil, args=(delay, callback), daemon=True
+    ).start(),
+)
+
+
 def segfault(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
@@ -118,6 +232,15 @@ def segfault(delay, callback):
     if callback is not None:
         callback()
     ctypes.string_at(1)
+
+
+# Register segfault fault
+register_fault(
+    Fault.SEGFAULT,
+    lambda delay, callback: threading.Thread(
+        target=segfault, args=(delay, callback), daemon=True
+    ).start(),
+)
 
 
 def send_signal(pid, signal, delay, callback):
@@ -129,6 +252,56 @@ def send_signal(pid, signal, delay, callback):
     os.kill(pid, signal)
 
 
+# Register signal faults
+register_fault(
+    Fault.SIGNAL_EXC,
+    lambda delay, callback: (
+        signal.signal(signal.SIGUSR1, termination_signal_handler),
+        ctx.Process(
+            target=send_signal,
+            args=(os.getpid(), signal.SIGUSR1, delay, callback),
+            daemon=True,
+        ).start(),
+    )[1],
+)  # Return the result of .start()
+
+register_fault(
+    Fault.SIGKILL,
+    lambda delay, callback: ctx.Process(
+        target=send_signal,
+        args=(os.getpid(), signal.SIGKILL, delay, callback),
+        daemon=True,
+    ).start(),
+)
+
+register_fault(
+    Fault.SIGTERM,
+    lambda delay, callback: ctx.Process(
+        target=send_signal,
+        args=(os.getpid(), signal.SIGTERM, delay, callback),
+        daemon=True,
+    ).start(),
+)
+
+register_fault(
+    Fault.SIGINT,
+    lambda delay, callback: ctx.Process(
+        target=send_signal,
+        args=(os.getpid(), signal.SIGINT, delay, callback),
+        daemon=True,
+    ).start(),
+)
+
+register_fault(
+    Fault.SIGSTOP,
+    lambda delay, callback: ctx.Process(
+        target=send_signal,
+        args=(os.getpid(), signal.SIGSTOP, delay, callback),
+        daemon=True,
+    ).start(),
+)
+
+
 def abort(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
@@ -136,6 +309,15 @@ def abort(delay, callback):
     if callback is not None:
         callback()
     os.abort()
+
+
+# Register abort fault
+register_fault(
+    Fault.OS_ABORT,
+    lambda delay, callback: threading.Thread(
+        target=abort, args=(delay, callback), daemon=True
+    ).start(),
+)
 
 
 def inject_fault(
@@ -154,8 +336,6 @@ def inject_fault(
     generator = random.Random()
     generator.seed(seed)
 
-    ctx = multiprocessing.get_context('fork')
-
     if isinstance(num_faults, int):
         min_faults, max_faults = num_faults, num_faults
     else:
@@ -171,68 +351,4 @@ def inject_fault(
     if rank in ranks_to_inject:
         log.info(f'{seed=} {num_ranks_to_inject=} {ranks_to_inject=} ' f'{fault=} {delay=:.3f}')
 
-        if fault == Fault.ASYNC_EXC:
-            thread = threading.Thread(
-                target=async_raise_exception,
-                args=(threading.main_thread().ident, delay, callback),
-                daemon=True,
-            )
-            thread.start()
-        elif fault == Fault.SIGNAL_EXC:
-            signal.signal(signal.SIGUSR1, termination_signal_handler)
-            p = ctx.Process(
-                target=send_signal,
-                args=(os.getpid(), signal.SIGUSR1, delay, callback),
-                daemon=True,
-            )
-            p.start()
-        elif fault == Fault.GPU_ERROR:
-            thread = threading.Thread(
-                target=raise_gpu_error,
-                args=(delay, callback),
-                daemon=True,
-            )
-            thread.start()
-        elif fault == Fault.LOCK_GIL:
-            thread = threading.Thread(target=lock_gil, args=(delay, callback), daemon=True)
-            thread.start()
-        elif fault == Fault.GPU_SLEEP:
-            device = get_current_device()
-            thread = threading.Thread(target=gpu_sleep, args=(delay, device, callback), daemon=True)
-            thread.start()
-        elif fault == Fault.SEGFAULT:
-            thread = threading.Thread(target=segfault, args=(delay, callback), daemon=True)
-            thread.start()
-        elif fault == Fault.OS_ABORT:
-            thread = threading.Thread(target=abort, args=(delay, callback), daemon=True)
-            thread.start()
-        elif fault == Fault.SIGKILL:
-            p = ctx.Process(
-                target=send_signal,
-                args=(os.getpid(), signal.SIGKILL, delay, callback),
-                daemon=True,
-            )
-            p.start()
-        elif fault == Fault.SIGTERM:
-            p = ctx.Process(
-                target=send_signal,
-                args=(os.getpid(), signal.SIGTERM, delay, callback),
-                daemon=True,
-            )
-            p.start()
-        elif fault == Fault.SIGINT:
-            p = ctx.Process(
-                target=send_signal,
-                args=(os.getpid(), signal.SIGINT, delay, callback),
-                daemon=True,
-            )
-            p.start()
-        elif fault == Fault.SIGSTOP:
-            p = ctx.Process(
-                target=send_signal,
-                args=(os.getpid(), signal.SIGSTOP, delay, callback),
-                daemon=True,
-            )
-            p.start()
-        else:
-            raise RuntimeError
+        dispatch_fault_injection(fault, delay, callback)

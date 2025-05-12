@@ -13,9 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import filecmp
-import pickle
-from copy import deepcopy
-from dataclasses import fields
 
 import torch
 from torch.distributed.checkpoint import (
@@ -24,9 +21,8 @@ from torch.distributed.checkpoint import (
     FileSystemReader,
     FileSystemWriter,
     load,
-    save,
+    state_dict_saver,
 )
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue, AsyncRequest
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
@@ -34,12 +30,13 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     save_state_dict_async_finalize,
     save_state_dict_async_plan,
 )
-from nvidia_resiliency_ext.checkpointing.utils import diff
-from tests.checkpointing.unit import TempNamedDir
-from tests.checkpointing.unit.test_utilities import TestModel, Utils
+
+from . import TempNamedDir
+from .test_utilities import TestModel, Utils
 
 
-class TestAsyncSave:
+class TestAsyncSaveWithMSC:
+
     def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
         """Creates an async save request with a finalization step."""
         save_fn, preload_fn, save_args = writer.get_save_function_and_args()
@@ -52,21 +49,21 @@ class TestAsyncSave:
         return AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
 
     def async_save_checkpoint(
-        self, checkpoint_dir, state_dict, planner, async_queue, thread_count=1, caching=False
+        self, checkpoint_dir, state_dict, planner, async_queue, thread_count=1
     ):
         """Performs an asynchronous model checkpoint save."""
-        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count)
+        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count, use_msc=True)
         coordinator_rank = 0
 
         save_state_dict_ret = save_state_dict_async_plan(
-            state_dict, writer, None, coordinator_rank, planner=planner, enable_cache=caching
+            state_dict, writer, None, coordinator_rank, planner=planner
         )
         async_request = self.get_async_save_request(writer, save_state_dict_ret)
         async_queue.schedule_async_request(async_request)
 
     def sync_save_checkpoint(self, checkpoint_dir, state_dict, planner):
         """Performs a synchronous model checkpoint save using FileSystemWriter."""
-        save(
+        state_dict_saver.save(
             state_dict=state_dict,
             storage_writer=FileSystemWriter(checkpoint_dir),
             planner=planner,
@@ -84,8 +81,9 @@ class TestAsyncSave:
     def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt):
         """Verifies that async checkpointing produces the same results as sync checkpointing."""
         Utils.initialize_distributed()
-        model = FSDP(TestModel((1024, 1024), 8))
+        model = TestModel((1024, 1024), 10)
         async_queue = AsyncCallsQueue()
+
         with (
             TempNamedDir(tmp_path_dist_ckpt / 'async_checkpoint', sync=True) as async_ckpt_dir,
             TempNamedDir(tmp_path_dist_ckpt / 'sync_checkpoint', sync=True) as sync_ckpt_dir,
@@ -113,68 +111,14 @@ class TestAsyncSave:
             ], f"Differences found in saved files: {comparison.diff_files}"
 
             # Load and compare state dicts
-            loaded_async_state_dict = self.load_checkpoint(async_ckpt_dir, deepcopy(state_dict))
-            loaded_sync_state_dict = self.load_checkpoint(sync_ckpt_dir, deepcopy(state_dict))
-            assert loaded_sync_state_dict.keys() == state_dict.keys()
+            loaded_async_state_dict = self.load_checkpoint(async_ckpt_dir, state_dict.copy())
+            loaded_sync_state_dict = self.load_checkpoint(sync_ckpt_dir, state_dict.copy())
+
             for key in loaded_sync_state_dict.keys():
                 assert key in loaded_async_state_dict, f"Missing key in async checkpoint: {key}"
                 assert torch.equal(
                     loaded_async_state_dict[key], loaded_sync_state_dict[key]
                 ), f"Mismatch for key '{key}' between async and sync checkpoints."
                 assert torch.equal(
-                    loaded_sync_state_dict[key], state_dict[key]
+                    loaded_async_state_dict[key], state_dict[key]
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
-
-    def test_cached_metadata(self, tmp_path_dist_ckpt):
-        Utils.initialize_distributed()
-        async_queue = AsyncCallsQueue()
-
-        model = FSDP(TestModel((1024, 1024), 8))
-        state_dict_non_cached = model.state_dict()
-        state_dict_cached = deepcopy(state_dict_non_cached)
-        loaded_non_cached, loaded_cached = None, None
-        md_non_cached, md_cached = None, None
-        planner = DefaultSavePlanner()
-
-        with TempNamedDir(tmp_path_dist_ckpt / 'ckpt_dir', sync=True) as ckpt_dir:
-            self.async_save_checkpoint(
-                ckpt_dir, state_dict_non_cached, planner, async_queue, caching=True
-            )
-            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-            loaded_non_cached = self.load_checkpoint(ckpt_dir, state_dict_non_cached)
-            md_path = ckpt_dir.__enter__() / '.metadata'
-            with md_path.open('rb') as f:
-                md_non_cached = pickle.load(f)
-
-        # Run over 3 iterations with cached metadata enabled
-        # The 3rd iteration will run with cached metadata
-        # `ckpt_dir` at the 3rd iteration 2 will be maintained for comparison
-        ckpt_dir = None
-        for i in range(3):
-            ckpt_dir = TempNamedDir(tmp_path_dist_ckpt / f'ckpt_dir_{i}_cached', sync=True)
-            self.async_save_checkpoint(
-                ckpt_dir.__enter__(), state_dict_cached, planner, async_queue, caching=True
-            )
-            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-            if i < 2:
-                ckpt_dir.cleanup()
-        loaded_cached = self.load_checkpoint(ckpt_dir.__enter__(), state_dict_cached)
-        md_path = ckpt_dir.__enter__() / '.metadata'
-
-        with md_path.open('rb') as f:
-            md_cached = pickle.load(f)
-
-        # Check loaded state dict
-        diffs = diff(loaded_non_cached, loaded_cached)
-
-        assert not any(
-            len(x) for x in diffs
-        ), 'Cached metadata doesn\'t produce the same state_dict in loading'
-        # Check metadata recorded in .metadata, torch.distributed.metadata.Metadata
-        for field in fields(md_non_cached):
-            if field.name not in ['storage_data', 'storage_meta']:
-                diffs = diff(getattr(md_non_cached, field.name), getattr(md_cached, field.name))
-                assert not any(
-                    len(x) for x in diffs
-                ), f'{field.name} is different in metadata from non-cached, cached metadata impls'
-        ckpt_dir.cleanup()

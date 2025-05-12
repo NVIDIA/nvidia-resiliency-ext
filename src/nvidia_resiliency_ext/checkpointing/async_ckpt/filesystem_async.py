@@ -15,8 +15,10 @@
 
 """ Storage writer for PyT Distributed format allowing asynchronous save. """
 import dataclasses
+import inspect
 import logging
 import os
+import pickle
 import queue
 from functools import partial
 from heapq import heappop, heappush
@@ -31,6 +33,7 @@ import torch
 from torch import multiprocessing as mp
 from torch.distributed.checkpoint import FileSystemWriter
 from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX, _StoragePrefix, _write_item
+from torch.distributed.checkpoint.metadata import Metadata
 
 try:
     from torch.distributed.checkpoint.filesystem import _StorageWriterTransforms
@@ -77,8 +80,13 @@ class FileSystemWriterAsync(FileSystemWriter):
     (intermediate state is stored as writer attributes).
     """
 
-    def __init__(self, *args, separation_hint: Optional[str] = None, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self, path: Union[str, os.PathLike], *args, separation_hint: Optional[str] = None, **kwargs
+    ):
+        self.checkpoint_dir = path
+        self.use_msc = kwargs.pop("use_msc", False)
+
+        super().__init__(path, *args, **kwargs)
         if not self.single_file_per_rank:
             raise NotImplementedError(
                 'single_file_per_rank flag not supported for FileSystemWriterAsync'
@@ -159,7 +167,11 @@ class FileSystemWriterAsync(FileSystemWriter):
                 if len(bytes_data) > 0 or len(tensor_data) > 0:
                     file_name = gen_file(prefix=group_name)
                     self.write_buckets.append(
-                        (self.path / file_name, file_name, (bytes_data, tensor_data))
+                        (
+                            os.path.join(self.checkpoint_dir, file_name),
+                            file_name,
+                            (bytes_data, tensor_data),
+                        )
                     )
 
         # Check if there is anything to write on this rank
@@ -189,7 +201,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             return None, None, ()
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
         return (
-            partial(self.write_preloaded_data_multiproc, transform_list),
+            partial(self.write_preloaded_data_multiproc, transform_list, self.use_msc),
             partial(self.preload_tensors, self.write_buckets, True),
             [torch.distributed.get_rank(), self.write_buckets, self.results_queue],
         )
@@ -218,7 +230,8 @@ class FileSystemWriterAsync(FileSystemWriter):
     @staticmethod
     @_disable_gc()
     def write_preloaded_data_multiproc(
-        transform_list: List,
+        transform_list: List[_StorageWriterTransforms],
+        use_msc: bool,
         rank: int,
         write_buckets: List[WriteBucket],
         global_results_queue: mp.Queue,
@@ -254,10 +267,22 @@ class FileSystemWriterAsync(FileSystemWriter):
         for i, write_bucket in enumerate(write_buckets):
             try:
                 count_queue.put(i)
+
+                kwargs = {
+                    'local_proc_idx': i,
+                    'write_bucket': write_bucket,
+                    'results_queue': local_results_queue,
+                    'count_queue': count_queue,
+                    'use_fsync': True,
+                }
+
+                if use_msc:
+                    kwargs['use_msc'] = use_msc
+
                 p_list.append(
                     ctx.Process(
                         target=partial(FileSystemWriterAsync.write_preloaded_data, transform_list),
-                        args=(i, write_bucket, local_results_queue, count_queue, True),
+                        kwargs=kwargs,
                     )
                 )
             except Exception as e:
@@ -313,6 +338,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         results_queue: mp.SimpleQueue,
         count_queue: mp.JoinableQueue,
         use_fsync: bool,
+        **kwargs,
     ) -> None:
         """
         Performs actual data saving to storage.
@@ -330,24 +356,45 @@ class FileSystemWriterAsync(FileSystemWriter):
         logger = logging.getLogger(__name__)
         logger.debug(f'{local_proc_idx} started')
         mem_before = _process_memory()
+        use_msc = kwargs.get('use_msc', False)
 
         local_results = []
         try:
             file_name, storage_key, (bytes_data, tensor_data) = write_bucket
-            with open(file_name, "wb") as stream:
+            extra_kwargs = {}
+            write_fn = _write_item
+            if "serialization_format" in inspect.signature(_write_item).parameters:
+                from torch.distributed.checkpoint.filesystem import SerializationFormat
+
+                extra_kwargs['serialization_format'] = SerializationFormat.TORCH_SAVE
+
+            if "transforms" in inspect.signature(_write_item).parameters:
+                assert len(transform_list) <= 1
+                write_fn = partial(_write_item, *transform_list)
+
+            if use_msc:
+                import multistorageclient as msc
+
+                open_file = msc.open
+            else:
+                open_file = open
+            with open_file(file_name, "wb") as stream:
                 for write_item, data in bytes_data:
                     local_results.append(
-                        _write_item(*transform_list, stream, data, write_item, storage_key)
+                        write_fn(stream, data, write_item, storage_key, **extra_kwargs)
                     )
 
                 for write_item, tensor in tensor_data:
                     assert tensor.is_cpu
                     local_results.append(
-                        _write_item(*transform_list, stream, tensor, write_item, storage_key)
+                        write_fn(stream, tensor, write_item, storage_key, **extra_kwargs)
                     )
 
                 if use_fsync:
-                    os.fsync(stream.fileno())
+                    if use_msc:
+                        stream.fsync()
+                    else:
+                        os.fsync(stream.fileno())
             local_output = (local_proc_idx, local_results)
         except Exception as e:
             logger.debug(f'{local_proc_idx} failed')
@@ -411,6 +458,55 @@ class FileSystemWriterAsync(FileSystemWriter):
         return dataclasses.replace(
             local_plan, storage_data=_StoragePrefix(f"__{torch.distributed.get_rank()}_")
         )
+
+    def finish(self, metadata: Metadata, results: List[List[WriteResult]]) -> None:
+        """
+        Finish the checkpointing process.
+
+        Args:
+            metadata (Metadata): metadata to save
+            results (List[List[WriteResult]]): results to save
+        """
+        if self.use_msc:
+            import multistorageclient as msc
+
+            storage_md = dict()
+            for wr_list in results:
+                storage_md.update({wr.index: wr.storage_data for wr in wr_list})
+
+            metadata.storage_data = storage_md
+            metadata.storage_meta = self.storage_meta()
+
+            path = os.path.join(self.checkpoint_dir, ".metadata")
+
+            with msc.open(path, "wb") as metadata_file:
+                pickle.dump(metadata, metadata_file)
+        else:
+            super().finish(metadata, results)
+
+    def prepare_local_plan(self, plan: SavePlan) -> SavePlan:
+        """
+        Prepare the local plan for the checkpointing process.
+        """
+        if self.use_msc:
+            import multistorageclient as msc
+
+            msc.os.makedirs(str(self.checkpoint_dir), exist_ok=True)
+        else:
+            super().prepare_local_plan(plan)
+
+        return plan
+
+    @property
+    def checkpoint_id(self) -> Union[str, os.PathLike]:
+        """
+        return the checkpoint_id that will be used to save the checkpoint.
+        """
+        return str(self.checkpoint_dir)
+
+    @classmethod
+    def validate_checkpoint_id(cls, checkpoint_id: Union[str, os.PathLike]) -> bool:
+        return True
 
 
 def _split_by_size_and_type(bins: int, items: List[WriteItem]) -> List[List[WriteItem]]:

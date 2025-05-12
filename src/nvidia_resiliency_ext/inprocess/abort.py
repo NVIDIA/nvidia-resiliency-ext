@@ -17,6 +17,7 @@
 import abc
 import concurrent.futures
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 
 from . import utils
@@ -66,7 +67,7 @@ class AbortTorchDistributed(Abort):
 
     @staticmethod
     def shutdown_all_process_group_backends():
-        device = torch.device('cuda')
+        device = get_current_device()
         process_groups = list(torch.distributed.distributed_c10d._world.pg_names)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(process_groups)) as executor:
@@ -101,4 +102,21 @@ class AbortTorchDistributed(Abort):
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
+        return state
+
+
+class AbortTransformerEngine(Abort):
+    r'''
+    Aborts TransformerEngine Userbuffer.
+
+    '''
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        try:
+            import transformer_engine.pytorch as te
+        except Exception:
+            pass
+        else:
+            te.module.base.destroy_ub()
+
         return state

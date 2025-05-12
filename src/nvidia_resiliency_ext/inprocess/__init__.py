@@ -14,7 +14,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import exception, finalize, health_check, initialize, monitor_thread, rank_assignment, state
+from . import (
+    completion,
+    exception,
+    finalize,
+    health_check,
+    initialize,
+    monitor_thread,
+    nested_restarter,
+    rank_assignment,
+    state,
+    terminate,
+)
 from .compose import Compose
 from .state import FrozenState, Mode, State
 from .wrap import CallWrapper, Wrapper
