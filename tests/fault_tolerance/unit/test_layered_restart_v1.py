@@ -97,14 +97,8 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.INITIALIZE)
         self.state_machine.transition_to(RankMonitorState.FINALIZED)
 
-        # Attempt the invalid transition and assert that it raises an exception
-        with self.assertRaises(InvalidStateTransitionException) as context:
-            self.state_machine.handle_signal()
-        # Check that the exception message is as expected
-        self.assertEqual(
-            str(context.exception),
-            "Invalid transition attempted from RankMonitorState.FINALIZED to RankMonitorState.FINALIZED",
-        )
+        # It is ok to receive signal in FINALIZED state.
+        self.state_machine.handle_signal()
         # Ensure that the state has not changed and remains FINALIZED
         self.assertEqual(self.state_machine.state, RankMonitorState.FINALIZED)
 
