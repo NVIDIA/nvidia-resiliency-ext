@@ -72,3 +72,149 @@ The following example shows how the routine can be used to synchronize the async
 		async_impl.async_save(model.state_dict(), ckpt_dir)
 
     async_impl.finalize_async_save(blocking=True)
+
+
+Using Multi-Storage Client with Async Checkpointing
+---------------------------------------------------
+`nvidia_resiliency_ext` supports saving checkpoints to object stores like AWS S3, Azure Blob Storage, Google Cloud Storage, and more through the NVIDIA Multi-Storage Client (MSC) integration. 
+
+MSC (`GitHub repository <https://github.com/NVIDIA/multi-storage-client>`_) provides a unified API for various storage backends, allowing you to write checkpoints to different storage services using the same code.
+
+Installation
+^^^^^^^^^^^^
+Before using MSC integration, you need to install the Multi-Storage Client package:
+
+.. code-block:: bash
+    
+    # Install the Multi-Storage Client package with boto3 support
+    pip install multi-storage-client[boto3]
+
+
+Configuration
+^^^^^^^^^^^^^
+
+Create a configuration file for the Multi-Storage Client and export the environment variable ``MSC_PROFILE`` to point to it:
+
+.. code-block:: bash
+
+    export MSC_CONFIG=/path/to/your/msc_config.yaml
+
+
+.. code-block:: yaml
+  :caption: Example configuration file used for AWS S3.
+
+  profiles:
+    model-checkpoints:
+      storage_provider:
+        type: s3
+        options:
+          base_path: bucket-checkpoints # Set the bucket name as the base path
+      credentials_provider:
+        type: S3Credentials
+        options:
+          access_key: ${AWS_ACCESS_KEY} # Set the AWS access key in the environment variable
+          secret_key: ${AWS_SECRET_KEY} # Set the AWS secret key in the environment variable
+
+
+Basic Usage
+^^^^^^^^^^^
+
+To enable MSC integration, simply pass ``use_msc=True`` when creating the ``FileSystemWriterAsync`` instance:
+
+The MSC URL scheme is ``msc://<profile-name>/<path>``. The example below shows how to save a checkpoint to the ``model-checkpoints`` profile, the data will be stored in the ``bucket-checkpoints`` bucket in AWS S3.
+
+.. code-block:: python
+
+    from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
+   
+    # Create writer with MSC enabled
+    writer = FileSystemWriterAsync(
+        "msc://model-checkpoints/iteration-0010",
+        use_msc=True
+    )
+
+
+Example: Saving and Loading Checkpoints with MSC
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The following example demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integration:
+
+.. code-block:: python
+
+    import torch
+    from torch.distributed.checkpoint import (
+        DefaultLoadPlanner,
+        DefaultSavePlanner,
+        load,
+    )
+
+    from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue, AsyncRequest
+    from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
+    from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
+        save_state_dict_async_finalize,
+        save_state_dict_async_plan,
+    )
+
+    import multistorageclient as msc
+
+
+    def async_save_checkpoint(checkpoint_path, state_dict, thread_count=2):
+        """
+        Save checkpoint asynchronously to MSC storage.
+        """
+        # Create async queue
+        async_queue = AsyncCallsQueue()
+        
+        # Create writer with MSC enabled
+        writer = FileSystemWriterAsync(checkpoint_path, thread_count=thread_count, use_msc=True)
+        coordinator_rank = 0
+        planner = DefaultSavePlanner()
+        
+        # Plan the save operation
+        save_state_dict_ret = save_state_dict_async_plan(
+            state_dict, writer, None, coordinator_rank, planner=planner
+        )
+        
+        # Create async request with finalization
+        save_fn, preload_fn, save_args = writer.get_save_function_and_args()
+        
+        def finalize_fn():
+            """Finalizes async checkpointing and synchronizes processes."""
+            save_state_dict_async_finalize(*save_state_dict_ret)
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+        
+        async_request = AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
+        
+        # Schedule the request and return the queue for later checking
+        async_queue.schedule_async_request(async_request)
+        return async_queue
+
+
+    def load_checkpoint(checkpoint_path, state_dict):
+        """
+        Load checkpoint from MSC storage into the state_dict.
+        """
+        # Create reader with MSC path
+        reader = msc.torch.MultiStorageFileSystemReader(checkpoint_path, thread_count=2)
+        
+        # Load the checkpoint into the state_dict
+        load(
+            state_dict=state_dict,
+            storage_reader=reader,
+            planner=DefaultLoadPlanner(),
+        )
+        return state_dict
+
+
+    # Initialize your model and get state_dict
+    model = YourModel()
+    state_dict = model.state_dict()
+
+    # Save checkpoint asynchronously
+    checkpoint_path = "msc://model-checkpoints/iteration-0010"
+    async_queue = async_save_checkpoint(checkpoint_path, state_dict)
+    async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+
+    # Load checkpoint synchronously
+    loaded_state_dict = load_checkpoint(checkpoint_path, state_dict.copy())
