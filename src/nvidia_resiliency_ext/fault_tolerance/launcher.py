@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import uuid
+import warnings
 from argparse import REMAINDER, ArgumentParser
 from dataclasses import dataclass, field
 from string import Template
@@ -1061,6 +1062,21 @@ def launch_agent(
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
 
 
+def check_for_deprecated_args():
+    deprecated_args = [
+        "--fault-tol-cfg-path",
+        "--ignore-missing-fault-tol-cfg",
+        "--restart-policy",
+        "--restart_policy",
+        "--ft_param_link_down_path_template",
+        "--ft_param_enable_nic_monitor",
+        "--ft_param_pci_topo_file",
+    ]
+
+    for arg in deprecated_args:
+        if arg in sys.argv:
+            warnings.warn(f"Argument {arg} is deprecated and will be removed in NVRx v0.5")
+
 # Source
 # https://github.com/pytorch/pytorch/blob/release/2.3/torch/distributed/run.py
 
@@ -1670,9 +1686,13 @@ def get_args_parser() -> ArgumentParser:
     #
     # Fault tolerance related items
     #
+
+    check_for_deprecated_args()
+
     parser.add_argument(
-        "--fault-tol-cfg-path",
-        "--fault-tol-cfg-path",
+        "--ft-param-cfg-path",
+        "--ft-param-cfg-path",
+        "--fault-tol-cfg-path",  # Deprecated, to be removed in v0.5
         default=None,
         type=str,
         action=env,
@@ -1681,14 +1701,15 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ignore-missing-fault-tol-cfg",
-        "--ignore-missing-fault-tol-cfg",
+        "--ft-param-ignore-missing-cfg",
+        "--ft-param-ignore_missing_cfg",
+        "--ignore-missing-fault-tol-cfg",  # Deprecated, to be removed in v0.5
         action='store_true',
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
     )
 
     parser.add_argument(
-        "--ft-param-workload_check_interval",
+        "--ft-param-workload-check-interval",
         "--ft-param-workload_check_interval",
         type=float,
         default=None,
@@ -1696,7 +1717,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-initial_rank_heartbeat_timeout",
+        "--ft-param-initial-rank-heartbeat-timeout",
         "--ft-param-initial_rank_heartbeat_timeout",
         type=float,
         default=None,
@@ -1704,7 +1725,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-rank_heartbeat_timeout",
+        "--ft-param-rank-heartbeat-timeout",
         "--ft-param-rank_heartbeat_timeout",
         type=float,
         default=None,
@@ -1712,7 +1733,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-node_health_check_interval",
+        "--ft-param-node-health-check-interval",
         "--ft-param-node_health_check_interval",
         type=float,
         default=None,
@@ -1720,7 +1741,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-safety_factor",
+        "--ft-param-safety-factor",
         "--ft-param-safety_factor",
         type=float,
         default=None,
@@ -1728,7 +1749,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-rank_termination_signal",
+        "--ft-param-rank-termination-signal",
         "--ft-param-rank_termination_signal",
         type=str,
         default=None,
@@ -1736,7 +1757,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-log_level",
+        "--ft-param-log-level",
         "--ft-param-log_level",
         type=str,
         default=None,
@@ -1744,7 +1765,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-rank_out_of_section_timeout",
+        "--ft-param-rank-out-of-section-timeout",
         "--ft-param-rank_out_of_section_timeout",
         type=float,
         default=None,
@@ -1752,7 +1773,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-rank_section_timeouts",
+        "--ft-param-rank-section-timeouts",
         "--ft-param-rank_section_timeouts",
         type=str,
         default=None,
@@ -1761,7 +1782,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-param-restart_check_interval",
+        "--ft-param-restart-check-interval",
         "--ft-param-restart_check_interval",
         type=float,
         default=None,
@@ -1769,8 +1790,10 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--restart-policy",
-        "--restart_policy",
+        "--ft-param-restart-policy",
+        "--ft-param-restart_policy",
+        "--restart-policy",  # Deprecated, to be removed in v0.5
+        "--restart_policy",  # Deprecated, to be removed in v0.5
         type=str,
         choices=['any-failed', 'min-healthy'],
         default='any-failed',
@@ -1780,24 +1803,27 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft_param_enable_nic_monitor",
         "--ft-param-enable-nic-monitor",
+        "--ft-param-enable_nic_monitor",
+        "--ft_param_enable_nic_monitor",  # Deprecated, to be removed in v0.5
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
         default=True,
         help="Enable or Disable NIC health monitoring in training.",
     )
 
     parser.add_argument(
-        "--ft_param_pci_topo_file",
         "--ft-param-pci-topo-file",
+        "--ft-param-pci_topo_file",
+        "--ft_param_pci_topo_file",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
         help="PCI topology file that describes GPU and NIC topology.",
     )
 
     parser.add_argument(
-        "--ft_param_link_down_path_template",
         "--ft-param-link-down-path-template",
+        "--ft-param-link_down_path_template",
+        "--ft_param_link_down_path_template",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
         help="Part of Fault Tolerance pkg config (link_down_path_template). "
