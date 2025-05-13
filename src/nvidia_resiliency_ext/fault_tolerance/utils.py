@@ -130,7 +130,7 @@ async def read_obj_from_ipc_stream(stream: asyncio.StreamReader):
         return _IPC_PICKLER.loads(obj_pickled)
     except (asyncio.IncompleteReadError, Exception):
         # print(f"Error in _read_obj_from_stream: {e}", file=sys.stderr)
-        return None
+        raise
 
 
 async def write_obj_to_ipc_stream(obj, stream: asyncio.StreamWriter):
