@@ -17,8 +17,9 @@ import gc
 import logging
 from contextlib import contextmanager
 from time import time
-from typing import Callable, Dict, List, Optional, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
+import numpy as np
 import torch
 
 U = TypeVar("U")
@@ -81,16 +82,6 @@ def debug_msg(msg: str):
         last_logger.debug(f"{stacked_name} {msg}")
 
 
-def dict_list_map_outplace(f: Callable[[U], V], x: Union[Dict, List, U]) -> Union[Dict, List, V]:
-    """Maps dicts and lists *out-of-place* with a given function."""
-    if isinstance(x, dict):
-        return {k: dict_list_map_outplace(f, v) for k, v in x.items()}
-    elif isinstance(x, list):
-        return [dict_list_map_outplace(f, v) for v in x]
-    else:
-        return f(x)
-
-
 def preload_tensors(state_dict: Dict, non_blocking=True):
     """Preload tensors in state_dict to host memory through CPU memory
     Args:
@@ -127,3 +118,75 @@ def wrap_for_async(fn):
             fn(state_dict, *args, **kwargs)
 
     return wrapped
+
+
+# Dict utils copied from megatron.core.dist_checkpointing.dict_utils.py
+def diff(x1: Any, x2: Any, prefix: Tuple = ()) -> Tuple[list, list, list]:
+    """Recursive diff of dicts.
+
+    Args:
+        x1 (object): left dict
+        x2 (object): right dict
+        prefix (tuple): tracks recursive calls. Used for reporting differing keys.
+
+    Returns:
+        Tuple[list, list, list]: tuple of:
+            - only_left: Prefixes present only in left dict
+            - only_right: Prefixes present only in right dict
+            - mismatch: values present in both dicts but not equal across dicts.
+                For tensors equality of all elems is checked.
+                Each element is a tuple (prefix, type of left value, type of right value).
+    """
+    mismatch = []
+    if isinstance(x1, dict) and isinstance(x2, dict):
+        only_left = [prefix + (k,) for k in x1.keys() - x2.keys()]
+        only_right = [prefix + (k,) for k in x2.keys() - x1.keys()]
+        for k in x2.keys() & x1.keys():
+            _left, _right, _mismatch = diff(x1[k], x2[k], prefix + (k,))
+            only_left.extend(_left)
+            only_right.extend(_right)
+            mismatch.extend(_mismatch)
+    elif isinstance(x1, list) or isinstance(x1, tuple) or isinstance(x1, np.ndarray):
+        assert isinstance(x1, type(x2))
+        only_left = list(range(len(x1) - 1, len(x2) - 1, -1))
+        only_right = list(range(len(x1) - 1, len(x2) - 1, -1))
+        for i, (v1, v2) in enumerate(zip(x1, x2)):
+            _left, _right, _mismatch = diff(v1, v2, prefix + (i,))
+            only_left.extend(_left)
+            only_right.extend(_right)
+            mismatch.extend(_mismatch)
+    else:
+        only_left = []
+        only_right = []
+        if isinstance(x1, torch.Tensor) and isinstance(x2, torch.Tensor):
+            if x1.device != x2.device:
+                _is_mismatch = not torch.all(x1.cpu() == x2.cpu())
+            else:
+                _is_mismatch = not torch.all(x1 == x2)
+        # TODO: change with concrete type that has both replica_id and data attrs
+        elif hasattr(x1, 'replica_id') and hasattr(x2, 'replica_id'):
+            assert isinstance(x1, type(x2))
+            only_left, only_right, mismatch = diff(
+                x1.data, x2.data, prefix + (type(x1),)
+            )  # type: ignore
+            _is_mismatch = False
+        else:
+            try:
+                _is_mismatch = bool(x1 != x2)
+            except RuntimeError:
+                _is_mismatch = True
+
+        if _is_mismatch:
+            mismatch.append((prefix, type(x1), type(x2)))
+
+    return only_left, only_right, mismatch
+
+
+def dict_list_map_outplace(f: Callable[[U], V], x: Union[Dict, List, U]) -> Union[Dict, List, V]:
+    """Maps dicts and lists *out-of-place* with a given function."""
+    if isinstance(x, dict):
+        return {k: dict_list_map_outplace(f, v) for k, v in x.items()}
+    elif isinstance(x, list):
+        return [dict_list_map_outplace(f, v) for v in x]
+    else:
+        return f(x)

@@ -19,7 +19,12 @@ import functools
 import inspect
 import logging
 import os
-import pickle
+
+# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
+# Severity: Low   Confidence: High
+# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+# More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
+import pickle  # nosec
 import sys
 import time
 from collections.abc import Iterable
@@ -110,14 +115,22 @@ class StoreMixin:
 
     def get_states(self, ranks):
         states = [
-            pickle.loads(state)
+            # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
+            # Severity: Medium   Confidence: High
+            # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+            # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
+            pickle.loads(state)  # nosec
             for state in self.multi_get([self.STATE.format(rank=rank) for rank in ranks])
         ]
         return states
 
     def get_keys(self, ranks):
         keys = [
-            pickle.loads(key)
+            # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
+            # Severity: Medium   Confidence: High
+            # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+            # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
+            pickle.loads(key)  # nosec
             for key in self.multi_get([self.KEY.format(rank=rank) for rank in ranks])
         ]
         return keys
