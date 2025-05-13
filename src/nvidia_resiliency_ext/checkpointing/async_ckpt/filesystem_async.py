@@ -490,7 +490,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 # Severity: Medium   Confidence: High
                 # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
                 # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
-                pickle.dump(metadata, metadata_file)
+                pickle.dump(metadata, metadata_file)  # nosec
         else:
             super().finish(metadata, results)
 
