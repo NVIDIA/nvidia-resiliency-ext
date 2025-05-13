@@ -18,7 +18,12 @@ import dataclasses
 import inspect
 import logging
 import os
-import pickle
+
+# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
+# Severity: Low   Confidence: High
+# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+# More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
+import pickle  # nosec
 import queue
 from functools import partial
 from heapq import heappop, heappush
@@ -481,6 +486,10 @@ class FileSystemWriterAsync(FileSystemWriter):
             path = os.path.join(self.checkpoint_dir, ".metadata")
 
             with msc.open(path, "wb") as metadata_file:
+                # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
+                # Severity: Medium   Confidence: High
+                # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+                # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
                 pickle.dump(metadata, metadata_file)
         else:
             super().finish(metadata, results)
