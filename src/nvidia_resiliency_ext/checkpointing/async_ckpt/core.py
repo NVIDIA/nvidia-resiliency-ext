@@ -286,6 +286,7 @@ class PersistentAsyncCaller(AsyncCaller):
         self.comp_q: mp.Queue = ctx.Queue()
         self.cur_item: int = None
         self.cur_idx: int = -1
+        self.rank: int = None
 
     def schedule_async_call(self, async_req: AsyncRequest) -> None:
         """Put `AsyncRequest` to the Persistent Async Caller
