@@ -51,37 +51,8 @@ def test_from_kwargs():
 
 
 def test_from_args():
-    parser = ArgumentParser(description="Test parser")
-    parser.add_argument(
-        "--ft-param-safety_factor",
-        "--ft-param-safety_factor",
-        type=float,
-        default=None,
-    )
-    parser.add_argument(
-        "--ft-param-rank_termination_signal",
-        "--ft-param-rank_termination_signal",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--ft-param-log_level",
-        "--ft-param-log_level",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--ft-param-rank_out_of_section_timeout",
-        "--ft-param-rank_out_of_section_timeout",
-        type=float,
-        default=None,
-    )
-    parser.add_argument(
-        "--ft-param-rank_section_timeouts",
-        "--ft-param-rank_section_timeouts",
-        type=str,
-        default=None,
-    )
+    from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
+    parser = get_args_parser()
     inp = [
         "--ft-param-safety_factor",
         "0.567",
@@ -94,10 +65,13 @@ def test_from_args():
         "--ft-param-rank_section_timeouts",
         "custom1:111.1,custom2:222.2",
     ]
+
+    # Add a the dummy training script required by the torchrun argparser
+    inp.append("dummy.py")
+
     args = parser.parse_args(inp)
-    ft = fault_tolerance.FaultToleranceConfig.from_args(
-        args=args, cfg_file_arg=None, ft_args_prefix='ft_param_'
-    )
+    ft = fault_tolerance.FaultToleranceConfig.from_args(args)
+
     assert ft.safety_factor == 0.567
     assert ft.rank_termination_signal == signal.SIGUSR2
     assert ft.log_level == logging.DEBUG
