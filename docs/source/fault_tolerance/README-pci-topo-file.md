@@ -6,7 +6,7 @@ In certain environments, such as virtual machines (VMs) provided by cloud servic
 To work around this limitation, users can specify a pre-defined PCI topology file using the following option:  
 
 ```
-–ft-param-pci-topo-file=<pci_topo_file>
+–ft-pci-topo-file=<pci_topo_file>
 ```
 where `<pci_topo_file>` is an XML file describing the PCI topology.
 
