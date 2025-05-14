@@ -1715,15 +1715,6 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-ignore-missing-cfg",
-        "--ft-ignore_missing_cfg",
-        "--ignore-missing-fault-tol-cfg",  # Deprecated, to be removed in v0.5
-        action='store_true',
-        dest="ft_ignore_missing_cfg",
-        help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
-    )
-
-    parser.add_argument(
         "--ft-workload-check-interval",
         "--ft-workload_check_interval",
         "--ft-param-workload_check_interval",  # Deprecated, to be removed in v0.5
@@ -2026,20 +2017,8 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
             f"Current ft_launcher version supports only rdzv_backend=c10d. Got {args.rdzv_backend}"
         )
 
-    try:
-        fault_tol_cfg = FaultToleranceConfig.from_args(
-            args,
-            cfg_file_arg="ft-param-cfg-path",
-            ft_args_prefix="ft-param",
-        )
-    except ValueError:
-        if args.ignore_missing_fault_tol_cfg:
-            logger.warning(
-                f"Could not load FT config from '{args.ft_cfg_path}' or read from CLI args. Will use default FT settings."
-            )
-            fault_tol_cfg = FaultToleranceConfig()
-        else:
-            raise ValueError("Fault Tolerance configuration not provided.")
+
+    fault_tol_cfg = FaultToleranceConfig.from_args(args)
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
