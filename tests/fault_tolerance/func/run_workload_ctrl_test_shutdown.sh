@@ -105,7 +105,7 @@ THIS_SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 WORKER_SCRIPT="${THIS_SCRIPT_DIR}/_workload_ctrl_test_worker.py"
 
 export LOGLEVEL='DEBUG'
-COMMON_FT_ARGS="--ft-param-log_level=DEBUG --ft-param-rank_heartbeat_timeout=5 --ft-param-initial_rank_heartbeat_timeout=5"
+COMMON_FT_ARGS="--ft-log-level=DEBUG --ft-rank-heartbeat-timeout=5 --ft-initial-rank-heartbeat-timeout=5"
 COMMON_LAUNCHER_ARGS="--nproc-per-node=1 --nnodes=${NODES} --rdzv-backend=c10d --rdzv_endpoint=localhost:12345 --max-restarts=100"
 
 rm -f "${RANK_CONTROL_FILE}"
