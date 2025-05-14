@@ -1066,11 +1066,24 @@ def check_for_deprecated_args():
     deprecated_args = [
         "--fault-tol-cfg-path",
         "--ignore-missing-fault-tol-cfg",
+        "--ft-param-workload_check_interval",
+        "--ft-param-initial_rank_heartbeat_timeout",
+        "--ft-param-rank_heartbeat_timeout",
+        "--ft-param-node_health_check_interval",
+        "--ft-param-safety_factor",
+        "--ft-param-rank_termination_signal",
+        "--ft-param-log_level",
+        "--ft-param-rank_out_of_section_timeout",
+        "--ft-param-rank_section_timeouts",
+        "--ft-param-restart_check_interval",
         "--restart-policy",
         "--restart_policy",
-        "--ft_param_link_down_path_template",
+        "--ft-param-enable-nic-monitor",
         "--ft_param_enable_nic_monitor",
+        "--ft-param-pci-topo-file",
         "--ft_param_pci_topo_file",
+        "--ft-param-link-down-path-template",
+        "--ft_param_link_down_path_template",
     ]
 
     for arg in deprecated_args:
@@ -1690,142 +1703,171 @@ def get_args_parser() -> ArgumentParser:
     check_for_deprecated_args()
 
     parser.add_argument(
-        "--ft-param-cfg-path",
-        "--ft-param-cfg-path",
+        "--ft-cfg-path",
+        "--ft-cfg_path",
         "--fault-tol-cfg-path",  # Deprecated, to be removed in v0.5
         default=None,
         type=str,
         action=env,
+        dest="ft_cfg_path",
         help="Path to a YAML file that contains Fault Tolerance pkg config (`fault_tolerance` section)."
         " NOTE: config items from the file can be overwritten by `--ft-param-*` args.",
     )
 
     parser.add_argument(
-        "--ft-param-ignore-missing-cfg",
-        "--ft-param-ignore_missing_cfg",
+        "--ft-ignore-missing-cfg",
+        "--ft-ignore_missing_cfg",
         "--ignore-missing-fault-tol-cfg",  # Deprecated, to be removed in v0.5
         action='store_true',
+        dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
     )
 
     parser.add_argument(
-        "--ft-param-workload-check-interval",
-        "--ft-param-workload_check_interval",
+        "--ft-workload-check-interval",
+        "--ft-workload_check_interval",
+        "--ft-param-workload_check_interval",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
+        dest="ft_workload_check_interval",
         help="Part of Fault Tolerance pkg config (workload_check_interval).",
     )
 
     parser.add_argument(
-        "--ft-param-initial-rank-heartbeat-timeout",
-        "--ft-param-initial_rank_heartbeat_timeout",
+        "--ft-initial-rank-heartbeat-timeout",
+        "--ft-initial_rank_heartbeat_timeout",
+        "--ft-param-initial_rank_heartbeat_timeout",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
+        dest="ft_initial_rank_heartbeat_timeout",
         help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout).",
     )
 
     parser.add_argument(
-        "--ft-param-rank-heartbeat-timeout",
-        "--ft-param-rank_heartbeat_timeout",
+        "--ft-rank-heartbeat-timeout",
+        "--ft-rank_heartbeat_timeout",
+        "--ft-param-rank_heartbeat_timeout",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
+        dest="ft_rank_heartbeat_timeout",
         help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout).",
     )
 
     parser.add_argument(
-        "--ft-param-node-health-check-interval",
-        "--ft-param-node_health_check_interval",
+        "--ft-node-health-check-interval",
+        "--ft-node_health_check_interval",
+        "--ft-param-node_health_check_interval",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
+        dest="ft_node_health_check_interval",
         help="Part of Fault Tolerance pkg config (node_health_check_interval).",
     )
 
     parser.add_argument(
-        "--ft-param-safety-factor",
-        "--ft-param-safety_factor",
+        "--ft-safety-factor",
+        "--ft-safety_factor",
+        "--ft-param-safety_factor",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
+        dest="ft_safety_factor",
         help="Part of Fault Tolerance pkg config (safety_factor).",
     )
 
     parser.add_argument(
-        "--ft-param-rank-termination-signal",
-        "--ft-param-rank_termination_signal",
+        "--ft-rank-termination-signal",
+        "--ft-rank_termination_signal",
+        "--ft-param-rank_termination_signal",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
+        dest="ft_rank_termination_signal",
         help="Part of Fault Tolerance pkg config (rank_termination_signal).",
     )
 
     parser.add_argument(
-        "--ft-param-log-level",
-        "--ft-param-log_level",
+        "--ft-log-level",
+        "--ft-log_level",
+        "--ft-param-log_level",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
+        dest="ft_log_level",
         help="Part of Fault Tolerance pkg config (log_level).",
     )
 
     parser.add_argument(
-        "--ft-param-rank-out-of-section-timeout",
-        "--ft-param-rank_out_of_section_timeout",
+        "--ft-rank-out-of-section-timeout",
+        "--ft-rank_out_of_section_timeout",
+        "--ft-param-rank_out_of_section_timeout",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
+        dest="ft_rank_out_of_section_timeout",
         help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout).",
     )
 
     parser.add_argument(
-        "--ft-param-rank-section-timeouts",
-        "--ft-param-rank_section_timeouts",
+        "--ft-rank-section-timeouts",
+        "--ft-rank_section_timeouts",
+        "--ft-param-rank_section_timeouts",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
+        dest="ft_rank_section_timeouts",
         help="Part of Fault Tolerance pkg config (rank_section_timeouts). "
         "Expected format: name1:value1,name2:value2,... Use 'null'|'none'|'' for None",
     )
 
     parser.add_argument(
-        "--ft-param-restart-check-interval",
-        "--ft-param-restart_check_interval",
+        "--ft-restart-check-interval",
+        "--ft-restart_check_interval",
+        "--ft-param-restart_check_interval",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
+        dest="ft_restart_check_interval",
         help="Part of Fault Tolerance pkg config (restart_check_interval).",
     )
 
     parser.add_argument(
-        "--ft-param-restart-policy",
-        "--ft-param-restart_policy",
+        "--ft-restart-policy",
+        "--ft-restart_policy",
         "--restart-policy",  # Deprecated, to be removed in v0.5
         "--restart_policy",  # Deprecated, to be removed in v0.5
         type=str,
         choices=['any-failed', 'min-healthy'],
         default='any-failed',
+        dest="ft_restart_policy",
         help="Worker groups restarting policy. Options: "
         "'any-failed' restart if any worker group fails (torchrun's default); "
         "'min-healthy' restart if number of healthy worker groups falls below <minimum_nodes>",
     )
 
     parser.add_argument(
-        "--ft-param-enable-nic-monitor",
-        "--ft-param-enable_nic_monitor",
+        "--ft-enable-nic-monitor",
+        "--ft-enable_nic_monitor",
+        "--ft-param-enable-nic-monitor",  # Deprecated, to be removed in v0.5
         "--ft_param_enable_nic_monitor",  # Deprecated, to be removed in v0.5
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
         default=True,
+        dest="ft_enable_nic_monitor",
         help="Enable or Disable NIC health monitoring in training.",
     )
 
     parser.add_argument(
-        "--ft-param-pci-topo-file",
-        "--ft-param-pci_topo_file",
+        "--ft-pci-topo-file",
+        "--ft-pci_topo_file",
+        "--ft-param-pci-topo-file",  # Deprecated, to be removed in v0.5
         "--ft_param_pci_topo_file",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
+        dest="ft_pci_topo_file",
         help="PCI topology file that describes GPU and NIC topology.",
     )
 
     parser.add_argument(
-        "--ft-param-link-down-path-template",
-        "--ft-param-link_down_path_template",
+        "--ft-link-down-path-template",
+        "--ft-link_down_path_template",
+        "--ft-param-link-down-path-template",  # Deprecated, to be removed in v0.5
         "--ft_param_link_down_path_template",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
+        dest="ft_link_down_path_template",
         help="Part of Fault Tolerance pkg config (link_down_path_template). "
         "Template path to check if a NIC link is down.",
     )
@@ -1987,13 +2029,13 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     try:
         fault_tol_cfg = FaultToleranceConfig.from_args(
             args,
-            cfg_file_arg="fault_tol_cfg_path",
-            ft_args_prefix="ft_param_",
+            cfg_file_arg="ft-param-cfg-path",
+            ft_args_prefix="ft-param",
         )
     except ValueError:
         if args.ignore_missing_fault_tol_cfg:
             logger.warning(
-                f"Could not load FT config from '{args.fault_tol_cfg_path}' or read from CLI args. Will use default FT settings."
+                f"Could not load FT config from '{args.ft_cfg_path}' or read from CLI args. Will use default FT settings."
             )
             fault_tol_cfg = FaultToleranceConfig()
         else:
@@ -2027,7 +2069,7 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
         rdzv_backend=args.rdzv_backend,
         rdzv_configs=rdzv_configs,
         max_restarts=args.max_restarts,
-        restart_policy=args.restart_policy,
+        restart_policy=args.ft_restart_policy,
         term_timeout=args.term_timeout,
         workers_stop_timeout=args.workers_stop_timeout,
         monitor_interval=args.monitor_interval,
