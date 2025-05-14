@@ -129,9 +129,9 @@ class FaultToleranceConfig:
         section_timeouts_arg = section_timeouts_arg.strip()
         if not section_timeouts_arg:
             return {}
-        section_timeout_paris = section_timeouts_arg.split(",")
+        section_timeout_pairs = section_timeouts_arg.split(",")
         res = {}
-        for st in section_timeout_paris:
+        for st in section_timeout_pairs:
             section, timeout = st.split(":")
             section = section.strip()
             timeout = timeout.strip()
@@ -142,11 +142,7 @@ class FaultToleranceConfig:
         return res
 
     @staticmethod
-    def from_args(
-        args: argparse.Namespace,
-        cfg_file_arg: str = None,
-        ft_args_prefix: str = '',
-    ):
+    def from_args(args: argparse.Namespace):
         """
         Init FT config object from parsed CLI args.
 
@@ -158,44 +154,37 @@ class FaultToleranceConfig:
 
         Args:
             args (argparse.Namespace): Parsed arguments
-            cfg_file_arg (str, optional): Name of the argument that contains the FT config YAML file. Defaults to None - do not try to read from file.
-            ft_args_prefix (str, optional): Prefix of the FT related args. Defaults to empty str - assume no prefix.
         """
-
+        # Start with default config
         ft_cfg = FaultToleranceConfig()
         is_read_from_file = False
-        if cfg_file_arg:
-            cfg_path = getattr(args, cfg_file_arg)
-            if cfg_path is not None:
-                with contextlib.suppress(ValueError):
-                    ft_cfg = FaultToleranceConfig.from_yaml_file(cfg_path)
-                    is_read_from_file = True
 
-        # extract FT args specified via CLI, remove the common FT args prefix
-        # so we should get FaultToleranceConfig field name -> value mapping
-        provided_ft_args = {
-            k.removeprefix(ft_args_prefix): v
-            for k, v in vars(args).items()
-            if k.startswith(ft_args_prefix) and v is not None
-        }
+        # Try to read from config file if specified
+        if args.ft_cfg_path is not None:
+            with contextlib.suppress(ValueError):
+                ft_cfg = FaultToleranceConfig.from_yaml_file(args.ft_cfg_path)
+                is_read_from_file = True
 
-        if provided_ft_args.get('rank_section_timeouts', None):
-            # convert section timeouts arg to a mapping
-            section_timeouts_arg = provided_ft_args['rank_section_timeouts']
-            provided_ft_args['rank_section_timeouts'] = (
-                FaultToleranceConfig._parse_section_timeouts_arg(section_timeouts_arg)
-            )
+        # Extract FT args from CLI
+        cli_ft_args = {}
+        for field in fields(FaultToleranceConfig):
+            cli_field_name = f"ft_{field.name}"
+            val = getattr(args, cli_field_name, None)
+            if val is not None:
+                if field.name == "rank_section_timeouts" and isinstance(val, str):
+                    val = FaultToleranceConfig._parse_section_timeouts_arg(val)
+                cli_ft_args[field.name] = val
 
-        for arg_name, arg_val in provided_ft_args.items():
-            assert hasattr(
-                ft_cfg, arg_name
-            ), f"Invalid FT parameter specified via CLI: {ft_args_prefix}{arg_name}."
+        # Update config with CLI args
+        for arg_name, arg_val in cli_ft_args.items():
             setattr(ft_cfg, arg_name, arg_val)
 
+        # Fix any type issues
         ft_cfg._fix_log_level_type()
         ft_cfg._fix_rank_termination_signal_type()
 
-        if not (is_read_from_file or provided_ft_args):
+        # If we didn't read from file and no CLI args were provided, raise an error
+        if not (is_read_from_file or cli_ft_args):
             raise ValueError("No fault tolerance configuration provided.")
 
         return ft_cfg
