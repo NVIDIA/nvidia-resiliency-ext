@@ -54,15 +54,15 @@ def test_from_args():
     from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
     parser = get_args_parser()
     inp = [
-        "--ft-param-safety_factor",
+        "--ft-safety-factor",
         "0.567",
-        "--ft-param-rank_termination_signal",
+        "--ft-rank-termination-signal",
         "SIGUSR2",
-        "--ft-param-log_level",
+        "--ft-log-level",
         "DEBUG",
-        "--ft-param-rank_out_of_section_timeout",
+        "--ft-rank-out-of-section-timeout",
         "123.0",
-        "--ft-param-rank_section_timeouts",
+        "--ft-rank-section-timeouts",
         "custom1:111.1,custom2:222.2",
     ]
 
