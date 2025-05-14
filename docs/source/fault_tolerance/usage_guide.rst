@@ -49,11 +49,11 @@ FT launcher
 
 Fault tolerance includes a launcher tool called ``ft_launcher``, which is based on ``torchrun``
 and supports most ``torchrun`` command-line parameters. FT configuration can be specified either
-via a YAML file using ``--ft-param-cfg-path`` or through command-line parameters
-using ``--ft-param-<parameter-name>``.
+via a YAML file using ``--ft-cfg-path`` or through command-line parameters
+using ``--ft-<parameter-name>``.
 
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
-The restart behavior depends on the ``--ft-param-restart-policy`` parameter, which supports two modes:
+The restart behavior depends on the ``--ft-restart-policy`` parameter, which supports two modes:
 
 * ``any-failed`` (default)  
   All workers are restarted if any worker fails.  
@@ -102,13 +102,14 @@ API, which can be used to control the workload restarting logic implemented in t
 Deprecated arguments
 --------------------
 
-The following arguments are deprecated.  Please use the new arguments instead.
+The following arguments are deprecated and will be removed in a future version:
 
-* ``--fault-tol-cfg-path`` (replaced by ``--ft-param-cfg-path``)
-* ``--ignore-missing-fault-tol-cfg`` (replaced by ``--ft-param-ignore-missing-cfg``)
-* ``--restart-policy`` (replaced by ``--ft-param-restart-policy``)
-* ``--restart_policy`` (replaced by ``--ft-param-restart-policy``)
-* ``--ft_param_link_down_path_template`` (replaced by ``--ft-param-link-down-path-template``)
-* ``--ft_param_enable_nic_monitor`` (replaced by ``--ft-param-enable-nic-monitor``)
-* ``--ft_param_pci_topo_file`` (replaced by ``--ft-param-pci-topo-file``)
+* ``--ft-param-*`` arguments (replaced by ``--ft-*``)
+* ``--fault-tol-cfg-path`` (replaced by ``--ft-cfg-path``)
+* ``--ignore-missing-fault-tol-cfg`` (replaced by ``--ft-ignore-missing-cfg``)
+* ``--restart-policy`` (replaced by ``--ft-restart-policy``)
+* ``--restart_policy`` (replaced by ``--ft-restart-policy``)
+* ``--ft_param_link_down_path_template`` (replaced by ``--ft-link-down-path-template``)
+* ``--ft_param_enable_nic_monitor`` (replaced by ``--ft-enable-nic-monitor``)
+* ``--ft_param_pci_topo_file`` (replaced by ``--ft-pci-topo-file``)
 

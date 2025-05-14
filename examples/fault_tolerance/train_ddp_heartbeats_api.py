@@ -15,6 +15,17 @@
 
 """
 Demo of fault tolerance with DDP training, using FT package heartbeats API
+
+This script demonstrates how to use the FT heartbeats API for hang detection in
+distributed training. It should be run with the ft_launcher command. E.g.:
+
+`ft_launcher --nproc-per-node=2 --ft-cfg-path=./examples/fault_tolerance/fault_tol_cfg_heartbeats.yaml examples/fault_tolerance/train_ddp_heartbeats_api.py --device=cpu`
+
+Fault tolerance features demonstrated:
+1. Heartbeat sending during training
+2. Timeout calculation and setting
+3. State persistence through checkpoints
+4. Simulated fault injection
 """
 
 import argparse

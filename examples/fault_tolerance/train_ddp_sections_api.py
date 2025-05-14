@@ -17,7 +17,7 @@
 Demo of DDP training with fault tolerance, using FT package sections API
 
 It should be run with `ft_launcher`. E.g.
-`ft_launcher --nproc-per-node=2 --ft-param-cfg-path=./examples/fault_tolerance/fault_tol_cfg_sections.yaml examples/fault_tolerance/train_ddp_sections_api.py --device=cpu`
+`ft_launcher --nproc-per-node=2 --ft-cfg-path=./examples/fault_tolerance/fault_tol_cfg_sections.yaml examples/fault_tolerance/train_ddp_sections_api.py --device=cpu`
 
 This example uses following custom FT sections
 - 'init' - covers workload initialization
