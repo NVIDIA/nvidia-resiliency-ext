@@ -96,7 +96,12 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">pickle</span>
+
+<span class="c1"># Issue: [B403:blacklist] Consider possible security implications associated with pickle module.</span>
+<span class="c1"># Severity: Low   Confidence: High</span>
+<span class="c1"># CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)</span>
+<span class="c1"># More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pickle</span>  <span class="c1"># nosec</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">queue</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">functools</span><span class="w"> </span><span class="kn">import</span> <span class="n">partial</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">heapq</span><span class="w"> </span><span class="kn">import</span> <span class="n">heappop</span><span class="p">,</span> <span class="n">heappush</span>
@@ -587,7 +592,11 @@
             <span class="n">path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;.metadata&quot;</span><span class="p">)</span>
 
             <span class="k">with</span> <span class="n">msc</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">metadata_file</span><span class="p">:</span>
-                <span class="n">pickle</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">metadata_file</span><span class="p">)</span>
+                <span class="c1"># Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.</span>
+                <span class="c1"># Severity: Medium   Confidence: High</span>
+                <span class="c1"># CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)</span>
+                <span class="c1"># More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle</span>
+                <span class="n">pickle</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">metadata_file</span><span class="p">)</span>  <span class="c1"># nosec</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">results</span><span class="p">)</span></div>
 
