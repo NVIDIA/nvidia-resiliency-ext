@@ -30,7 +30,7 @@ import nvidia_resiliency_ext.fault_tolerance as ft
 # After each epoch, FT timeouts are calculated and saved to the file "./ft_state.json".
 #
 # You can run it using:
-# `ft_launcher --nproc-per-node=4 --max-restarts=3 --ft-param-initial-rank-heartbeat-timeout=30 --ft-param-rank-heartbeat-timeout=15 examples/fault_tolerance/basic_ft_example.py`
+# `ft_launcher --nproc-per-node=4 --max-restarts=3 --ft-initial-rank-heartbeat-timeout=30 --ft-rank-heartbeat-timeout=15 examples/fault_tolerance/basic_ft_example.py`
 # In this example configuration, at most 3 training restarts are allowed.
 #
 # To find rank PIDs, use:

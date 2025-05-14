@@ -24,10 +24,10 @@ Fixed timeout values can be used throughout the training runs, or timeouts can b
 `null` timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.
 
 .. note::
-    When --ft-param-initial_rank_heartbeat_timeout and --ft-param-rank_heartbeat_timeout are not
+    When --ft-initial-rank-heartbeat-timeout and --ft-rank-heartbeat-timeout are not
     provided in the command-line arguments, the launcher defaults to FT's predefined values. These are
-    not null/None; currently, the defaults are 60 minutes for --ft-param-initial_rank_heartbeat_timeout
-    and 45 minutes for --ft-param-rank_heartbeat_timeout.
+    not null/None; currently, the defaults are 60 minutes for --ft-initial-rank-heartbeat-timeout
+    and 45 minutes for --ft-rank-heartbeat-timeout.
 
 Configuration file example:
 
