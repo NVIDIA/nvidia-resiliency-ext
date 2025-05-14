@@ -101,7 +101,7 @@ function get_still_alive {
 ( kill -s SIGKILL $(pgrep -f ft_launcher) > /dev/null 2>&1 || true ) 
 
 export LOGLEVEL='DEBUG'
-COMMON_FT_ARGS="--ft-param-log_level=DEBUG --ft-param-rank_heartbeat_timeout=5 --ft-param-initial_rank_heartbeat_timeout=5"
+COMMON_FT_ARGS="--ft-log-level=DEBUG --ft-rank-heartbeat-timeout=5 --ft-initial-rank-heartbeat-timeout=5"
 COMMON_LAUNCHER_ARGS="--nproc-per-node=1 --nnodes=2 --rdzv-backend=c10d --rdzv_endpoint=localhost:12345 --max-restarts=10"
 
 rm -f "${RANK_CONTROL_FILE}"

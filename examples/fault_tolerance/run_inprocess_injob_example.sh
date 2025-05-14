@@ -22,8 +22,8 @@
 # NOTE: The in-process package has monitoring capabilities that can also be used. 
 # Please refer to the in-process package documentation for details.
 #
-# When using `ft_launcher --restart-policy=min-healthy --nnodes=2:3`, fault tolerance 
-# restarts the training when the number of healthy agents (agents with all ranks alive) 
+# When using `ft_launcher --ft-restart-policy=min-healthy --nnodes=2:3`, fault tolerance
+# restarts the training when the number of healthy agents (agents with all ranks alive)
 # falls below 2.
 #
 # Simulated sequence:
@@ -47,11 +47,11 @@
 THIS_SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 WORKER_SCRIPT="${THIS_SCRIPT_DIR}/in_job_and_in_process_example.py"
 
-COMMON_LAUNCHER_ARGS="--nnodes=2:3 --max-restarts=2 --nproc_per_node=2 --rdzv_backend=c10d --rdzv_endpoint=127.0.0.1:29500"
-COMMON_FT_ARGS="--ft-param-log_level=DEBUG --ft-param-rank_heartbeat_timeout=12 --ft-param-initial_rank_heartbeat_timeout=12 --restart-policy=min-healthy"
+COMMON_LAUNCHER_ARGS="--nnodes=2:3 --max-restarts=2 --nproc-per-node=2 --rdzv-backend=c10d --rdzv-endpoint=127.0.0.1:29500"
+COMMON_FT_ARGS="--ft-log-level=DEBUG --ft-rank-heartbeat-timeout=12 --ft-initial-rank-heartbeat-timeout=12 --ft-restart-policy=min-healthy"
 
 # WAR: this example currently does not work with the NIC monitor
-COMMON_FT_ARGS="${COMMON_FT_ARGS} --ft_param_enable_nic_monitor=False"
+COMMON_FT_ARGS="${COMMON_FT_ARGS} --ft-enable-nic-monitor=False"
 
 # Avoid c10d log clutter with "(...) TCPStore.cpp:122] [c10d] sendBytes failed (...)" 
 # when terminating a hung workload and the TCP Store hosting rank is killed.

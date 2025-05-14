@@ -80,7 +80,7 @@ def test_rank_not_send_initial_hb(tmp_dir):
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
-        f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -99,7 +99,7 @@ def test_rank_failed(tmp_dir):
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
-        f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -117,7 +117,7 @@ def test_ranks_exit_gracefully(tmp_dir):
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()}"
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
-        f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -137,7 +137,7 @@ def test_launcher_sigterm_graceful_exit(tmp_dir):
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=return0"
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
-        f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -158,7 +158,7 @@ def test_launcher_sigterm_ignored(tmp_dir):
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=ignore"
     launcher_cmd = (
         "ft_launcher --term-timeout=5 --monitor-interval=1"
-        f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -179,7 +179,7 @@ def test_ranks_restart(tmp_dir):
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --tmp_dir={tmp_dir}"
     launcher_cmd = (
         "ft_launcher --max-restarts=2 --monitor-interval=1"
-        f" --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -201,27 +201,18 @@ def test_missing_cfg(tmp_dir):
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
-        f" --fault-tol-cfg-path={empty_ft_cfg_path} --nproc-per-node={WORLD_SIZE} --ft-param-rank_heartbeat_timeout=1.0"
+        f" --ft-cfg-path={empty_ft_cfg_path} --nproc-per-node={WORLD_SIZE} --ft-rank-heartbeat-timeout=1.0"
         f" {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert ret_code == 0
-    # Empty config file again, launcher run with `--ignore-missing-fault-tol-cfg` should use defaults
+    # Invalid config file path - should fail despite FT args specified via CLI
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
-        f" --fault-tol-cfg-path={empty_ft_cfg_path} --ignore-missing-fault-tol-cfg"
-        f" --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
-    )
-    ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code == 0
-    # Invalid config file path - should fail despite --ignore-missing-fault-tol-cfg and FT args specified via CLI
-    cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
-    launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        " --fault-tol-cfg-path=/not/there.yaml"
-        " --ft-param-rank_heartbeat_timeout=1.0"
-        f" --nproc-per-node={WORLD_SIZE} --ignore-missing-fault-tol-cfg"
+        " --ft-cfg-path=/not/there.yaml"
+        " --ft-rank-heartbeat-timeout=1.0"
+        f" --nproc-per-node={WORLD_SIZE}"
         f" {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -231,11 +222,11 @@ def test_missing_cfg(tmp_dir):
 def test_config_provided_via_cli(tmp_dir):
     # Check if FT args passed via CLI were propagated to the FT monitor process
     ft_params_str = (
-        "--ft-param-workload_check_interval=321.0"
-        " --ft-param-initial_rank_heartbeat_timeout=1.0"
-        " --ft-param-rank_heartbeat_timeout=2.0"
-        " --ft-param-rank_termination_signal=SIGUSR2"
-        " --ft-param-log_level=WARNING"
+        "--ft-workload-check-interval=321.0"
+        " --ft-initial-rank-heartbeat-timeout=1.0"
+        " --ft-rank-heartbeat-timeout=2.0"
+        " --ft-rank-termination-signal=SIGUSR2"
+        " --ft-log-level=WARNING"
     )
     cmd_to_run = f"{_get_util_script_path()} --scenario=dump_cfg --tmp_dir={tmp_dir}"
     launcher_cmd = "ft_launcher" f" {ft_params_str} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
@@ -267,15 +258,15 @@ def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
     base_cfg.to_yaml_file(ft_cfg_path)
 
     ft_params_str = (
-        "--ft-param-rank_heartbeat_timeout=123.0"
-        " --ft-param-safety_factor=7.7"
-        " --ft-param-rank_termination_signal=SIGUSR1"
-        " --ft-param-log_level=CRITICAL"
+        "--ft-rank-heartbeat-timeout=123.0"
+        " --ft-safety-factor=7.7"
+        " --ft-rank-termination-signal=SIGUSR1"
+        " --ft-log-level=CRITICAL"
     )
     cmd_to_run = f"{_get_util_script_path()} --scenario=dump_cfg --tmp_dir={tmp_dir}"
     launcher_cmd = (
         "ft_launcher"
-        f" {ft_params_str} --fault-tol-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f" {ft_params_str} --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert ret_code == 0
