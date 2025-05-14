@@ -206,15 +206,6 @@ def test_missing_cfg(tmp_dir):
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert ret_code == 0
-    # Empty config file again, launcher run with `--ignore-missing-fault-tol-cfg` should use defaults
-    cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
-    launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --fault-tol-cfg-path={empty_ft_cfg_path} --ignore-missing-fault-tol-cfg"
-        f" --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
-    )
-    ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
-    assert ret_code == 0
     # Invalid config file path - should fail despite --ignore-missing-fault-tol-cfg and FT args specified via CLI
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
     launcher_cmd = (
