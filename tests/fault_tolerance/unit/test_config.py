@@ -17,7 +17,6 @@ import logging
 import os
 import signal
 import tempfile
-from argparse import ArgumentParser
 from contextlib import contextmanager
 
 import pytest
@@ -52,6 +51,7 @@ def test_from_kwargs():
 
 def test_from_args():
     from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
+
     parser = get_args_parser()
     inp = [
         "--ft-safety-factor",
