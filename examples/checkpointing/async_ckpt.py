@@ -83,9 +83,8 @@ def main():
     org_sd = model.state_dict()
     # Define checkpoint directory and manager
     ckpt_dir = args.ckpt_dir
-    if not os.path.isdir(ckpt_dir):
-        os.makedirs(ckpt_dir, exist_ok=True)
-        logging.info(f"Created checkpoint directory: {ckpt_dir}")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    logging.info(f"Created checkpoint directory: {ckpt_dir}")
     ckpt_file_name = os.path.join(ckpt_dir, f"ckpt_rank{torch.distributed.get_rank()}.pt")
 
     ckpt_impl = TorchAsyncCheckpoint(persistent_queue=args.persistent_queue)
