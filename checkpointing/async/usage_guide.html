@@ -53,6 +53,13 @@
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Usage guide</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#requirements">Requirements</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#synchronization-of-asynchronous-checkpoint-requests">Synchronization of Asynchronous Checkpoint Requests</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#using-multi-storage-client-with-async-checkpointing">Using Multi-Storage Client with Async Checkpointing</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#installation">Installation</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#configuration">Configuration</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#basic-usage">Basic Usage</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#example-saving-and-loading-checkpoints-with-msc">Example: Saving and Loading Checkpoints with MSC</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
@@ -148,6 +155,139 @@ The following example shows how the routine can be used to synchronize the async
 <span class="n">async_impl</span><span class="o">.</span><span class="n">finalize_async_save</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
 </div>
+</section>
+<section id="using-multi-storage-client-with-async-checkpointing">
+<h2>Using Multi-Storage Client with Async Checkpointing<a class="headerlink" href="#using-multi-storage-client-with-async-checkpointing" title="Link to this heading"></a></h2>
+<p><cite>nvidia_resiliency_ext</cite> supports saving checkpoints to object stores like AWS S3, Azure Blob Storage, Google Cloud Storage, and more through the NVIDIA Multi-Storage Client (MSC) integration.</p>
+<p>MSC (<a class="reference external" href="https://github.com/NVIDIA/multi-storage-client">GitHub repository</a>) provides a unified API for various storage backends, allowing you to write checkpoints to different storage services using the same code.</p>
+<section id="installation">
+<h3>Installation<a class="headerlink" href="#installation" title="Link to this heading"></a></h3>
+<p>Before using MSC integration, you need to install the Multi-Storage Client package:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install the Multi-Storage Client package with boto3 support</span>
+pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<span class="o">[</span>boto3<span class="o">]</span>
+</pre></div>
+</div>
+</section>
+<section id="configuration">
+<h3>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h3>
+<p>Create a configuration file for the Multi-Storage Client and export the environment variable <code class="docutils literal notranslate"><span class="pre">MSC_PROFILE</span></code> to point to it:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">MSC_CONFIG</span><span class="o">=</span>/path/to/your/msc_config.yaml
+</pre></div>
+</div>
+<div class="literal-block-wrapper docutils container" id="id1">
+<div class="code-block-caption"><span class="caption-text">Example configuration file used for AWS S3.</span><a class="headerlink" href="#id1" title="Link to this code"></a></div>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">profiles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">model-checkpoints</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">storage_provider</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3</span>
+<span class="w">      </span><span class="nt">options</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">base_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bucket-checkpoints</span><span class="w"> </span><span class="c1"># Set the bucket name as the base path</span>
+<span class="w">    </span><span class="nt">credentials_provider</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">S3Credentials</span>
+<span class="w">      </span><span class="nt">options</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">access_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${AWS_ACCESS_KEY}</span><span class="w"> </span><span class="c1"># Set the AWS access key in the environment variable</span>
+<span class="w">        </span><span class="nt">secret_key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${AWS_SECRET_KEY}</span><span class="w"> </span><span class="c1"># Set the AWS secret key in the environment variable</span>
+</pre></div>
+</div>
+</div>
+</section>
+<section id="basic-usage">
+<h3>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading"></a></h3>
+<p>To enable MSC integration, simply pass <code class="docutils literal notranslate"><span class="pre">use_msc=True</span></code> when creating the <code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync</span></code> instance:</p>
+<p>The MSC URL scheme is <code class="docutils literal notranslate"><span class="pre">msc://&lt;profile-name&gt;/&lt;path&gt;</span></code>. The example below shows how to save a checkpoint to the <code class="docutils literal notranslate"><span class="pre">model-checkpoints</span></code> profile, the data will be stored in the <code class="docutils literal notranslate"><span class="pre">bucket-checkpoints</span></code> bucket in AWS S3.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileSystemWriterAsync</span>
+
+<span class="c1"># Create writer with MSC enabled</span>
+<span class="n">writer</span> <span class="o">=</span> <span class="n">FileSystemWriterAsync</span><span class="p">(</span>
+    <span class="s2">&quot;msc://model-checkpoints/iteration-0010&quot;</span><span class="p">,</span>
+    <span class="n">use_msc</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="example-saving-and-loading-checkpoints-with-msc">
+<h3>Example: Saving and Loading Checkpoints with MSC<a class="headerlink" href="#example-saving-and-loading-checkpoints-with-msc" title="Link to this heading"></a></h3>
+<p>The following example demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integration:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">DefaultLoadPlanner</span><span class="p">,</span>
+    <span class="n">DefaultSavePlanner</span><span class="p">,</span>
+    <span class="n">load</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncCallsQueue</span><span class="p">,</span> <span class="n">AsyncRequest</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileSystemWriterAsync</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">save_state_dict_async_finalize</span><span class="p">,</span>
+    <span class="n">save_state_dict_async_plan</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">multistorageclient</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">msc</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">async_save_checkpoint</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">,</span> <span class="n">thread_count</span><span class="o">=</span><span class="mi">2</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Save checkpoint asynchronously to MSC storage.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="c1"># Create async queue</span>
+    <span class="n">async_queue</span> <span class="o">=</span> <span class="n">AsyncCallsQueue</span><span class="p">()</span>
+
+    <span class="c1"># Create writer with MSC enabled</span>
+    <span class="n">writer</span> <span class="o">=</span> <span class="n">FileSystemWriterAsync</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">thread_count</span><span class="o">=</span><span class="n">thread_count</span><span class="p">,</span> <span class="n">use_msc</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">coordinator_rank</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">planner</span> <span class="o">=</span> <span class="n">DefaultSavePlanner</span><span class="p">()</span>
+
+    <span class="c1"># Plan the save operation</span>
+    <span class="n">save_state_dict_ret</span> <span class="o">=</span> <span class="n">save_state_dict_async_plan</span><span class="p">(</span>
+        <span class="n">state_dict</span><span class="p">,</span> <span class="n">writer</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">coordinator_rank</span><span class="p">,</span> <span class="n">planner</span><span class="o">=</span><span class="n">planner</span>
+    <span class="p">)</span>
+
+    <span class="c1"># Create async request with finalization</span>
+    <span class="n">save_fn</span><span class="p">,</span> <span class="n">preload_fn</span><span class="p">,</span> <span class="n">save_args</span> <span class="o">=</span> <span class="n">writer</span><span class="o">.</span><span class="n">get_save_function_and_args</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">finalize_fn</span><span class="p">():</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Finalizes async checkpointing and synchronizes processes.&quot;&quot;&quot;</span>
+        <span class="n">save_state_dict_async_finalize</span><span class="p">(</span><span class="o">*</span><span class="n">save_state_dict_ret</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">():</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
+
+    <span class="n">async_request</span> <span class="o">=</span> <span class="n">AsyncRequest</span><span class="p">(</span><span class="n">save_fn</span><span class="p">,</span> <span class="n">save_args</span><span class="p">,</span> <span class="p">[</span><span class="n">finalize_fn</span><span class="p">],</span> <span class="n">preload_fn</span><span class="o">=</span><span class="n">preload_fn</span><span class="p">)</span>
+
+    <span class="c1"># Schedule the request and return the queue for later checking</span>
+    <span class="n">async_queue</span><span class="o">.</span><span class="n">schedule_async_request</span><span class="p">(</span><span class="n">async_request</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">async_queue</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Load checkpoint from MSC storage into the state_dict.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="c1"># Create reader with MSC path</span>
+    <span class="n">reader</span> <span class="o">=</span> <span class="n">msc</span><span class="o">.</span><span class="n">torch</span><span class="o">.</span><span class="n">MultiStorageFileSystemReader</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">thread_count</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+
+    <span class="c1"># Load the checkpoint into the state_dict</span>
+    <span class="n">load</span><span class="p">(</span>
+        <span class="n">state_dict</span><span class="o">=</span><span class="n">state_dict</span><span class="p">,</span>
+        <span class="n">storage_reader</span><span class="o">=</span><span class="n">reader</span><span class="p">,</span>
+        <span class="n">planner</span><span class="o">=</span><span class="n">DefaultLoadPlanner</span><span class="p">(),</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">state_dict</span>
+
+
+<span class="c1"># Initialize your model and get state_dict</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">YourModel</span><span class="p">()</span>
+<span class="n">state_dict</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">()</span>
+
+<span class="c1"># Save checkpoint asynchronously</span>
+<span class="n">checkpoint_path</span> <span class="o">=</span> <span class="s2">&quot;msc://model-checkpoints/iteration-0010&quot;</span>
+<span class="n">async_queue</span> <span class="o">=</span> <span class="n">async_save_checkpoint</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">)</span>
+<span class="n">async_queue</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+<span class="c1"># Load checkpoint synchronously</span>
+<span class="n">loaded_state_dict</span> <span class="o">=</span> <span class="n">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">state_dict</span><span class="o">.</span><span class="n">copy</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
 </section>
 </section>
 
