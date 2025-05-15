@@ -41,7 +41,7 @@ jobs:
         git fetch origin
 
         echo "Collecting commits in ${{ github.event.inputs.base_branch }} not in ${{ github.event.inputs.release_branch }}..."
-        COMMITS=$(git log origin/${{ github.event.inputs.release_branch }}..origin/${{ github.event.inputs.base_branch }} --pretty=format:"%H" --reverse)
+        COMMITS=$(git cherry origin/${{ github.event.inputs.release_branch }} origin/${{ github.event.inputs.base_branch }} | grep '^+' | awk '{print $2}')
 
         echo "Filtering commits that are part of PRs..."
         CHERRY_COMMITS=()
