@@ -313,5 +313,5 @@ class BaseCheckpointManager(ABC):
         save_fn(*save_args)
         # Wait so everyone is done (necessary)
         if torch.distributed.is_initialized():
-            torch.distributed.barrier(device_ids=[self.rank])
+            torch.distributed.barrier()
         finalize_fn()
