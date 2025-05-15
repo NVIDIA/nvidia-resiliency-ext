@@ -10,9 +10,11 @@ on:
       release_branch:
         description: 'Target release branch'
         required: true
+        default: 'release/v0.4.0'
       temp_branch:
         description: 'Temporary branch name for cherry-pick'
         required: true
+        default: 'cherry-pick/staging'
 
 permissions:
   contents: write
@@ -35,8 +37,11 @@ jobs:
     - name: Find commits to cherry-pick
       id: commits
       run: |
+        echo "Fetching all branches..."
+        git fetch origin
+
         echo "Collecting commits in ${{ github.event.inputs.base_branch }} not in ${{ github.event.inputs.release_branch }}..."
-        COMMITS=$(git log ${{ github.event.inputs.release_branch }}..${{ github.event.inputs.base_branch }} --pretty=format:"%H" --reverse)
+        COMMITS=$(git log origin/${{ github.event.inputs.release_branch }}..origin/${{ github.event.inputs.base_branch }} --pretty=format:"%H" --reverse)
 
         echo "Filtering commits that are part of PRs..."
         CHERRY_COMMITS=()
@@ -56,7 +61,7 @@ jobs:
 
     - name: Create temporary branch
       run: |
-        git checkout -b ${{ github.event.inputs.temp_branch }} ${{ github.event.inputs.release_branch }}
+        git checkout -b ${{ github.event.inputs.temp_branch }} origin/${{ github.event.inputs.release_branch }}
 
     - name: Cherry-pick commits
       run: |
