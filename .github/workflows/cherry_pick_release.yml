@@ -1,0 +1,87 @@
+name: Cherry Pick to Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_branch:
+        description: 'Branch to cherry-pick from'
+        required: true
+        default: 'main'
+      release_branch:
+        description: 'Target release branch'
+        required: true
+      temp_branch:
+        description: 'Temporary branch name for cherry-pick'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  cherry-pick:
+    name: Cherry-pick PR commits into release
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Needed to get full commit history
+
+    - name: Set up Git
+      run: |
+        git config --global pull.rebase false
+
+    - name: Find commits to cherry-pick
+      id: commits
+      run: |
+        echo "Collecting commits in ${{ github.event.inputs.base_branch }} not in ${{ github.event.inputs.release_branch }}..."
+        COMMITS=$(git log ${{ github.event.inputs.release_branch }}..${{ github.event.inputs.base_branch }} --pretty=format:"%H" --reverse)
+
+        echo "Filtering commits that are part of PRs..."
+        CHERRY_COMMITS=()
+        for commit in $COMMITS; do
+          PR_TITLE=$(gh pr list --search "$commit" --state merged --json title --jq '.[0].title' || true)
+          if [[ ! -z "$PR_TITLE" ]]; then
+            CHERRY_COMMITS+=("$commit")
+          fi
+        done
+
+        echo "CHERRY_COMMITS<<EOF" >> $GITHUB_ENV
+        for c in "${CHERRY_COMMITS[@]}"; do echo $c >> $GITHUB_ENV; done
+        echo "EOF" >> $GITHUB_ENV
+
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create temporary branch
+      run: |
+        git checkout -b ${{ github.event.inputs.temp_branch }} ${{ github.event.inputs.release_branch }}
+
+    - name: Cherry-pick commits
+      run: |
+        for commit in $CHERRY_COMMITS; do
+          echo "Processing $commit..."
+          PARENTS=$(git rev-list --parents -n 1 "$commit")
+          NUM_PARENTS=$(echo "$PARENTS" | wc -w)
+          if [ "$NUM_PARENTS" -gt 2 ]; then
+            git cherry-pick -m 1 "$commit" || { echo "Conflict on $commit"; exit 1; }
+          else
+            git cherry-pick "$commit" || { echo "Conflict on $commit"; exit 1; }
+          fi
+        done
+
+    - name: Push cherry-picked branch
+      run: |
+        git push origin ${{ github.event.inputs.temp_branch }}
+
+    - name: Create pull request to release branch
+      run: |
+        gh pr create \
+          --base "${{ github.event.inputs.release_branch }}" \
+          --head "${{ github.event.inputs.temp_branch }}" \
+          --title "Cherry-pick PRs into ${{ github.event.inputs.release_branch }}" \
+          --body "This PR includes cherry-picked commits from ${{ github.event.inputs.base_branch }} that went through PR review."
+
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
