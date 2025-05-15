@@ -168,7 +168,10 @@ propagates to the outer scope.</p></li>
 (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group" title="(in PyTorch v2.7)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.init_process_group()</span></code></a>); the initialization needs
 to read <a class="reference external" href="https://pytorch.org/docs/stable/distributed.html#environment-variable-initialization">standard PyTorch distributed variables</a>
 (<code class="docutils literal notranslate"><span class="pre">RANK</span></code>, <code class="docutils literal notranslate"><span class="pre">WORLD_SIZE</span></code>, <code class="docutils literal notranslate"><span class="pre">MASTER_ADDR</span></code>, <code class="docutils literal notranslate"><span class="pre">MASTER_PORT</span></code> and
-<code class="docutils literal notranslate"><span class="pre">LOCAL_RANK</span></code>) from the environment.</p></li>
+<code class="docutils literal notranslate"><span class="pre">LOCAL_RANK</span></code>) from the environment. Users can use torchrun to override the environment
+variables (–master_addr=127.0.0.1, –master_port=29500, etc.) depending on
+their cluster requirements and also to run the provided examples <code class="docutils literal notranslate"><span class="pre">torchrun</span> <span class="pre">--nproc_per_node=8</span>
+<span class="pre">--nnodes=1</span> <span class="pre">--node_rank=0</span> <span class="pre">basic_example.py</span></code>.</p></li>
 <li><p>it’s heavily recommended for the wrapped function to load the state affected
 by distributed collectives from a checkpoint on every restart (e.g. load
 weights of a model); outputs of distributed collectives are likely to become
