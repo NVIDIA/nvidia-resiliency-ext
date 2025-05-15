@@ -52,7 +52,10 @@ Requirements for the wrapped function
   to read `standard PyTorch distributed variables
   <https://pytorch.org/docs/stable/distributed.html#environment-variable-initialization>`_
   (``RANK``, ``WORLD_SIZE``, ``MASTER_ADDR``, ``MASTER_PORT`` and
-  ``LOCAL_RANK``) from the environment.
+  ``LOCAL_RANK``) from the environment. Users can use torchrun to override the environment 
+  variables (--master_addr=127.0.0.1, --master_port=29500, etc.) depending on 
+  their cluster requirements and also to run the provided examples ``torchrun --nproc_per_node=8 
+  --nnodes=1 --node_rank=0 basic_example.py``. 
 
 - it's heavily recommended for the wrapped function to load the state affected
   by distributed collectives from a checkpoint on every restart (e.g. load
