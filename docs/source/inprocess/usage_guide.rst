@@ -185,16 +185,14 @@ For example:
 
 .. code-block:: python
 
-    rank_assignment = (
-        inprocess.Compose(
-            inprocess.rank_assignment.ActivateAllRanks(),
-            inprocess.rank_assignment.ShiftRanks(),
-            inprocess.rank_assignment.FilterCountGroupedByKey(
-                key_or_fn=lambda state: state.rank // 8,
-                condition=lambda count: count == 8,
-            ),
-        ),
-    ),
+    rank_assignment = inprocess.Compose(
+        inprocess.rank_assignment.ActivateAllRanks(),
+        inprocess.rank_assignment.ShiftRanks(),
+        inprocess.rank_assignment.FilterCountGroupedByKey(
+            key_or_fn=lambda state: state.rank // 8,
+            condition=lambda count: count == 8,
+        )
+    )
 
 ensures that all ranks within each non-overlapping group of 8 consecutive
 ranks remain healthy. If any rank within a group of 8 is unhealthy or
