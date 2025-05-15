@@ -72,7 +72,16 @@ jobs:
           if [ "$NUM_PARENTS" -gt 2 ]; then
             git cherry-pick -m 1 "$commit" || { echo "Conflict on $commit"; exit 1; }
           else
-            git cherry-pick "$commit" || { echo "Conflict on $commit"; exit 1; }
+            git cherry-pick "$commit" || {
+              # Conflict occurred, try to detect if it's an empty commit
+              if git status | grep -q 'nothing to commit'; then
+                echo "Empty cherry-pick after conflict resolution. Skipping..."
+                git cherry-pick --skip
+              else
+                echo "Conflict on $commit";
+                exit 1;
+              fi
+            }
           fi
         done
 
