@@ -27,6 +27,7 @@ import threading
 import time
 from typing import Any, Callable, Optional, Union
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 
 
@@ -167,7 +168,7 @@ register_fault(
 def raise_gpu_error(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    device = torch.device(torch.cuda.current_device())
+    device = get_current_device()
     log.critical(f'raising GPU error on {device}')
     if callback is not None:
         callback()

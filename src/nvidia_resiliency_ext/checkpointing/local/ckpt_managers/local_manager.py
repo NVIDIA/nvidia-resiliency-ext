@@ -58,8 +58,9 @@ class LocalCheckpointManager(BaseCheckpointManager):
         root_local_ckpt_dir: Union[str, Path],
         session_id: str = '',
         repl_strategy: Optional[ReplicationStrategy] = None,
+        group:Optional[torch.distributed.ProcessGroup]=None
     ):
-        super().__init__(session_id, repl_strategy)
+        super().__init__(session_id, repl_strategy, group)
         self.root_local_ckpt_dir = root_local_ckpt_dir
         self._dir_created = False
         self._local_ckpt_dir = None

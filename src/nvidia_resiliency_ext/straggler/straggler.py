@@ -231,7 +231,8 @@ class Detector:
         assert cls.initialized
 
         # ensure all CUDA kernels are completed
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         section_summaries = cls._get_section_summaries()
         kernel_summaries = cls._get_kernel_summaries()

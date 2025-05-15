@@ -42,7 +42,6 @@ logger = logging.getLogger(__name__)
 
 CkptID = Tuple[int, int, Any]
 
-
 class CheckpointingException(Exception):
     """Base checkpointing related exception"""
 
@@ -67,11 +66,12 @@ class BaseCheckpointManager(ABC):
     abstracting replication mechanisms from the underlying implementations.
     """
 
-    def __init__(self, session_id, repl_strategy: ReplicationStrategy = None):
+    def __init__(self, session_id, repl_strategy: ReplicationStrategy = None, group:Optional[torch.distributed.ProcessGroup]=None):
         self.latest_iteration = -1
         self.repl_strategy = repl_strategy
         self.session_id = session_id
         self._rank = None
+        self.group = group
 
     @property
     def rank(self):
@@ -172,7 +172,7 @@ class BaseCheckpointManager(ABC):
             # as no other operations should invalidate the most recent iteration.
             logger.debug(f'Using cached latest_iteration: {self.latest_iteration} in find_latest')
             return self.latest_iteration
-        group_wrapper = GroupWrapper()
+        group_wrapper = GroupWrapper(group=self.group)
 
         locally_available_ids = self._my_ckpt_ids()
         if self.repl_strategy is None:
@@ -305,13 +305,14 @@ class BaseCheckpointManager(ABC):
 
         if is_async:
             # we must wait for D2H to complete before returning control to the training
-            with debug_time("ckpt_D2H_synchronize", logger):
-                torch.cuda.synchronize()
-            return AsyncRequest(save_fn, save_args, [finalize_fn])
+            if torch.cuda.is_available():
+                with debug_time("ckpt_D2H_synchronize", logger):
+                    torch.cuda.synchronize()
+            return AsyncRequest(save_fn, save_args, [finalize_fn], group=self.group)
 
         assert not is_async
         save_fn(*save_args)
         # Wait so everyone is done (necessary)
         if torch.distributed.is_initialized():
-            torch.distributed.barrier(device_ids=[self.rank])
+            torch.distributed.barrier(group=self.group)
         finalize_fn()

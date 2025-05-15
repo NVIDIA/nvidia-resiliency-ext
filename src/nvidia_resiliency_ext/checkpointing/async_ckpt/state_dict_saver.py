@@ -20,6 +20,7 @@ from logging import getLogger
 from time import time
 from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
+from nvidia_resiliency_ext.common.device_utils import get_current_device
 import torch
 import torch.distributed as dist
 from torch.distributed.checkpoint import CheckpointException
@@ -293,8 +294,8 @@ def save_state_dict_async_plan(
             metadata_cache.get_cache_metadata()
         )
 
-    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     dist_wrapper = _DistWrapper(process_group, True, coordinator_rank)
+    rank = dist_wrapper.get_rank()
     if planner is None:
         planner = DefaultSavePlanner()
     assert planner is not None
@@ -409,7 +410,8 @@ def verify_global_md_reuse(
                 f"local_verify_reuse is False: diffs -"
                 f" {_compare_dataclasses(local_plan, loaded_all_plans[rank])}"
             )
-        all_results = torch.tensor([local_verify_reuse], dtype=torch.int, device='cuda')
+            
+        all_results = torch.tensor([local_verify_reuse], dtype=torch.int, device=get_current_device())
         torch.distributed.all_reduce(all_results, op=torch.distributed.ReduceOp.MIN)
         # Check if all reduced results are True
         global_md_verify_reuse = all_results.item() == 1
@@ -440,7 +442,7 @@ def save_state_dict_async_finalize(
     gather_start = time()
     all_results = dist_wrapper.gather_object(write_results)
     gather_end = time()
-    logger.debug(f"{gather_end}, {torch.distributed.get_rank()}, gather: {gather_end-gather_start}")
+    logger.debug(f"{gather_end}, {dist_wrapper.get_rank()}, gather: {gather_end-gather_start}")
 
     # Store the metadata on coordinator rank
     if dist_wrapper.is_coordinator:

@@ -30,6 +30,11 @@ import warnings
 from datetime import timedelta
 from typing import Optional
 
+from nvidia_resiliency_ext.common.device_utils import (
+    get_current_device, 
+    get_distributed_init_method
+)
+
 if 'TORCH_CPP_LOG_LEVEL' not in os.environ:
     os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 
@@ -159,7 +164,7 @@ class Mode(enum.Enum):
     TRAIN = enum.auto()
 
 
-def maybe_trigger_fault(rank, world_size, args):
+def maybe_trigger_fault(rank, world_size, args, group:Optional[torch.distributed.ProcessGroup]=None):
     log = logging.getLogger()
     num_ranks_to_trigger = min(
         random.randint(args.min_faults, args.max_faults),
@@ -172,7 +177,9 @@ def maybe_trigger_fault(rank, world_size, args):
 
     if args.check_fault and torch.distributed.is_available() and torch.distributed.is_initialized():
         all_ranks_to_trigger = [None] * world_size
-        torch.distributed.all_gather_object(all_ranks_to_trigger, ranks_to_trigger)
+        torch.distributed.all_gather_object(
+            all_ranks_to_trigger, ranks_to_trigger
+        )
 
         for other_ranks_to_trigger in all_ranks_to_trigger:
             if other_ranks_to_trigger != ranks_to_trigger:
@@ -189,7 +196,7 @@ def maybe_trigger_fault(rank, world_size, args):
     if rank in ranks_to_trigger:
         log.info(f'{rank=} triggers {fault=}')
 
-        if fault == Fault.GPU_ERROR:
+        if fault == Fault.GPU:
             b = torch.ones(1, dtype=torch.int64).cuda()
             a = torch.ones(1, dtype=torch.int64).cuda()
             a[b] = 0
@@ -258,7 +265,7 @@ def training_main():
         multi_tenant=True,
         wait_for_workers=True,
         use_libuv=True,
-    )
+    ) if torch.cuda.is_available() else None
 
     wrapped = inprocess.Wrapper(
         store_kwargs={
@@ -334,10 +341,11 @@ def train(
 
     if args.backend == 'gloo':
         device = torch.device('cpu')
-    elif args.backend == 'nccl':
-        device = torch.device('cuda')
-        local_rank = int(os.environ['LOCAL_RANK'])
-        torch.cuda.set_device(local_rank)
+    elif args.backend == 'nccl' or args.backend == 'xla':
+        device = get_current_device()
+    else:
+        raise RuntimeError(f"Unsupported backend: {args.backend}")
+    assert torch.cuda.is_available() or (args.backend == "xla" or args.backend == "gloo")
 
     if args.distributed:
         if base_store is not None:
@@ -351,19 +359,23 @@ def train(
                 timeout=datetime.timedelta(seconds=args.process_group_timeout),
             )
         else:
+            init_method = get_distributed_init_method(args.backend),
             torch.distributed.init_process_group(
                 backend=args.backend,
+                rank=int(os.environ['RANK']),
+                world_size=int(os.environ['WORLD_SIZE']),
+                init_method=init_method,
                 timeout=datetime.timedelta(seconds=args.process_group_timeout),
             )
 
         tensor = torch.ones(args.size, dtype=torch.int64, device=device)
-        torch.distributed.all_reduce(tensor)
+        torch.distributed.all_reduce(tensor, group=torch.distributed.WORLD)
         assert (tensor == world_size).all()
         if device.type == 'cuda':
             torch.cuda.synchronize()
 
         for _ in range(args.all_reduce):
-            torch.distributed.all_reduce(tensor)
+            torch.distributed.all_reduce(tensor, group=torch.distributed.WORLD)
 
     if call_wrapper is not None:
         call_wrapper.ping()
@@ -388,7 +400,7 @@ def train(
 
     if args.distributed:
         for _ in range(args.all_reduce):
-            torch.distributed.all_reduce(tensor)
+            torch.distributed.all_reduce(tensor, group=torch.distributed.WORLD)
 
     if world_size == args.keep_alive:
         logging.critical(f'{rank=} world_size == keep_alive, returning')
