@@ -292,16 +292,14 @@ computation is performed by
 <p>Multiple RankAssignments could be composed with <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code>
 to achieve the desired behavior.</p>
 <p>For example:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank_assignment</span> <span class="o">=</span> <span class="p">(</span>
-    <span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
-        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ActivateAllRanks</span><span class="p">(),</span>
-        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ShiftRanks</span><span class="p">(),</span>
-        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">FilterCountGroupedByKey</span><span class="p">(</span>
-            <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">state</span><span class="p">:</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span> <span class="o">//</span> <span class="mi">8</span><span class="p">,</span>
-            <span class="n">condition</span><span class="o">=</span><span class="k">lambda</span> <span class="n">count</span><span class="p">:</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">8</span><span class="p">,</span>
-        <span class="p">),</span>
-    <span class="p">),</span>
-<span class="p">),</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank_assignment</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ActivateAllRanks</span><span class="p">(),</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ShiftRanks</span><span class="p">(),</span>
+    <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">FilterCountGroupedByKey</span><span class="p">(</span>
+        <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">state</span><span class="p">:</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span> <span class="o">//</span> <span class="mi">8</span><span class="p">,</span>
+        <span class="n">condition</span><span class="o">=</span><span class="k">lambda</span> <span class="n">count</span><span class="p">:</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">8</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="p">)</span>
 </pre></div>
 </div>
 <p>ensures that all ranks within each non-overlapping group of 8 consecutive
