@@ -55,6 +55,7 @@
 <li class="toctree-l4"><a class="reference internal" href="#ft-launcher">FT launcher</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#hang-detection">Hang detection</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#workload-control">Workload control</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#deprecated-arguments">Deprecated arguments</a></li>
 </ul>
 </li>
 </ul>
@@ -144,10 +145,10 @@
 <h3>FT launcher<a class="headerlink" href="#ft-launcher" title="Link to this heading"></a></h3>
 <p>Fault tolerance includes a launcher tool called <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>, which is based on <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>
 and supports most <code class="docutils literal notranslate"><span class="pre">torchrun</span></code> command-line parameters. FT configuration can be specified either
-via a YAML file using <code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code> or through command-line parameters
-using <code class="docutils literal notranslate"><span class="pre">--ft-param-&lt;parameter-name&gt;</span></code>.</p>
+via a YAML file using <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code> or through command-line parameters
+using <code class="docutils literal notranslate"><span class="pre">--ft-&lt;parameter-name&gt;</span></code>.</p>
 <p>If <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, the launcher restarts failed workers.
-The restart behavior depends on the <code class="docutils literal notranslate"><span class="pre">--restart-policy</span></code> parameter, which supports two modes:</p>
+The restart behavior depends on the <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> parameter, which supports two modes:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">any-failed</span></code> (default)
 All workers are restarted if any worker fails.</p></li>
@@ -193,6 +194,20 @@ API, which can be used to control the workload restarting logic implemented in t
 The fault tolerance package is job scheduler-agnostic,
 i.e., it does not control underlying SLURM job allocations.</p>
 </div>
+</section>
+<section id="deprecated-arguments">
+<h3>Deprecated arguments<a class="headerlink" href="#deprecated-arguments" title="Link to this heading"></a></h3>
+<p>The following arguments are deprecated and will be removed in a future version:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-param-*</span></code> arguments (replaced by <code class="docutils literal notranslate"><span class="pre">--ft-*</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--fault-tol-cfg-path</span></code> (replaced by <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ignore-missing-fault-tol-cfg</span></code> (replaced by <code class="docutils literal notranslate"><span class="pre">--ft-ignore-missing-cfg</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--restart-policy</span></code> (replaced by <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--restart_policy</span></code> (replaced by <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft_param_link_down_path_template</span></code> (replaced by <code class="docutils literal notranslate"><span class="pre">--ft-link-down-path-template</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft_param_enable_nic_monitor</span></code> (replaced by <code class="docutils literal notranslate"><span class="pre">--ft-enable-nic-monitor</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft_param_pci_topo_file</span></code> (replaced by <code class="docutils literal notranslate"><span class="pre">--ft-pci-topo-file</span></code>)</p></li>
+</ul>
 </section>
 </section>
 </section>

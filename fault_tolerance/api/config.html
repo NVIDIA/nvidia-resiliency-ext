@@ -149,7 +149,7 @@ All timeouts can be deduced and set during runtime.</p>
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_args</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cfg_file_arg</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ft_args_prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">''</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.from_args"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_args</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">args</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig.from_args"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args" title="Link to this definition"></a></dt>
 <dd><p>Init FT config object from parsed CLI args.</p>
 <p>Implements the following logic:
 - Use default FT config as a base.
@@ -158,11 +158,7 @@ All timeouts can be deduced and set during runtime.</p>
 - If can’t read from file and there are no related args in CLI, raise an exception.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>args</strong> (<a class="reference external" href="https://docs.python.org/3/library/argparse.html#argparse.Namespace" title="(in Python v3.13)"><em>argparse.Namespace</em></a>) – Parsed arguments</p></li>
-<li><p><strong>cfg_file_arg</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>optional</em>) – Name of the argument that contains the FT config YAML file. Defaults to None - do not try to read from file.</p></li>
-<li><p><strong>ft_args_prefix</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>optional</em>) – Prefix of the FT related args. Defaults to empty str - assume no prefix.</p></li>
-</ul>
+<dd class="field-odd"><p><strong>args</strong> (<a class="reference external" href="https://docs.python.org/3/library/argparse.html#argparse.Namespace" title="(in Python v3.13)"><em>argparse.Namespace</em></a>) – Parsed arguments</p>
 </dd>
 </dl>
 </dd></dl>

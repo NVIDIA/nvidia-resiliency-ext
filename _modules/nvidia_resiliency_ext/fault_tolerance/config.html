@@ -215,9 +215,9 @@
         <span class="n">section_timeouts_arg</span> <span class="o">=</span> <span class="n">section_timeouts_arg</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">section_timeouts_arg</span><span class="p">:</span>
             <span class="k">return</span> <span class="p">{}</span>
-        <span class="n">section_timeout_paris</span> <span class="o">=</span> <span class="n">section_timeouts_arg</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;,&quot;</span><span class="p">)</span>
+        <span class="n">section_timeout_pairs</span> <span class="o">=</span> <span class="n">section_timeouts_arg</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;,&quot;</span><span class="p">)</span>
         <span class="n">res</span> <span class="o">=</span> <span class="p">{}</span>
-        <span class="k">for</span> <span class="n">st</span> <span class="ow">in</span> <span class="n">section_timeout_paris</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">st</span> <span class="ow">in</span> <span class="n">section_timeout_pairs</span><span class="p">:</span>
             <span class="n">section</span><span class="p">,</span> <span class="n">timeout</span> <span class="o">=</span> <span class="n">st</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;:&quot;</span><span class="p">)</span>
             <span class="n">section</span> <span class="o">=</span> <span class="n">section</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
             <span class="n">timeout</span> <span class="o">=</span> <span class="n">timeout</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
@@ -230,11 +230,7 @@
 <div class="viewcode-block" id="FaultToleranceConfig.from_args">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args">[docs]</a>
     <span class="nd">@staticmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">from_args</span><span class="p">(</span>
-        <span class="n">args</span><span class="p">:</span> <span class="n">argparse</span><span class="o">.</span><span class="n">Namespace</span><span class="p">,</span>
-        <span class="n">cfg_file_arg</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-        <span class="n">ft_args_prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span><span class="p">,</span>
-    <span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_args</span><span class="p">(</span><span class="n">args</span><span class="p">:</span> <span class="n">argparse</span><span class="o">.</span><span class="n">Namespace</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Init FT config object from parsed CLI args.</span>
 
@@ -246,44 +242,37 @@
 
 <span class="sd">        Args:</span>
 <span class="sd">            args (argparse.Namespace): Parsed arguments</span>
-<span class="sd">            cfg_file_arg (str, optional): Name of the argument that contains the FT config YAML file. Defaults to None - do not try to read from file.</span>
-<span class="sd">            ft_args_prefix (str, optional): Prefix of the FT related args. Defaults to empty str - assume no prefix.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-
+        <span class="c1"># Start with default config</span>
         <span class="n">ft_cfg</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="p">()</span>
         <span class="n">is_read_from_file</span> <span class="o">=</span> <span class="kc">False</span>
-        <span class="k">if</span> <span class="n">cfg_file_arg</span><span class="p">:</span>
-            <span class="n">cfg_path</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">cfg_file_arg</span><span class="p">)</span>
-            <span class="k">if</span> <span class="n">cfg_path</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">suppress</span><span class="p">(</span><span class="ne">ValueError</span><span class="p">):</span>
-                    <span class="n">ft_cfg</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">from_yaml_file</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">)</span>
-                    <span class="n">is_read_from_file</span> <span class="o">=</span> <span class="kc">True</span>
 
-        <span class="c1"># extract FT args specified via CLI, remove the common FT args prefix</span>
-        <span class="c1"># so we should get FaultToleranceConfig field name -&gt; value mapping</span>
-        <span class="n">provided_ft_args</span> <span class="o">=</span> <span class="p">{</span>
-            <span class="n">k</span><span class="o">.</span><span class="n">removeprefix</span><span class="p">(</span><span class="n">ft_args_prefix</span><span class="p">):</span> <span class="n">v</span>
-            <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="nb">vars</span><span class="p">(</span><span class="n">args</span><span class="p">)</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
-            <span class="k">if</span> <span class="n">k</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">ft_args_prefix</span><span class="p">)</span> <span class="ow">and</span> <span class="n">v</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-        <span class="p">}</span>
+        <span class="c1"># Try to read from config file if specified</span>
+        <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">ft_cfg_path</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">suppress</span><span class="p">(</span><span class="ne">ValueError</span><span class="p">):</span>
+                <span class="n">ft_cfg</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">from_yaml_file</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">ft_cfg_path</span><span class="p">)</span>
+                <span class="n">is_read_from_file</span> <span class="o">=</span> <span class="kc">True</span>
 
-        <span class="k">if</span> <span class="n">provided_ft_args</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;rank_section_timeouts&#39;</span><span class="p">,</span> <span class="kc">None</span><span class="p">):</span>
-            <span class="c1"># convert section timeouts arg to a mapping</span>
-            <span class="n">section_timeouts_arg</span> <span class="o">=</span> <span class="n">provided_ft_args</span><span class="p">[</span><span class="s1">&#39;rank_section_timeouts&#39;</span><span class="p">]</span>
-            <span class="n">provided_ft_args</span><span class="p">[</span><span class="s1">&#39;rank_section_timeouts&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
-                <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_parse_section_timeouts_arg</span><span class="p">(</span><span class="n">section_timeouts_arg</span><span class="p">)</span>
-            <span class="p">)</span>
+        <span class="c1"># Extract FT args from CLI</span>
+        <span class="n">cli_ft_args</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">field</span> <span class="ow">in</span> <span class="n">fields</span><span class="p">(</span><span class="n">FaultToleranceConfig</span><span class="p">):</span>
+            <span class="n">cli_field_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;ft_</span><span class="si">{</span><span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="n">val</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">cli_field_name</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">val</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;rank_section_timeouts&quot;</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">val</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+                    <span class="n">val</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_parse_section_timeouts_arg</span><span class="p">(</span><span class="n">val</span><span class="p">)</span>
+                <span class="n">cli_ft_args</span><span class="p">[</span><span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">val</span>
 
-        <span class="k">for</span> <span class="n">arg_name</span><span class="p">,</span> <span class="n">arg_val</span> <span class="ow">in</span> <span class="n">provided_ft_args</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-            <span class="k">assert</span> <span class="nb">hasattr</span><span class="p">(</span>
-                <span class="n">ft_cfg</span><span class="p">,</span> <span class="n">arg_name</span>
-            <span class="p">),</span> <span class="sa">f</span><span class="s2">&quot;Invalid FT parameter specified via CLI: </span><span class="si">{</span><span class="n">ft_args_prefix</span><span class="si">}{</span><span class="n">arg_name</span><span class="si">}</span><span class="s2">.&quot;</span>
+        <span class="c1"># Update config with CLI args</span>
+        <span class="k">for</span> <span class="n">arg_name</span><span class="p">,</span> <span class="n">arg_val</span> <span class="ow">in</span> <span class="n">cli_ft_args</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
             <span class="nb">setattr</span><span class="p">(</span><span class="n">ft_cfg</span><span class="p">,</span> <span class="n">arg_name</span><span class="p">,</span> <span class="n">arg_val</span><span class="p">)</span>
 
+        <span class="c1"># Fix any type issues</span>
         <span class="n">ft_cfg</span><span class="o">.</span><span class="n">_fix_log_level_type</span><span class="p">()</span>
         <span class="n">ft_cfg</span><span class="o">.</span><span class="n">_fix_rank_termination_signal_type</span><span class="p">()</span>
 
-        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="n">is_read_from_file</span> <span class="ow">or</span> <span class="n">provided_ft_args</span><span class="p">):</span>
+        <span class="c1"># If we didn&#39;t read from file and no CLI args were provided, raise an error</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="n">is_read_from_file</span> <span class="ow">or</span> <span class="n">cli_ft_args</span><span class="p">):</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;No fault tolerance configuration provided.&quot;</span><span class="p">)</span>
 
         <span class="k">return</span> <span class="n">ft_cfg</span></div>

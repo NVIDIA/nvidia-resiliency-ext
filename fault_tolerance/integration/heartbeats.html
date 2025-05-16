@@ -126,10 +126,10 @@ To avoid deadlocks and other unintended side effects, signal handling should be 
 <cite>null</cite> timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>When –ft-param-initial_rank_heartbeat_timeout and –ft-param-rank_heartbeat_timeout are not
+<p>When –ft-initial-rank-heartbeat-timeout and –ft-rank-heartbeat-timeout are not
 provided in the command-line arguments, the launcher defaults to FT’s predefined values. These are
-not null/None; currently, the defaults are 60 minutes for –ft-param-initial_rank_heartbeat_timeout
-and 45 minutes for –ft-param-rank_heartbeat_timeout.</p>
+not null/None; currently, the defaults are 60 minutes for –ft-initial-rank-heartbeat-timeout
+and 45 minutes for –ft-rank-heartbeat-timeout.</p>
 </div>
 <p>Configuration file example:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="linenos">1</span><span class="nt">fault_tolerance</span><span class="p">:</span>
