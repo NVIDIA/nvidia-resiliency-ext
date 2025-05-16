@@ -209,7 +209,7 @@ class CheckpointMetadataCache:
 _checkpoint_metadata_cache = None
 
 
-def init_checkpoint_metadata_cache(cached_global_metadata: Metadata):
+def init_checkpoint_metadata_cache(cached_global_metadata: Metadata = None):
     """
     Initializes the checkpoint metadata cache.
 
