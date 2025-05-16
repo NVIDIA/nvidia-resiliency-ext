@@ -100,8 +100,8 @@ log_title() {
 ( kill -s SIGKILL $(pgrep -f ft_launcher) > /dev/null 2>&1 || true ) 
 
 export LOGLEVEL='DEBUG'
-COMMON_FT_ARGS="--ft-param-log_level=DEBUG"
-COMMON_LAUNCHER_ARGS="--nproc-per-node=2 --nnodes=2:3 --rdzv-backend=c10d --rdzv_endpoint=localhost:12345 --max-restarts=5 --restart-policy=any-failed"
+COMMON_FT_ARGS="--ft-log-level=DEBUG"
+COMMON_LAUNCHER_ARGS="--nproc-per-node=2 --nnodes=2:3 --rdzv-backend=c10d --rdzv_endpoint=localhost:12345 --max-restarts=5 --ft-restart-policy=any-failed"
 COMMON_TEST_SCRIPT_ARGS="--max-time=60 --run-cnt-file=${RUNS_COUNT_FILE} --world-size-file=${WORLD_SIZE_FILE}"
 rm -f "${RUNS_COUNT_FILE}"
 rm -f "${WORLD_SIZE_FILE}"

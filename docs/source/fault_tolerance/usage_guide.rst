@@ -47,13 +47,13 @@ Usage Overview
 FT launcher
 -----------
 
-Fault tolerance includes a launcher tool called ``ft_launcher``, which is based on ``torchrun`` 
-and supports most ``torchrun`` command-line parameters. FT configuration can be specified either 
-via a YAML file using ``--fault-tol-cfg-path`` or through command-line parameters 
-using ``--ft-param-<parameter-name>``.  
+Fault tolerance includes a launcher tool called ``ft_launcher``, which is based on ``torchrun``
+and supports most ``torchrun`` command-line parameters. FT configuration can be specified either
+via a YAML file using ``--ft-cfg-path`` or through command-line parameters
+using ``--ft-<parameter-name>``.
 
-If ``--max-restarts`` is specified, the launcher restarts failed workers. 
-The restart behavior depends on the ``--restart-policy`` parameter, which supports two modes:  
+If ``--max-restarts`` is specified, the launcher restarts failed workers.
+The restart behavior depends on the ``--ft-restart-policy`` parameter, which supports two modes:
 
 * ``any-failed`` (default)  
   All workers are restarted if any worker fails.  
@@ -98,3 +98,18 @@ API, which can be used to control the workload restarting logic implemented in t
    Please note that only the ft_launcher behavior is affected by this call. 
    The fault tolerance package is job scheduler-agnostic, 
    i.e., it does not control underlying SLURM job allocations.
+
+Deprecated arguments
+--------------------
+
+The following arguments are deprecated and will be removed in a future version:
+
+* ``--ft-param-*`` arguments (replaced by ``--ft-*``)
+* ``--fault-tol-cfg-path`` (replaced by ``--ft-cfg-path``)
+* ``--ignore-missing-fault-tol-cfg`` (replaced by ``--ft-ignore-missing-cfg``)
+* ``--restart-policy`` (replaced by ``--ft-restart-policy``)
+* ``--restart_policy`` (replaced by ``--ft-restart-policy``)
+* ``--ft_param_link_down_path_template`` (replaced by ``--ft-link-down-path-template``)
+* ``--ft_param_enable_nic_monitor`` (replaced by ``--ft-enable-nic-monitor``)
+* ``--ft_param_pci_topo_file`` (replaced by ``--ft-pci-topo-file``)
+

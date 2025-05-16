@@ -9,7 +9,7 @@ FT Launcher & Inprocess integration
 
 2. Worker Monitoring & Restart Policy
 ====================
-A new ``--restart-policy`` argument in ``ft_launcher`` modifies the default worker monitor logic for better compatibility with :doc:`../inprocess/index`.
+A new ``--ft-restart-policy`` argument in ``ft_launcher`` modifies the default worker monitor logic for better compatibility with :doc:`../inprocess/index`.
 
 **Policy Options**
 
