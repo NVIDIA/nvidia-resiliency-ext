@@ -47,7 +47,7 @@
 THIS_SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 WORKER_SCRIPT="${THIS_SCRIPT_DIR}/in_job_and_in_process_example.py"
 
-COMMON_LAUNCHER_ARGS="--nnodes=2:3 --max-restarts=2 --nproc_per_node=2 --rdzv_backend=c10d --rdzv_endpoint=127.0.0.1:29500"
+COMMON_LAUNCHER_ARGS="--nnodes=2:3 --max-restarts=2 --nproc_per_node=2 --rdzv_backend=c10d --rdzv_endpoint=127.0.0.1:29500 --monitor-interval=5"
 COMMON_FT_ARGS="--ft-param-log_level=DEBUG --ft-param-rank_heartbeat_timeout=12 --ft-param-initial_rank_heartbeat_timeout=12 --restart-policy=min-healthy"
 
 # WAR: this example currently does not work with the NIC monitor

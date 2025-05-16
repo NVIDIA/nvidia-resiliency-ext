@@ -4,7 +4,7 @@ import socket
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import torch
 import torch.multiprocessing
@@ -20,7 +20,10 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     SectionMsg,
 )
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
-from nvidia_resiliency_ext.fault_tolerance.utils import write_obj_to_ipc_stream, read_obj_from_ipc_stream
+from nvidia_resiliency_ext.fault_tolerance.utils import (
+    read_obj_from_ipc_stream,
+    write_obj_to_ipc_stream,
+)
 
 
 class TestRankMonitorServer(unittest.TestCase):
