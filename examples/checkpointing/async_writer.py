@@ -14,11 +14,13 @@ from torch.utils.data import DataLoader, DistributedSampler
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue, AsyncRequest
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
+    init_checkpoint_metadata_cache,
     save_state_dict_async_finalize,
     save_state_dict_async_plan,
 )
 
 # Set up basic logging configuration
+# Try setting `DEBUG` to see detailed steps of NVRx checkpointing
 logging.basicConfig(level=logging.INFO)
 
 FEAT_SIZE = 4096
@@ -160,6 +162,9 @@ def main():
     num_iters_for_10pct = num_iters_in_epoch // 10  # iters for 1/10 of epoch
     checkpoint_dir = None
     sampler.set_epoch(0)
+
+    init_checkpoint_metadata_cache()
+
     for batch_idx, (data, target) in enumerate(dataloader):
         async_queue.maybe_finalize_async_calls(blocking=False, no_dist=False)
         if (batch_idx % num_iters_for_10pct) == 0 and rank == 0:
