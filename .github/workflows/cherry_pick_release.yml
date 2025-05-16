@@ -100,12 +100,20 @@ jobs:
         git push origin ${{ github.event.inputs.temp_branch }}
 
     - name: Create pull request to release branch
+      id: create_pr
       run: |
-        gh pr create \
+        PR_URL=$(gh pr create \
           --base "${{ github.event.inputs.release_branch }}" \
           --head "${{ github.event.inputs.temp_branch }}" \
           --title "Cherry-pick PRs into ${{ github.event.inputs.release_branch }}" \
-          --body "This PR includes cherry-picked commits from ${{ github.event.inputs.base_branch }} that went through PR review."
+          --body "This PR includes cherry-picked commits from ${{ github.event.inputs.base_branch }} that went through PR review." \
+          --json url --jq '.url')
+        echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Auto-merge the PR (Signed)
+      run: |
+        gh pr merge "$PR_URL" --merge --admin --delete-branch
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
