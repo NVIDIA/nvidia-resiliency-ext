@@ -24,6 +24,9 @@ jobs:
   cherry-pick:
     name: Cherry-pick PR commits into release
     runs-on: ubuntu-latest
+    env:
+      SKIP_COMMITS: |
+        31c591585c030f6ad7a514f9ec0e9b90d7aa4019
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -68,6 +71,11 @@ jobs:
     - name: Cherry-pick commits
       run: |
         for commit in $CHERRY_COMMITS; do
+          if echo "$SKIP_COMMITS" | grep -q "$commit"; then
+            echo "Skipping $commit (in skip list)"
+            continue
+          fi
+
           echo "Processing $commit..."
           PARENTS=$(git rev-list --parents -n 1 "$commit")
           NUM_PARENTS=$(echo "$PARENTS" | wc -w)
