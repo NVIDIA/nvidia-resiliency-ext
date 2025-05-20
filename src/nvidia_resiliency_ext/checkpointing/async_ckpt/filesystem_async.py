@@ -481,7 +481,10 @@ class FileSystemWriterAsync(FileSystemWriter):
                 storage_md.update({wr.index: wr.storage_data for wr in wr_list})
 
             metadata.storage_data = storage_md
-            metadata.storage_meta = self.storage_meta()
+
+            # storage_meta was introduced since PyTorch 2.4
+            if hasattr(self, "storage_meta"):
+                metadata.storage_meta = self.storage_meta()
 
             path = os.path.join(self.checkpoint_dir, ".metadata")
 
