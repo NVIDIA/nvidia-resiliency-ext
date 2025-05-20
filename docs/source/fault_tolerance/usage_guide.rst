@@ -106,7 +106,7 @@ The following arguments are deprecated and will be removed in a future version:
 
 * ``--ft-param-*`` arguments (replaced by ``--ft-*``)
 * ``--fault-tol-cfg-path`` (replaced by ``--ft-cfg-path``)
-* ``--ignore-missing-fault-tol-cfg`` (replaced by ``--ft-ignore-missing-cfg``)
+* ``--ignore-missing-fault-tol-cfg`` (deprecated completely)
 * ``--restart-policy`` (replaced by ``--ft-restart-policy``)
 * ``--restart_policy`` (replaced by ``--ft-restart-policy``)
 * ``--ft_param_link_down_path_template`` (replaced by ``--ft-link-down-path-template``)
