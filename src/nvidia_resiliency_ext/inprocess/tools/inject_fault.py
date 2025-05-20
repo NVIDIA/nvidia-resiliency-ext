@@ -147,6 +147,13 @@ def maybe_raise_workload_exception():
         raise InjectedException
 
 
+def clear_workload_exception():
+    """
+    Force clear the workload exception sentinel.
+    """
+    workload_raise_event.clear()
+
+
 def async_raise_exception(tid, delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
