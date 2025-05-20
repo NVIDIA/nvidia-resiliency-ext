@@ -1863,6 +1863,13 @@ def get_args_parser() -> ArgumentParser:
         "Template path to check if a NIC link is down.",
     )
 
+    parser.add_argument(
+        "--ignore-missing-fault-tol-cfg",  # Deprecated, to be removed in v0.5
+        action='store_true',
+        dest="ft_ignore_missing_cfg",
+        help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
+    )
+
     #
     # Positional arguments.
     #
