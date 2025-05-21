@@ -66,7 +66,7 @@ Using ``Detector.detection_section``:
 
 .. code-block:: python
 
-   import nvidia_resiliency_ext.straggler as straggler
+   import nvidia_resiliency_ext.attribution.straggler as straggler
 
    straggler.Detector.initialize(
       scores_to_compute=["relative_perf_scores", "individual_perf_scores"],
