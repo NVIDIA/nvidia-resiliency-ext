@@ -483,8 +483,8 @@ class FileSystemWriterAsync(FileSystemWriter):
             metadata.storage_data = storage_md
 
             # storage_meta was introduced since PyTorch 2.4
-            if hasattr(self, "storage_meta"):
-                metadata.storage_meta = self.storage_meta()
+            if "storage_meta" in inspect.signature(Metadata).parameters:
+                metadata.stoage_meta = self.storage_meta()
 
             path = os.path.join(self.checkpoint_dir, ".metadata")
 
