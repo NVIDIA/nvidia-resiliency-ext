@@ -549,7 +549,9 @@ class AsyncCallsQueue:
                 for finalize_fn in async_request.finalize_fns:
                     finalize_fn()
                 if no_dist:
-                    ten = torch.tensor([call_idx], dtype=torch.int, device=torch.cuda.current_device())
+                    ten = torch.tensor(
+                        [call_idx], dtype=torch.int, device=torch.cuda.current_device()
+                    )
                     torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
                     assert ten.item() == call_idx, 'Unmatched async calls. '
                     'That probably means not all ranks are participating in async finalization'
