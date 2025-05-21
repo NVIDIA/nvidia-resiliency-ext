@@ -368,14 +368,10 @@
 <span class="sd">        process_group (dist.ProcessGroup, optional): process group used for save planning</span>
 <span class="sd">        coordinator_rank (int, optional): coordinator rank for planning. Defaults to 0.</span>
 <span class="sd">        planner (SavePlanner, optional): save planner for torch.distributed.checkpoint format</span>
-<span class="sd">        cached_ckpt_structure (Tuple[SavePlan, SavePlan, bool], Optional):</span>
-<span class="sd">            Each object of this tuple will be used in the order as following</span>
-<span class="sd">            cached_central_plan (SavePlan): a globally coordinated save plan</span>
-<span class="sd">                cached in the previous iteration</span>
-<span class="sd">            cached_local_plan (SavePlan): a local plan</span>
-<span class="sd">                cached in the previous iteration</span>
-<span class="sd">            validated_cache_reuse (bool): boolean value to tell global_metadata and planning dict</span>
-<span class="sd">                is consistent over iterations</span>
+<span class="sd">        enable_cache (bool, optional): Flag to enable caching of checkpoint metadata. When True,</span>
+<span class="sd">            previously saved metadata can be reused to speed up subsequent saves.</span>
+<span class="sd">        metadata_cache (CheckpointMetadataCache, optional): Custom metadata cache instance to use</span>
+<span class="sd">            for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.</span>
 
 <span class="sd">    Returns: Tuple of:</span>
 <span class="sd">        - storage writer (the one passed as input)</span>

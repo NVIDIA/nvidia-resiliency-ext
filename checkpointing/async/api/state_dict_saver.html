@@ -273,20 +273,10 @@ FileSystemWriterAsync</p></li>
 <li><p><strong>process_group</strong> (<em>dist.ProcessGroup</em><em>, </em><em>optional</em>) – process group used for save planning</p></li>
 <li><p><strong>coordinator_rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – coordinator rank for planning. Defaults to 0.</p></li>
 <li><p><strong>planner</strong> (<em>SavePlanner</em><em>, </em><em>optional</em>) – save planner for torch.distributed.checkpoint format</p></li>
-<li><p><strong>cached_ckpt_structure</strong> (<em>Tuple</em><em>[</em><em>SavePlan</em><em>, </em><em>SavePlan</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>]</em><em>, </em><em>Optional</em>) – <p>Each object of this tuple will be used in the order as following
-cached_central_plan (SavePlan): a globally coordinated save plan</p>
-<blockquote>
-<div><p>cached in the previous iteration</p>
-</div></blockquote>
-<dl class="simple">
-<dt>cached_local_plan (SavePlan): a local plan</dt><dd><p>cached in the previous iteration</p>
-</dd>
-<dt>validated_cache_reuse (bool): boolean value to tell global_metadata and planning dict</dt><dd><p>is consistent over iterations</p>
-</dd>
-</dl>
-</p></li>
-<li><p><strong>enable_cache</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>)</p></li>
-<li><p><strong>metadata_cache</strong> (<a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache"><em>CheckpointMetadataCache</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>enable_cache</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – Flag to enable caching of checkpoint metadata. When True,
+previously saved metadata can be reused to speed up subsequent saves.</p></li>
+<li><p><strong>metadata_cache</strong> (<a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache"><em>CheckpointMetadataCache</em></a><em>, </em><em>optional</em>) – Custom metadata cache instance to use
+for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
