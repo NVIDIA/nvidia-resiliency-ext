@@ -548,7 +548,7 @@ class AsyncCallsQueue:
                 call_idx, _, async_request = self.async_calls.popleft()
                 for finalize_fn in async_request.finalize_fns:
                     finalize_fn()
-                if no_dist:
+                if not no_dist:
                     ten = torch.tensor(
                         [call_idx], dtype=torch.int, device=torch.cuda.current_device()
                     )
