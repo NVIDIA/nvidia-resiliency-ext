@@ -33,7 +33,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 
-from nvidia_resiliency_ext import straggler
+from nvidia_resiliency_ext import attribution.straggler as straggler
 
 
 class Model(nn.Module):

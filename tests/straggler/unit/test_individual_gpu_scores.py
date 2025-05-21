@@ -20,7 +20,7 @@ import pytest
 import torch
 import torch.multiprocessing as mp
 
-from nvidia_resiliency_ext import straggler
+from nvidia_resiliency_ext import attribution.straggler as straggler
 
 from ._utils import multiprocessing_execute_join, multiprocessing_execute_start
 
