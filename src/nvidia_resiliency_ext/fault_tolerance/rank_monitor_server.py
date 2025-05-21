@@ -140,24 +140,44 @@ class RankMonitorServer:
         self.rank_monitor_ready_event = rank_monitor_ready_event
         self.logger = logger
         self.state_machine = RankMonitorStateMachine(logger)
-        self._periodic_restart_task = None
-        self.health_checker = GPUHealthCheck(
-            interval=self.cfg.node_health_check_interval, on_failure=self._handle_unhealthy_node
-        )
         self.current_writer = None
         self.launcher_ipc_socket_path = (
             f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_to_rmon.socket"
         )
         self.launcher_server = None
+        self._periodic_restart_task = None
+
+        if self.cfg.simulate_failure_type and self.cfg.simulate_failure_type.lower() == "gpu":
+            self.health_checker = GPUHealthCheck(
+                interval=self.cfg.node_health_check_interval,
+                on_failure=self._handle_unhealthy_node,
+                simulate_failure_rank=self.cfg.simulate_failure_rank,
+                simulate_failure_time=self.cfg.simulate_failure_time,
+                simulate_recovery_action=self.cfg.simulate_recovery_action,
+            )
+        else:
+            self.health_checker = GPUHealthCheck(
+                interval=self.cfg.node_health_check_interval, on_failure=self._handle_unhealthy_node
+            )
 
         if self.cfg.enable_nic_monitor:
             self.logger.info("Enable NIC health monitoring.")
-            self.nic_health_checker = NicHealthCheck(
-                interval=self.cfg.node_health_check_interval,
-                pci_topo_file=self.cfg.pci_topo_file,
-                link_down_path_template=self.cfg.link_down_path_template,
-                on_failure=self._handle_unhealthy_nic,
-            )
+            if self.cfg.simulate_failure_type and self.cfg.simulate_failure_type.lower() == "nic":
+                self.nic_health_checker = NicHealthCheck(
+                    interval=self.cfg.node_health_check_interval,
+                    pci_topo_file=self.cfg.pci_topo_file,
+                    link_down_path_template=self.cfg.link_down_path_template,
+                    on_failure=self._handle_unhealthy_nic,
+                    simulate_failure_rank=self.cfg.simulate_failure_rank,
+                    simulate_failure_time=self.cfg.simulate_failure_time,
+                )
+            else:
+                self.nic_health_checker = NicHealthCheck(
+                    interval=self.cfg.node_health_check_interval,
+                    pci_topo_file=self.cfg.pci_topo_file,
+                    link_down_path_template=self.cfg.link_down_path_template,
+                    on_failure=self._handle_unhealthy_nic,
+                )
         else:
             self.nic_health_checker = None
 

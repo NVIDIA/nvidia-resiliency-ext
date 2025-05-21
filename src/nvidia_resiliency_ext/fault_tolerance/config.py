@@ -51,6 +51,10 @@ class FaultToleranceConfig:
     * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
     * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
       placeholder which will be replaced with actual NIC device name.
+    * `simulate_failure_type` - Type of failure to simulate.
+    * `simulate_failure_rank` - Rank to simulate failure on.
+    * `simulate_failure_time` - Time to simulate failure.
+    * `simulate_recovery_action` - Action to take after recovery.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -69,6 +73,10 @@ class FaultToleranceConfig:
     enable_nic_monitor: bool = True
     pci_topo_file: Optional[str] = None
     link_down_path_template: Optional[str] = None
+    simulate_failure_type: Optional[str] = None
+    simulate_failure_rank: Optional[int] = None
+    simulate_failure_time: Optional[int] = None
+    simulate_recovery_action: Optional[str] = None
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
