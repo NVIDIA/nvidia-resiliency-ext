@@ -146,7 +146,7 @@ def main():
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=sampler)
 
-    # Model, optimizer, and DDP
+    # Model, optimizer, and FSDP wrapper
     model = SimpleModel().to("cuda")
     fsdp_model = FSDP(model)
     optimizer = optim.SGD(fsdp_model.parameters(), lr=0.01)
