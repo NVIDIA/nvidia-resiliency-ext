@@ -1,6 +1,10 @@
 
 ## Nvidia Resiliency Extension (NVRx) OSS Contribution Rules
 
+Thank you for your interest in contributing to this project. We value collaboration, clear ownership, and high standards of responsibility. These guidelines outline how to contribute effectively and responsibly, ensuring that code quality, project direction, and accountability are maintained. 
+
+Please note that as a contributor, you are responsible for responding to feedback and ongoing maintenance of your contributions. By following these guidelines, you help maintain a high-quality, collaborative and productive environment for all contributors. Any code, comments, issues and other contributions violating these guidelines will be subject to removal.  
+
 #### Issue Tracking
 
 * All enhancement, bugfix, or change requests must begin with the creation of a [NVRx Issue Request](TBD).
