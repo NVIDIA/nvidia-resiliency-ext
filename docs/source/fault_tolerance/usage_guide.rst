@@ -72,6 +72,7 @@ The FT package provides two fully independent mechanisms for detecting hangs in 
 Users can choose the API that is best suited for their needs, or use both APIs at the same time.
 
 * Heartbeats API
+
 The training script periodically sends `heartbeats` to the monitor. 
 If no heartbeat arrives in a defined time, the workload is considered hung.
 This API is the simplest to use but might require coarse timeouts 
@@ -79,6 +80,7 @@ that need to cover a wide range of possible intervals between heartbeats.
 Please find more details in :doc:`integration/heartbeats`.
 
 * Sections API  
+
 Some parts of the training scripts are wrapped in `sections`. 
 If any section is opened for too long, the workload is considered hung.
 The sections-based API requires more changes in the user code, but timeouts 
