@@ -29,7 +29,7 @@ elif is_module_available("pytorch_lightning"):
 else:
     raise ImportError("Could not find 'lightning' or 'pytorch_lightning' module")
 
-import nvidia_resiliency_ext.straggler as straggler
+import nvidia_resiliency_ext.attribution.straggler as straggler
 
 
 class StragglerDetectionCallback(Callback):

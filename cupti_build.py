@@ -71,7 +71,7 @@ def build(setup_kwargs):
     cpp_extension = Pybind11Extension(
         'nvrx_cupti_module',
         # Sort .cpp files for reproducibility
-        sorted(glob.glob('src/nvidia_resiliency_ext/straggler/cupti_src/*.cpp')),
+        sorted(glob.glob('src/nvidia_resiliency_ext/attribution/straggler/cupti_src/*.cpp')),
         include_dirs=include_dirs,
         library_dirs=library_dirs,
         libraries=['cupti'],

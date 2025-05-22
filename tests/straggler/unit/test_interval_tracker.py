@@ -15,7 +15,7 @@
 
 import time
 
-from nvidia_resiliency_ext.straggler import interval_tracker
+from nvidia_resiliency_ext.attribution.straggler import interval_tracker
 
 
 def test_estimate():

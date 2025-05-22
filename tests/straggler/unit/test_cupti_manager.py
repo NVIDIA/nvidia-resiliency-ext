@@ -16,7 +16,7 @@
 import pytest
 import torch
 
-from nvidia_resiliency_ext.straggler.cupti import CuptiManager
+from nvidia_resiliency_ext.attribution.straggler.cupti import CuptiManager
 
 
 def test_cupti_manager_start_stop():
