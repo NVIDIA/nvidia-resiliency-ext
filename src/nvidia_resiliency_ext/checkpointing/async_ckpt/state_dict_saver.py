@@ -264,14 +264,10 @@ def save_state_dict_async_plan(
         process_group (dist.ProcessGroup, optional): process group used for save planning
         coordinator_rank (int, optional): coordinator rank for planning. Defaults to 0.
         planner (SavePlanner, optional): save planner for torch.distributed.checkpoint format
-        cached_ckpt_structure (Tuple[SavePlan, SavePlan, bool], Optional):
-            Each object of this tuple will be used in the order as following
-            cached_central_plan (SavePlan): a globally coordinated save plan
-                cached in the previous iteration
-            cached_local_plan (SavePlan): a local plan
-                cached in the previous iteration
-            validated_cache_reuse (bool): boolean value to tell global_metadata and planning dict
-                is consistent over iterations
+        enable_cache (bool, optional): Flag to enable caching of checkpoint metadata. When True,
+            previously saved metadata can be reused to speed up subsequent saves.
+        metadata_cache (CheckpointMetadataCache, optional): Custom metadata cache instance to use
+            for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.
 
     Returns: Tuple of:
         - storage writer (the one passed as input)
