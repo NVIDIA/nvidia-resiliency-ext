@@ -23,7 +23,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from nvidia_resiliency_ext import attribution.straggler as straggler
+from nvidia_resiliency_ext.attribution import straggler
 
 
 class Layer(nn.Module):

@@ -18,7 +18,7 @@ import inspect
 import pytest
 import torch
 
-from nvidia_resiliency_ext import attribution.straggler as straggler
+from nvidia_resiliency_ext.attribution import straggler
 
 
 @pytest.fixture
