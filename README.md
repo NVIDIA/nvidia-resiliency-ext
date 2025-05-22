@@ -4,7 +4,7 @@ The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused so
 
 For detailed documentation and usage information about each component, please refer to https://nvidia.github.io/nvidia-resiliency-ext/.
 
-> ⚠️ NOTE: This project is currently experimental and under active development. The code, features, and documentation are evolving rapidly. Please expect frequent updates and breaking changes. Contributions are welcome and we encourage you to watch for updates.
+> ⚠️ NOTE: This project is still experimental and under active development. The code, features, and documentation are evolving rapidly. Please expect frequent updates and breaking changes. Contributions are welcome and we encourage you to watch for updates.
 
 <img src="/docs/source/media/nvrx_core_features.png" alt="Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks" width="950" height="350">
 
