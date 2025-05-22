@@ -22,7 +22,7 @@ from typing import Dict
 import torch
 import torch.nn as nn
 
-from nvidia_resiliency_ext import attribution.straggler as straggler
+from nvidia_resiliency_ext.attribution import straggler
 
 
 def parse_args():
