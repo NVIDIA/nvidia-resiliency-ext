@@ -553,8 +553,10 @@ class AsyncCallsQueue:
                         [call_idx], dtype=torch.int, device=torch.cuda.current_device()
                     )
                     torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
-                    assert ten.item() == call_idx, 'Unmatched async calls. '
-                    'That probably means not all ranks are participating in async finalization'
+                    assert ten.item() == call_idx, (
+                        'Unmatched async calls. '
+                        'That probably means not all ranks are participating in async finalization'
+                    )
                 call_idx_finalized.append(call_idx)
         return call_idx_finalized
 
