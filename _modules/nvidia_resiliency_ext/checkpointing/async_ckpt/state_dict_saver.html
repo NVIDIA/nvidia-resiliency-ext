@@ -130,27 +130,27 @@
 <div class="viewcode-block" id="CheckpointMetadataCache">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">CheckpointMetadataCache</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    Cache of metadata for checkpoint saving.</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Cache of metadata for checkpoint saving.</span>
 
 <span class="sd">    This class maintains a cache of metadata used during distributed checkpoint saving operations.</span>
 <span class="sd">    It stores various components of the save plan and metadata to optimize subsequent checkpoint</span>
 <span class="sd">    saves by avoiding redundant planning and metadata generation when the checkpoint structure</span>
 <span class="sd">    remains consistent across iterations.</span>
 
-<span class="sd">    The cache stores:</span>
-<span class="sd">    - cached_central_plan: The aggregated global save plan from all ranks</span>
-<span class="sd">    - cached_local_plan: The local save plan describing how the local state_dict is written</span>
-<span class="sd">    - cached_global_metadata: The global metadata (only held by the coordinator rank)</span>
-<span class="sd">    - validated_cache_reuse: Flag indicating if checkpoint structures are consistent</span>
-<span class="sd">    - validated_loaded_metadata_reuse: Flag indicating the metadata loaded from the prev checkpoint</span>
-<span class="sd">                                       is validated to reuse, which skips all metadata communications</span>
-<span class="sd">    - loaded_all_plans: Cached local plans from the previous checkpoint&#39;s metadata file</span>
-
 <span class="sd">    This caching mechanism helps optimize checkpoint saving by:</span>
 <span class="sd">    1. Avoiding redundant planning when checkpoint structures are consistent</span>
 <span class="sd">    2. Reusing global metadata when possible</span>
 <span class="sd">    3. Enabling decentralized planning when supported by the planner and storage writer</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        cached_central_plan (SavePlan): The aggregated global save plan from all ranks</span>
+<span class="sd">        cached_local_plan (SavePlan): The local save plan describing how the local state_dict is written</span>
+<span class="sd">        cached_global_metadata (Metadata): The global metadata (only held by the coordinator rank)</span>
+<span class="sd">        validated_cache_reuse (bool): Flag indicating if checkpoint structures are consistent</span>
+<span class="sd">        validated_loaded_metadata_reuse (bool): Flag indicating the metadata loaded from the prev checkpoint</span>
+<span class="sd">                                         is validated to reuse, which skips all metadata communications</span>
+<span class="sd">        loaded_all_plans (List[SavePlan]): Cached local plans from the previous checkpoint&#39;s metadata file</span>
+
 <span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -167,7 +167,7 @@
         <span class="c1"># so the following checkpoint savings reuse `cached_global_metadata`</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">validated_cache_reuse</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="c1"># The knob to enable cached metadata communication in saving</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">validated_loaded_metadata_reuse</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">validated_loaded_metadata_reuse</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="c1"># The cached all_local_plans from the loaded metadata file of the previous checkpoint</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">loaded_all_plans</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">SavePlan</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 

@@ -111,22 +111,23 @@
 It stores various components of the save plan and metadata to optimize subsequent checkpoint
 saves by avoiding redundant planning and metadata generation when the checkpoint structure
 remains consistent across iterations.</p>
-<p>The cache stores:
-- cached_central_plan: The aggregated global save plan from all ranks
-- cached_local_plan: The local save plan describing how the local state_dict is written
-- cached_global_metadata: The global metadata (only held by the coordinator rank)
-- validated_cache_reuse: Flag indicating if checkpoint structures are consistent
-- validated_loaded_metadata_reuse: Flag indicating the metadata loaded from the prev checkpoint</p>
-<blockquote>
-<div><p>is validated to reuse, which skips all metadata communications</p>
-</div></blockquote>
-<ul class="simple">
-<li><p>loaded_all_plans: Cached local plans from the previous checkpoint’s metadata file</p></li>
-</ul>
 <p>This caching mechanism helps optimize checkpoint saving by:
 1. Avoiding redundant planning when checkpoint structures are consistent
 2. Reusing global metadata when possible
 3. Enabling decentralized planning when supported by the planner and storage writer</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>cached_central_plan</strong> (<em>SavePlan</em>) – The aggregated global save plan from all ranks</p></li>
+<li><p><strong>cached_local_plan</strong> (<em>SavePlan</em>) – The local save plan describing how the local state_dict is written</p></li>
+<li><p><strong>cached_global_metadata</strong> (<em>Metadata</em>) – The global metadata (only held by the coordinator rank)</p></li>
+<li><p><strong>validated_cache_reuse</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Flag indicating if checkpoint structures are consistent</p></li>
+<li><p><strong>validated_loaded_metadata_reuse</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Flag indicating the metadata loaded from the prev checkpoint
+is validated to reuse, which skips all metadata communications</p></li>
+<li><p><strong>loaded_all_plans</strong> (<em>List</em><em>[</em><em>SavePlan</em><em>]</em>) – Cached local plans from the previous checkpoint’s metadata file</p></li>
+</ul>
+</dd>
+</dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.get_cache_metadata">
 <span class="sig-name descname"><span class="pre">get_cache_metadata</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#CheckpointMetadataCache.get_cache_metadata"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.get_cache_metadata" title="Link to this definition"></a></dt>
