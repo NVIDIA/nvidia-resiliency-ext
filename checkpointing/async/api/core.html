@@ -212,9 +212,13 @@ active calls with <cite>maybe_finalize_async_calls</cite>.</p>
 <p>This method must be called on all ranks.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until all active requests
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until all active requests
 are done. Otherwise, finalizes only the async request that already
-finished. Defaults to False.</p>
+finished. Defaults to False.</p></li>
+<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, training ranks simply check its
+asynchronous checkpoint writer without synchronization.</p></li>
+</ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
 <dd class="field-even"><p><dl class="simple">
