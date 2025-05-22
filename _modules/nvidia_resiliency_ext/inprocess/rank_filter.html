@@ -1,0 +1,241 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.inprocess.rank_filter &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.inprocess.rank_filter</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.inprocess.rank_filter</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: NVIDIA CORPORATION &amp; AFFILIATES</span>
+<span class="c1"># Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">abc</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Optional</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">rank_assignment</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">State</span>
+
+
+<div class="viewcode-block" id="RankFilter">
+<a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.RankFilter">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">RankFilter</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABC</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    .. note::</span>
+<span class="sd">       :py:class:`RankFilter` is deprecated and will be removed in the next</span>
+<span class="sd">       release. The functionality is merged into</span>
+<span class="sd">       :py:class:`inprocess.rank_assignment.RankAssignment`.</span>
+
+<span class="sd">    :py:class:`RankFilter` selects which ranks are active in the current</span>
+<span class="sd">    restart iteration of :py:class:`inprocess.Wrapper`.</span>
+
+<span class="sd">    Active ranks call the provided wrapped function. Inactive ranks are waiting</span>
+<span class="sd">    idle, and could serve as a pool of static, preallocated and preinitialized</span>
+<span class="sd">    reserve ranks. Reserve ranks would be activated in a subsequent restart</span>
+<span class="sd">    iteration if previously active ranks were terminated or became unhealthy.</span>
+
+<span class="sd">    Multiple instances of :py:class:`RankFilter` could be composed with</span>
+<span class="sd">    :py:class:`inprocess.Compose` to achieve the desired behavior.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="nd">@abc</span><span class="o">.</span><span class="n">abstractmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">State</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+
+<div class="viewcode-block" id="MaxActiveWorldSize">
+<a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.MaxActiveWorldSize">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MaxActiveWorldSize</span><span class="p">(</span><span class="n">RankFilter</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    .. note::</span>
+<span class="sd">       :py:class:`MaxActiveWorldSize` is deprecated and will be removed in the</span>
+<span class="sd">       next release. The functionality is moved to</span>
+<span class="sd">       :py:class:`inprocess.rank_assignment.MaxActiveWorldSize`.</span>
+
+<span class="sd">    :py:class:`MaxActiveWorldSize` ensures that the active world size is no</span>
+<span class="sd">    greater than the specified ``max_active_world_size``. Ranks with indices</span>
+<span class="sd">    less than the active world size are active and calling the wrapped</span>
+<span class="sd">    function, while ranks outside this range are inactive.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        max_active_world_size: maximum active world size, no limit if</span>
+<span class="sd">            :py:obj:`None`</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">max_active_world_size</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">):</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="s1">&#39;rank_filter.MaxActiveWorldSize is deprecated and will be removed &#39;</span>
+            <span class="s1">&#39;in the next release. The functionality is moved to &#39;</span>
+            <span class="s1">&#39;rank_assignment.MaxActiveWorldSize&#39;</span><span class="p">,</span>
+            <span class="ne">DeprecationWarning</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">impl</span> <span class="o">=</span> <span class="n">rank_assignment</span><span class="o">.</span><span class="n">MaxActiveWorldSize</span><span class="p">(</span><span class="n">max_active_world_size</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">State</span><span class="p">:</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">rank_assignment</span><span class="o">.</span><span class="n">RankAssignmentCtx</span><span class="p">(</span><span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="o">=</span><span class="nb">set</span><span class="p">())</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">impl</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span><span class="o">.</span><span class="n">state</span></div>
+
+
+
+<div class="viewcode-block" id="ActiveWorldSizeDivisibleBy">
+<a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.ActiveWorldSizeDivisibleBy">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ActiveWorldSizeDivisibleBy</span><span class="p">(</span><span class="n">RankFilter</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    .. note::</span>
+<span class="sd">       :py:class:`ActiveWorldSizeDivisibleBy` is deprecated and will be removed</span>
+<span class="sd">       in the next release. The functionality is moved to</span>
+<span class="sd">       :py:class:`inprocess.rank_assignment.ActiveWorldSizeDivisibleBy`.</span>
+
+<span class="sd">    :py:class:`ActiveWorldSizeDivisibleBy` ensures that the active world size</span>
+<span class="sd">    is divisible by a given number. Ranks within the adjusted world size are</span>
+<span class="sd">    marked as active and are calling the wrapped function, while ranks outside</span>
+<span class="sd">    this range are marked as inactive.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        divisor: the divisor to adjust the active world size by</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">divisor</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">):</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="s1">&#39;rank_filter.ActiveWorldSizeDivisibleBy is deprecated and will be &#39;</span>
+            <span class="s1">&#39;removed in the next release. The functionality is moved to &#39;</span>
+            <span class="s1">&#39;rank_assignment.ActiveWorldSizeDivisibleBy&#39;</span><span class="p">,</span>
+            <span class="ne">DeprecationWarning</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">impl</span> <span class="o">=</span> <span class="n">rank_assignment</span><span class="o">.</span><span class="n">ActiveWorldSizeDivisibleBy</span><span class="p">(</span><span class="n">divisor</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">State</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">State</span><span class="p">:</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">rank_assignment</span><span class="o">.</span><span class="n">RankAssignmentCtx</span><span class="p">(</span><span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="o">=</span><span class="nb">set</span><span class="p">())</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">impl</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span><span class="o">.</span><span class="n">state</span></div>
+
+
+
+<div class="viewcode-block" id="WorldSizeDivisibleBy">
+<a class="viewcode-back" href="../../../inprocess/api/rank_filter.html#nvidia_resiliency_ext.inprocess.rank_filter.WorldSizeDivisibleBy">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">WorldSizeDivisibleBy</span><span class="p">(</span><span class="n">ActiveWorldSizeDivisibleBy</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="s1">&#39;rank_filter.WorldSizeDivisibleBy is deprecated and will be &#39;</span>
+            <span class="s1">&#39;removed in the next release. The functionality is moved to &#39;</span>
+            <span class="s1">&#39;rank_assignment.ActiveWorldSizeDivisibleBy&#39;</span><span class="p">,</span>
+            <span class="ne">DeprecationWarning</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

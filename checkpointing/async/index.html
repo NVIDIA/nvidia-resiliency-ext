@@ -90,13 +90,9 @@ It leverages <cite>torch.multiprocessing</cite> to either fork a temporary proce
 <p>Applications can monitor asynchronous checkpoint progress in a non-blocking manner
 and define a custom finalization step once all ranks complete their background checkpoint saving.</p>
 <p>This repository includes an implementation of asynchronous checkpointing utilities for both <cite>torch.save</cite> and <cite>torch.distributed.save_state_dict</cite>.
-Our modified <cite>torch.distributed.save_state_dict</cite> interface is integrated with an optimized backend, <cite>FileSystemWriterAsync</cite>, which:</p>
-<blockquote>
-<div><ul class="simple">
-<li><p>Runs in the async checkpoint process creating child parallel processes for intra-node parallelism, avoiding GIL contention.</p></li>
-<li><p>Minimizes metadata communication overhead by metadata caching, ensuring efficient checkpoint saving.</p></li>
-</ul>
-</div></blockquote>
+Our modified <cite>torch.distributed.save_state_dict</cite> interface is integrated with an optimized backend, <cite>FileSystemWriterAsync</cite>, which:
+• Runs in the async checkpoint process creating child parallel processes for intra-node parallelism, avoiding GIL contention.
+• Minimizes metadata communication overhead by metadata caching, ensuring efficient checkpoint saving.</p>
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul>

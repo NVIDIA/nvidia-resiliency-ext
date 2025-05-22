@@ -1,0 +1,708 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.inprocess.wrap &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.inprocess.wrap</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.inprocess.wrap</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: NVIDIA CORPORATION &amp; AFFILIATES</span>
+<span class="c1"># Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">contextlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">datetime</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">timedelta</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Optional</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">param_utils</span><span class="p">,</span> <span class="n">utils</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.abort</span><span class="w"> </span><span class="kn">import</span> <span class="n">Abort</span><span class="p">,</span> <span class="n">AbortTorchDistributed</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.attribution</span><span class="w"> </span><span class="kn">import</span> <span class="n">Interruption</span><span class="p">,</span> <span class="n">InterruptionRecord</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.completion</span><span class="w"> </span><span class="kn">import</span> <span class="n">Completion</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.compose</span><span class="w"> </span><span class="kn">import</span> <span class="n">Compose</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheckError</span><span class="p">,</span> <span class="n">InternalError</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.finalize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Finalize</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheck</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.initialize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Initialize</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_process</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorProcess</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorThread</span><span class="p">,</span> <span class="n">RankShouldRestart</span><span class="p">,</span> <span class="n">reraise_if_unraisable</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.param_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">enforce_subclass</span><span class="p">,</span> <span class="n">enforce_type</span><span class="p">,</span> <span class="n">enforce_value</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.progress_watchdog</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProgressWatchdog</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_assignment</span><span class="w"> </span><span class="kn">import</span> <span class="n">ActivateAllRanks</span><span class="p">,</span> <span class="n">RankAssignment</span><span class="p">,</span> <span class="n">RankAssignmentCtx</span><span class="p">,</span> <span class="n">ShiftRanks</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.rank_filter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankFilter</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">Mode</span><span class="p">,</span> <span class="n">State</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">PrefixStore</span><span class="p">,</span> <span class="n">StoreMixin</span><span class="p">,</span> <span class="n">TCPStore</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.terminate</span><span class="w"> </span><span class="kn">import</span> <span class="n">Terminate</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">log_exc</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HealthCheckPassed</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+    <span class="k">pass</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">reserve_fn</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">,</span> <span class="n">progress_watchdog</span><span class="p">,</span> <span class="n">progress_watchdog_interval</span><span class="p">):</span>
+    <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+    <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
+
+    <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> starting reserve_fn&#39;</span><span class="p">)</span>
+    <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">ping</span><span class="p">()</span>
+
+    <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">wait_for_completed</span><span class="p">(</span><span class="n">progress_watchdog_interval</span><span class="p">)</span>
+            <span class="k">break</span>
+        <span class="k">except</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">DistStoreError</span><span class="p">:</span>
+            <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">ping</span><span class="p">()</span>
+            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">getswitchinterval</span><span class="p">())</span>
+
+    <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> finished reserve_fn&#39;</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="Wrapper">
+<a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">Wrapper</span><span class="p">:</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Python function wrapper that adds restart capabilities to an existing</span>
+<span class="sd">    Python function implementing distributed PyTorch workload.</span>
+
+<span class="sd">    Upon a fault, the wrapped function is restarted across all distributed</span>
+<span class="sd">    ranks, within the same operating system process. Wrapped function restart</span>
+<span class="sd">    invocation excludes distributed ranks that are terminated, missing, or</span>
+<span class="sd">    deemed unhealthy. When a failure occurs on any worker, the wrapper ensures</span>
+<span class="sd">    the function restarts simultaneously on all healthy ranks. This process</span>
+<span class="sd">    continues until all ranks complete execution successfully or a termination</span>
+<span class="sd">    condition is met.</span>
+
+<span class="sd">    See the :doc:`Usage Guide &lt;../usage_guide&gt;` for detailed documentation.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        store_factory: Factory to construct the internal distributed store for</span>
+<span class="sd">            communication between ranks.</span>
+<span class="sd">        store_kwargs: Dictionary of keyword arguments to construct the internal</span>
+<span class="sd">            store with ``store_factory(**store_kwargs)``.</span>
+<span class="sd">        initialize: Rank-local initialize.</span>
+<span class="sd">        abort: Asynchronously aborts execution.</span>
+<span class="sd">        finalize: Rank-local finalize.</span>
+<span class="sd">        health_check: Rank-local health check.</span>
+<span class="sd">        rank_assignment: Reassigns ranks, computes the new world size and</span>
+<span class="sd">            specifies which ranks are calling the wrapped function.</span>
+<span class="sd">        rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped</span>
+<span class="sd">            function.</span>
+<span class="sd">        monitor_thread_interval: Monitoring interval for the monitor thread.</span>
+<span class="sd">        monitor_process_interval: Monitoring interval for the monitor process.</span>
+<span class="sd">        heartbeat_interval: Monitoring interval for detecting unresponsive</span>
+<span class="sd">            ranks.</span>
+<span class="sd">        progress_watchdog_interval: Interval for automatic progress watchdog</span>
+<span class="sd">            timestamp updates.</span>
+<span class="sd">        soft_timeout: Soft progress timeout. Timed-out rank executes</span>
+<span class="sd">            asynchronous abort, and participates in the restart if healthy.</span>
+<span class="sd">        hard_timeout: Hard progress timeout. Timed-out rank is terminated.</span>
+<span class="sd">        heartbeat_timeout: Timeout for a missing rank detection heartbeat.</span>
+<span class="sd">        barrier_timeout: Barrier timeout.</span>
+<span class="sd">        completion_timeout: Completion barrier timeout.</span>
+<span class="sd">        last_call_wait: Time interval for other ranks to report concurrent</span>
+<span class="sd">            terminal failures.</span>
+<span class="sd">        termination_grace_time: Interval between ``SIGTERM`` and ``SIGKILL``</span>
+<span class="sd">            signals issued by the hard timeout mechanism.</span>
+<span class="sd">        monitor_process_logfile: Absolute filepath for the monitor process</span>
+<span class="sd">            logfile. It may contain &quot;{rank}&quot; placeholder, to be filled with</span>
+<span class="sd">            initial integer rank id.</span>
+<span class="sd">        enabled: Enables the wrapper.</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        Returns the value of the wrapped function if all ranks successfully</span>
+<span class="sd">        completed execution.</span>
+<span class="sd">        Inactive ranks return :py:obj:`None`.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="o">*</span><span class="p">,</span>
+        <span class="n">store_factory</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">StoreMixin</span><span class="p">]</span> <span class="o">=</span> <span class="n">TCPStore</span><span class="p">,</span>
+        <span class="n">store_kwargs</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">initialize</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Initialize</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">abort</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Abort</span><span class="p">]</span> <span class="o">=</span> <span class="n">AbortTorchDistributed</span><span class="p">(),</span>
+        <span class="n">finalize</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Finalize</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">health_check</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">HealthCheck</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">rank_assignment</span><span class="p">:</span> <span class="n">RankAssignment</span> <span class="o">=</span> <span class="n">Compose</span><span class="p">(</span>
+            <span class="n">ActivateAllRanks</span><span class="p">(),</span>
+            <span class="n">ShiftRanks</span><span class="p">(),</span>
+        <span class="p">),</span>
+        <span class="n">rank_filter</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">RankFilter</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">monitor_thread_interval</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
+        <span class="n">monitor_process_interval</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
+        <span class="n">heartbeat_interval</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
+        <span class="n">progress_watchdog_interval</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
+        <span class="n">soft_timeout</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">60</span><span class="p">),</span>
+        <span class="n">hard_timeout</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">90</span><span class="p">),</span>
+        <span class="n">heartbeat_timeout</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">30</span><span class="p">),</span>
+        <span class="n">barrier_timeout</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">120</span><span class="p">),</span>
+        <span class="n">completion_timeout</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">120</span><span class="p">),</span>
+        <span class="n">last_call_wait</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span>
+        <span class="n">termination_grace_time</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">5</span><span class="p">),</span>
+        <span class="n">monitor_process_logfile</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">completion</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Completion</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">terminate</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Terminate</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">):</span>
+        <span class="n">enforce_subclass</span><span class="p">(</span><span class="s1">&#39;store_factory&#39;</span><span class="p">,</span> <span class="n">StoreMixin</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;store_kwargs&#39;</span><span class="p">,</span> <span class="p">(</span><span class="nb">dict</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;initialize&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Initialize</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;abort&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Abort</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;finalize&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Finalize</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;health_check&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">HealthCheck</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;rank_assignment&#39;</span><span class="p">,</span> <span class="n">RankAssignment</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;rank_filter&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">RankFilter</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;monitor_thread_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;monitor_process_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;heartbeat_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;progress_watchdog_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;soft_timeout&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;hard_timeout&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;heartbeat_timeout&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;barrier_timeout&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;completion_timeout&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;last_call_wait&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;termination_grace_time&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;monitor_process_logfile&#39;</span><span class="p">,</span> <span class="p">(</span><span class="nb">str</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;enabled&#39;</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;completion&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Completion</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+        <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;terminate&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Terminate</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">soft_timeout</span> <span class="o">&lt;</span> <span class="n">hard_timeout</span> <span class="o">&lt;</span> <span class="n">barrier_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">monitor_process_interval</span> <span class="o">&lt;</span> <span class="n">barrier_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">heartbeat_timeout</span> <span class="o">&lt;</span> <span class="n">barrier_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">heartbeat_interval</span> <span class="o">&lt;</span> <span class="n">heartbeat_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">monitor_process_interval</span> <span class="o">&lt;</span> <span class="n">heartbeat_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">monitor_process_interval</span> <span class="o">&lt;</span> <span class="n">soft_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">monitor_thread_interval</span> <span class="o">&lt;</span> <span class="n">soft_timeout</span><span class="p">)</span>
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">progress_watchdog_interval</span> <span class="o">&lt;</span> <span class="n">soft_timeout</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">monitor_process_logfile</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">enforce_value</span><span class="p">(</span><span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">monitor_process_logfile</span><span class="p">)</span><span class="o">.</span><span class="n">is_absolute</span><span class="p">())</span>
+
+        <span class="n">enforce_value</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_available</span><span class="p">())</span>
+
+        <span class="k">if</span> <span class="n">rank_filter</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+                <span class="s1">&#39;The &quot;rank_filter&quot; argument is deprecated and will be removed &#39;</span>
+                <span class="s1">&#39;in the next release. The functionality is merged into &#39;</span>
+                <span class="s1">&#39;&quot;rank_assignment&quot;.&#39;</span><span class="p">,</span>
+                <span class="ne">DeprecationWarning</span><span class="p">,</span>
+                <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+            <span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">store_kwargs</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">store_kwargs</span> <span class="o">=</span> <span class="p">{}</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">store_factory</span> <span class="o">=</span> <span class="n">store_factory</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">store_kwargs</span> <span class="o">=</span> <span class="n">store_kwargs</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">initialize</span> <span class="o">=</span> <span class="n">initialize</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">abort</span> <span class="o">=</span> <span class="n">abort</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">finalize</span> <span class="o">=</span> <span class="n">finalize</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">health_check</span> <span class="o">=</span> <span class="n">health_check</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rank_assignment</span> <span class="o">=</span> <span class="n">rank_assignment</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rank_filter</span> <span class="o">=</span> <span class="n">rank_filter</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">monitor_thread_interval</span> <span class="o">=</span> <span class="n">monitor_thread_interval</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process_interval</span> <span class="o">=</span> <span class="n">monitor_process_interval</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">heartbeat_interval</span> <span class="o">=</span> <span class="n">heartbeat_interval</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog_interval</span> <span class="o">=</span> <span class="n">progress_watchdog_interval</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">soft_timeout</span> <span class="o">=</span> <span class="n">soft_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">hard_timeout</span> <span class="o">=</span> <span class="n">hard_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">heartbeat_timeout</span> <span class="o">=</span> <span class="n">heartbeat_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">barrier_timeout</span> <span class="o">=</span> <span class="n">barrier_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">completion_timeout</span> <span class="o">=</span> <span class="n">completion_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">last_call_wait</span> <span class="o">=</span> <span class="n">last_call_wait</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">termination_grace_time</span> <span class="o">=</span> <span class="n">termination_grace_time</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process_logfile</span> <span class="o">=</span> <span class="n">monitor_process_logfile</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">enabled</span> <span class="o">=</span> <span class="n">enabled</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">completion</span> <span class="o">=</span> <span class="n">completion</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">terminate</span> <span class="o">=</span> <span class="n">terminate</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">enabled</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">fn</span>
+
+        <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">fn</span><span class="p">)</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">wrapped</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+            <span class="k">with</span> <span class="n">CallWrapper</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="k">as</span> <span class="n">call_wrapper</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">call_wrapper</span><span class="p">(</span><span class="n">fn</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">wrapped</span></div>
+
+
+
+<div class="viewcode-block" id="CallWrapper">
+<a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">CallWrapper</span><span class="p">:</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    The :py:class:`CallWrapper` encapsulates the state and execution flow of</span>
+<span class="sd">    the restart capabilities of the :py:class:`Wrapper` for a single invocation</span>
+<span class="sd">    of the wrapped function. This design ensures that each call operates</span>
+<span class="sd">    independently, with the restart state tied to the specific invocation</span>
+<span class="sd">    rather than the function&#39;s definition.</span>
+
+
+<span class="sd">    The :py:class:`CallWrapper` is automatically created by the</span>
+<span class="sd">    :py:class:`Wrapper` with every invocation of the wrapped function. The</span>
+<span class="sd">    active :py:class:`CallWrapper` instance is then passed as the value for any</span>
+<span class="sd">    function argument annotated with ``CallWrapper`` or</span>
+<span class="sd">    ``typing.Optional[CallWrapper]``. This allows the wrapped function to</span>
+<span class="sd">    access and interact with the state of the :py:class:`Wrapper` during its</span>
+<span class="sd">    execution.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">wrapper</span><span class="p">:</span> <span class="n">Wrapper</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="kc">None</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">utils</span><span class="o">.</span><span class="n">Logging</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
+            <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+            <span class="n">enforce_value</span><span class="p">(</span><span class="ow">not</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">())</span>
+
+            <span class="n">state</span> <span class="o">=</span> <span class="n">State</span><span class="o">.</span><span class="n">from_env</span><span class="p">()</span>
+
+            <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span> <span class="o">=</span> <span class="n">MonitorProcess</span><span class="p">(</span>
+                <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+                <span class="n">world_size</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
+                <span class="n">soft_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">soft_timeout</span><span class="p">,</span>
+                <span class="n">hard_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">hard_timeout</span><span class="p">,</span>
+                <span class="n">termination_grace_time</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">termination_grace_time</span><span class="p">,</span>
+                <span class="n">barrier_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
+                <span class="n">interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">monitor_process_interval</span><span class="p">,</span>
+                <span class="n">heartbeat_interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">heartbeat_interval</span><span class="p">,</span>
+                <span class="n">heartbeat_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">heartbeat_timeout</span><span class="p">,</span>
+                <span class="n">log_filename</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">monitor_process_logfile</span><span class="p">,</span>
+                <span class="n">store_factory</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">store_factory</span><span class="p">,</span>
+                <span class="n">store_kwargs</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">store_kwargs</span><span class="p">,</span>
+            <span class="p">)</span>
+
+            <span class="n">store_kwargs</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">store_kwargs</span>
+            <span class="n">base_store</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">store_factory</span><span class="p">(</span><span class="o">**</span><span class="n">store_kwargs</span><span class="p">)</span>
+            <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">base_store</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">store_kwargs</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
+
+            <span class="n">base_store</span><span class="o">.</span><span class="n">initial_barrier</span><span class="p">(</span>
+                <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">],</span>
+                <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
+                <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="n">base_store</span><span class="o">.</span><span class="n">set_initial_rank</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">can_create_store</span><span class="p">()</span>
+
+            <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span> <span class="o">=</span> <span class="n">ProgressWatchdog</span><span class="p">(</span>
+                <span class="n">rank</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+                <span class="n">monitor_process</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="p">,</span>
+                <span class="n">interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">progress_watchdog_interval</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+            <span class="bp">self</span><span class="o">.</span><span class="n">atomic_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">RLock</span><span class="p">()</span>
+
+            <span class="bp">self</span><span class="o">.</span><span class="n">store</span> <span class="o">=</span> <span class="n">base_store</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span> <span class="o">=</span> <span class="n">base_store</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">wrapper</span> <span class="o">=</span> <span class="n">wrapper</span>
+
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+            <span class="k">raise</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">shutdown</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span><span class="o">.</span><span class="n">critical_ranks</span><span class="p">:</span>
+            <span class="n">timeout</span> <span class="o">=</span> <span class="n">timedelta</span><span class="o">.</span><span class="n">max</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">timeout</span> <span class="o">=</span> <span class="n">timedelta</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span><span class="o">.</span><span class="n">termination_barrier</span><span class="p">(</span>
+                <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">],</span>
+                <span class="n">rendezvous_count</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_world_size</span><span class="p">,</span>
+                <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+            <span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+
+        <span class="n">utils</span><span class="o">.</span><span class="n">Logging</span><span class="o">.</span><span class="n">deinitialize</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__enter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__exit__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">exc_type</span><span class="p">,</span> <span class="n">exc_value</span><span class="p">,</span> <span class="n">traceback</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">iteration</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">        Returns integer index of the current restart iteration.</span>
+<span class="sd">        &#39;&#39;&#39;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">iteration</span>
+
+<div class="viewcode-block" id="CallWrapper.ping">
+<a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper.ping">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">ping</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">        Sends a heartbeat to indicate that the workload is making meaningful</span>
+<span class="sd">        forward progress.</span>
+
+<span class="sd">        The optional manual progress timeout is initiated with the first call</span>
+<span class="sd">        to :py:meth:`CallWrapper.ping` on each rank in a restart iteration.</span>
+<span class="sd">        Once the timeout is activated, every distributed rank must periodically</span>
+<span class="sd">        invoke :py:meth:`CallWrapper.ping` to confirm ongoing progress. If any</span>
+<span class="sd">        rank fails to report progress within the specified ``soft_timeout`` or</span>
+<span class="sd">        ``hard_timeout`` intervals for the :py:class:`Wrapper`, the rank will</span>
+<span class="sd">        be considered unresponsive, and a restart of the wrapped function will</span>
+<span class="sd">        be attempted.</span>
+<span class="sd">        &#39;&#39;&#39;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">ping</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="CallWrapper.atomic">
+<a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper.atomic">[docs]</a>
+    <span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">atomic</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">        A context manager to wrap a section of the workload that must not be</span>
+<span class="sd">        executed while the termination procedure is in progress.</span>
+
+<span class="sd">        :py:meth:`atomic` is implemented with a reentrant lock, shared between</span>
+<span class="sd">        the termination procedure and atomic section in the wrapped function.</span>
+<span class="sd">        The termination procedure won&#39;t be launched if the main thread is</span>
+<span class="sd">        executing :py:meth:`inprocess.CallWrapper.atomic` code block, and the</span>
+<span class="sd">        main thread won&#39;t enter into :py:meth:`inprocess.CallWrapper.atomic`</span>
+<span class="sd">        code block if termination procedure is already in progress.</span>
+<span class="sd">        &#39;&#39;&#39;</span>
+        <span class="k">while</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">atomic_lock</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+            <span class="k">pass</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">yield</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">atomic_lock</span><span class="o">.</span><span class="n">release</span><span class="p">()</span></div>
+
+
+    <span class="nd">@reraise_if_unraisable</span><span class="p">(</span><span class="n">RankShouldRestart</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
+        <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+        <span class="n">store</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span>
+        <span class="n">base_store</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span>
+        <span class="n">monitor_process</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span>
+        <span class="n">wrapper</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">wrapper</span>
+        <span class="n">progress_watchdog</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span>
+
+        <span class="n">rank_assignment_ctx</span> <span class="o">=</span> <span class="n">RankAssignmentCtx</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">,</span> <span class="nb">set</span><span class="p">())</span>
+        <span class="n">reassigned_ctx</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_assignment</span><span class="p">(</span><span class="n">rank_assignment_ctx</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span> <span class="o">=</span> <span class="n">reassigned_ctx</span><span class="o">.</span><span class="n">state</span>
+
+        <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_filter</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">state</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_filter</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+        <span class="n">state</span><span class="o">.</span><span class="n">set_distributed_vars</span><span class="p">()</span>
+
+        <span class="n">monitor_process</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="n">ret</span> <span class="o">=</span> <span class="kc">None</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+                <span class="n">store</span> <span class="o">=</span> <span class="n">PrefixStore</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">iteration</span><span class="p">,</span> <span class="n">base_store</span><span class="p">)</span>
+                <span class="n">store</span><span class="o">.</span><span class="n">set_initial_rank</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">)</span>
+                <span class="n">monitor_process</span><span class="o">.</span><span class="n">start_iteration</span><span class="p">(</span>
+                    <span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
+                    <span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
+                    <span class="n">state</span><span class="o">.</span><span class="n">iteration</span><span class="p">,</span>
+                <span class="p">)</span>
+                <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+
+                <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span> <span class="o">=</span> <span class="n">param_utils</span><span class="o">.</span><span class="n">substitute_param_value</span><span class="p">(</span>
+                    <span class="n">fn</span><span class="p">,</span>
+                    <span class="n">args</span><span class="p">,</span>
+                    <span class="n">kwargs</span><span class="p">,</span>
+                    <span class="p">{</span>
+                        <span class="n">CallWrapper</span><span class="p">:</span> <span class="bp">self</span><span class="p">,</span>
+                    <span class="p">},</span>
+                <span class="p">)</span>
+
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="k">try</span><span class="p">:</span>
+                        <span class="n">monitor_thread</span> <span class="o">=</span> <span class="n">MonitorThread</span><span class="p">(</span>
+                            <span class="n">state</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">(),</span>
+                            <span class="n">store</span><span class="o">=</span><span class="n">store</span><span class="p">,</span>
+                            <span class="n">abort</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">abort</span><span class="p">,</span>
+                            <span class="n">interval</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">monitor_thread_interval</span><span class="p">,</span>
+                            <span class="n">progress_watchdog</span><span class="o">=</span><span class="n">progress_watchdog</span><span class="p">,</span>
+                            <span class="n">soft_timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">soft_timeout</span><span class="p">,</span>
+                            <span class="n">last_call_wait</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">last_call_wait</span><span class="p">,</span>
+                            <span class="n">atomic_lock</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">atomic_lock</span><span class="p">,</span>
+                            <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                        <span class="p">)</span>
+                        <span class="n">monitor_thread</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+                        <span class="k">try</span><span class="p">:</span>
+                            <span class="k">try</span><span class="p">:</span>
+                                <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">initialize</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                                    <span class="n">wrapper</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
+                            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">init_ex</span><span class="p">:</span>
+                                <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">init_ex</span><span class="p">,</span> <span class="s1">&#39;init_ex&#39;</span><span class="p">))</span>
+                                <span class="k">raise</span>
+
+                            <span class="k">try</span><span class="p">:</span>
+                                <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                                    <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
+                            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">health_ex</span><span class="p">:</span>
+                                <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">health_ex</span><span class="p">,</span> <span class="s1">&#39;health_ex&#39;</span><span class="p">))</span>
+                                <span class="k">raise</span> <span class="n">HealthCheckError</span> <span class="kn">from</span><span class="w"> </span><span class="nn">health_ex</span>
+
+                            <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="n">Mode</span><span class="o">.</span><span class="n">ACTIVE</span><span class="p">:</span>
+                                <span class="n">ret</span> <span class="o">=</span> <span class="n">fn</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+                                <span class="n">store</span><span class="o">.</span><span class="n">record_completed</span><span class="p">()</span>
+                            <span class="k">elif</span> <span class="n">state</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="n">Mode</span><span class="o">.</span><span class="n">INACTIVE</span><span class="p">:</span>
+                                <span class="n">ret</span> <span class="o">=</span> <span class="n">reserve_fn</span><span class="p">(</span>
+                                    <span class="n">state</span><span class="p">,</span>
+                                    <span class="n">store</span><span class="p">,</span>
+                                    <span class="n">progress_watchdog</span><span class="p">,</span>
+                                    <span class="n">wrapper</span><span class="o">.</span><span class="n">progress_watchdog_interval</span><span class="p">,</span>
+                                <span class="p">)</span>
+                            <span class="k">else</span><span class="p">:</span>
+                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+
+                            <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+                            <span class="n">store</span><span class="o">.</span><span class="n">completion_barrier</span><span class="p">(</span>
+                                <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">],</span>
+                                <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
+                                <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">completion_timeout</span><span class="p">,</span>
+                                <span class="n">timeout_chunk</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">progress_watchdog_interval</span><span class="p">,</span>
+                            <span class="p">)</span>
+                        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">fn_ex</span><span class="p">:</span>
+                            <span class="k">try</span><span class="p">:</span>
+                                <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">fn_ex</span><span class="p">,</span> <span class="s1">&#39;fn_ex&#39;</span><span class="p">))</span>
+                                <span class="n">monitor_process</span><span class="o">.</span><span class="n">record_interrupted</span><span class="p">(</span>
+                                    <span class="p">[</span><span class="n">InterruptionRecord</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">Interruption</span><span class="o">.</span><span class="n">EXCEPTION</span><span class="p">)]</span>
+                                <span class="p">)</span>
+                                <span class="n">progress_watchdog</span><span class="o">.</span><span class="n">spin_till_paused</span><span class="p">()</span>
+                                <span class="n">monitor_thread</span><span class="o">.</span><span class="n">maybe_join</span><span class="p">()</span>
+                            <span class="k">except</span> <span class="n">RankShouldRestart</span> <span class="k">as</span> <span class="n">async_ex</span><span class="p">:</span>
+                                <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">async_ex</span><span class="p">,</span> <span class="s1">&#39;async_ex&#39;</span><span class="p">))</span>
+                                <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+                                <span class="k">raise</span> <span class="n">async_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">fn_ex</span>
+                            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">other_ex</span><span class="p">:</span>
+                                <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">other_ex</span><span class="p">,</span> <span class="s1">&#39;other_ex&#39;</span><span class="p">))</span>
+                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">other_ex</span>
+                            <span class="k">else</span><span class="p">:</span>
+                                <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">fn_ex</span>
+                    <span class="k">except</span> <span class="n">RankShouldRestart</span> <span class="k">as</span> <span class="n">term_ex</span><span class="p">:</span>
+                        <span class="n">log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">term_ex</span><span class="p">,</span> <span class="s1">&#39;term_ex&#39;</span><span class="p">))</span>
+                        <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+
+                        <span class="n">state</span><span class="o">.</span><span class="n">fn_exception</span> <span class="o">=</span> <span class="n">term_ex</span><span class="o">.</span><span class="n">__cause__</span>
+
+                        <span class="k">try</span><span class="p">:</span>
+                            <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">finalize</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                                <span class="n">wrapper</span><span class="o">.</span><span class="n">finalize</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
+                        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">finalize_ex</span><span class="p">:</span>
+                            <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">finalize_ex</span><span class="p">,</span> <span class="s1">&#39;finalize_ex&#39;</span><span class="p">))</span>
+                            <span class="k">raise</span> <span class="n">finalize_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
+
+                        <span class="k">try</span><span class="p">:</span>
+                            <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                                <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
+                        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">health_ex</span><span class="p">:</span>
+                            <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">health_ex</span><span class="p">,</span> <span class="s1">&#39;health_ex&#39;</span><span class="p">))</span>
+                            <span class="k">try</span><span class="p">:</span>
+                                <span class="k">raise</span> <span class="n">health_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
+                            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                                <span class="k">raise</span> <span class="n">HealthCheckError</span> <span class="kn">from</span><span class="w"> </span><span class="nn">health_ex</span>
+                        <span class="k">else</span><span class="p">:</span>
+                            <span class="k">raise</span> <span class="n">HealthCheckPassed</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
+
+                    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">term_ex</span><span class="p">:</span>
+                        <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">term_ex</span><span class="p">,</span> <span class="s1">&#39;term_ex&#39;</span><span class="p">))</span>
+                        <span class="k">raise</span> <span class="n">InternalError</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">state</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
+                    <span class="k">finally</span><span class="p">:</span>
+                        <span class="n">monitor_thread</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+                <span class="k">except</span> <span class="n">HealthCheckPassed</span> <span class="k">as</span> <span class="n">restart_ex</span><span class="p">:</span>
+                    <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">restart_ex</span><span class="p">,</span> <span class="s1">&#39;restart_ex&#39;</span><span class="p">))</span>
+                    <span class="n">store</span><span class="o">.</span><span class="n">iteration_barrier</span><span class="p">(</span>
+                        <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">],</span>
+                        <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
+                        <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
+                    <span class="p">)</span>
+                    <span class="n">monitor_process</span><span class="o">.</span><span class="n">disable_sibling_monitor</span><span class="p">()</span>
+
+                    <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="n">store</span><span class="o">.</span><span class="n">get_terminated_ranks</span><span class="p">()</span>
+
+                    <span class="n">rank_assignment_ctx</span> <span class="o">=</span> <span class="n">RankAssignmentCtx</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="p">)</span>
+                    <span class="n">reassigned_ctx</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_assignment</span><span class="p">(</span><span class="n">rank_assignment_ctx</span><span class="p">)</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span> <span class="o">=</span> <span class="n">reassigned_ctx</span><span class="o">.</span><span class="n">state</span>
+
+                    <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_filter</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                        <span class="n">state</span> <span class="o">=</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">rank_filter</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+                    <span class="n">state</span><span class="o">.</span><span class="n">set_distributed_vars</span><span class="p">()</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">break</span>
+                <span class="k">finally</span><span class="p">:</span>
+                    <span class="k">while</span> <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">():</span>
+                        <span class="k">pass</span>
+
+                <span class="n">state</span><span class="o">.</span><span class="n">advance</span><span class="p">()</span>
+
+        <span class="k">except</span> <span class="ne">BaseException</span> <span class="k">as</span> <span class="n">exit_ex</span><span class="p">:</span>
+
+            <span class="n">log</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">exit_ex</span><span class="p">,</span> <span class="s1">&#39;exit_ex&#39;</span><span class="p">))</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">record_interrupted</span><span class="p">([</span><span class="n">InterruptionRecord</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span> <span class="n">Interruption</span><span class="o">.</span><span class="n">BASE_EXCEPTION</span><span class="p">)])</span>
+            <span class="n">store</span><span class="o">.</span><span class="n">record_terminated_ranks</span><span class="p">([</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">])</span>
+
+            <span class="n">store</span><span class="o">.</span><span class="n">iteration_barrier</span><span class="p">(</span>
+                <span class="n">ranks</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="p">],</span>
+                <span class="n">rendezvous_count</span><span class="o">=</span><span class="n">state</span><span class="o">.</span><span class="n">world_size</span><span class="p">,</span>
+                <span class="n">timeout</span><span class="o">=</span><span class="n">wrapper</span><span class="o">.</span><span class="n">barrier_timeout</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="n">monitor_process</span><span class="o">.</span><span class="n">disable_sibling_monitor</span><span class="p">()</span>
+
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">terminate</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="n">wrapper</span><span class="o">.</span><span class="n">terminate</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
+            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">terminate_ex</span><span class="p">:</span>
+                <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">terminate_ex</span><span class="p">,</span> <span class="s1">&#39;terminate_ex&#39;</span><span class="p">))</span>
+                <span class="k">raise</span> <span class="n">terminate_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exit_ex</span>
+
+            <span class="k">raise</span> <span class="n">exit_ex</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">completion</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">wrapper</span><span class="o">.</span><span class="n">completion</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">completion_ex</span><span class="p">:</span>
+            <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">completion_ex</span><span class="p">,</span> <span class="s1">&#39;completion_ex&#39;</span><span class="p">))</span>
+
+        <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
+        <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> returning&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">ret</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

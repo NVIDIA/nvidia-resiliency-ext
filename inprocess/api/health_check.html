@@ -60,6 +60,7 @@
 <li class="toctree-l3"><a class="reference internal" href="abort.html">Abort</a></li>
 <li class="toctree-l3"><a class="reference internal" href="finalize.html">Finalize</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Health Check</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="docutils literal notranslate"><span class="pre">HealthCheck</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck"><code class="docutils literal notranslate"><span class="pre">CudaHealthCheck</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.FaultCounter"><code class="docutils literal notranslate"><span class="pre">FaultCounter</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.FaultCounterExceeded"><code class="docutils literal notranslate"><span class="pre">FaultCounterExceeded</span></code></a></li>
@@ -102,9 +103,48 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="module-nvidia_resiliency_ext.inprocess.health_check">
-<span id="health-check"></span><h1>Health Check<a class="headerlink" href="#module-nvidia_resiliency_ext.inprocess.health_check" title="Link to this heading"></a></h1>
+  <section id="health-check">
+<h1>Health Check<a class="headerlink" href="#health-check" title="Link to this heading"></a></h1>
 <dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.health_check.HealthCheck">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.</span></span><span class="sig-name descname"><span class="pre">HealthCheck</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/health_check.html#HealthCheck"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="Link to this definition"></a></dt>
+<dd><p>Abstract base class for <code class="docutils literal notranslate"><span class="pre">health_check</span></code> argument for
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code></a> ensures the worker is in a healthy state and can
+execute the workload.</p>
+<p>Health checks are executed after the target function failure was discovered
+(on local, or other distributed ranks), local distributed group was
+destroyed, and after the user-provided
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.finalize.Finalize</span></code> finished.</p>
+<p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code></a> is executed to filter out unhealthy ranks (e.g. due
+to corrupted CUDA context). The execution should be local to a given rank,
+other ranks may have already been terminated, lost or still executing the
+wrapped function.</p>
+<p>Unhealthy state is reported by raising an <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a>. The
+exception is reraised by the <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>, and should lead
+to termination of the main Python interpreter process.</p>
+<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code></a> could be composed with
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.health_check.HealthCheck.__call__">
+<em class="property"><span class="pre">abstract</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">__call__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/health_check.html#HealthCheck.__call__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck.__call__" title="Link to this definition"></a></dt>
+<dd><p>Implementation of a <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code></a>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>state</strong> (<em>FrozenState</em>) – read-only <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> state</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Forwarded read-only input <code class="docutils literal notranslate"><span class="pre">state</span></code>.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><em>FrozenState</em></p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class" id="module-nvidia_resiliency_ext.inprocess.health_check">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.</span></span><span class="sig-name descname"><span class="pre">CudaHealthCheck</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">datetime.timedelta(seconds=30)</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/health_check.html#CudaHealthCheck"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck" title="Link to this definition"></a></dt>
 <dd><p>Ensures that CUDA context for the current process is in a healthy state.</p>

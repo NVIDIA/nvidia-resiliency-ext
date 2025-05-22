@@ -114,7 +114,7 @@
              
   <section id="usage-guide">
 <h1>Usage Guide<a class="headerlink" href="#usage-guide" title="Link to this heading"></a></h1>
-<p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code> serves as the primary interface for accessing
+<p>The <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> serves as the primary interface for accessing
 in-process restart functionality. It provides various configuration options
 through its arguments, enabling customization of the restart process and fault
 monitoring capabilities. To ensure efficient and effective restarts, the
@@ -186,7 +186,7 @@ distributed backend was terminated.</p></li>
 <ul class="simple">
 <li><p>The PyTorch NCCL watchdog must either be disabled or configured with a
 timeout longer than the <code class="docutils literal notranslate"><span class="pre">hard_timeout</span></code> of the
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code>. If the NCCL watchdog is triggered, it forcibly
+<a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a>. If the NCCL watchdog is triggered, it forcibly
 terminates the process, preventing a restart. To adjust the NCCL watchdog
 timeout, use the <code class="docutils literal notranslate"><span class="pre">timeout</span></code> argument when calling
 <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group" title="(in PyTorch v2.7)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.init_process_group()</span></code></a> with the <code class="docutils literal notranslate"><span class="pre">backend</span></code>
@@ -205,16 +205,16 @@ user-launched processes have fully exited before ending the distributed job.</p>
 communication between ranks, users may specify a different implementation of
 a distributed store by subclassing from
 <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.store.StoreMixin</span></code> and passing the subclass as
-<code class="docutils literal notranslate"><span class="pre">store_factory</span></code> argument to the <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></p></li>
+<code class="docutils literal notranslate"><span class="pre">store_factory</span></code> argument to the <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a></p></li>
 <li><p>blocking calls issued by the main process are generally not recoverable if
 they hang, except for NCCL collectives or functions waiting on them; NCCL
 collectives are asynchronously aborted by a separate monitoring thread that
-calls <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code>; users can specify
-additional <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code> subclasses to asynchronously
+calls <a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code></a>; users can specify
+additional <a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code></a> subclasses to asynchronously
 abort blocking calls from other software components.</p></li>
-<li><p>when using <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine</span></code> composed with
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code>, the
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code> should be
+<li><p>when using <a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine" title="nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine</span></code></a> composed with
+<a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code></a>, the
+<a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed</span></code></a> should be
 the first abort in the composition chain.  In <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.compose.Compose</span></code>,
 the last callback in the chain is executed first, so the following composition is recommended:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
@@ -231,7 +231,7 @@ the last callback in the chain is executed first, so the following composition i
 <section id="implementation-overview">
 <h3>Implementation overview<a class="headerlink" href="#implementation-overview" title="Link to this heading"></a></h3>
 <p>Below is a simplified pseudocode snippet that illustrates the order of
-operations executed by <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code>, providing a high-level
+operations executed by <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a>, providing a high-level
 overview of the workflow within this class. This code is for illustrative
 purposes only and may omit certain implementation details.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">distributed_store</span> <span class="o">=</span> <span class="n">store_factory</span><span class="p">(</span><span class="o">**</span><span class="n">store_kwargs</span><span class="p">)</span>
@@ -292,7 +292,7 @@ with a consecutive sequence of integer rank indices, from <code class="docutils 
 <code class="docutils literal notranslate"><span class="pre">WORLD_SIZE</span> <span class="pre">-</span> <span class="pre">1</span></code>, as some of the ranks from previous iteration may have been
 terminated or are in an unhealthy state. Rank reassignment and new world size
 computation is performed by
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code> instance passed as
+<a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code></a> instance passed as
 <code class="docutils literal notranslate"><span class="pre">rank_assignment</span></code> argument to the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>.</p>
 <p>Multiple RankAssignments could be composed with <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code>
 to achieve the desired behavior.</p>
@@ -325,10 +325,10 @@ were terminated or became unhealthy</p></li>
 </ol>
 <p>Rank filtering is a process of selecting active and inactive ranks within a
 given restart iteration, and is performed by
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code> instance passed as
+<a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code></a> instance passed as
 <code class="docutils literal notranslate"><span class="pre">rank_assignment</span></code> argument to the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>.</p>
-<p>Multiple <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter</span></code> or
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code> instances can be composed
+<p>Multiple <a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter</span></code></a> or
+<a class="reference internal" href="api/rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment</span></code></a> instances can be composed
 using <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code> to achieve the desired behavior. Typically,
 all <code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code> instances should follow any
 <code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code> steps that recalculate rank indices or adjust the
@@ -349,7 +349,7 @@ healthy ranks would be inactive and serve as a reserve.</p>
 <section id="initialize">
 <h3>Initialize<a class="headerlink" href="#initialize" title="Link to this heading"></a></h3>
 <p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> accepts an optional, user-provided
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.Initialize</span></code> class, which is executed at the
+<a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.Initialize</span></code></a> class, which is executed at the
 start of every restart iteration, including the first one.
 <code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code> can raise exceptions (e.g., if specific preconditions
 are not met). Raising a standard Python <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a> triggers another
@@ -369,7 +369,7 @@ waiting period, the <code class="xref py py-class docutils literal notranslate">
 procedure across all ranks to ensure a consistent recovery process:</p>
 <ul class="simple">
 <li><p>the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> calls an instance of
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code> from a separate Python thread; by default,
+<a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code></a> from a separate Python thread; by default,
 this operation is equivalent to calling
 <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.destroy_process_group()</span></code>,</p></li>
 <li><p>next the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> raises asynchronous Python exception within the
@@ -452,11 +452,11 @@ forward progress</p></li>
 progress by periodically calling the <code class="xref py py-meth docutils literal notranslate"><span class="pre">inprocess.CallWrapper.ping()</span></code>
 method:</p>
 <ul>
-<li><p>the <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code> inspects the signature of the wrapped
+<li><p>the <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> inspects the signature of the wrapped
 function for an argument annotated with the type
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.CallWrapper</span></code>,</p></li>
+<a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper" title="nvidia_resiliency_ext.inprocess.CallWrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.CallWrapper</span></code></a>,</p></li>
 <li><p>if such an argument is present, the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> injects an instance
-of <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.CallWrapper</span></code> into the function, enabling it to call
+of <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper" title="nvidia_resiliency_ext.inprocess.CallWrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.CallWrapper</span></code></a> into the function, enabling it to call
 <code class="xref py py-meth docutils literal notranslate"><span class="pre">inprocess.CallWrapper.ping()</span></code> within its scope,</p></li>
 <li><p>the timeout for the manual heartbeat is activated after the first call to
 the <code class="xref py py-meth docutils literal notranslate"><span class="pre">inprocess.CallWrapper.ping()</span></code> method.</p></li>
@@ -470,7 +470,7 @@ didn’t record a heartbeat in the specified time interval.</p>
 <section id="finalize">
 <h3>Finalize<a class="headerlink" href="#finalize" title="Link to this heading"></a></h3>
 <p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> accepts optional, user-provided
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.finalize.Finalize</span></code> class. <code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code> class is
+<a class="reference internal" href="api/finalize.html#nvidia_resiliency_ext.inprocess.finalize.Finalize" title="nvidia_resiliency_ext.inprocess.finalize.Finalize"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.finalize.Finalize</span></code></a> class. <code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code> class is
 executed after a fault was detected, distributed group was destroyed, but
 before the <code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code> is performed. <code class="xref py py-class docutils literal notranslate"><span class="pre">Finalize</span></code> should
 bring the process into a state where a restart of the wrapped function may be
@@ -485,7 +485,7 @@ should cause termination of the main Python interpreter process.</p>
 <section id="health-check">
 <h3>Health check<a class="headerlink" href="#health-check" title="Link to this heading"></a></h3>
 <p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> calls optional, user-provided
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.HealthCheck</span></code> class before the restart to
+<a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.HealthCheck</span></code></a> class before the restart to
 ensure that the worker is in a healthy state. <code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code> is
 executed after the wrapped function failure was discovered (on local or remote
 distributed rank), local distributed group was destroyed, and the optional
@@ -495,7 +495,7 @@ and it is meant to filter out unhealthy ranks that cannot continue executing
 the workload (e.g. corrupted CUDA context). The execution should be local to
 the calling rank, other ranks may have already been terminated, lost or still
 executing the wrapped function. An unhealthy state is reported to
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code> by raising an exception from
+<a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> by raising an exception from
 <code class="xref py py-meth docutils literal notranslate"><span class="pre">inprocess.health_check.HealthCheck.__call__()</span></code> method. The exception is
 then reraised by the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>, and should cause termination of the
 main Python interpreter process on the local rank.</p>
@@ -512,7 +512,7 @@ fault.</p>
 tasked with periodically checking the distributed store for any faults reported
 by other distributed ranks. It also ensures that the local rank is
 <a class="reference internal" href="#reporting-progress"><span class="std std-ref">reporting progress</span></a>. If a fault or a lack of
-progress is detected, it triggers <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code> and raises
+progress is detected, it triggers <a class="reference internal" href="api/abort.html#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.abort.Abort</span></code></a> and raises
 asynchronous Python exception within the wrapped function.</p>
 <p>The execution interval of the monitoring loop is governed by the
 <code class="docutils literal notranslate"><span class="pre">monitor_thread_interval</span></code> parameter of the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>. During each
@@ -655,21 +655,21 @@ participating in a Gloo collective stops making forward progress, the
 remaining ranks would wait till <code class="xref py py-class docutils literal notranslate"><span class="pre">ProcessGroupGloo</span></code> timeout is
 exceeded; a workaround is to specify a short timeout for the <code class="docutils literal notranslate"><span class="pre">gloo</span></code>
 backend to enable faster restarts.</p></li>
-<li><p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code> class uses
+<li><p>The <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> class uses
 <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.html#torch.distributed.Store.wait" title="(in PyTorch v2.7)"><code class="xref py py-meth docutils literal notranslate"><span class="pre">torch.distributed.Store.wait()</span></code></a> to detect events in the distributed
 key-value store within its monitoring loops. Because these loops often
 advance to the next iteration after an expected timeout, PyTorch emits a
 warning every time <code class="xref py py-meth docutils literal notranslate"><span class="pre">wait()</span></code> times out, cluttering the output. To
 suppress these warnings, set the <code class="docutils literal notranslate"><span class="pre">TORCH_CPP_LOG_LEVEL</span></code> environment
 variable to <code class="docutils literal notranslate"><span class="pre">error</span></code> or <code class="docutils literal notranslate"><span class="pre">fatal</span></code> before importing <code class="docutils literal notranslate"><span class="pre">torch</span></code>.</p></li>
-<li><p><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code> is not fully compatible with
+<li><p><a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> is not fully compatible with
 <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.run()</span></code>. <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.run()</span></code>
 automatically terminates all worker processes if any one of them fails, in
-this case <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code> can only recover from transient
+this case <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> can only recover from transient
 faults that don’t cause termination of worker processes.</p></li>
 <li><p>By default, PyTorch NCCL Watchdog forcefully terminates the process if NCCL
 call returns an error, or if CUDA context was corrupted. Forceful
-termination of the worker process prevents <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code>
+termination of the worker process prevents <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a>
 from restarting the wrapper function. A workaround is to set
 <code class="docutils literal notranslate"><span class="pre">TORCH_NCCL_RETHROW_CUDA_ERRORS</span></code> environment variable to <code class="docutils literal notranslate"><span class="pre">0</span></code>, to avoid
 rethrowing CUDA and NCCL errors in PyTorch NCCL Watchdog.</p></li>
@@ -693,7 +693,7 @@ the first iteration of a backward pass is in progress (<a class="reference exter
 <section id="cuda">
 <h3>CUDA<a class="headerlink" href="#cuda" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
-<li><p>To perform a restart, the <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code> needs to wait for
+<li><p>To perform a restart, the <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a> needs to wait for
 completion of all executing and pending CUDA kernels. This is implemented
 with a GPU synchronization, and is a part of
 <a class="reference internal" href="api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.health_check.CudaHealthCheck</span></code></a>. Waiting for CUDA kernels

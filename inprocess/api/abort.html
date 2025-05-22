@@ -57,7 +57,12 @@
 <li class="toctree-l3"><a class="reference internal" href="rank_assignment.html">Rank Assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="rank_filter.html">Rank Filter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="initialize.html">Initialize</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Abort</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Abort</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.Abort"><code class="docutils literal notranslate"><span class="pre">Abort</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="docutils literal notranslate"><span class="pre">AbortTorchDistributed</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine"><code class="docutils literal notranslate"><span class="pre">AbortTransformerEngine</span></code></a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="finalize.html">Finalize</a></li>
 <li class="toctree-l3"><a class="reference internal" href="health_check.html">Health Check</a></li>
 <li class="toctree-l3"><a class="reference internal" href="exception.html">Exceptions</a></li>
@@ -99,6 +104,55 @@
              
   <section id="abort">
 <h1>Abort<a class="headerlink" href="#abort" title="Link to this heading"></a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.Abort">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">Abort</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#Abort"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.Abort" title="Link to this definition"></a></dt>
+<dd><p>Abstract base class for <code class="docutils literal notranslate"><span class="pre">abort</span></code> argument for
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
+<p>An instance of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">Abort</span></code></a> is triggered by a separate monitoring
+thread within <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code> as part of the termination
+mechanism when a fault is detected. Its primary purpose is to unblock the
+main thread, which might be waiting for results from other distributed
+ranks that are either already terminated or unresponsive. For example, this
+could occur during a distributed collective operation attempting to
+communicate with a terminated rank.</p>
+<p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">Abort</span></code></a> could be composed with
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.Abort.__call__">
+<em class="property"><span class="pre">abstract</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">__call__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#Abort.__call__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.Abort.__call__" title="Link to this definition"></a></dt>
+<dd><p>Implementation of a <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><code class="xref py py-class docutils literal notranslate"><span class="pre">Abort</span></code></a>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>state</strong> (<em>FrozenState</em>) – read-only <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> state</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Forwarded read-only input <code class="docutils literal notranslate"><span class="pre">state</span></code>.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><em>FrozenState</em></p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class" id="module-nvidia_resiliency_ext.inprocess.abort">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">AbortTorchDistributed</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#AbortTorchDistributed"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="Link to this definition"></a></dt>
+<dd><p>Aborts PyTorch distributed collectives, and destroys all PyTorch
+distributed process groups.</p>
+<p>This functionality is implemented by invoking
+<code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.destroy_process_group()</span></code> in a separate Python
+thread for each distributed group that has been created.</p>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">AbortTransformerEngine</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#AbortTransformerEngine"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine" title="Link to this definition"></a></dt>
+<dd><p>Aborts TransformerEngine Userbuffer.</p>
+</dd></dl>
+
 </section>
 
 

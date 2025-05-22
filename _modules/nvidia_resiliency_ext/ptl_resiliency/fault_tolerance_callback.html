@@ -1,0 +1,527 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback</h1><div class="highlight"><pre>
+<span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Union</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">._utils</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">SimulatedFaultParams</span><span class="p">,</span>
+    <span class="n">is_module_available</span><span class="p">,</span>
+    <span class="n">parse_simulated_fault_params</span><span class="p">,</span>
+    <span class="n">setup_simulated_fault</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="k">if</span> <span class="n">is_module_available</span><span class="p">(</span><span class="s2">&quot;lightning&quot;</span><span class="p">):</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">lightning.pytorch.callbacks</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callback</span>
+<span class="k">elif</span> <span class="n">is_module_available</span><span class="p">(</span><span class="s2">&quot;pytorch_lightning&quot;</span><span class="p">):</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">pytorch_lightning.callbacks</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callback</span>
+<span class="k">else</span><span class="p">:</span>
+    <span class="k">raise</span> <span class="ne">ImportError</span><span class="p">(</span><span class="s2">&quot;Could not find &#39;lightning&#39; or &#39;pytorch_lightning&#39; module&quot;</span><span class="p">)</span>
+
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.fault_tolerance</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">ft</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">_TrainingStateMachine</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    This class encapsulates logic for determining when:</span>
+<span class="sd">    - training is finished successfully (`.is_training_completed` method)</span>
+<span class="sd">    - FT timeouts can be updated (`.can_update_timeouts` property)</span>
+
+<span class="sd">    `on_ ...` methods update the state and should be called from the corresponding PTL callback methods.</span>
+<span class="sd">    `on_ft_heartbeat_sent` should be called after each FT heartbeat.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">MIN_ITERS_FOR_TIMEOUT_UPDATE</span> <span class="o">=</span> <span class="mi">2</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_tr_iters_total</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_total</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_at_last_save</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">seen_checkpointing</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">loaded_checkpoint</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">caught_exception</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">is_stop_exception</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">training_ended</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_updated</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_setup</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_tr_iters_total</span> <span class="o">==</span> <span class="mi">0</span>
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_total</span> <span class="o">==</span> <span class="mi">0</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_teardown</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">training_ended</span> <span class="o">=</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_load_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">loaded_checkpoint</span> <span class="o">=</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_save_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_at_last_save</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_total</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_train_start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_train_batch_end</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_tr_iters_total</span> <span class="o">+=</span> <span class="mi">1</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_train_end</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_validation_start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_validation_batch_end</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_validation_end</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_exception</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">exc</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">caught_exception</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="c1"># check if `sys.exit(0)` was invoked, interpret that as a &quot;clean exit&quot;.</span>
+        <span class="c1"># it&#39;s used i.e. by the NeMo preemption callback to stop the training.</span>
+        <span class="c1"># NOTE: _TunerExitException raised by NeMo StatelessTimer is NOT captured here,</span>
+        <span class="c1"># but `teardown` hook is called when _TunerExitException is raised.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">is_stop_exception</span> <span class="o">=</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="ne">SystemExit</span><span class="p">)</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">exc</span><span class="o">.</span><span class="n">code</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_ft_timeouts_updated</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_updated</span> <span class="o">=</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_ft_heartbeat_sent</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_total</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">seen_checkpointing</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_at_last_save</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="c1"># detect checkpointing that makes hearbeat interval longer</span>
+            <span class="c1"># NOTE: neeed at least one post-checkpointing heartbeat</span>
+            <span class="n">num_pre_save</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_at_last_save</span>
+            <span class="n">num_post_save</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_total</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_hb_at_last_save</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">seen_checkpointing</span> <span class="o">=</span> <span class="n">num_pre_save</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">num_post_save</span> <span class="o">&gt;</span> <span class="mi">0</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_training_completed</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">trainer</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Returns True if training is finished sucessfuly.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># if exiting AND just 0 or 1 training iterations were made AND error is not set,</span>
+        <span class="c1"># assume training has finished successfully and there is nothing else to do.</span>
+        <span class="c1"># 1 iteration is made when we run a workload for which &#39;max_time&#39; elapsed,</span>
+        <span class="c1"># so need to handle that special case.</span>
+        <span class="n">has_failed</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">caught_exception</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_stop_exception</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">training_ended</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_tr_iters_total</span> <span class="o">&lt;=</span> <span class="mi">1</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">has_failed</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">True</span>
+
+        <span class="k">if</span> <span class="n">trainer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="c1"># if iters limit is reached:</span>
+            <span class="k">if</span> <span class="p">(</span>
+                <span class="nb">isinstance</span><span class="p">(</span><span class="n">trainer</span><span class="o">.</span><span class="n">max_steps</span><span class="p">,</span> <span class="nb">int</span><span class="p">)</span>
+                <span class="ow">and</span> <span class="n">trainer</span><span class="o">.</span><span class="n">max_steps</span> <span class="o">&gt;</span> <span class="mi">0</span>
+                <span class="ow">and</span> <span class="n">trainer</span><span class="o">.</span><span class="n">global_step</span> <span class="o">&gt;=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">max_steps</span>
+            <span class="p">):</span>
+                <span class="k">return</span> <span class="kc">True</span>
+            <span class="c1"># if epochs limit is reached</span>
+            <span class="k">if</span> <span class="p">(</span>
+                <span class="nb">isinstance</span><span class="p">(</span><span class="n">trainer</span><span class="o">.</span><span class="n">max_epochs</span><span class="p">,</span> <span class="nb">int</span><span class="p">)</span>
+                <span class="ow">and</span> <span class="n">trainer</span><span class="o">.</span><span class="n">max_epochs</span> <span class="o">&gt;</span> <span class="mi">0</span>
+                <span class="ow">and</span> <span class="n">trainer</span><span class="o">.</span><span class="n">current_epoch</span> <span class="o">&gt;=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">max_epochs</span>
+            <span class="p">):</span>
+                <span class="k">return</span> <span class="kc">True</span>
+
+        <span class="k">return</span> <span class="kc">False</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">can_update_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Returns True if new timeouts can be computed.</span>
+<span class="sd">        `.on_timeouts_updated()` resets this property back to False.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_updated</span><span class="p">:</span>
+            <span class="c1"># timeouts are updated at most once per training run</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_tr_iters_total</span> <span class="o">&lt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">MIN_ITERS_FOR_TIMEOUT_UPDATE</span><span class="p">:</span>
+            <span class="c1"># need a few training iters</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">caught_exception</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_stop_exception</span><span class="p">:</span>
+            <span class="c1"># if stopping due to an exception, and it isn&#39;t &quot;graceful stop&quot; exception</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="c1"># check if there was checkpoint loading and saving</span>
+        <span class="c1"># this makes heartbeat iterval longer than usual.</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">loaded_checkpoint</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">seen_checkpointing</span>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">FaultToleranceCallback</span><span class="p">(</span><span class="n">Callback</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    FaultToleranceCallback is a Torch Lightning callback for integration with the Fault Tolerance package.</span>
+
+<span class="sd">    FT is only active during a &#39;fit&#39; stage.</span>
+<span class="sd">    Training should be run with &#39;ft_launcher&#39; for the callback to work.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">TIMEOUTS_FILENAME</span> <span class="o">=</span> <span class="s2">&quot;_ft_state.json&quot;</span>
+    <span class="n">FT_DIR_NAME</span> <span class="o">=</span> <span class="s2">&quot;ft_state&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">autoresume</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="n">calculate_timeouts</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="n">simulated_fault_params</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="n">SimulatedFaultParams</span><span class="p">,</span> <span class="nb">dict</span><span class="p">,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">exp_dir</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">logger_name</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;nemo_logger.FaultToleranceCallback&quot;</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Initialize callback instance.</span>
+
+<span class="sd">        This is a lightweight initialization. Most of the initialization is conducted in the &#39;setup&#39; hook.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            autoresume (bool): Set to `True` if the FT auto-resume feature is used (e.g., there are multiple training jobs to be run).</span>
+<span class="sd">            calculate_timeouts (bool): Set to `True` if FT timeouts should be calculated based on observed heartbeat intervals.</span>
+<span class="sd">                Calculated timeouts overwrite the timeouts from the FT config.</span>
+<span class="sd">                Timeouts are computed at the end of a training job, if there was checkpoint loading and saving.</span>
+<span class="sd">                For example, for training started from scratch, the timeouts are computed at the end of the second job.</span>
+<span class="sd">            simulated_fault_params (SimulatedFaultParams, dict, DictConfig, None): Simulated fault spec. It&#39;s for debugging only. Defaults to None.</span>
+<span class="sd">                Should be a `SimulatedFaultParams` instance or any object that can be used for SimulatedFaultParams initialization with `SimulatedFaultParams(**obj)`.</span>
+<span class="sd">            exp_dir (Union[str, pathlib.Path, None], optional): Directory where the FT state should be saved.</span>
+<span class="sd">                Must be available for all training jobs. NOTE: Beware that PTL can move files written to its `trainer.log_dir`.</span>
+<span class="sd">                Defaults to None, in which case it defaults to `trainer.log_dir/ft_state`.</span>
+<span class="sd">            logger_name (Optional[str], optional): Logger name to be used.</span>
+<span class="sd">                Defaults to &quot;nemo_logger.FaultToleranceCallback&quot;.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="n">logger_name</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">autoresume</span> <span class="o">=</span> <span class="n">autoresume</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">calculate_timeouts</span> <span class="o">=</span> <span class="n">calculate_timeouts</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">simulated_fault_params</span> <span class="o">=</span> <span class="n">parse_simulated_fault_params</span><span class="p">(</span><span class="n">simulated_fault_params</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">provided_exp_dir</span> <span class="o">=</span> <span class="n">exp_dir</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_file_path</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_initialized</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+<div class="viewcode-block" id="FaultToleranceCallback.setup">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.setup">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">setup</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">trainer</span><span class="p">,</span> <span class="n">pl_module</span><span class="p">,</span> <span class="n">stage</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">stage</span> <span class="o">==</span> <span class="s2">&quot;fit&quot;</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_verify_env</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span> <span class="o">=</span> <span class="n">_TrainingStateMachine</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_setup</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_setup_fault_tolerance</span><span class="p">(</span><span class="n">trainer</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.teardown">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.teardown">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">teardown</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">trainer</span><span class="p">,</span> <span class="n">pl_module</span><span class="p">,</span> <span class="n">stage</span><span class="p">):</span>
+        <span class="c1"># FT might be already deinitialized due to an exception</span>
+        <span class="k">if</span> <span class="n">stage</span> <span class="o">==</span> <span class="s2">&quot;fit&quot;</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_teardown</span><span class="p">()</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_rank0</span><span class="p">():</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">autoresume</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">is_training_completed</span><span class="p">(</span><span class="n">trainer</span><span class="p">):</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_create_finished_flag_file</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_maybe_update_ft_timeouts</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_fault_tolerance</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_train_start">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_start">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_train_start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_train_start</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_train_batch_end">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_batch_end">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_train_batch_end</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_train_batch_end</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_train_end">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_end">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_train_end</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_train_end</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_validation_start">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_start">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_validation_start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="c1"># this can be called outside of `fit` stage</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_validation_start</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_validation_batch_end">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_batch_end">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_validation_batch_end</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="c1"># this can be called outside of `fit` stage</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_validation_batch_end</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_validation_end">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_end">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_validation_end</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="c1"># this can be called outside of `fit` stage</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_validation_end</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_load_checkpoint">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_load_checkpoint">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_load_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="c1"># this can be called outside of `fit` stage</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_load_checkpoint</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_save_checkpoint">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_save_checkpoint">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_save_checkpoint</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="c1"># this can be called outside of `fit` stage</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_save_checkpoint</span><span class="p">()</span>
+            <span class="c1"># in NeMo, it can happen that there are 2 checkpointing operations</span>
+            <span class="c1"># one after another, without any training/eval iteration between.</span>
+            <span class="c1"># send a heartbeat, so in such case we wont get unusually long interval.</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FaultToleranceCallback.on_exception">
+<a class="viewcode-back" href="../../../fault_tolerance/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_exception">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_exception</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">trainer</span><span class="p">,</span> <span class="n">pl_module</span><span class="p">,</span> <span class="n">exception</span><span class="p">):</span>
+        <span class="c1"># this can be called outside of `fit` stage</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_exception</span><span class="p">(</span><span class="n">exception</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_send_ft_heartbeat</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_maybe_update_ft_timeouts</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_fault_tolerance</span><span class="p">()</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_is_rank0</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">()</span> <span class="ow">and</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_log_info_on_rank0</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_rank0</span><span class="p">():</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;[FaultToleranceCallback@rank0] &quot;</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">msg</span><span class="p">))</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_verify_env</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">autoresume</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;FAULT_TOL_FINISHED_FLAG_FILE&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="s2">&quot;&#39;FAULT_TOL_FINISHED_FLAG_FILE&#39; env variable is not set. Was this job launched with FT launcher?&quot;</span>
+            <span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_send_ft_heartbeat</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">send_heartbeat</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_ft_heartbeat_sent</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_maybe_update_ft_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">calculate_timeouts</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">can_update_timeouts</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log_info_on_rank0</span><span class="p">(</span><span class="s1">&#39;Updating FT timeouts...&#39;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">calculate_and_set_hb_timeouts</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">on_ft_timeouts_updated</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log_info_on_rank0</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s1">&#39;Updated FT timeouts. New values: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="si">}</span><span class="s1">&#39;</span>
+            <span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_rank0</span><span class="p">():</span>
+                <span class="c1"># FT state is the same on all ranks, so we can save it only on rank 0</span>
+                <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">timeouts_file_path</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;w&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+                    <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">f</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_maybe_load_ft_timeouts</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">calculate_timeouts</span><span class="p">:</span>
+            <span class="c1"># we load the timeouts only when calculate_timeouts=True</span>
+            <span class="n">loaded_ft_state_dict</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_file_path</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
+                <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">timeouts_file_path</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;r&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+                    <span class="n">loaded_ft_state_dict</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">loaded_ft_state_dict</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">loaded_ft_state_dict</span><span class="p">)</span>
+                <span class="n">ft_timeouts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">hb_timeouts</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log_info_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Fault tolerance timeouts loaded: </span><span class="si">{</span><span class="n">ft_timeouts</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_setup_fault_tolerance</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">trainer</span><span class="p">):</span>
+
+        <span class="k">assert</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">,</span> <span class="s2">&quot;Fault tolerance client already initialized.&quot;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span> <span class="o">=</span> <span class="n">ft</span><span class="o">.</span><span class="n">RankMonitorClient</span><span class="p">()</span>
+
+        <span class="c1"># Format timeouts file path</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">provided_exp_dir</span><span class="p">:</span>
+            <span class="n">ft_dir</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">provided_exp_dir</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">ft_dir</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">trainer</span><span class="o">.</span><span class="n">log_dir</span><span class="p">)</span> <span class="o">/</span> <span class="bp">self</span><span class="o">.</span><span class="n">FT_DIR_NAME</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_rank0</span><span class="p">():</span>
+                <span class="n">ft_dir</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+            <span class="n">trainer</span><span class="o">.</span><span class="n">strategy</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_log_info_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Fault tolerance dir: </span><span class="si">{</span><span class="n">ft_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">ft_dir</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Fault tolerance save directory does not exist: </span><span class="si">{</span><span class="n">ft_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_file_path</span> <span class="o">=</span> <span class="n">ft_dir</span> <span class="o">/</span> <span class="bp">self</span><span class="o">.</span><span class="n">TIMEOUTS_FILENAME</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">init_workload_monitoring</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_maybe_load_ft_timeouts</span><span class="p">()</span>
+
+        <span class="n">ft_timeouts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">hb_timeouts</span>
+        <span class="k">if</span> <span class="n">ft_timeouts</span><span class="o">.</span><span class="n">are_valid</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log_info_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Fault tolerance client initialized. Timeouts: </span><span class="si">{</span><span class="n">ft_timeouts</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">calculate_timeouts</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log_info_on_rank0</span><span class="p">(</span>
+                    <span class="s2">&quot;Fault tolerance client initialized. Timeouts: not calculated yet.&quot;</span>
+                <span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                    <span class="s2">&quot;Fault tolerance doesn&#39;t have valid timeouts set and &#39;calculate_timeouts&#39; is False.&quot;</span>
+                <span class="p">)</span>
+        <span class="c1"># Simulated fault for testing/debug purposes</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">simulated_fault_params</span><span class="p">:</span>
+            <span class="n">setup_simulated_fault</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">simulated_fault_params</span><span class="p">)</span>
+
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_fault_tolerance</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span><span class="o">.</span><span class="n">shutdown_workload_monitoring</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">fault_tol_client</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="k">assert</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_create_finished_flag_file</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">flag_file_path</span> <span class="o">=</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">&quot;FAULT_TOL_FINISHED_FLAG_FILE&quot;</span><span class="p">])</span>
+            <span class="n">flag_file_path</span><span class="o">.</span><span class="n">touch</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;_create_finished_flag_file exception: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
