@@ -50,27 +50,27 @@ def _compare_dataclasses(obj1, obj2):
 
 
 class CheckpointMetadataCache:
-    """
-    Cache of metadata for checkpoint saving.
+    """Cache of metadata for checkpoint saving.
 
     This class maintains a cache of metadata used during distributed checkpoint saving operations.
     It stores various components of the save plan and metadata to optimize subsequent checkpoint
     saves by avoiding redundant planning and metadata generation when the checkpoint structure
     remains consistent across iterations.
 
-    The cache stores:
-    - cached_central_plan: The aggregated global save plan from all ranks
-    - cached_local_plan: The local save plan describing how the local state_dict is written
-    - cached_global_metadata: The global metadata (only held by the coordinator rank)
-    - validated_cache_reuse: Flag indicating if checkpoint structures are consistent
-    - validated_loaded_metadata_reuse: Flag indicating the metadata loaded from the prev checkpoint
-                                       is validated to reuse, which skips all metadata communications
-    - loaded_all_plans: Cached local plans from the previous checkpoint's metadata file
-
     This caching mechanism helps optimize checkpoint saving by:
     1. Avoiding redundant planning when checkpoint structures are consistent
     2. Reusing global metadata when possible
     3. Enabling decentralized planning when supported by the planner and storage writer
+
+    Args:
+        cached_central_plan (SavePlan): The aggregated global save plan from all ranks
+        cached_local_plan (SavePlan): The local save plan describing how the local state_dict is written
+        cached_global_metadata (Metadata): The global metadata (only held by the coordinator rank)
+        validated_cache_reuse (bool): Flag indicating if checkpoint structures are consistent
+        validated_loaded_metadata_reuse (bool): Flag indicating the metadata loaded from the prev checkpoint
+                                         is validated to reuse, which skips all metadata communications
+        loaded_all_plans (List[SavePlan]): Cached local plans from the previous checkpoint's metadata file
+
     """
 
     def __init__(self):
@@ -87,7 +87,7 @@ class CheckpointMetadataCache:
         # so the following checkpoint savings reuse `cached_global_metadata`
         self.validated_cache_reuse: bool = False
         # The knob to enable cached metadata communication in saving
-        self.validated_loaded_metadata_reuse = False
+        self.validated_loaded_metadata_reuse: bool = False
         # The cached all_local_plans from the loaded metadata file of the previous checkpoint
         self.loaded_all_plans: List[SavePlan] = None
 
