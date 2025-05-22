@@ -308,7 +308,6 @@ class GPUHealthCheck(PynvmlMixin):
                     and self.start_time is not None
                     and self.simulate_failure_time is not None
                 ):
-
                     elapsed_seconds = int(time.time() - self.start_time)
                     if elapsed_seconds >= self.simulate_failure_time:
                         if self.simulate_recovery_action:
@@ -321,6 +320,8 @@ class GPUHealthCheck(PynvmlMixin):
                                 f"after {elapsed_seconds} seconds with "
                                 f"recovery action: {self.simulate_recovery_action}"
                             )
+                            # Disable the simulated failure on future checks.
+                            self.simulate_failure_time = None
 
                 # Get the GPU recovery action status
                 if recovery_action is None:
@@ -620,13 +621,14 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
             and self.start_time is not None
             and self.simulate_failure_time is not None
         ):
-
             elapsed_seconds = int(time.time() - self.start_time)
             if elapsed_seconds >= self.simulate_failure_time:
                 self.log.warning(
                     f"Simulated NIC failure on rank {self._local_rank} "
                     f"after {elapsed_seconds} seconds"
                 )
+                # Disable the simulated failure on future checks.
+                self.simulate_failure_time = None
                 return False
 
         link_downed_path = self.link_down_path_template.format(nic=self.nic_name)
