@@ -46,8 +46,6 @@ Guide <usage_guide>` and :doc:`Examples <examples>`.
    :maxdepth: 2
    :caption: Contents:
 
-   installation
    usage_guide
    api
    examples
-   development
