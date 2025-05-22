@@ -171,7 +171,9 @@ to read <a class="reference external" href="https://pytorch.org/docs/stable/dist
 <code class="docutils literal notranslate"><span class="pre">LOCAL_RANK</span></code>) from the environment. Users can use torchrun to override the environment
 variables (–master_addr=127.0.0.1, –master_port=29500, etc.) depending on
 their cluster requirements and also to run the provided examples <code class="docutils literal notranslate"><span class="pre">torchrun</span> <span class="pre">--nproc_per_node=8</span>
-<span class="pre">--nnodes=1</span> <span class="pre">--node_rank=0</span> <span class="pre">basic_example.py</span></code>.</p></li>
+<span class="pre">--nnodes=1</span> <span class="pre">--node_rank=0</span> <span class="pre">basic_example.py</span></code>. For other environment variables when running
+with torchrun, please refer to the <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/examples/fault_tolerance/run_inprocess_injob_example.sh">run_inprocess_injob_example.sh</a> example for the recommended
+default values (for example, –monitor-interval=5).</p></li>
 <li><p>it’s heavily recommended for the wrapped function to load the state affected
 by distributed collectives from a checkpoint on every restart (e.g. load
 weights of a model); outputs of distributed collectives are likely to become
