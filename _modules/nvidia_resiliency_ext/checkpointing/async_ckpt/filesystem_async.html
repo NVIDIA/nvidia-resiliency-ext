@@ -587,7 +587,10 @@
                 <span class="n">storage_md</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">wr</span><span class="o">.</span><span class="n">index</span><span class="p">:</span> <span class="n">wr</span><span class="o">.</span><span class="n">storage_data</span> <span class="k">for</span> <span class="n">wr</span> <span class="ow">in</span> <span class="n">wr_list</span><span class="p">})</span>
 
             <span class="n">metadata</span><span class="o">.</span><span class="n">storage_data</span> <span class="o">=</span> <span class="n">storage_md</span>
-            <span class="n">metadata</span><span class="o">.</span><span class="n">storage_meta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage_meta</span><span class="p">()</span>
+
+            <span class="c1"># storage_meta was introduced since PyTorch 2.4</span>
+            <span class="k">if</span> <span class="s2">&quot;storage_meta&quot;</span> <span class="ow">in</span> <span class="n">inspect</span><span class="o">.</span><span class="n">signature</span><span class="p">(</span><span class="n">Metadata</span><span class="p">)</span><span class="o">.</span><span class="n">parameters</span><span class="p">:</span>
+                <span class="n">metadata</span><span class="o">.</span><span class="n">stoage_meta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage_meta</span><span class="p">()</span>
 
             <span class="n">path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">&quot;.metadata&quot;</span><span class="p">)</span>
 
