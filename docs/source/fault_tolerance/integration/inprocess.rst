@@ -1,15 +1,15 @@
 FT Launcher & Inprocess integration
-**************************
+***********************************
 **FT launcher** integrates with **Inprocess recovery mechanisms**, improving fault tolerance by coordinating injob and inprocess fault recovery.
 
 1. Heartbeat Mechanism
-=================
+======================
 * The **FT launcher heartbeat** remains active throughout execution to detect and mitigate potential hangs.
 * Users must configure timeouts manually, ensuring they exceed **inprocess operational timeouts** to prevent conflicts.
 
 2. Worker Monitoring & Restart Policy
-====================
-A new ``--ft-restart-policy`` argument in ``ft_launcher`` modifies the default worker monitor logic for better compatibility with :doc:`../inprocess/index`.
+=====================================
+A new ``--ft-restart-policy`` argument in ``ft_launcher`` modifies the default worker monitor logic for better compatibility with :doc:`../../inprocess/index`.
 
 **Policy Options**
 
@@ -40,12 +40,12 @@ A new ``--ft-restart-policy`` argument in ``ft_launcher`` modifies the default w
 
 **Behavior in min-healthy mode:**
 
-* If enough nodes remain healthy, the worker monitor stays inactive while collaborating with :doc:`../inprocess/index`..
+* If enough nodes remain healthy, the worker monitor stays inactive while collaborating with :doc:`../../inprocess/index`..
 * If the threshold is breached, ``FT launcher`` takes over and restarts the training process.
 
 
 Supported & Unsupported Configurations
-====================
+======================================
 
 To ensure correct behavior with inprocess:
 
