@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import ctypes
+import datetime
 import enum
 import logging
 import multiprocessing
@@ -115,7 +116,9 @@ def termination_signal_handler(signum, frame):
 def workload_exception(delay, callback):
     time.sleep(delay)
     log = logging.getLogger(__name__)
-    log.critical('raising workload exception')
+    current_time = datetime.datetime.now()
+    timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S.%f")
+    log.critical(f'raising workload exception at {timestamp}')
     if callback is not None:
         callback()
     workload_raise_event.set()
@@ -142,6 +145,13 @@ def maybe_raise_workload_exception():
     if workload_raise_event.is_set():
         workload_raise_event.clear()
         raise InjectedException
+
+
+def clear_workload_exception():
+    """
+    Force clear the workload exception sentinel.
+    """
+    workload_raise_event.clear()
 
 
 def async_raise_exception(tid, delay, callback):
