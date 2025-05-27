@@ -358,7 +358,10 @@ terminates the <code class="xref py py-class docutils literal notranslate"><span
 <a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.RetryController" title="nvidia_resiliency_ext.inprocess.initialize.RetryController"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.RetryController</span></code></a> can be used to limit the
 number of restart attempts or to halt execution if the number of healthy
 workers drops below a specified threshold.</p>
-<p>Multiple initializers could be composed with <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code>.</p>
+<p>Multiple initializers could be composed with <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code>.
+The composition order follows mathematical composition. Therefore, the last listed function is called first.
+Consequently, when using nested restarters, the <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.nested_restarter.NestedRestarterHandlingCompleted</span></code>
+should be listed first, as handling a restart is not complete until the end of the <cite>Initialize</cite>.</p>
 </section>
 <section id="wrapped-function-termination-mechanism">
 <h3>Wrapped function termination mechanism<a class="headerlink" href="#wrapped-function-termination-mechanism" title="Link to this heading"></a></h3>
