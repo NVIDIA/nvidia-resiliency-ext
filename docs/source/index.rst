@@ -1,4 +1,4 @@
-nvidia-resiliency-ext v0.3.0
+nvidia-resiliency-ext v0.4.0
 =============================
 
 **nvidia-resiliency-ext** is a set of tools developed by NVIDIA to improve large-scale distributed training resiliency.
