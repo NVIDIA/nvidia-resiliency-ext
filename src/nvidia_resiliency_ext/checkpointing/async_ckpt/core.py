@@ -531,6 +531,8 @@ class AsyncCallsQueue:
             blocking (bool, optional): if True, will wait until all active requests
                 are done. Otherwise, finalizes only the async request that already
                 finished. Defaults to False.
+            no_dist (bool, optional): if True, training ranks simply check its
+                asynchronous checkpoint writer without synchronization.
         Returns:
             List[int]: list of indices (as returned by `schedule_async_request`)
                 of async calls that have been successfully finalized.
@@ -546,10 +548,15 @@ class AsyncCallsQueue:
                 call_idx, _, async_request = self.async_calls.popleft()
                 for finalize_fn in async_request.finalize_fns:
                     finalize_fn()
-                ten = torch.tensor([call_idx], dtype=torch.int, device=torch.cuda.current_device())
-                torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
-                assert ten.item() == call_idx, 'Unmatched async calls. '
-                'That probably means not all ranks are participating in async finalization'
+                if not no_dist:
+                    ten = torch.tensor(
+                        [call_idx], dtype=torch.int, device=torch.cuda.current_device()
+                    )
+                    torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
+                    assert ten.item() == call_idx, (
+                        'Unmatched async calls. '
+                        'That probably means not all ranks are participating in async finalization'
+                    )
                 call_idx_finalized.append(call_idx)
         return call_idx_finalized
 
