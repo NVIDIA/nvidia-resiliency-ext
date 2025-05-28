@@ -2,6 +2,31 @@
 
 NVIDIA Resiliency Extension is a Python package for framework developers and users to implement fault-tolerant features. It improves effective training time by minimizing downtime due to failures and interruptions.
 
+## NVIDIA Resiliency Extension v0.4.0
+
+### Highlights
+
+- Checkpointing
+    - [PR 29](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/29) - Support for storing checkpoints to cloud object stores
+        - Leverage cloud storage provider’s multithreaded SDK for rapid loading and saving checkpoints to object stores such as AWS S3, Azure Blob 
+          Storage, Google Cloud Storage and more using NVIDIA Multi-storage Client.
+        - Provide scalable, reliable, cheaper, single source of truth across clouds/regions
+        - Provide opt-out configuration when creating FileSystemWriterAsync class instance to allow users to passthrough to the filesystem
+    - [PR 36](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/36) - Critical bug fix to enable async checkpoint loading without errors 
+
+- In-process & In-job restart
+    - [PR 35](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/35) - Nested restarter updates for in-process restart to align with in-job 
+      restart, so users have a consistent experience across in-process and in-job restarts
+    - Updates to in-process nested restart functionality provided by Python Wrapper class and existing callback infrastructure with additional 
+      callbacks and logging 
+
+### Known Issues & Limitations
+- Dependencies:
+    - In-process requires Pytorch, at least [version](https://github.com/orgs/pytorch/packages/container/pytorch-nightly/398218496?tag=2.8.0.dev20250418-cuda12.6-cudnn9-devel), that includes changes in [PR 150690](https://github.com/pytorch/pytorch/pull/150690) to avoid 
+      deadlock in NCCL P2P communications (used in pipeline parallel)
+    - In-process requires Transformer Engine including at least [PR 1715](https://github.com/NVIDIA/TransformerEngine/pull/1715) (merged) and [PR 
+      1812](https://github.com/NVIDIA/TransformerEngine/pull/1812) (not yet merged) to reduce cross-restart memory leaks 
+
 ## NVIDIA Resiliency Extension v0.3.0
 
 ### Highlights
@@ -16,7 +41,7 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
     - NIC 
 - Checkpointing
     - Existing capabilities that used to be part of Megatron Core is refactored to be part of NVRx. The checkpointing feature will be maintained as part of NVRx, and Megatron Core and NeMo will use the code from NVRx in the future.
-    - Added support for checkpoint metadata caching to improve performance for subsequent checkpoints
+    - Added support for checkpoint metadata caching to improve performance for subsequent checkpoints.
 
 ### Known Issues & Limitations
 
