@@ -29,7 +29,7 @@ import time
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 
@@ -62,6 +62,8 @@ def get_method_name(depth=2):
         return inspect.stack()[depth].function
     return "no_method_name"
 
+def get_utc_time() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 Token = Any
 """Represent an opaque fencing token used by the rendezvous backend."""
@@ -446,8 +448,8 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
             heartbeat_bytes = self._store.get(node_key)
             if heartbeat_bytes is None:
                 return True
-            last_heartbeat = datetime.fromtimestamp(float(heartbeat_bytes), datetime.UTC)
-            return last_heartbeat <= datetime.now(datetime.UTC) - interval
+            last_heartbeat = datetime.fromtimestamp(float(heartbeat_bytes))
+            return last_heartbeat <= get_utc_time() - interval
         except Exception:
             return True
 
@@ -457,14 +459,14 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
             heartbeat_bytes = self._store.get(node_key)
             if heartbeat_bytes is None:
                 return None
-            return datetime.fromtimestamp(float(heartbeat_bytes), datetime.UTC)
+            return datetime.fromtimestamp(float(heartbeat_bytes))
         except KeyError:
             return None
 
     def _update_heartbeat(self, node: _NodeDesc):
         node_key = self._get_heartbeat_key(node)
         # Store current timestamp as heartbeat
-        current_time = datetime.now(datetime.UTC).timestamp()
+        current_time = get_utc_time().timestamp()
         self._store.set(node_key, str(current_time).encode())
 
     def _cleanup_heartbeat(self, node: _NodeDesc):
@@ -887,7 +889,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         self._keep_alive()
 
         if len(state.participants) == self._settings.min_nodes:
-            state.deadline = datetime.now(UTC) + self._settings.timeout.last_call
+            state.deadline = get_utc_time() + self._settings.timeout.last_call
             log.debug(f"Deadline set to {state.deadline} based on minimum nodes.")
 
         if len(state.participants) == self._settings.max_nodes:
@@ -1042,7 +1044,7 @@ def _should_keep_alive(ctx: _RendezvousContext, state_holder: _RendezvousStateHo
     if last_heartbeat is None:
         return True  # No heartbeat found, should send one
 
-    return last_heartbeat <= datetime.now(UTC) - ctx.settings.keep_alive_interval
+    return last_heartbeat <= get_utc_time() - ctx.settings.keep_alive_interval
 
 
 class _SetWorkersStateOp:
@@ -1182,7 +1184,7 @@ class _RendezvousJoinOp:
                 len(state.participants) >= ctx.settings.min_nodes
                 and len(state.participants) <= ctx.settings.max_nodes
             ):
-                if cast(datetime, state.deadline) < datetime.now(UTC):
+                if cast(datetime, state.deadline) < get_utc_time():
                     msg = (
                         f"The node '{ctx.node}' marking the rendezvous complete, "
                         f"quorum established within deadline"
