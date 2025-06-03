@@ -29,7 +29,7 @@ import time
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 
@@ -55,6 +55,7 @@ from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
 
 log = logging.getLogger(__name__)
 
+STATE_SYNC_INTERVAL = 2.0
 
 def get_method_name(depth=2):
     if len(inspect.stack()) > depth:
@@ -445,8 +446,8 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
             heartbeat_bytes = self._store.get(node_key)
             if heartbeat_bytes is None:
                 return True
-            last_heartbeat = datetime.fromtimestamp(float(heartbeat_bytes), UTC)
-            return last_heartbeat <= datetime.now(UTC) - interval
+            last_heartbeat = datetime.fromtimestamp(float(heartbeat_bytes), datetime.UTC)
+            return last_heartbeat <= datetime.now(datetime.UTC) - interval
         except Exception:
             return True
 
@@ -456,14 +457,14 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
             heartbeat_bytes = self._store.get(node_key)
             if heartbeat_bytes is None:
                 return None
-            return datetime.fromtimestamp(float(heartbeat_bytes), UTC)
+            return datetime.fromtimestamp(float(heartbeat_bytes), datetime.UTC)
         except KeyError:
             return None
 
     def _update_heartbeat(self, node: _NodeDesc):
         node_key = self._get_heartbeat_key(node)
         # Store current timestamp as heartbeat
-        current_time = datetime.now(UTC).timestamp()
+        current_time = datetime.now(datetime.UTC).timestamp()
         self._store.set(node_key, str(current_time).encode())
 
     def _cleanup_heartbeat(self, node: _NodeDesc):
@@ -716,6 +717,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
     ) -> None:
         """See base class."""
         action = None
+        consecutive_syncs = 0
         while action != _Action.FINISH:
             # Reads or writes the latest rendezvous state shared by all nodes in
             # the rendezvous. Note that our local changes might get overridden
@@ -750,7 +752,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
                 self._prev_round = self._state.round
 
             if action == _Action.FINISH:
-                continue
+                break
 
             if action == _Action.ERROR_CLOSED:
                 raise RendezvousClosedError()
@@ -762,8 +764,31 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
                 # Delay the execution by one second to avoid overloading the
                 # backend if we are asked to poll for state changes.
                 log.debug(f"Syncing state for node {self._node}")
-                _delay(seconds=1)
+                consecutive_syncs += 1
+
+                # Adaptive delay: shorter delays for first few syncs, longer for excessive syncing
+                if consecutive_syncs <= 3:
+                    delay = 0.1  # 100ms instead of 1000ms
+                elif consecutive_syncs <= 6:
+                    delay = 0.3  # 300ms
+                else:
+                    delay = 0.5  # 500ms max, never 1000ms
+
+                # Check if we're stuck in sync loop
+                if consecutive_syncs > 10:
+                    log.warning(f"Node {self._node} stuck in sync loop, forcing state refresh")
+                    self._state_holder.sync()
+                    consecutive_syncs = 0
+
+                time.sleep(delay)
+
+                # Periodic state sync instead of on every iteration
+                current_time = time.monotonic()
+                if (current_time % STATE_SYNC_INTERVAL) < delay:
+                    self._state_holder.sync()
+
             else:
+                consecutive_syncs = 0
                 if action == _Action.KEEP_ALIVE:
                     self._keep_alive()
                 elif action == _Action.ADD_TO_PARTICIPANTS:
