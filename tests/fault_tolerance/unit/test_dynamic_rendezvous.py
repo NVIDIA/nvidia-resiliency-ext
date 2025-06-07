@@ -12,7 +12,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from base64 import b64encode
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import MethodType
 from typing import Callable, Optional, Tuple, cast
 from unittest import TestCase
@@ -47,6 +47,7 @@ from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
     _RendezvousState,
     _RendezvousStateHolder,
     create_handler,
+    get_utc_time,
 )
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import WorkerState
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous.c10d_rendezvous_backend import (
@@ -168,10 +169,12 @@ class RendezvousStateTest(TestCase):
 class FakeRendezvousBackend(RendezvousBackend):
     _state: Optional[bytes]
     _token: int
+    _store: Store
 
     def __init__(self) -> None:
         self._state = None
         self._token = 0
+        self._store = DummyStore()
 
     @property
     def name(self) -> str:
@@ -516,6 +519,12 @@ class FakeRendezvousStateHolder(_RendezvousStateHolder):
 
         return dirty
 
+    def _update_heartbeat(self, node: _NodeDesc):
+        pass
+
+    def _read_heartbeat(self, node: _NodeDesc) -> datetime:
+        pass
+
     def mark_dirty(self) -> None:
         self._dirty = True
 
@@ -523,18 +532,25 @@ class FakeRendezvousStateHolder(_RendezvousStateHolder):
 class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
     def setUp(self) -> None:
         self._node = _NodeDesc("this_node", 1, 1)
+        self._now = datetime(2000, 1, 1, hour=0, minute=0)
 
         self._state_holder = FakeRendezvousStateHolder()
 
         mock_sync = MagicMock(wraps=self._state_holder.sync)
         mock_mark = MagicMock(wraps=self._state_holder.mark_dirty)
+        mock_update_heartbeat = MagicMock(wraps=self._state_holder._update_heartbeat)
+        mock_read_heartbeat = MagicMock(return_value=self._now)
 
         self._mock_state_holder = Mock()
         self._mock_state_holder.sync = mock_sync
         self._mock_state_holder.mark = mock_mark
+        self._mock_state_holder.update_heartbeat = mock_update_heartbeat
+        self._mock_state_holder.read_heartbeat = mock_read_heartbeat
 
         setattr(self._state_holder, "sync", mock_sync)  # noqa: B010
         setattr(self._state_holder, "mark_dirty", mock_mark)  # noqa: B010
+        setattr(self._state_holder, "_update_heartbeat", mock_update_heartbeat)
+        setattr(self._state_holder, "_read_heartbeat", mock_read_heartbeat)
 
         self._state = self._state_holder.state
 
@@ -542,8 +558,6 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         self._max_nodes = 1
 
         self._timeout = RendezvousTimeout()
-
-        self._now = datetime(2000, 1, 1, hour=0, minute=0)
 
         self._datetime_patch = patch(
             "nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.datetime"
@@ -578,7 +592,7 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         ranks_connector.clear.return_value = None  # Default behavior for clear()
 
         return _DistributedRendezvousOpExecutor(
-            self._node, self._state_holder, settings, ranks_connector
+            self._node, self._state_holder, settings, ranks_connector, DummyStore()
         )
 
     def _run_action(self, action: _Action) -> None:
@@ -625,8 +639,6 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         expected_state = _RendezvousState()
 
         expected_state.participants[self._node] = 0
-
-        expected_state.last_heartbeats[self._node] = self._now
 
         self._min_nodes = 2
         self._max_nodes = 2
@@ -908,12 +920,10 @@ class AbstractTestRendezvousOp(ABC):
         self._datetime_patch = patch(
             "nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.datetime"
         )
-
         mock_datetime = self._datetime_patch.start()
         mock_datetime.utcnow.return_value = self._now
 
         self._time_patch = patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.time")
-
         mock_time = self._time_patch.start()
         mock_time.monotonic.return_value = self._deadline
 
@@ -1180,7 +1190,6 @@ class TestRendezvousKeepAliveOp(AbstractTestRendezvousOp, TestCase):
 
 class DummyStore(Store):
     pass
-
 
 class DynamicRendezvousHandlerTest(TestCase):
     def setUp(self) -> None:
