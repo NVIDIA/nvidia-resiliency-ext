@@ -391,10 +391,16 @@ class FileSystemWriterAsync(FileSystemWriter):
         try:
             file_name, storage_key, (bytes_data, tensor_data) = write_bucket
             extra_kwargs = {}
+            write_fn = _write_item
             if "serialization_format" in inspect.signature(_write_item).parameters:
                 from torch.distributed.checkpoint.filesystem import SerializationFormat
 
                 extra_kwargs['serialization_format'] = SerializationFormat.TORCH_SAVE
+
+            if "transforms" in inspect.signature(_write_item).parameters:
+                assert len(transform_list) <= 1
+                write_fn = partial(_write_item, *transform_list)
+
             if use_msc:
                 import multistorageclient as msc
 
@@ -404,17 +410,13 @@ class FileSystemWriterAsync(FileSystemWriter):
             with open_file(file_name, "wb") as stream:
                 for write_item, data in bytes_data:
                     local_results.append(
-                        _write_item(
-                            *transform_list, stream, data, write_item, storage_key, **extra_kwargs
-                        )
+                        write_fn(stream, data, write_item, storage_key, **extra_kwargs)
                     )
 
                 for write_item, tensor in tensor_data:
                     assert tensor.is_cpu
                     local_results.append(
-                        _write_item(
-                            *transform_list, stream, tensor, write_item, storage_key, **extra_kwargs
-                        )
+                        write_fn(stream, tensor, write_item, storage_key, **extra_kwargs)
                     )
 
                 if use_fsync:
