@@ -496,7 +496,7 @@ class AsyncCallsQueue:
     active calls with `maybe_finalize_async_calls`.
     """
 
-    def __init__(self, persistent: bool = False):
+    def __init__(self, persistent: bool = True):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
         self.persistent: bool = persistent
