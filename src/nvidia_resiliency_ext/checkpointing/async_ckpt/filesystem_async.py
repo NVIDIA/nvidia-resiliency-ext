@@ -305,7 +305,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 else:
                     kwargs['count_queue'] = None
                     kwargs['results_queue'] = None
-                    logger.info(f'FileSystemWriterAsync: master worker started')
+                    logger.debug('FileSystemWriterAsync: master worker started')
                     local_output = FileSystemWriterAsync.write_preloaded_data(
                         transform_list, **kwargs
                     )
@@ -349,7 +349,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             logger.debug('FileSystemWriterAsync: collected worker results successfully')
 
         if local_output is not None:
-            logger.info(f'FileSystemWriterAsync: master worker results successfully collected')
+            logger.debug('FileSystemWriterAsync: master worker results successfully collected')
             check_local_output(local_output[1], local_output[0])
             write_results_or_exc[local_output[0]] = local_output[1]
 
