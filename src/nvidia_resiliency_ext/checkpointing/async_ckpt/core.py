@@ -415,7 +415,7 @@ class PersistentAsyncCaller(AsyncCaller):
             self.process = None
 
     def __del__(self):
-        pass
+        self.close()
 
     @staticmethod
     @_disable_gc()
