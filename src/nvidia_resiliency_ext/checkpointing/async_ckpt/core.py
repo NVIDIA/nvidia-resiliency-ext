@@ -78,11 +78,20 @@ class AsyncRequest(NamedTuple):
 
         This logic is equivalent to what should happen in case of the async call.
         """
+        async_fn_args = list(self.async_fn_args)
+        if self.preload_fn:
+            # If there's a preload_fn in `async_req`, we call this func
+            # to do the defined action in `async_req.preload_fn` to
+            # stage GPU tensors to its defined destination
+            async_fn_args[1] = self.preload_fn()
+
         if self.async_fn is not None:
-            self.async_fn(*self.async_fn_args)
+            self.async_fn(*async_fn_args, **self.async_fn_kwargs)
         torch.distributed.barrier()
         for finalize_fn in self.finalize_fns:
             finalize_fn()
+        # explictly delete arguments to release memory used for `preload_fn`
+        del async_fn_args
 
     def freeze(self) -> 'AsyncRequest':
         """Freezes the async request, disallowing adding new finalization functions.
@@ -459,6 +468,8 @@ class PersistentAsyncCaller(AsyncCaller):
                 logger.debug(f"{rank} has completed saving {item.call_idx}")
                 comp_q.put(item.call_idx)
                 queue.task_done()
+            # delete item to release memory used for `preload_fn`
+            del item
 
         logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank}  has terminated")
 
