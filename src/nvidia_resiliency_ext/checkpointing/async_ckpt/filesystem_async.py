@@ -86,10 +86,16 @@ class FileSystemWriterAsync(FileSystemWriter):
     """
 
     def __init__(
-        self, path: Union[str, os.PathLike], *args, separation_hint: Optional[str] = None, **kwargs
+        self,
+        path: Union[str, os.PathLike],
+        *args,
+        separation_hint: Optional[str] = None,
+        use_msc: bool = False,
+        sequential: bool = False,
+        **kwargs,
     ):
         self.checkpoint_dir = path
-        self.use_msc = kwargs.pop("use_msc", False)
+        self.use_msc = use_msc
 
         super().__init__(path, *args, **kwargs)
         if not self.single_file_per_rank:
@@ -103,6 +109,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         self.write_buckets: Optional[List[WriteBucket]] = None
         self.results_queue: Optional[mp.Queue] = None
         self.separation_hint = separation_hint
+        self.sequential = sequential
 
     def prepare_write_data(self, plan: SavePlan, planner: SavePlanner) -> None:
         """
@@ -203,10 +210,12 @@ class FileSystemWriterAsync(FileSystemWriter):
             3) arguments to that function in 1).
         """
         if not self.write_buckets:
-            return None, None, ()
+            return None, None, []
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
         return (
-            partial(self.write_preloaded_data_multiproc, transform_list, self.use_msc),
+            partial(
+                self.write_preloaded_data_multiproc, transform_list, self.use_msc, self.sequential
+            ),
             partial(self.preload_tensors, self.write_buckets, True),
             [torch.distributed.get_rank(), self.write_buckets, self.results_queue],
         )
@@ -241,6 +250,7 @@ class FileSystemWriterAsync(FileSystemWriter):
     def write_preloaded_data_multiproc(
         transform_list: List[_StorageWriterTransforms],
         use_msc: bool,
+        sequential: bool,
         rank: int,
         write_buckets: List[WriteBucket],
         global_results_queue: mp.Queue,
@@ -273,7 +283,16 @@ class FileSystemWriterAsync(FileSystemWriter):
         local_results_queue = ctx.Queue()
         count_queue = ctx.JoinableQueue()
         p_list = []
-        local_output = None
+
+        def check_local_output(local_results_or_exc, local_proc_idx):
+            if isinstance(local_results_or_exc, Exception):
+                err_msg = (
+                    f"Local process {local_proc_idx} encountered"
+                    f" an error: {local_results_or_exc}"
+                )
+                logger.error(err_msg)
+            assert isinstance(local_results_or_exc, list), type(local_results_or_exc)
+
         for i, write_bucket in enumerate(write_buckets):
             try:
                 kwargs = {
@@ -292,7 +311,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                     if len(signature.parameters) > 6:
                         kwargs['use_msc'] = use_msc
                 # Parallel Writers are required
-                if i < len(write_buckets) - 1:
+                if i < len(write_buckets) - 1 and not sequential:
                     count_queue.put(i)
                     p_list.append(
                         ctx.Process(
@@ -309,21 +328,19 @@ class FileSystemWriterAsync(FileSystemWriter):
                     local_output = FileSystemWriterAsync.write_preloaded_data(
                         transform_list, **kwargs
                     )
+                    if local_output is not None:
+                        logger.info(
+                            'FileSystemWriterAsync: master worker results successfully collected'
+                        )
+                        check_local_output(local_output[1], local_output[0])
+                        write_results_or_exc[local_output[0]] = local_output[1]
+
             except Exception as e:
                 err_msg = f'An error is caught while a proc {i} is created, error: {e}'
                 logger.error(err_msg)
                 write_results_or_exc = RuntimeError(err_msg)
 
-        def check_local_output(local_results_or_exc, local_proc_idx):
-            if isinstance(local_results_or_exc, Exception):
-                err_msg = (
-                    f"Local process {local_proc_idx} encountered"
-                    f" an error: {local_results_or_exc}"
-                )
-                logger.error(err_msg)
-            assert isinstance(local_results_or_exc, list), type(local_results_or_exc)
-
-        if not isinstance(write_results_or_exc, Exception) and len(p_list) > 0:
+        if not isinstance(write_results_or_exc, Exception) and len(p_list) > 0 and not sequential:
             for p in p_list:
                 p.start()
 
@@ -347,11 +364,6 @@ class FileSystemWriterAsync(FileSystemWriter):
                     write_results_or_exc[local_proc_idx] = local_results_or_exc
                     p_list[local_proc_idx].join()
             logger.debug('FileSystemWriterAsync: collected worker results successfully')
-
-        if local_output is not None:
-            logger.debug('FileSystemWriterAsync: master worker results successfully collected')
-            check_local_output(local_output[1], local_output[0])
-            write_results_or_exc[local_output[0]] = local_output[1]
 
         global_results_queue.put(write_results_or_exc)
 
