@@ -136,6 +136,7 @@ class MonitorProcess:
         heartbeat_interval: datetime.timedelta,
         heartbeat_timeout: datetime.timedelta,
         log_filename: Optional[str],
+        pid_filename: Optional[str],
         log_level: int,
         store_factory: type[StoreMixin],
         store_kwargs: dict[str, Any],
@@ -169,6 +170,15 @@ class MonitorProcess:
 
         daemon_pid = os.getpid()
         log.info(f'{target_pid=} {daemon_pid=} {log_level=} {rank=} {world_size=}')
+
+        # Handle PID file
+        if pid_filename is not None:
+            pid_filename = pid_filename.format(rank=rank)
+            try:
+                with open(pid_filename, 'w') as f:
+                    f.write(str(daemon_pid))
+            except Exception as e:
+                log.error(f"Failed to write PID file {pid_filename}: {e}")
 
         target_process = psutil.Process(target_pid)
         msg_queue.put((Message.DAEMON_PID, daemon_pid))
@@ -314,6 +324,15 @@ class MonitorProcess:
             if sibling_monitor is not None:
                 sibling_monitor.shutdown()
 
+            # Clean up PID file
+            if pid_filename is not None:
+                try:
+                    if os.path.exists(pid_filename):
+                        os.remove(pid_filename)
+                except Exception as e:
+                    # Log the error but don't fail the process
+                    log.error(f"Failed to remove PID file {pid_filename}: {e}")
+
     def can_create_store(self):
         self.main_store_created.set()
 
@@ -341,6 +360,7 @@ class MonitorProcess:
         heartbeat_interval,
         heartbeat_timeout,
         log_filename,
+        pid_filename,
         store_factory,
         store_kwargs,
     ):
@@ -376,6 +396,7 @@ class MonitorProcess:
                     'heartbeat_interval': heartbeat_interval,
                     'heartbeat_timeout': heartbeat_timeout,
                     'log_filename': log_filename,
+                    'pid_filename': pid_filename,
                     'log_level': log.getEffectiveLevel(),
                     'store_factory': store_factory,
                     'store_kwargs': store_kwargs,
