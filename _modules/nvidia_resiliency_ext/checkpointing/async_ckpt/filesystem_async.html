@@ -139,7 +139,7 @@
 <span class="k">def</span><span class="w"> </span><span class="nf">_get_write_results_queue</span><span class="p">():</span>
     <span class="k">global</span> <span class="n">_results_queue</span>
     <span class="k">if</span> <span class="n">_results_queue</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;fork&#39;</span><span class="p">)</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
         <span class="k">with</span> <span class="n">_disable_gc</span><span class="p">():</span>
             <span class="n">_results_queue</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Manager</span><span class="p">()</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
     <span class="k">return</span> <span class="n">_results_queue</span>
