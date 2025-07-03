@@ -600,6 +600,57 @@ class TestLogging(TestCase):
             self.assertIn('target_pid', data, data)
             self.assertIn('monitor_process', data, data)
 
+    def test_monitor_process_pidfile(self):
+        """Test that monitor_process_pidfile parameter works correctly."""
+        with tempfile.NamedTemporaryFile('r') as tmp_file:
+            pid_file_path = tmp_file.name
+
+            @inprocess.Wrapper(
+                **self.kwargs(),
+                monitor_process_pidfile=pid_file_path,
+            )
+            def fn():
+                return
+
+            with self.assertWarns(UserWarning):
+                fn()
+
+            # Check that the PID file was created and contains a valid PID
+            self.assertTrue(os.path.exists(pid_file_path))
+            with open(pid_file_path, 'r') as fp:
+                pid_content = fp.read().strip()
+                self.assertTrue(pid_content.isdigit())
+                pid = int(pid_content)
+                self.assertGreater(pid, 0)
+
+    def test_monitor_process_pidfile_with_rank_placeholder(self):
+        """Test that monitor_process_pidfile works with {rank} placeholder."""
+        with tempfile.NamedTemporaryFile('r') as tmp_file:
+            pid_file_path = tmp_file.name + "_{rank}.pid"
+
+            @inprocess.Wrapper(
+                **self.kwargs(),
+                monitor_process_pidfile=pid_file_path,
+            )
+            def fn():
+                return
+
+            with self.assertWarns(UserWarning):
+                fn()
+
+            # Check that the PID file was created with rank substitution
+            expected_pid_file = pid_file_path.format(rank=0)  # Assuming rank 0
+            self.assertTrue(os.path.exists(expected_pid_file))
+            with open(expected_pid_file, 'r') as fp:
+                pid_content = fp.read().strip()
+                self.assertTrue(pid_content.isdigit())
+                pid = int(pid_content)
+                self.assertGreater(pid, 0)
+
+            # Clean up
+            if os.path.exists(expected_pid_file):
+                os.remove(expected_pid_file)
+
 
 class TestTCPStore(TestCase):
     def test_reinit_clears_keys(self):
