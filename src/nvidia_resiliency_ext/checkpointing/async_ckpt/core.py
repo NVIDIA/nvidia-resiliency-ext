@@ -78,9 +78,17 @@ class AsyncRequest(NamedTuple):
 
         This logic is equivalent to what should happen in case of the async call.
         """
+        # preload tensors.
+        async_fn_args = list(self.async_fn_args)
+        if self.preload_fn:
+            # the 2nd arg is state dict
+            async_fn_args[1] = self.preload_fn()
+        # persist the state
         if self.async_fn is not None:
-            self.async_fn(*self.async_fn_args)
+            self.async_fn(*async_fn_args, **self.async_fn_kwargs)
+        # This utility implements a sync cp save. Hence the barrier.
         torch.distributed.barrier()
+        # finalize the CP state
         for finalize_fn in self.finalize_fns:
             finalize_fn()
 
