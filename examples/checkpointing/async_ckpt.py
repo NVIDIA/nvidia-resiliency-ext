@@ -23,9 +23,14 @@ def parse_args():
         help="Checkpoint directory for async checkpoints",
     )
     parser.add_argument(
-        '--persistent_queue',
-        action='store_true',
-        help="Enables a persistent version of AsyncCallsQueue.",
+        '--no_persistent_queue',
+        action='store_false',
+        default=True,
+        dest='persistent_queue'
+        help=(
+            "Disables a persistent version of AsyncCallsQueue. "
+            "Effective only when --async_save is set."
+        ),
     )
     return parser.parse_args()
 

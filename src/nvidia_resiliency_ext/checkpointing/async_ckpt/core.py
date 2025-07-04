@@ -78,8 +78,15 @@ class AsyncRequest(NamedTuple):
 
         This logic is equivalent to what should happen in case of the async call.
         """
+        # preload tensors.
+        async_fn_args = list(self.async_fn_args)
+        if self.preload_fn:
+            # the 2nd arg is state dict
+            async_fn_args[1] = self.preload_fn()
+        # persist the state
         if self.async_fn is not None:
-            self.async_fn(*self.async_fn_args)
+            self.async_fn(*async_fn_args, **self.async_fn_kwargs)
+        # This utility implements a sync cp save. Hence the barrier.
         torch.distributed.barrier()
         for finalize_fn in self.finalize_fns:
             finalize_fn()
@@ -485,7 +492,7 @@ class AsyncCallsQueue:
     active calls with `maybe_finalize_async_calls`.
     """
 
-    def __init__(self, persistent: bool = False):
+    def __init__(self, persistent: bool = True):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
         self.persistent: bool = persistent
@@ -493,6 +500,10 @@ class AsyncCallsQueue:
 
     def _get_async_caller(self):
         if not self.persistent:
+            logger.warning(f"The PersistentAsyncCaller is the "
+                    "recommended mechanism to trigger async checkpoint save"
+                    "The TemporalAsyncCaller will be deprecated. "
+                    "Enable persistent worker")
             return TemporalAsyncCaller()
         if self.persistent_caller is None:
             self.persistent_caller = PersistentAsyncCaller()
