@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 class TorchAsyncCheckpoint(object):
     async_fn = None
 
-    def __init__(self, persistent_queue=False):
+    def __init__(self, persistent_queue=True):
         self.save = torch.save
         self._async_calls_queue = AsyncCallsQueue(persistent=persistent_queue)
         # Use direct torch.save for persistent queue, avoid unnecessary wrapping

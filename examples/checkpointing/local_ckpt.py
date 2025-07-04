@@ -42,10 +42,12 @@ def parse_args():
         "Needs to be enabled on all ranks.",
     )
     parser.add_argument(
-        '--persistent_queue',
-        action='store_true',
+        '--no_persistent_queue',
+        action='store_false',
+        default=True,
+        dest='persistent_queue',
         help=(
-            "Enables a persistent version of AsyncCallsQueue. "
+            "Disables a persistent version of AsyncCallsQueue. "
             "Effective only when --async_save is set."
         ),
     )
