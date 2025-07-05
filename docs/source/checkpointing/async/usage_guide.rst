@@ -12,8 +12,8 @@ which defines checkpoint routine, its args/kwargs and finalization steps when th
 The implementation assumes all training ranks creates :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue` and synchronize with :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls` by default.
 
 
-A brief summary of changes from the initial implementation
----------------------------------------------------------
+Implementation Changes and Evolution
+------------------------------------
 * We have deprecated our initial implementation of async checkpointing, :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller`, using a forked process to run the checkpointing in the background. 
 
 * :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue` is now initialized by default to use :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` instead of :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller`.
@@ -33,12 +33,15 @@ A brief summary of changes from the initial implementation
     so dereference of GPU tensors should be done promptly inside of `preload_fn` if possible.
 
 * A proper termination of the persistent process is required for graceful shutdown.
+    
+  * Job schedulers(e.g. Slurm, torchrun) should clean up the persistent process and its child workers when the job step is terminated.
+
+  * The following changes will be made in the next release to the implementation of :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller`:
+
+    * We set up a signal handler to terminate the persistent process when the main process is terminated.
   
-  * We set up a signal handler to terminate the persistent process when the main process is terminated.
-  
-  * Optional child processes are terminated when the persistent process is terminated.
-  
-  * Job schedulers(e.g. Slurm) should clean up the persistent process when the job step is terminated.
+    * Optional child workers created by :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync` are terminated when the persistent process is terminated.
+
 
 
 Synchronization of Asynchronous Checkpoint Requests
@@ -238,8 +241,9 @@ The following example demonstrates a complete workflow for saving and loading ch
     # Load checkpoint synchronously
     loaded_state_dict = load_checkpoint(checkpoint_path, state_dict.copy())
 
+
 Best Practices
----------------------------------------------------------
+--------------
 * Use process binding to pin the checkpointing process to a specific GPU. This is important for pre-staging tensors to host memory.
 
 .. code-block:: bash
