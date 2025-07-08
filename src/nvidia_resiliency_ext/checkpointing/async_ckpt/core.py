@@ -442,7 +442,7 @@ class PersistentAsyncCaller(AsyncCaller):
             self.process = None
 
     def __del__(self):
-        pass
+        self.close()
 
     @staticmethod
     @_disable_gc()
@@ -521,7 +521,7 @@ class AsyncCallsQueue:
     active calls with `maybe_finalize_async_calls`.
     """
 
-    def __init__(self, persistent: bool = False):
+    def __init__(self, persistent: bool = True):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
         self.persistent: bool = persistent
@@ -529,6 +529,7 @@ class AsyncCallsQueue:
 
     def _get_async_caller(self):
         if not self.persistent:
+            logger.warning("The TemporalAsyncCaller will be deprecated soon. ")
             return TemporalAsyncCaller()
         if self.persistent_caller is None:
             self.persistent_caller = PersistentAsyncCaller()
