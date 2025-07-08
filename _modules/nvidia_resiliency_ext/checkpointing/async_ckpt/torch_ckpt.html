@@ -112,7 +112,7 @@
 <span class="k">class</span><span class="w"> </span><span class="nc">TorchAsyncCheckpoint</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
     <span class="n">async_fn</span> <span class="o">=</span> <span class="kc">None</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">persistent_queue</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">persistent_queue</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">save</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">save</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_async_calls_queue</span> <span class="o">=</span> <span class="n">AsyncCallsQueue</span><span class="p">(</span><span class="n">persistent</span><span class="o">=</span><span class="n">persistent_queue</span><span class="p">)</span>
         <span class="c1"># Use direct torch.save for persistent queue, avoid unnecessary wrapping</span>
