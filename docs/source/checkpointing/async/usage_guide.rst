@@ -38,8 +38,8 @@ Implementation Changes and Evolution
 
   * The following changes will be made in the next release to the implementation of :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller`:
 
-    * We set up a signal handler to terminate the persistent process when the main process is terminated.
-  
+    * We'll make the persistent process to be terminated when the main process is terminated.
+
     * Optional child workers created by :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync` are terminated when the persistent process is terminated.
 
 
