@@ -51,7 +51,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="index.html">Async Checkpointing</a><ul class="current">
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Usage guide</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#requirements">Requirements</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#implementation-changes-and-evolution">Implementation Changes and Evolution</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#synchronization-of-asynchronous-checkpoint-requests">Synchronization of Asynchronous Checkpoint Requests</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#using-multi-storage-client-with-async-checkpointing">Using Multi-Storage Client with Async Checkpointing</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#installation">Installation</a></li>
@@ -60,6 +60,7 @@
 <li class="toctree-l4"><a class="reference internal" href="#example-saving-and-loading-checkpoints-with-msc">Example: Saving and Loading Checkpoints with MSC</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="#best-practices">Best Practices</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
@@ -104,15 +105,38 @@ which defines checkpoint routine, its args/kwargs and finalization steps when th
 <dt><a class="reference internal" href="api/torch_ckpt.html#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint" title="nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint</span></code></a></dt><dd><p>is an instatiation of the core utilities to make <cite>torch.save</cite> run asynchronously.</p>
 </dd>
 </dl>
-<p>The implementation assumes all training ranks creates <code class="xref py py-class docutils literal notranslate"><span class="pre">core.AsyncCallsQueue</span></code> and synchronize with <code class="xref py py-class docutils literal notranslate"><span class="pre">core.AsyncCallsQueue.maybe_finalize_async_calls</span></code> by default.</p>
-<section id="requirements">
-<h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading"></a></h2>
-<p><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.utils</span></code> includes a couple of routines used for <a class="reference internal" href="api/core.html#module-nvidia_resiliency_ext.checkpointing.async_ckpt.core" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core</span></code></a>
-<code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.utils.wrap_for_async</span></code> disables garbage collection in a forked process to run user’s checkpoint routine
-to prevent failures incurred by GC, which tries to deallocate CUDA tensors in a forked process.
-This routine requires the first argument of the passed user fn should be state dictionary containing tensors or objects for checkpoint</p>
-<p>The current implementation uses a forked process to run pre-staged tensors in host memory by pinned memcpy.
-So, the routine should include <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.utils.preload_tensors</span></code> to stage GPU tensors in a state dictionary to host memory before it’s passed to <cite>AsyncCallsQueue</cite></p>
+<p><a class="reference internal" href="api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan</span></code></a> is an instantiation of the core utilities to make <cite>torch.distributed.save_state_dict</cite> run asynchronously.</p>
+<p>The implementation assumes all training ranks creates <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue"><code class="xref py py-class docutils literal notranslate"><span class="pre">AsyncCallsQueue</span></code></a> and synchronize with <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls"><code class="xref py py-class docutils literal notranslate"><span class="pre">maybe_finalize_async_calls</span></code></a> by default.</p>
+<section id="implementation-changes-and-evolution">
+<h2>Implementation Changes and Evolution<a class="headerlink" href="#implementation-changes-and-evolution" title="Link to this heading"></a></h2>
+<ul>
+<li><p>We have deprecated our initial implementation of async checkpointing, <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller"><code class="xref py py-class docutils literal notranslate"><span class="pre">TemporalAsyncCaller</span></code></a>, using a forked process to run the checkpointing in the background.</p></li>
+<li><p><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue"><code class="xref py py-class docutils literal notranslate"><span class="pre">AsyncCallsQueue</span></code></a> is now initialized by default to use <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller"><code class="xref py py-class docutils literal notranslate"><span class="pre">PersistentAsyncCaller</span></code></a> instead of <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller"><code class="xref py py-class docutils literal notranslate"><span class="pre">TemporalAsyncCaller</span></code></a>.</p></li>
+<li><p><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller"><code class="xref py py-class docutils literal notranslate"><span class="pre">PersistentAsyncCaller</span></code></a> spawns a persistent process that runs in a separate CUDA context and forks processes optionally for intra-node parallelism.</p></li>
+<li><p>Now, we don’t need <code class="xref py py-func docutils literal notranslate"><span class="pre">wrap_for_async()</span></code> anymore because <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller"><code class="xref py py-class docutils literal notranslate"><span class="pre">PersistentAsyncCaller</span></code></a> is safe to call garbage collection in the spawned process.</p></li>
+<li><dl class="simple">
+<dt><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller"><code class="xref py py-class docutils literal notranslate"><span class="pre">PersistentAsyncCaller</span></code></a> runs <a class="reference internal" href="api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors"><code class="xref py py-func docutils literal notranslate"><span class="pre">preload_tensors()</span></code></a> in the spawned process.</dt><dd><p>So, we’ve added a new field, <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn"><code class="xref py py-attr docutils literal notranslate"><span class="pre">preload_fn</span></code></a>, to pass the preload function(preload_fn) to the spawned process.</p>
+</dd>
+</dl>
+<ul class="simple">
+<li><p>The preload_fn should be self-contained with a proper list of arguments with <code class="xref py py-class docutils literal notranslate"><span class="pre">functools.partial</span></code>.</p></li>
+<li><p>The preload_fn should be a function that takes a state dictionary and returns a state dictionary.</p></li>
+<li><p><a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller"><code class="xref py py-class docutils literal notranslate"><span class="pre">PersistentAsyncCaller</span></code></a> receives GPU tensor IPC handles and prestages them to host memory through a preload_fn
+so dereference of GPU tensors should be done promptly inside of <cite>preload_fn</cite> if possible.</p></li>
+</ul>
+</li>
+<li><p>A proper termination of the persistent process is required for graceful shutdown.</p>
+<ul class="simple">
+<li><p>Job schedulers(e.g. Slurm, torchrun) should clean up the persistent process and its child workers when the job step is terminated.</p></li>
+<li><p>The following changes will be made in the next release to the implementation of <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller"><code class="xref py py-class docutils literal notranslate"><span class="pre">PersistentAsyncCaller</span></code></a>:</p>
+<ul>
+<li><p>We’ll make the persistent process to be terminated when the main process is terminated.</p></li>
+<li><p>Optional child workers created by <a class="reference internal" href="api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><code class="xref py py-class docutils literal notranslate"><span class="pre">FileSystemWriterAsync</span></code></a> are terminated when the persistent process is terminated.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
 </section>
 <section id="synchronization-of-asynchronous-checkpoint-requests">
 <h2>Synchronization of Asynchronous Checkpoint Requests<a class="headerlink" href="#synchronization-of-asynchronous-checkpoint-requests" title="Link to this heading"></a></h2>
@@ -288,6 +312,16 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
 </pre></div>
 </div>
 </section>
+</section>
+<section id="best-practices">
+<h2>Best Practices<a class="headerlink" href="#best-practices" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Use process binding to pin the checkpointing process to a specific GPU. This is important for pre-staging tensors to host memory.</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Example for a 8 GPU on 2 socket CPU with SLURM</span>
+numactl<span class="w"> </span>--cpunodebind<span class="o">=</span><span class="k">$((</span><span class="nv">SLURM_LOCALID</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="m">4</span><span class="k">))</span><span class="w"> </span>--membind<span class="o">=</span><span class="k">$((</span><span class="nv">SLURM_LOCALID</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="m">4</span><span class="k">))</span><span class="w"> </span>python<span class="w"> </span>train.py
+</pre></div>
+</div>
 </section>
 </section>
 
