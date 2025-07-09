@@ -323,6 +323,28 @@ will be called <em>after</em> existing finalization functions.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.execute_finalize_fns">
+<span class="sig-name descname"><span class="pre">execute_finalize_fns</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">validate_matching_call_idx</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#AsyncRequest.execute_finalize_fns"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.execute_finalize_fns" title="Link to this definition"></a></dt>
+<dd><p>Execute all the finalize functions associated with this async request.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>validate_matching_call_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – Validate that all ranks
+invoke CP finalize on the same call_idx. This is typically useful in
+async CP stages where multiple CP requests can be pending.
+This validation is unnecessary during synchronous CP step.
+When this param is True, an AllReduce Sync across all participating
+ranks is invoked. Default set to True for conservative validation.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The call_idx of async request that has been finalized</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>call_idx</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.execute_sync">
 <span class="sig-name descname"><span class="pre">execute_sync</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#AsyncRequest.execute_sync"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.execute_sync" title="Link to this definition"></a></dt>
 <dd><p>Helper to synchronously execute the request.</p>

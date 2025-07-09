@@ -163,11 +163,18 @@
 
 <span class="sd">        This logic is equivalent to what should happen in case of the async call.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># preload tensors.</span>
+        <span class="n">async_fn_args</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">async_fn_args</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
+            <span class="c1"># the 2nd arg is state dict</span>
+            <span class="n">async_fn_args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">()</span>
+        <span class="c1"># persist the state</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">async_fn</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">async_fn</span><span class="p">(</span><span class="o">*</span><span class="bp">self</span><span class="o">.</span><span class="n">async_fn_args</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">async_fn</span><span class="p">(</span><span class="o">*</span><span class="n">async_fn_args</span><span class="p">,</span> <span class="o">**</span><span class="bp">self</span><span class="o">.</span><span class="n">async_fn_kwargs</span><span class="p">)</span>
+        <span class="c1"># This utility implements a sync cp save. Hence the barrier.</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
-        <span class="k">for</span> <span class="n">finalize_fn</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">finalize_fns</span><span class="p">:</span>
-            <span class="n">finalize_fn</span><span class="p">()</span></div>
+        <span class="c1"># Finalize the CP state</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">execute_finalize_fns</span><span class="p">(</span><span class="n">validate_matching_call_idx</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="AsyncRequest.freeze">
@@ -180,6 +187,38 @@
 <span class="sd">                `is_frozen` flag.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_replace</span><span class="p">(</span><span class="n">is_frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="AsyncRequest.execute_finalize_fns">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.execute_finalize_fns">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">execute_finalize_fns</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">validate_matching_call_idx</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Execute all the finalize functions associated with this async request.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            validate_matching_call_idx (bool, optional): Validate that all ranks</span>
+<span class="sd">                invoke CP finalize on the same call_idx. This is typically useful in</span>
+<span class="sd">                async CP stages where multiple CP requests can be pending.</span>
+<span class="sd">                This validation is unnecessary during synchronous CP step.</span>
+<span class="sd">                When this param is True, an AllReduce Sync across all participating</span>
+<span class="sd">                ranks is invoked. Default set to True for conservative validation.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            call_idx: The call_idx of async request that has been finalized</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="n">debug_time</span><span class="p">(</span><span class="s2">&quot;finalize&quot;</span><span class="p">,</span> <span class="n">logger</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">finalize_fn</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">finalize_fns</span><span class="p">:</span>
+                <span class="n">finalize_fn</span><span class="p">()</span>
+
+            <span class="c1"># Validate that matching call_idx are invoked from all ranks.</span>
+            <span class="c1"># This ensures all ranks are correctly participating in CP save invocations</span>
+            <span class="k">if</span> <span class="n">validate_matching_call_idx</span><span class="p">:</span>
+                <span class="n">ten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span>
+                    <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">()</span>
+                <span class="p">)</span>
+                <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">ten</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
+                <span class="k">assert</span> <span class="n">ten</span><span class="o">.</span><span class="n">item</span><span class="p">()</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span><span class="p">,</span> <span class="s2">&quot;Unmatched async calls. &quot;</span>
+                <span class="s2">&quot;That probably means not all ranks are participating in async finalization&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span></div>
 </div>
 
 
@@ -685,18 +724,10 @@
             <span class="k">if</span> <span class="ow">not</span> <span class="n">next_async_done</span><span class="p">:</span>
                 <span class="k">break</span>
             <span class="k">with</span> <span class="n">debug_time</span><span class="p">(</span><span class="s2">&quot;finalize&quot;</span><span class="p">,</span> <span class="n">logger</span><span class="p">):</span>
-                <span class="n">call_idx</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">async_request</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="o">.</span><span class="n">popleft</span><span class="p">()</span>
-                <span class="k">for</span> <span class="n">finalize_fn</span> <span class="ow">in</span> <span class="n">async_request</span><span class="o">.</span><span class="n">finalize_fns</span><span class="p">:</span>
-                    <span class="n">finalize_fn</span><span class="p">()</span>
-                <span class="k">if</span> <span class="ow">not</span> <span class="n">no_dist</span><span class="p">:</span>
-                    <span class="n">ten</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span>
-                        <span class="p">[</span><span class="n">call_idx</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">()</span>
-                    <span class="p">)</span>
-                    <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">ten</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">MAX</span><span class="p">)</span>
-                    <span class="k">assert</span> <span class="n">ten</span><span class="o">.</span><span class="n">item</span><span class="p">()</span> <span class="o">==</span> <span class="n">call_idx</span><span class="p">,</span> <span class="p">(</span>
-                        <span class="s1">&#39;Unmatched async calls. &#39;</span>
-                        <span class="s1">&#39;That probably means not all ranks are participating in async finalization&#39;</span>
-                    <span class="p">)</span>
+                <span class="n">_</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">async_request</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="o">.</span><span class="n">popleft</span><span class="p">()</span>
+                <span class="n">call_idx</span> <span class="o">=</span> <span class="n">async_request</span><span class="o">.</span><span class="n">execute_finalize_fns</span><span class="p">(</span>
+                    <span class="n">validate_matching_call_idx</span><span class="o">=</span><span class="p">(</span><span class="ow">not</span> <span class="n">no_dist</span><span class="p">)</span>
+                <span class="p">)</span>
                 <span class="n">call_idx_finalized</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">call_idx</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">call_idx_finalized</span></div>
 
