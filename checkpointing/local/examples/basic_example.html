@@ -134,161 +134,146 @@
 <span class="linenos"> 42</span>        <span class="s2">&quot;Needs to be enabled on all ranks.&quot;</span><span class="p">,</span>
 <span class="linenos"> 43</span>    <span class="p">)</span>
 <span class="linenos"> 44</span>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span>
-<span class="linenos"> 45</span>        <span class="s1">&#39;--no_persistent_queue&#39;</span><span class="p">,</span>
-<span class="linenos"> 46</span>        <span class="n">action</span><span class="o">=</span><span class="s1">&#39;store_false&#39;</span><span class="p">,</span>
-<span class="linenos"> 47</span>        <span class="n">default</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<span class="linenos"> 48</span>        <span class="n">dest</span><span class="o">=</span><span class="s1">&#39;persistent_queue&#39;</span><span class="p">,</span>
-<span class="linenos"> 49</span>        <span class="n">help</span><span class="o">=</span><span class="p">(</span>
-<span class="linenos"> 50</span>            <span class="s2">&quot;Disables a persistent version of AsyncCallsQueue. &quot;</span>
-<span class="linenos"> 51</span>            <span class="s2">&quot;Effective only when --async_save is set.&quot;</span>
-<span class="linenos"> 52</span>        <span class="p">),</span>
-<span class="linenos"> 53</span>    <span class="p">)</span>
-<span class="linenos"> 54</span>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span>
-<span class="linenos"> 55</span>        <span class="s1">&#39;--replication_jump&#39;</span><span class="p">,</span>
-<span class="linenos"> 56</span>        <span class="n">default</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
-<span class="linenos"> 57</span>        <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span>
-<span class="linenos"> 58</span>        <span class="n">help</span><span class="o">=</span><span class="p">(</span>
-<span class="linenos"> 59</span>            <span class="s2">&quot;Specifies `J`, the spacing between ranks storing replicas of a given rank&#39;s data. &quot;</span>
-<span class="linenos"> 60</span>            <span class="s2">&quot;Replicas for rank `n` may be on ranks `n+J`, `n+2J`, ..., or `n-J`, `n-2J`, etc. &quot;</span>
-<span class="linenos"> 61</span>            <span class="s2">&quot;This flag has an effect only if --replication is used. &quot;</span>
-<span class="linenos"> 62</span>            <span class="s2">&quot;and must be consistent across all ranks. &quot;</span>
-<span class="linenos"> 63</span>            <span class="s2">&quot;The default value of 4 is for demonstration purposes and can be adjusted as needed.&quot;</span>
-<span class="linenos"> 64</span>        <span class="p">),</span>
-<span class="linenos"> 65</span>    <span class="p">)</span>
-<span class="linenos"> 66</span>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span>
-<span class="linenos"> 67</span>        <span class="s1">&#39;--replication_factor&#39;</span><span class="p">,</span>
-<span class="linenos"> 68</span>        <span class="n">default</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-<span class="linenos"> 69</span>        <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span>
-<span class="linenos"> 70</span>        <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Number of machines storing the replica of a given rank&#39;s data&quot;</span><span class="p">,</span>
-<span class="linenos"> 71</span>    <span class="p">)</span>
-<span class="linenos"> 72</span>    <span class="k">return</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">()</span>
-<span class="linenos"> 73</span>
-<span class="linenos"> 74</span>
-<span class="linenos"> 75</span><span class="c1"># Define a simple model</span>
-<span class="linenos"> 76</span><span class="k">class</span><span class="w"> </span><span class="nc">SimpleModel</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
-<span class="linenos"> 77</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<span class="linenos"> 78</span>        <span class="nb">super</span><span class="p">(</span><span class="n">SimpleModel</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
-<span class="linenos"> 79</span>        <span class="bp">self</span><span class="o">.</span><span class="n">fc1</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">5</span><span class="p">)</span>  <span class="c1"># Linear layer: input size 10, output size 5</span>
-<span class="linenos"> 80</span>        <span class="bp">self</span><span class="o">.</span><span class="n">fc2</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>  <span class="c1"># Linear layer: input size 5, output size 2</span>
-<span class="linenos"> 81</span>        <span class="bp">self</span><span class="o">.</span><span class="n">activation</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ReLU</span><span class="p">()</span>  <span class="c1"># Activation function: ReLU</span>
-<span class="linenos"> 82</span>
-<span class="linenos"> 83</span>    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
-<span class="linenos"> 84</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">activation</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">fc1</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
-<span class="linenos"> 85</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fc2</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
-<span class="linenos"> 86</span>        <span class="k">return</span> <span class="n">x</span>
-<span class="linenos"> 87</span>
-<span class="linenos"> 88</span>
-<span class="linenos"> 89</span><span class="k">def</span><span class="w"> </span><span class="nf">init_distributed_backend</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;nccl&quot;</span><span class="p">):</span>
-<span class="linenos"> 90</span><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="linenos"> 91</span><span class="sd">    Initialize the distributed process group for NCCL backend.</span>
-<span class="linenos"> 92</span><span class="sd">    Assumes the environment variables (CUDA_VISIBLE_DEVICES, etc.) are already set.</span>
-<span class="linenos"> 93</span><span class="sd">    &quot;&quot;&quot;</span>
-<span class="linenos"> 94</span>    <span class="k">try</span><span class="p">:</span>
-<span class="linenos"> 95</span>        <span class="n">dist</span><span class="o">.</span><span class="n">init_process_group</span><span class="p">(</span>
-<span class="linenos"> 96</span>            <span class="n">backend</span><span class="o">=</span><span class="n">backend</span><span class="p">,</span>  <span class="c1"># Use NCCL backend</span>
-<span class="linenos"> 97</span>            <span class="n">init_method</span><span class="o">=</span><span class="s2">&quot;env://&quot;</span><span class="p">,</span>  <span class="c1"># Use environment variables for initialization</span>
-<span class="linenos"> 98</span>        <span class="p">)</span>
-<span class="linenos"> 99</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rank </span><span class="si">{</span><span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2"> initialized with </span><span class="si">{</span><span class="n">backend</span><span class="si">}</span><span class="s2"> backend.&quot;</span><span class="p">)</span>
-<span class="linenos">100</span>
-<span class="linenos">101</span>        <span class="c1"># Ensure each process uses a different GPU</span>
-<span class="linenos">102</span>        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">())</span>
-<span class="linenos">103</span>    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-<span class="linenos">104</span>        <span class="n">logging</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Error initializing the distributed backend: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<span class="linenos">105</span>        <span class="k">raise</span>
+<span class="linenos"> 45</span>        <span class="s1">&#39;--replication_jump&#39;</span><span class="p">,</span>
+<span class="linenos"> 46</span>        <span class="n">default</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<span class="linenos"> 47</span>        <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span>
+<span class="linenos"> 48</span>        <span class="n">help</span><span class="o">=</span><span class="p">(</span>
+<span class="linenos"> 49</span>            <span class="s2">&quot;Specifies `J`, the spacing between ranks storing replicas of a given rank&#39;s data. &quot;</span>
+<span class="linenos"> 50</span>            <span class="s2">&quot;Replicas for rank `n` may be on ranks `n+J`, `n+2J`, ..., or `n-J`, `n-2J`, etc. &quot;</span>
+<span class="linenos"> 51</span>            <span class="s2">&quot;This flag has an effect only if --replication is used. &quot;</span>
+<span class="linenos"> 52</span>            <span class="s2">&quot;and must be consistent across all ranks. &quot;</span>
+<span class="linenos"> 53</span>            <span class="s2">&quot;The default value of 4 is for demonstration purposes and can be adjusted as needed.&quot;</span>
+<span class="linenos"> 54</span>        <span class="p">),</span>
+<span class="linenos"> 55</span>    <span class="p">)</span>
+<span class="linenos"> 56</span>    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span>
+<span class="linenos"> 57</span>        <span class="s1">&#39;--replication_factor&#39;</span><span class="p">,</span>
+<span class="linenos"> 58</span>        <span class="n">default</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+<span class="linenos"> 59</span>        <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span>
+<span class="linenos"> 60</span>        <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Number of machines storing the replica of a given rank&#39;s data&quot;</span><span class="p">,</span>
+<span class="linenos"> 61</span>    <span class="p">)</span>
+<span class="linenos"> 62</span>    <span class="k">return</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">()</span>
+<span class="linenos"> 63</span>
+<span class="linenos"> 64</span>
+<span class="linenos"> 65</span><span class="c1"># Define a simple model</span>
+<span class="linenos"> 66</span><span class="k">class</span><span class="w"> </span><span class="nc">SimpleModel</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<span class="linenos"> 67</span>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="linenos"> 68</span>        <span class="nb">super</span><span class="p">(</span><span class="n">SimpleModel</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+<span class="linenos"> 69</span>        <span class="bp">self</span><span class="o">.</span><span class="n">fc1</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">5</span><span class="p">)</span>  <span class="c1"># Linear layer: input size 10, output size 5</span>
+<span class="linenos"> 70</span>        <span class="bp">self</span><span class="o">.</span><span class="n">fc2</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>  <span class="c1"># Linear layer: input size 5, output size 2</span>
+<span class="linenos"> 71</span>        <span class="bp">self</span><span class="o">.</span><span class="n">activation</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ReLU</span><span class="p">()</span>  <span class="c1"># Activation function: ReLU</span>
+<span class="linenos"> 72</span>
+<span class="linenos"> 73</span>    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+<span class="linenos"> 74</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">activation</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">fc1</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
+<span class="linenos"> 75</span>        <span class="n">x</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fc2</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+<span class="linenos"> 76</span>        <span class="k">return</span> <span class="n">x</span>
+<span class="linenos"> 77</span>
+<span class="linenos"> 78</span>
+<span class="linenos"> 79</span><span class="k">def</span><span class="w"> </span><span class="nf">init_distributed_backend</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;nccl&quot;</span><span class="p">):</span>
+<span class="linenos"> 80</span><span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="linenos"> 81</span><span class="sd">    Initialize the distributed process group for NCCL backend.</span>
+<span class="linenos"> 82</span><span class="sd">    Assumes the environment variables (CUDA_VISIBLE_DEVICES, etc.) are already set.</span>
+<span class="linenos"> 83</span><span class="sd">    &quot;&quot;&quot;</span>
+<span class="linenos"> 84</span>    <span class="k">try</span><span class="p">:</span>
+<span class="linenos"> 85</span>        <span class="n">dist</span><span class="o">.</span><span class="n">init_process_group</span><span class="p">(</span>
+<span class="linenos"> 86</span>            <span class="n">backend</span><span class="o">=</span><span class="n">backend</span><span class="p">,</span>  <span class="c1"># Use NCCL backend</span>
+<span class="linenos"> 87</span>            <span class="n">init_method</span><span class="o">=</span><span class="s2">&quot;env://&quot;</span><span class="p">,</span>  <span class="c1"># Use environment variables for initialization</span>
+<span class="linenos"> 88</span>        <span class="p">)</span>
+<span class="linenos"> 89</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rank </span><span class="si">{</span><span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2"> initialized with </span><span class="si">{</span><span class="n">backend</span><span class="si">}</span><span class="s2"> backend.&quot;</span><span class="p">)</span>
+<span class="linenos"> 90</span>
+<span class="linenos"> 91</span>        <span class="c1"># Ensure each process uses a different GPU</span>
+<span class="linenos"> 92</span>        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">())</span>
+<span class="linenos"> 93</span>    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+<span class="linenos"> 94</span>        <span class="n">logging</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Error initializing the distributed backend: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="linenos"> 95</span>        <span class="k">raise</span>
+<span class="linenos"> 96</span>
+<span class="linenos"> 97</span>
+<span class="linenos"> 98</span><span class="k">def</span><span class="w"> </span><span class="nf">create_checkpoint_manager</span><span class="p">(</span><span class="n">args</span><span class="p">):</span>
+<span class="linenos"> 99</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">replication</span><span class="p">:</span>
+<span class="linenos">100</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Creating CliqueReplicationStrategy.&quot;</span><span class="p">)</span>
+<span class="linenos">101</span>        <span class="n">repl_strategy</span> <span class="o">=</span> <span class="n">CliqueReplicationStrategy</span><span class="o">.</span><span class="n">from_replication_params</span><span class="p">(</span>
+<span class="linenos">102</span>            <span class="n">args</span><span class="o">.</span><span class="n">replication_jump</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">replication_factor</span>
+<span class="linenos">103</span>        <span class="p">)</span>
+<span class="linenos">104</span>    <span class="k">else</span><span class="p">:</span>
+<span class="linenos">105</span>        <span class="n">repl_strategy</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="linenos">106</span>
-<span class="linenos">107</span>
-<span class="linenos">108</span><span class="k">def</span><span class="w"> </span><span class="nf">create_checkpoint_manager</span><span class="p">(</span><span class="n">args</span><span class="p">):</span>
-<span class="linenos">109</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">replication</span><span class="p">:</span>
-<span class="linenos">110</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Creating CliqueReplicationStrategy.&quot;</span><span class="p">)</span>
-<span class="linenos">111</span>        <span class="n">repl_strategy</span> <span class="o">=</span> <span class="n">CliqueReplicationStrategy</span><span class="o">.</span><span class="n">from_replication_params</span><span class="p">(</span>
-<span class="linenos">112</span>            <span class="n">args</span><span class="o">.</span><span class="n">replication_jump</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">replication_factor</span>
-<span class="linenos">113</span>        <span class="p">)</span>
-<span class="linenos">114</span>    <span class="k">else</span><span class="p">:</span>
-<span class="linenos">115</span>        <span class="n">repl_strategy</span> <span class="o">=</span> <span class="kc">None</span>
-<span class="linenos">116</span>
-<span class="linenos">117</span>    <span class="k">return</span> <span class="n">LocalCheckpointManager</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="p">,</span> <span class="n">repl_strategy</span><span class="o">=</span><span class="n">repl_strategy</span><span class="p">)</span>
-<span class="linenos">118</span>
-<span class="linenos">119</span>
-<span class="linenos">120</span><span class="k">def</span><span class="w"> </span><span class="nf">save</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">,</span> <span class="n">async_queue</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
-<span class="linenos">121</span>    <span class="c1"># Create Tensor-Aware State Dict</span>
-<span class="linenos">122</span>    <span class="n">ta_state_dict</span> <span class="o">=</span> <span class="n">BasicTensorAwareStateDict</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">())</span>
-<span class="linenos">123</span>
-<span class="linenos">124</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">async_save</span><span class="p">:</span>
-<span class="linenos">125</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Creating save request.&quot;</span><span class="p">)</span>
-<span class="linenos">126</span>        <span class="n">save_request</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">iteration</span><span class="p">,</span> <span class="n">is_async</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<span class="linenos">127</span>
-<span class="linenos">128</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Saving TASD checkpoint...&quot;</span><span class="p">)</span>
-<span class="linenos">129</span>        <span class="n">async_queue</span><span class="o">.</span><span class="n">schedule_async_request</span><span class="p">(</span><span class="n">save_request</span><span class="p">)</span>
-<span class="linenos">130</span>
-<span class="linenos">131</span>    <span class="k">else</span><span class="p">:</span>
-<span class="linenos">132</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Saving TASD checkpoint...&quot;</span><span class="p">)</span>
-<span class="linenos">133</span>        <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">iteration</span><span class="p">)</span>
-<span class="linenos">134</span>
+<span class="linenos">107</span>    <span class="k">return</span> <span class="n">LocalCheckpointManager</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="p">,</span> <span class="n">repl_strategy</span><span class="o">=</span><span class="n">repl_strategy</span><span class="p">)</span>
+<span class="linenos">108</span>
+<span class="linenos">109</span>
+<span class="linenos">110</span><span class="k">def</span><span class="w"> </span><span class="nf">save</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">,</span> <span class="n">async_queue</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
+<span class="linenos">111</span>    <span class="c1"># Create Tensor-Aware State Dict</span>
+<span class="linenos">112</span>    <span class="n">ta_state_dict</span> <span class="o">=</span> <span class="n">BasicTensorAwareStateDict</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">())</span>
+<span class="linenos">113</span>
+<span class="linenos">114</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">async_save</span><span class="p">:</span>
+<span class="linenos">115</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Creating save request.&quot;</span><span class="p">)</span>
+<span class="linenos">116</span>        <span class="n">save_request</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">iteration</span><span class="p">,</span> <span class="n">is_async</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="linenos">117</span>
+<span class="linenos">118</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Saving TASD checkpoint...&quot;</span><span class="p">)</span>
+<span class="linenos">119</span>        <span class="n">async_queue</span><span class="o">.</span><span class="n">schedule_async_request</span><span class="p">(</span><span class="n">save_request</span><span class="p">)</span>
+<span class="linenos">120</span>
+<span class="linenos">121</span>    <span class="k">else</span><span class="p">:</span>
+<span class="linenos">122</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Saving TASD checkpoint...&quot;</span><span class="p">)</span>
+<span class="linenos">123</span>        <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">iteration</span><span class="p">)</span>
+<span class="linenos">124</span>
+<span class="linenos">125</span>
+<span class="linenos">126</span><span class="k">def</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">):</span>
+<span class="linenos">127</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Loading TASD checkpoint...&quot;</span><span class="p">)</span>
+<span class="linenos">128</span>    <span class="n">iteration</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">find_latest</span><span class="p">()</span>
+<span class="linenos">129</span>    <span class="k">assert</span> <span class="n">iteration</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;Local checkpoint has not been found&quot;</span>
+<span class="linenos">130</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Found checkpoint from iteration: </span><span class="si">{</span><span class="n">iteration</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="linenos">131</span>
+<span class="linenos">132</span>    <span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">ckpt_part_id</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
+<span class="linenos">133</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Successfully loaded checkpoint part (id: </span><span class="si">{</span><span class="n">ckpt_part_id</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+<span class="linenos">134</span>    <span class="k">return</span> <span class="n">ta_state_dict</span><span class="o">.</span><span class="n">state_dict</span>
 <span class="linenos">135</span>
-<span class="linenos">136</span><span class="k">def</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">):</span>
-<span class="linenos">137</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Loading TASD checkpoint...&quot;</span><span class="p">)</span>
-<span class="linenos">138</span>    <span class="n">iteration</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">find_latest</span><span class="p">()</span>
-<span class="linenos">139</span>    <span class="k">assert</span> <span class="n">iteration</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;Local checkpoint has not been found&quot;</span>
-<span class="linenos">140</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Found checkpoint from iteration: </span><span class="si">{</span><span class="n">iteration</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<span class="linenos">141</span>
-<span class="linenos">142</span>    <span class="n">ta_state_dict</span><span class="p">,</span> <span class="n">ckpt_part_id</span> <span class="o">=</span> <span class="n">ckpt_manager</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
-<span class="linenos">143</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Successfully loaded checkpoint part (id: </span><span class="si">{</span><span class="n">ckpt_part_id</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
-<span class="linenos">144</span>    <span class="k">return</span> <span class="n">ta_state_dict</span><span class="o">.</span><span class="n">state_dict</span>
-<span class="linenos">145</span>
+<span class="linenos">136</span>
+<span class="linenos">137</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+<span class="linenos">138</span>    <span class="n">args</span> <span class="o">=</span> <span class="n">parse_args</span><span class="p">()</span>
+<span class="linenos">139</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">args</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+<span class="linenos">140</span>
+<span class="linenos">141</span>    <span class="c1"># Initialize the distributed backend</span>
+<span class="linenos">142</span>    <span class="n">init_distributed_backend</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;nccl&quot;</span><span class="p">)</span>
+<span class="linenos">143</span>
+<span class="linenos">144</span>    <span class="c1"># Instantiate the model and move to CUDA</span>
+<span class="linenos">145</span>    <span class="n">model</span> <span class="o">=</span> <span class="n">SimpleModel</span><span class="p">()</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
 <span class="linenos">146</span>
-<span class="linenos">147</span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-<span class="linenos">148</span>    <span class="n">args</span> <span class="o">=</span> <span class="n">parse_args</span><span class="p">()</span>
-<span class="linenos">149</span>    <span class="k">assert</span> <span class="p">(</span>
-<span class="linenos">150</span>        <span class="ow">not</span> <span class="n">args</span><span class="o">.</span><span class="n">persistent_queue</span> <span class="ow">or</span> <span class="n">args</span><span class="o">.</span><span class="n">async_save</span>
-<span class="linenos">151</span>    <span class="p">),</span> <span class="s2">&quot;--persistent_queue requires --async_save to be enabled.&quot;</span>
-<span class="linenos">152</span>    <span class="k">assert</span> <span class="p">(</span>
-<span class="linenos">153</span>        <span class="ow">not</span> <span class="n">args</span><span class="o">.</span><span class="n">persistent_queue</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">args</span><span class="o">.</span><span class="n">replication</span>
-<span class="linenos">154</span>    <span class="p">),</span> <span class="s2">&quot;persistent_queue is currently incompatible with replication due to object pickling issues.&quot;</span>
-<span class="linenos">155</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">args</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+<span class="linenos">147</span>    <span class="c1"># Instantiate checkpointing classess needed for local checkpointing</span>
+<span class="linenos">148</span>    <span class="n">ckpt_manager</span> <span class="o">=</span> <span class="n">create_checkpoint_manager</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>
+<span class="linenos">149</span>    <span class="c1"># Persistent queue is incompatible with local checkpointing because some routines are not pickleable.</span>
+<span class="linenos">150</span>    <span class="n">async_queue</span> <span class="o">=</span> <span class="n">AsyncCallsQueue</span><span class="p">(</span><span class="n">persistent</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span> <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">async_save</span> <span class="k">else</span> <span class="kc">None</span>
+<span class="linenos">151</span>
+<span class="linenos">152</span>    <span class="n">iteration</span> <span class="o">=</span> <span class="mi">123</span>  <span class="c1"># training iteration (used as training state id)</span>
+<span class="linenos">153</span>
+<span class="linenos">154</span>    <span class="c1"># Local checkpointing save</span>
+<span class="linenos">155</span>    <span class="n">save</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">,</span> <span class="n">async_queue</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">iteration</span><span class="p">)</span>
 <span class="linenos">156</span>
-<span class="linenos">157</span>    <span class="c1"># Initialize the distributed backend</span>
-<span class="linenos">158</span>    <span class="n">init_distributed_backend</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;nccl&quot;</span><span class="p">)</span>
+<span class="linenos">157</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">async_save</span><span class="p">:</span>
+<span class="linenos">158</span>        <span class="c1"># Other operations can happen here</span>
 <span class="linenos">159</span>
-<span class="linenos">160</span>    <span class="c1"># Instantiate the model and move to CUDA</span>
-<span class="linenos">161</span>    <span class="n">model</span> <span class="o">=</span> <span class="n">SimpleModel</span><span class="p">()</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
-<span class="linenos">162</span>
-<span class="linenos">163</span>    <span class="c1"># Instantiate checkpointing classess needed for local checkpointing</span>
-<span class="linenos">164</span>    <span class="n">ckpt_manager</span> <span class="o">=</span> <span class="n">create_checkpoint_manager</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>
-<span class="linenos">165</span>    <span class="n">async_queue</span> <span class="o">=</span> <span class="n">AsyncCallsQueue</span><span class="p">(</span><span class="n">persistent</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">persistent_queue</span><span class="p">)</span> <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">async_save</span> <span class="k">else</span> <span class="kc">None</span>
+<span class="linenos">160</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Finalize TASD checkpoint saving.&quot;</span><span class="p">)</span>
+<span class="linenos">161</span>        <span class="n">async_queue</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="linenos">162</span>        <span class="n">async_queue</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>  <span class="c1"># Explicitly close queue (optional)</span>
+<span class="linenos">163</span>
+<span class="linenos">164</span>    <span class="c1"># Synchronize processes to ensure all have completed the saving</span>
+<span class="linenos">165</span>    <span class="n">dist</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
 <span class="linenos">166</span>
-<span class="linenos">167</span>    <span class="n">iteration</span> <span class="o">=</span> <span class="mi">123</span>  <span class="c1"># training iteration (used as training state id)</span>
-<span class="linenos">168</span>
-<span class="linenos">169</span>    <span class="c1"># Local checkpointing save</span>
-<span class="linenos">170</span>    <span class="n">save</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">,</span> <span class="n">async_queue</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">iteration</span><span class="p">)</span>
-<span class="linenos">171</span>
-<span class="linenos">172</span>    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">async_save</span><span class="p">:</span>
-<span class="linenos">173</span>        <span class="c1"># Other operations can happen here</span>
-<span class="linenos">174</span>
-<span class="linenos">175</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Finalize TASD checkpoint saving.&quot;</span><span class="p">)</span>
-<span class="linenos">176</span>        <span class="n">async_queue</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-<span class="linenos">177</span>        <span class="n">async_queue</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>  <span class="c1"># Explicitly close queue (optional)</span>
-<span class="linenos">178</span>
-<span class="linenos">179</span>    <span class="c1"># Synchronize processes to ensure all have completed the saving</span>
-<span class="linenos">180</span>    <span class="n">dist</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
+<span class="linenos">167</span>    <span class="c1"># Local checkpointing load</span>
+<span class="linenos">168</span>    <span class="n">load</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">)</span>
+<span class="linenos">169</span>
+<span class="linenos">170</span>    <span class="c1"># Synchronize processes to ensure all have completed the loading</span>
+<span class="linenos">171</span>    <span class="n">dist</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
+<span class="linenos">172</span>
+<span class="linenos">173</span>    <span class="c1"># Clean up checkpoint directory only on rank 0</span>
+<span class="linenos">174</span>    <span class="k">if</span> <span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<span class="linenos">175</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cleaning up checkpoint directory: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="linenos">176</span>        <span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="p">)</span>
+<span class="linenos">177</span>
+<span class="linenos">178</span>    <span class="c1"># Ensure NCCL process group is properly destroyed</span>
+<span class="linenos">179</span>    <span class="k">if</span> <span class="n">dist</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">():</span>
+<span class="linenos">180</span>        <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
 <span class="linenos">181</span>
-<span class="linenos">182</span>    <span class="c1"># Local checkpointing load</span>
-<span class="linenos">183</span>    <span class="n">load</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">ckpt_manager</span><span class="p">)</span>
-<span class="linenos">184</span>
-<span class="linenos">185</span>    <span class="c1"># Synchronize processes to ensure all have completed the loading</span>
-<span class="linenos">186</span>    <span class="n">dist</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
-<span class="linenos">187</span>
-<span class="linenos">188</span>    <span class="c1"># Clean up checkpoint directory only on rank 0</span>
-<span class="linenos">189</span>    <span class="k">if</span> <span class="n">dist</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-<span class="linenos">190</span>        <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cleaning up checkpoint directory: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<span class="linenos">191</span>        <span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">ckpt_dir</span><span class="p">)</span>
-<span class="linenos">192</span>
-<span class="linenos">193</span>    <span class="c1"># Ensure NCCL process group is properly destroyed</span>
-<span class="linenos">194</span>    <span class="k">if</span> <span class="n">dist</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">():</span>
-<span class="linenos">195</span>        <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
-<span class="linenos">196</span>
-<span class="linenos">197</span>
-<span class="linenos">198</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-<span class="linenos">199</span>    <span class="n">main</span><span class="p">()</span>
+<span class="linenos">182</span>
+<span class="linenos">183</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<span class="linenos">184</span>    <span class="n">main</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>

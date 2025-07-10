@@ -149,7 +149,10 @@ otherwise the training ends up in a corrupted state (a NCCL collective hang or t
 </section>
 <section id="restrictions">
 <h2>Restrictions<a class="headerlink" href="#restrictions" title="Link to this heading"></a></h2>
-<p>Currently under review - no documented restrictions at this time.</p>
+<ul class="simple">
+<li><p><cite>AsyncCallsQueue</cite> must be initialized with <cite>persistence=False</cite>, because some local checkpointing routines
+are not pickleable. This restriction may be lifted in the future.</p></li>
+</ul>
 </section>
 <section id="functionality-overview">
 <h2>Functionality Overview<a class="headerlink" href="#functionality-overview" title="Link to this heading"></a></h2>
@@ -216,12 +219,17 @@ controlled by the <cite>is_async</cite> parameter in the <cite>save(…)</cite> 
 performs a blocking save operation, ensuring all data is written before returning.</p></li>
 <li><p>Asynchronous Save: When <cite>is_async</cite> is set to <cite>True</cite>, the <cite>save(…)</cite> method
 initiates a non-blocking save and returns an <cite>AsyncRequest</cite> object.
-This class is fully compatible with the <cite>nvidia_resiliency_ext.checkpointing.async_ckpt</cite> module.</p></li>
+This class is compatible with the <cite>nvidia_resiliency_ext.checkpointing.async_ckpt</cite> module.</p></li>
 </ul>
 <p>The returned <cite>AsyncRequest</cite> can then be submitted to an <cite>AsyncCallsQueue</cite>,
 enabling advanced asynchronous processing.
 The usage of <cite>AsyncRequest</cite> with <cite>AsyncCallsQueue</cite> is demonstrated in the provided example,
 showcasing how to efficiently manage non-blocking saves within your workflow.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Per the Restrictions and the included example, <cite>AsyncCallsQueue</cite> must be initialized with
+<cite>persistence=False</cite>. This is because some local checkpointing routines are not pickleable.</p>
+</div>
 </section>
 <section id="logging">
 <h3>Logging<a class="headerlink" href="#logging" title="Link to this heading"></a></h3>
