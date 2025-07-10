@@ -767,10 +767,10 @@ def train(
             break
         except Exception as e:
             accelerator.print(f"⚠️  {ckpt} corrupt ({e}); deleting")
-            shutil.rmtree(path)  # delete bad checkpoint
+            shutil.rmtree(path)  # delete corrupted checkpoint
 
     if global_step == 0:
-        accelerator.print("   no usable checkpoints, starting fresh")
+        accelerator.print("❌ no usable checkpoints, starting fresh")
 
     unet.train()
     progress = tqdm(
@@ -827,7 +827,7 @@ def train(
                 global_step += 1
                 train_loss += loss.detach().float()
 
-                # ─────────────────── Saving checkpints ───────────────────
+                # ─────────────────── Saving checkpoints ───────────────────
                 if global_step % args.checkpointing_steps == 0 and accelerator.is_main_process:
                     ckpt_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                     with call_wrapper.atomic():  # guarantees a consistent save
@@ -842,7 +842,7 @@ def train(
                         safe_serialization=True,
                     )
 
-                    # ──────────────── Ejecting fault ────────────────
+                    # ──────────────── Injecting synthetic fault ────────────────
                     if args.fault_prob and random.random() < args.fault_prob:
                         global raise_timestamp
                         if raise_timestamp is not None:
