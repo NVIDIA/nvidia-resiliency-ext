@@ -575,9 +575,7 @@ def build_static(args):
     )
 
 
-###############################################################################
 # Function executed (and re-executed) by nvidia_resiliency_ext.inprocess.Wrapper
-###############################################################################
 def train(
     base_store,
     static,
@@ -684,7 +682,6 @@ def train(
         batch["input_ids"] = inputs.input_ids
         return batch
 
-    # Image transforms ---------------------------------------------------------
     interpolation = getattr(
         transforms.InterpolationMode,
         args.image_interpolation_mode.upper(),
@@ -735,7 +732,6 @@ def train(
         num_workers=args.dataloader_num_workers,
     )
 
-    # --------------------------------------------------------------- Scheduler
     updates_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
     total_updates = args.max_train_steps or updates_per_epoch * args.num_train_epochs
 
@@ -746,7 +742,6 @@ def train(
         num_training_steps=total_updates * accelerator.num_processes,
     )
 
-    # --------------------------------------------------------- Accelerator prep
     unet, optimizer, train_loader, lr_scheduler = accelerator.prepare(
         unet, optimizer, train_loader, lr_scheduler
     )
@@ -756,7 +751,6 @@ def train(
         total_updates = args.num_train_epochs * num_update_steps_per_epoch
     else:
         total_updates = args.max_train_steps
-    # -------------------------------------------- Training loop (unchanged) --
 
     ckpts = [d for d in os.listdir(args.output_dir) if d.startswith("checkpoint-")]
     ckpts.sort(key=lambda x: int(x.split("-")[1]), reverse=True)  # newest first
@@ -773,10 +767,10 @@ def train(
             break
         except Exception as e:
             accelerator.print(f"⚠️  {ckpt} corrupt ({e}); deleting")
-            shutil.rmtree(path)  # 🔥 delete bad checkpoint
+            shutil.rmtree(path)  # delete bad checkpoint
 
     if global_step == 0:
-        accelerator.print("🆕  no usable checkpoints, starting fresh")
+        accelerator.print("   no usable checkpoints, starting fresh")
 
     unet.train()
     progress = tqdm(
@@ -833,7 +827,7 @@ def train(
                 global_step += 1
                 train_loss += loss.detach().float()
 
-                # ─────────────────── 1️⃣  SAVE CHECKPOINT ───────────────────
+                # ─────────────────── Saving checkpints ───────────────────
                 if global_step % args.checkpointing_steps == 0 and accelerator.is_main_process:
                     ckpt_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                     with call_wrapper.atomic():  # guarantees a consistent save
@@ -848,7 +842,7 @@ def train(
                         safe_serialization=True,
                     )
 
-                    # ──────────────── 2️⃣  NOW inject the synthetic fault ────────────────
+                    # ──────────────── Ejecting fault ────────────────
                     if args.fault_prob and random.random() < args.fault_prob:
                         global raise_timestamp
                         if raise_timestamp is not None:
@@ -881,7 +875,7 @@ def train(
             safe_serialization=True,  # or False for `.bin`
         )
 
-        logger.info(f"✅ Final LoRA saved at: {final_dir}")
+        logger.info(f"🎉 Final LoRA saved at: {final_dir}")
 
 
 def main():
