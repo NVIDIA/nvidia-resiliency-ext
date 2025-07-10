@@ -42,16 +42,6 @@ def parse_args():
         "Needs to be enabled on all ranks.",
     )
     parser.add_argument(
-        '--no_persistent_queue',
-        action='store_false',
-        default=True,
-        dest='persistent_queue',
-        help=(
-            "Disables a persistent version of AsyncCallsQueue. "
-            "Effective only when --async_save is set."
-        ),
-    )
-    parser.add_argument(
         '--replication_jump',
         default=4,
         type=int,
@@ -146,12 +136,6 @@ def load(args, ckpt_manager):
 
 def main():
     args = parse_args()
-    assert (
-        not args.persistent_queue or args.async_save
-    ), "--persistent_queue requires --async_save to be enabled."
-    assert (
-        not args.persistent_queue or not args.replication
-    ), "persistent_queue is currently incompatible with replication due to object pickling issues."
     logging.info(f'{args}')
 
     # Initialize the distributed backend
@@ -162,7 +146,8 @@ def main():
 
     # Instantiate checkpointing classess needed for local checkpointing
     ckpt_manager = create_checkpoint_manager(args)
-    async_queue = AsyncCallsQueue(persistent=args.persistent_queue) if args.async_save else None
+    # Persistent queue is incompatible with local checkpointing because some routines are not pickleable.
+    async_queue = AsyncCallsQueue(persistent=False) if args.async_save else None
 
     iteration = 123  # training iteration (used as training state id)
 
