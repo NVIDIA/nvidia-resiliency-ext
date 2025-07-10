@@ -638,11 +638,11 @@
                     <span class="n">state</span><span class="o">.</span><span class="n">set_distributed_vars</span><span class="p">()</span>
                 <span class="k">else</span><span class="p">:</span>
                     <span class="k">break</span>
-                <span class="k">finally</span><span class="p">:</span>
-                    <span class="k">while</span> <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">():</span>
-                        <span class="k">pass</span>
 
                 <span class="n">state</span><span class="o">.</span><span class="n">advance</span><span class="p">()</span>
+
+                <span class="k">while</span> <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">():</span>
+                    <span class="k">pass</span>
 
         <span class="k">except</span> <span class="ne">BaseException</span> <span class="k">as</span> <span class="n">exit_ex</span><span class="p">:</span>
 

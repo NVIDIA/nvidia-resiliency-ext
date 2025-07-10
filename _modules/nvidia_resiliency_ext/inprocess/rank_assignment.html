@@ -814,6 +814,8 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">recompute_rank</span><span class="p">()</span>
 
         <span class="n">ctx</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_state_from_tree</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">terminated_ranks</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">leaf</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">tree</span><span class="o">.</span><span class="n">iter_leaves</span><span class="p">():</span>
+            <span class="n">leaf</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">fn_exception</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="n">ctx</span><span class="o">.</span><span class="n">terminated_ranks</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
 
         <span class="k">return</span> <span class="n">ctx</span></div>
