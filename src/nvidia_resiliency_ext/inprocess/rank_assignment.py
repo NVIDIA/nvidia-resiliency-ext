@@ -701,6 +701,8 @@ class Tree(RankAssignment):
         self.recompute_rank()
 
         ctx.state = self.get_state_from_tree(state, terminated_ranks)
+        for leaf in self.tree.iter_leaves():
+            leaf.state.fn_exception = None
         ctx.terminated_ranks = set()
 
         return ctx
