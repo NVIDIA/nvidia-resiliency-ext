@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "nvidia-resiliency-ext"
 repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
-version = "0.4.1-rc1"
+version = "0.4.1-rc2"
 description = "NVIDIA Resiliency Package"
 authors = [ "NVIDIA Corporation",]
 readme = "README.md"
