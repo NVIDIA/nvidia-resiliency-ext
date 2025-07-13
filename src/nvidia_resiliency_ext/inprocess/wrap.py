@@ -466,7 +466,10 @@ class CallWrapper:
                             if state.mode == Mode.ACTIVE:
                                 if exception_recvd_time is not None:
                                     # Store local trigger time in the distributed store
-                                    store.set(f"exception_recvd_time_{state.rank}", str(exception_recvd_time))
+                                    store.set(
+                                        f"exception_recvd_time_{state.rank}",
+                                        str(exception_recvd_time),
+                                    )
                                     # Barrier to ensure all ranks have set their trigger time
                                     store.completion_barrier(
                                         ranks=[state.rank],
@@ -477,13 +480,25 @@ class CallWrapper:
                                     if state.rank == 0:
                                         excp_recvd_times = []
                                         for r in range(state.world_size):
-                                            excp_recvd_times.append(float(store.get(f"exception_recvd_time_{r}")))
-                                        restart_latency_min = int((time.monotonic() - min(excp_recvd_times))*1000)
-                                        restart_latency_max = int((time.monotonic() - max(excp_recvd_times))*1000)
-                                        log.info(f"In-Process Wrapper restart latency: ({restart_latency_min}, {restart_latency_max}) ms")
+                                            excp_recvd_times.append(
+                                                float(store.get(f"exception_recvd_time_{r}"))
+                                            )
+                                        restart_latency_min = int(
+                                            (time.monotonic() - min(excp_recvd_times)) * 1000
+                                        )
+                                        restart_latency_max = int(
+                                            (time.monotonic() - max(excp_recvd_times)) * 1000
+                                        )
+                                        log.info(
+                                            f"In-Process Wrapper restart latency: ({restart_latency_min}, {restart_latency_max}) ms"
+                                        )
                                     # Also log local latency for reference
-                                    local_restart_latency = int((time.monotonic() - exception_recvd_time)*1000)
-                                    log.debug(f"Local In-Process Wrapper restart latency: {local_restart_latency} ms")
+                                    local_restart_latency = int(
+                                        (time.monotonic() - exception_recvd_time) * 1000
+                                    )
+                                    log.debug(
+                                        f"Local In-Process Wrapper restart latency: {local_restart_latency} ms"
+                                    )
                                     exception_recvd_time = None
                                 ret = fn(*args, **kwargs)
                                 store.record_completed()
