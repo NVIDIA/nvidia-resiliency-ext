@@ -490,14 +490,14 @@ class CallWrapper:
                                             (time.monotonic() - max(excp_recvd_times)) * 1000
                                         )
                                         log.info(
-                                            f"In-Process Wrapper restart latency: ({restart_latency_min}, {restart_latency_max}) ms"
+                                            f"global-in-process ....: ({restart_latency_min}, {restart_latency_max})"
                                         )
                                     # Also log local latency for reference
                                     local_restart_latency = int(
                                         (time.monotonic() - exception_recvd_time) * 1000
                                     )
                                     log.debug(
-                                        f"Local In-Process Wrapper restart latency: {local_restart_latency} ms"
+                                        f"local-in-process ....: {local_restart_latency}"
                                     )
                                     exception_recvd_time = None
                                 ret = fn(*args, **kwargs)
