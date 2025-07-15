@@ -60,7 +60,10 @@ Requirements for the wrapped function
   ext/blob/main/examples/fault_tolerance/run_inprocess_injob_example.sh>`_ example for the recommended
   default values (for example, --monitor-interval=5).
 
-- it's heavily recommended for the wrapped function to load the state affected
+    - Any objects whose lifetime crosses the restart boundary *must* be process-group independent _or_
+      they are responsible for re-aligning themselves to the new process groups within the wrapped function.
+
+- It is heavily recommended for the wrapped function to load the state affected
   by distributed collectives from a checkpoint on every restart (e.g. load
   weights of a model); outputs of distributed collectives are likely to become
   corrupted or invalid if a fault happened while a collective was in-flight and

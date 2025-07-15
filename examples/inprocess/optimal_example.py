@@ -236,8 +236,9 @@ def main():
     else:
         raise RuntimeError
 
-    # All objects created in ``main()`` are constructed only once, and reused
-    # for all restart iterations.
+    # In this example, all objects created in ``main()`` are constructed only once and reused
+    # for all restart iterations. *This* model and optimizer are process-group independent,
+    # so they can safely be created outside of the wrapped function and reused.
     if args.seed is not None:
         torch.manual_seed(args.seed)
     model = torch.nn.Sequential(
