@@ -15,7 +15,24 @@
 # limitations under the License.
 """Fine-tuning script for Stable Diffusion for text2image with support for LoRA."""
 
-# This training can run with:
+#==========================================================================================================
+# INSTRUCTION FOR RUNNING THE SCRIPT WITH NVRx IN-PROCESS RESILIENCY
+#==========================================================================================================
+# ✅ Install dependencies
+# pip install accelerate datasets transformers peft torchvision
+# install diffusers from source:
+# pip install git+https://github.com/huggingface/diffusers
+# ✅ This script has been tested with:
+# nvidia_resiliency_ext    0.4.0
+# accelerate               1.8.1
+# torch                    2.7.1
+# torchvision              0.22.1
+# diffusers                0.35.0.dev0
+# transformers             4.53.1
+# peft                     0.16.0
+# pip                      22.0.2
+# datasets                 3.6.0
+# ✅ Example command:
 # accelerate launch t2i_accelerate_example.py --fault_prob 0.2 --dataset_name lambdalabs/naruto-blip-captions \
 # --pretrained_model_name_or_path stabilityai/stable-diffusion-2-1-base --resolution 512 --train_batch_size 2 \
 # --gradient_accumulation_steps 2 --mixed_precision bf16 --enable_xformers_memory_efficient_attention --use_8bit_adam \
