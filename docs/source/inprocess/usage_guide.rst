@@ -313,7 +313,10 @@ workers drops below a specified threshold.
 Multiple initializers could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose`.
 The composition order follows mathematical composition. Therefore, the last listed function is called first.
 Consequently, when using nested restarters, the :py:class:`nvidia_resiliency_ext.inprocess.nested_restarter.NestedRestarterHandlingCompleted`
-should be listed first, as handling a restart is not complete until the end of the `Initialize`.
+should be carefully placed as this callback indicates completion of the restart.
+Subsequent callbacks (e.g., those listed before the nested restarter callback) logically take placed
+at the _beginning_ of the next restart iteration.  For example, :py:class:`nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment`
+is logically part of the next restart iteration and should be called after the nested restarter callback.
 
 Wrapped function termination mechanism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
