@@ -15,9 +15,9 @@
 # limitations under the License.
 """Fine-tuning script for Stable Diffusion for text2image with support for LoRA."""
 
-#==========================================================================================================
+# ==========================================================================================================
 # INSTRUCTION FOR RUNNING THE SCRIPT WITH NVRx IN-PROCESS RESILIENCY
-#==========================================================================================================
+# ==========================================================================================================
 # ✅ Install dependencies
 # pip install accelerate datasets transformers peft torchvision
 # install diffusers from source:
