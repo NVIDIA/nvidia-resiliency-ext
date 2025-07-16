@@ -3,40 +3,11 @@ import logging
 import os
 import pickle
 from abc import ABC
-import glob
-import argparse
 import torch
-import re
-from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
-from nvidia_resiliency_ext.shared_utils.health_check import GPUHealthCheck, NicHealthCheck
 from nvidia_resiliency_ext.attribution.utils import capture_logs
+from nvidia_resiliency_ext.shared_utils.health_check import GPUHealthCheck, NicHealthCheck
+
 logger = logging.getLogger(__name__)
-
-
-_trace_analyzer = None
-
-def init_trace_analyzer(
-    path, json=True, 
-):
-    """
-    Initialize the trace analyzer with the specified configuration.
-    
-    Args:
-        path: Path to store trace files.
-        json: Whether to save traces in JSON format.
-
-    Returns:
-        The initialized trace analyzer instance.
-    """
-    global _trace_analyzer
-    if _trace_analyzer is None:
-        _trace_analyzer = TorchTraceAnalyzer(path, json)
-    return _trace_analyzer
-
-
-def get_trace_analyzer():
-    global _trace_analyzer
-    return _trace_analyzer
 
 
 class TraceCollector(ABC):
@@ -110,7 +81,7 @@ class TorchFRTraceCollector(TraceCollector):
         - Flushes the file to ensure all data is written
         """
 
-        output_path = f"{path}/_dump_{self.rank}"
+        output_path = f"{self.path}/_dump_{self.rank}"
         self.trace = self.dump_fn(includeCollectives=True, onlyActive=True)
         mode = 'wb'
         if self.json:
@@ -122,12 +93,11 @@ class TorchFRTraceCollector(TraceCollector):
             )
             dumped_dict = pickle.loads(self.trace)
             local_rank = self.rank % torch.cuda.device_count()
-            if health_check:
-                health_check_results = TorchFRTraceCollector.get_health_check_results(local_rank)
-                dumped_dict['health_check_results'] = {
-                    'gpu': health_check_results['gpu_health_check'],
-                    'nic': health_check_results['nic_health_check'],
-                }
+            health_check_results = TorchFRTraceCollector.get_health_check_results(local_rank)
+            dumped_dict['health_check_results'] = {
+                'gpu': health_check_results['gpu_health_check'],
+                'nic': health_check_results['nic_health_check'],
+            }
             if self.json:
                 json.dump(dumped_dict, f, indent=4)
             else:
@@ -157,46 +127,3 @@ class TorchFRTraceCollector(TraceCollector):
             'output': stderr_nic.getvalue(),
         }
         return health_check_results
-
-    def analyze(self, schedule_order: str = 'TP->PP->DP'):
-        """
-        Analyzes the collected trace data using the CollectiveAnalyzer.
-        """
-
-        args = {
-            'paths': [self.path],
-            'verbose': False,
-            'time_spread': False,
-            'health_check': True,
-            'llm_analyze': self.llm_analyze,
-            'model': 'nvdev/nvidia/llama-3.3-nemotron-super-49b-v1', #nvidia/llama-3.1-nemotron-51b-instruct',
-            'scheduling_order': schedule_order,
-        }
-        dump_files = glob.glob(os.path.join(self.path, '_dump_*'))
-        if not dump_files:
-            logger.warning(f"No dump files found in {self.path}")
-            return
-        logger.info(f"Found {len(dump_files)} dump files in {self.path}")
-        args['pattern'] = '*.json' if self.json else '*'
-        logger.info(f"Analyzing traces with options as {args}")
-        analyzer = CollectiveAnalyzer(argparse.Namespace(**args))
-        logger.info(f"CollectiveAnalyzer created")
-        with capture_logs() as stdout:
-            analyzer.run_sync(args['paths'])
-        analysis_output = stdout.getvalue()
-        logger.info(f"Analysis output: {analysis_output}")
-        hanging_ranks = re.search(r'.*hanging ranks: (.*)', analysis_output)
-        if hanging_ranks:
-            # Parse the hanging ranks from the analysis output
-            hanging_ranks_list = list(map(int, hanging_ranks.group(1).split(',')))
-            if self.failure_config:
-            # Check if failure_ranks is a list or a single value
-                failure_ranks_list = self.failure_ranks if isinstance(self.failure_ranks, list) else [self.failure_ranks]
-                # Find matched and unmatched elements
-                matched_ranks = [rank for rank in failure_ranks_list if rank in hanging_ranks_list]
-                unmatched_ranks = [rank for rank in failure_ranks_list if rank not in hanging_ranks_list]
-                logger.info(f"Matched ranks: {matched_ranks}, count: {len(matched_ranks)}")
-                logger.info(f"Unmatched ranks: {unmatched_ranks}, count: {len(unmatched_ranks)}")
-            else:
-                logger.info(f"hanging_ranks: {hanging_ranks_list}")
-        logger.info(f"Completed Analyzing traces in {self.path}")
