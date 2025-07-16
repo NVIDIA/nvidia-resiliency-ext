@@ -2,6 +2,28 @@
 
 NVIDIA Resiliency Extension is a Python package for framework developers and users to implement fault-tolerant features. It improves effective training time by minimizing downtime due to failures and interruptions.
 
+## NVIDIA Resiliency Extension v0.4.1
+
+### Highlights
+
+This hotfix release includes important bug fixes, performance improvements, and minor updates to enhance stability. 
+
+- Checkpointing
+    - [PR 104](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/104), [PR 106](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/106), [PR 108](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/108), [PR 111](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/111) and [PR 116](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/116) fix the asynchronous checkpointing module to switch from temporal to using the persistent worker that uses `spawn` instead of `fork`.
+    - The fix in this release is working toward an intermediate milestone of deprecating the use of `fork` and instead using a `spawn` for asynchronous checkpointing. The complete transition to using `spawn` has the following dependencies on `fork` that will be eliminated in upcoming release:
+        - Local checkpointing must continue to use the `fork` based asynchronous checkpointing as clarified in the usage guide.
+        - File IO operations with multiprocessing can still trigger a `fork`  
+
+- In-process restart
+    - [PR 103](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/103) fixes a case where extra CUDA contexts were created on local rank 0 after restart, consuming extra GPU memory on local rank 0.
+    - [PR 112](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/112) fixes the workload state leaks across the restart boundary. The fix addresses a case where objects created in the wrapped function could not be garbage collected after a restart, manifesting as a memory leak. 
+
+### Known Issues & Limitations
+
+- In a future release, we will add changes to automatically terminate the persistent process when the main process terminates.
+- Until this change is implemented, job schedulers must ensure proper termination of the persistent process and its child workers for a graceful shutdown. 
+  
+
 ## NVIDIA Resiliency Extension v0.4.0
 
 ### Highlights
@@ -9,7 +31,7 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
 - Checkpointing
     - [PR 29](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/29) - Support for storing checkpoints to cloud object stores
         - Leverage cloud storage provider’s multithreaded SDK for rapid loading and saving checkpoints to object stores such as AWS S3, Azure Blob 
-          Storage, Google Cloud Storage and more using NVIDIA Multi-storage Client.
+          Storage, Google Cloud Storage and more using NVIDIA Multi-storage Client
         - Provide scalable, reliable, cheaper, single source of truth across clouds/regions
         - Provide opt-out configuration when creating FileSystemWriterAsync class instance to allow users to passthrough to the filesystem
     - [PR 36](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/36) - Critical bug fix to enable async checkpoint loading without errors 
