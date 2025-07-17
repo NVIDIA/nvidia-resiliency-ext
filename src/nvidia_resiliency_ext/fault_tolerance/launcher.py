@@ -36,6 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 import torch
 from torch.distributed.argparse_util import check_env, env
 
+from nvidia_resiliency_ext.shared_utils.logger import log
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat import events, metrics, timer
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import (
     RunResult,
@@ -87,12 +88,14 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     write_obj_to_ipc_stream,
 )
 
-logging.basicConfig(
-    level=os.getenv('FT_LAUNCHER_LOGLEVEL', 'INFO'),
-    format=f"[%(asctime)s] [%(levelname)s] [ft_launcher{os.getpid()}@{socket.gethostname()}] %(message)s",
-)
-
-logger = logging.getLogger(__name__)
+# Deprecation warning for FT_LAUNCHER_LOGLEVEL
+if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
+    warnings.warn(
+        "FT_LAUNCHER_LOGLEVEL environment variable is deprecated. "
+        "Use NVRX_LOG_DEBUG=1 for debug logging instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
 
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
@@ -258,9 +261,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._record_worker_events(result)
             return result
         except RendezvousGracefulExitError as e:
-            logger.info("Rendezvous gracefully exited: %s", e)
+            log.info("Rendezvous gracefully exited: %s", e)
         except SignalException as e:
-            logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
+            log.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
             self._shutdown(e.sigval, timeout=self._term_timeout)
             shutdown_called = True
             raise
@@ -287,7 +290,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec = self._worker_group.spec
         role = spec.role
 
-        logger.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
+        log.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
 
         self._initialize_workers(self._worker_group)
         monitor_interval = spec.monitor_interval
@@ -304,7 +307,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
-                logger.info(
+                log.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
                     role,
@@ -314,7 +317,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 return run_result
             elif state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
                 if self._remaining_restarts > 0:
-                    logger.info(
+                    log.info(
                         "[%s] Worker group %s. "
                         "%s/%s attempts left;"
                         " will restart worker group",
@@ -338,7 +341,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 group_rank = self._worker_group.group_rank
                 if num_nodes_waiting > 0:
-                    logger.info(
+                    log.info(
                         "[%s] Detected %s "
                         "new nodes from group_rank=%s; "
                         "will restart worker group",
@@ -356,7 +359,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec = self._worker_group.spec
         role = spec.role
 
-        logger.info(
+        log.info(
             f"[{role}] starting workers for entrypoint: {spec.get_entrypoint_name()} with min-healthy policy"
         )
 
@@ -397,7 +400,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             num_succ = worker_state_cnt[WorkerState.SUCCEEDED]
             num_healthy = worker_state_cnt[WorkerState.HEALTHY]
 
-            logger.debug(
+            log.debug(
                 "[%s] group_rank=%s worker_state_cnt=%s", role, group_rank, worker_state_cnt
             )
 
@@ -407,7 +410,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             # their actual run result
             if num_healthy == 0:
                 if num_succ >= min_nodes:
-                    logger.info(
+                    log.info(
                         f"[{role}] {group_rank=} {state.name=} detected that the run ended successfuly: {worker_state_cnt=}"
                     )
                     # ensure this node workers are terminated
@@ -434,19 +437,19 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # all we can do is to restart if possible or shutdown otherwise
                 # NOTE: we use the rdzv round to count the restarts, so restarts are counted
                 # globally (while in any-failed mode each worker counts its own restarts)
-                logger.warning(
+                log.warning(
                     f"[{role}] {group_rank=} {state.name=} detected that the current run failed: {worker_state_cnt=}"
                 )
                 self._remaining_restarts = spec.max_restarts - self._rdzv_handler.round()
                 if self._remaining_restarts > 0:
-                    logger.info(
+                    log.info(
                         f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
                     )
                     self._remaining_restarts -= 1
                     self._restart_workers(self._worker_group)
                 else:
                     # try to stop the workers and return the updated run result
-                    logger.info(f"0/{spec.max_restarts} restart attempts left. Exiting...")
+                    log.info(f"0/{spec.max_restarts} restart attempts left. Exiting...")
                     self._stop_workers(self._worker_group)
                     run_result = self._monitor_workers(self._worker_group)
                     return run_result
@@ -455,20 +458,25 @@ class LocalElasticAgent(SimpleElasticAgent):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
+        """Setup rank monitors for each local rank."""
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
         for worker_env in envs.values():
-            # Start rank monitors if not already started
-            # Each rank (re)connects to its rank monitor when it starts
             # Monitor of the local rank0 on the store hosting node is the restarter logger
             local_rank = int(worker_env['LOCAL_RANK'])
             is_restarter_logger = self._is_store_host and local_rank == 0
             rmon_ipc_socket = worker_env[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR]
             if local_rank not in self._local_rank_to_rmon:
+                # Pass LOCAL_RANK and RANK environment variables to the rank monitor
+                rank_env = {
+                    'LOCAL_RANK': worker_env['LOCAL_RANK'],
+                    'RANK': worker_env['RANK']
+                }
                 self._local_rank_to_rmon[local_rank] = RankMonitorServer.run_in_subprocess(
                     cfg=self._ft_cfg,
                     ipc_socket_path=rmon_ipc_socket,
                     is_restarter_logger=is_restarter_logger,
                     mp_ctx=fork_mp_ctx,
+                    env=rank_env,
                 )
 
     def shutdown_rank_monitors(self):
@@ -490,7 +498,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 watchdog_file_path = os.path.join(
                     tempfile.gettempdir(), f"watchdog_timer_{uuid.uuid4()}"
                 )
-            logger.info("Starting a FileTimerServer with %s ...", watchdog_file_path)
+            log.info("Starting a FileTimerServer with %s ...", watchdog_file_path)
             self._worker_watchdog = timer.FileTimerServer(
                 file_path=watchdog_file_path,
                 max_interval=0.1,
@@ -498,9 +506,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                 log_event=self._log_watchdog_event,
             )
             self._worker_watchdog.start()
-            logger.info("FileTimerServer started")
+            log.info("FileTimerServer started")
         else:
-            logger.info(
+            log.info(
                 "Environment variable '%s' not found. Do not start FileTimerServer.",
                 enable_watchdog_env_name,
             )
@@ -550,7 +558,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
     def _stop_workers(self, worker_group: WorkerGroup) -> None:
-        logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
+        log.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Send close message to rank monitors
         for local_rank, rmon_proc in self._local_rank_to_rmon.items():
@@ -567,7 +575,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     asyncio.run(send_close_msg())
             except Exception as e:
-                logger.warning(f"Failed to send close message to rank monitor {local_rank}: {e}")
+                log.warning(f"Failed to send close message to rank monitor {local_rank}: {e}")
 
         self._shutdown(timeout=self._workers_stop_timeout)
 
@@ -665,7 +673,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         assert self._pcontext is not None
         pc_pids = set(self._pcontext.pids().values())
         if worker_pids != pc_pids:
-            logger.error(
+            log.error(
                 "[%s] worker pids do not match process_context pids." " Expected: %s, actual: %s",
                 role,
                 worker_pids,
@@ -740,16 +748,16 @@ class LocalElasticAgent(SimpleElasticAgent):
                     time.sleep(pooling_interval)
                     time_left -= pooling_interval
                 if rdzv_handler.num_nodes() > 0:
-                    logger.warning(
+                    log.warning(
                         f"Some nodes did not leave the rendezvous on time ({timeout=} seconds). "
                         "Exiting agent anyway, but this might result in rdzv failures."
                     )
                 else:
-                    logger.info(
+                    log.info(
                         "Rendezvous don't have any nodes. Leaving the store hosting process..."
                     )
         except Exception as e:
-            logger.warning(f"Error while trying to gracefully exit the rendezvous: {e}")
+            log.warning(f"Error while trying to gracefully exit the rendezvous: {e}")
             pass  # continue, we are exiting the process anyway
 
 
@@ -930,7 +938,7 @@ def launch_agent(
 ) -> Dict[int, Any]:
     if not config.run_id:
         run_id = str(uuid.uuid4().int)
-        logger.warning("config has no run_id, generated a random run_id: %s", run_id)
+        log.warning("config has no run_id, generated a random run_id: %s", run_id)
         config.run_id = run_id
 
     entrypoint_name = _get_entrypoint_name(entrypoint, args)
@@ -939,7 +947,7 @@ def launch_agent(
     # we dont want to replace missing/dead nodes with spares nor to upscale the rendezvous with new arrivals
     config.rdzv_configs['upscaling_enabled'] = config.restart_policy != "min-healthy"
 
-    logger.info(
+    log.info(
         "Starting elastic_operator with launch configs:\n"
         "  entrypoint       : %(entrypoint)s\n"
         "  min_nodes        : %(min_nodes)s\n"
@@ -1017,7 +1025,7 @@ def launch_agent(
         events.record(agent.get_event_succeeded())
 
         if result is None:
-            logger.info("Agent .run() result is None. Agent was waiting at the rendezvous.")
+            log.info("Agent .run() result is None. Agent was waiting at the rendezvous.")
             return None
 
         if result.is_failed():
@@ -1030,12 +1038,12 @@ def launch_agent(
                 failures=result.failures,
             )
 
-        logger.info(f"Agent .run() is OK. No failures in the result. {result=}")
+        log.info(f"Agent .run() is OK. No failures in the result. {result=}")
         return result.return_values
     except UnhealthyNodeException as e:
         # do not shutdown rendezvous when an unhealthy node is leaving
         shutdown_rdzv = False
-        logger.error(f"Agent .run() raised UnhealthyNodeException: {e}")
+        log.error(f"Agent .run() raised UnhealthyNodeException: {e}")
         events.record(agent.get_event_failed())
     except ChildFailedError:
         raise
@@ -1044,15 +1052,15 @@ def launch_agent(
         # since this closes the rendezvous on this rdzv_id permanently and
         # prevents any additional scaling events
         shutdown_rdzv = False
-        logger.error(f"Agent .run() raised SignalException: {e}")
+        log.error(f"Agent .run() raised SignalException: {e}")
         events.record(agent.get_event_failed())
         if agent.any_rank_failed():
-            logger.warning("Some ranks exited with non-zero. Re-raising SignalException.")
+            log.warning("Some ranks exited with non-zero. Re-raising SignalException.")
             raise
         else:
-            logger.info("All ranks exited gracefully. Launcher exiting without an error.")
+            log.info("All ranks exited gracefully. Launcher exiting without an error.")
     except Exception as e:
-        logger.error(f"Agent .run() raised exception, {e=}")
+        log.error(f"Agent .run() raised exception, {e=}")
         events.record(agent.get_event_failed())
         raise
     finally:
@@ -1908,7 +1916,7 @@ def parse_min_max_nnodes(nnodes: str):
 
 def determine_local_world_size(nproc_per_node: str):
     try:
-        logger.info("Using nproc_per_node=%s.", nproc_per_node)
+        log.info("Using nproc_per_node=%s.", nproc_per_node)
         return int(nproc_per_node)
     except ValueError as e:
         if nproc_per_node == "cpu":
@@ -1922,7 +1930,7 @@ def determine_local_world_size(nproc_per_node: str):
         else:
             raise ValueError(f"Unsupported nproc_per_node value: {nproc_per_node}") from e
 
-        logger.info(
+        log.info(
             "Using nproc_per_node=%s," " setting to %s since the instance " "has %s %s",
             nproc_per_node,
             num_proc,
@@ -1976,7 +1984,7 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
                 f"Could not find entrypoint under 'torchrun.logs_specs[{logs_specs_name}]' key"
             )
 
-        logger.info("Using logs_spec '%s' mapped to %s", logs_specs_name, str(logs_specs_cls))
+        log.info("Using logs_spec '%s' mapped to %s", logs_specs_name, str(logs_specs_cls))
     else:
         logs_specs_cls = DefaultLogsSpecs
 
@@ -1990,7 +1998,7 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     assert args.max_restarts >= 0
 
     if hasattr(args, "master_addr") and args.rdzv_backend != "static" and not args.rdzv_endpoint:
-        logger.warning(
+        log.warning(
             "master_addr is only used for static rdzv_backend and when rdzv_endpoint "
             "is not specified."
         )
@@ -1998,7 +2006,7 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     nproc_per_node = determine_local_world_size(args.nproc_per_node)
     if "OMP_NUM_THREADS" not in os.environ and nproc_per_node > 1:
         omp_num_threads = 1
-        logger.warning(
+        log.warning(
             "\n*****************************************\n"
             "Setting OMP_NUM_THREADS environment variable for each process to be "
             "%s in default, to avoid your system being overloaded, "
@@ -2112,7 +2120,7 @@ def run(args):
         args.rdzv_backend = "c10d"
         args.rdzv_endpoint = "localhost:0"
         args.rdzv_id = str(uuid.uuid4())
-        logger.info(
+        log.info(
             "\n**************************************\n"
             "Rendezvous info:\n"
             "--rdzv-backend=%s "
@@ -2138,14 +2146,14 @@ def main(args=None):
     try:
         run(args)
     except ChildFailedError as e:
-        logger.error(
+        log.error(
             f"Some rank(s) exited with non-zero exit code: {e.failures}. Agent's exit code = 1"
         )
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
+        log.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
         sys.exit(1)
-    logger.info("Agent exits with exit code = 0.")
+    log.info("Agent exits with exit code = 0.")
     sys.exit(0)
 
 

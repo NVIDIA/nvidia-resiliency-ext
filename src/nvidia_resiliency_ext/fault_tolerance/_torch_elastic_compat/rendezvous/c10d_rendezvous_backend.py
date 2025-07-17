@@ -17,6 +17,7 @@ from datetime import timedelta
 from typing import Any, Optional, Tuple, cast
 
 from torch.distributed import FileStore, Store, TCPStore
+from nvidia_resiliency_ext.shared_utils.logger import log
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events import (
     NodeState,
     construct_and_record_rdzv_event,
@@ -30,8 +31,6 @@ from .api import (
 )
 from .dynamic_rendezvous import RendezvousBackend, Token
 from .utils import _matches_machine_hostname, parse_rendezvous_endpoint
-
-log = logging.getLogger(__name__)
 
 
 class C10dRendezvousBackend(RendezvousBackend):

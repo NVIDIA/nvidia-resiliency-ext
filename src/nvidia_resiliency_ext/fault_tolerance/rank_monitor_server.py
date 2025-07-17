@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 import traceback
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Dict
 
 import torch
 import torch.multiprocessing as mp
@@ -510,8 +510,14 @@ class RankMonitorServer:
         ipc_socket_path: str,
         rank_monitor_ready_event,
         is_restarter_logger: bool,
+        env: Optional[Dict[str, str]] = None,
     ) -> None:
         try:
+            # Set environment variables if provided
+            if env is not None:
+                for key, value in env.items():
+                    os.environ[key] = value
+
             logger = RankMonitorLogger(level=cfg.log_level, is_restarter_logger=is_restarter_logger)
 
             logger.debug(f"Starting RankMonitorServer... PID={os.getpid()}")
@@ -533,7 +539,7 @@ class RankMonitorServer:
 
     @staticmethod
     def run_in_subprocess(
-        cfg, ipc_socket_path: str, is_restarter_logger: bool = False, mp_ctx=torch.multiprocessing
+        cfg, ipc_socket_path: str, is_restarter_logger: bool = False, mp_ctx=torch.multiprocessing, env=None
     ):
         rank_monitor_ready_event = mp_ctx.Event()
 
@@ -542,10 +548,12 @@ class RankMonitorServer:
             "ipc_socket_path": ipc_socket_path,
             "rank_monitor_ready_event": rank_monitor_ready_event,
             "is_restarter_logger": is_restarter_logger,
+            "env": env,
         }
 
         rank_monitor_process = mp_ctx.Process(
-            target=RankMonitorServer.run, kwargs=rank_monitor_process_kwargs
+            target=RankMonitorServer.run,
+            kwargs=rank_monitor_process_kwargs
         )
 
         rank_monitor_process.daemon = True

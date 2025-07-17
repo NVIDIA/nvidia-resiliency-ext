@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 
 from torch.distributed import PrefixStore, Store
 
+from nvidia_resiliency_ext.shared_utils.logger import log
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import WorkerState
 
 from ..shared_utils.health_check import GPUHealthCheck
@@ -52,9 +53,6 @@ from ._torch_elastic_compat.rendezvous.utils import _delay, _PeriodicTimer
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
-
-log = logging.getLogger(__name__)
-
 
 def get_method_name(depth=2):
     if len(inspect.stack()) > depth:

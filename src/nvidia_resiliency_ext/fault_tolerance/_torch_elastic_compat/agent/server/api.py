@@ -34,7 +34,7 @@ from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing
     ProcessFailure,
     SignalException,
 )
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.utils.logging import get_logger
+from nvidia_resiliency_ext.shared_utils.logger import log
 
 __all__ = [
     "WorkerSpec",
@@ -48,7 +48,6 @@ __all__ = [
 _TERMINAL_STATE_SYNC_ID = "torchelastic/agent/terminal_state"
 
 DEFAULT_ROLE = "default"
-log = get_logger(__name__)
 
 
 @dataclass

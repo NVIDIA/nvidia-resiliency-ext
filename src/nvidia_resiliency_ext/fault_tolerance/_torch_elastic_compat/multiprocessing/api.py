@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, Optional, Set, Tuple, Union
 from abc import ABC, abstractmethod
 
 import torch.multiprocessing as mp
+from nvidia_resiliency_ext.shared_utils.logger import log
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.errors import ProcessFailure, record
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.redirects import (
     redirect_stderr,
@@ -46,8 +47,6 @@ from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 
-
-log = logging.getLogger(__name__)
 
 __all__ = [
     "DefaultLogsSpecs",
