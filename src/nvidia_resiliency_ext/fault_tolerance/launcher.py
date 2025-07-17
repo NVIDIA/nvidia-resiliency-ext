@@ -19,7 +19,6 @@ import collections
 import contextlib
 import importlib.metadata as metadata
 import json
-import logging
 import os
 import signal
 import socket
@@ -36,7 +35,6 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 import torch
 from torch.distributed.argparse_util import check_env, env
 
-from nvidia_resiliency_ext.shared_utils.logger import log
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat import events, metrics, timer
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import (
     RunResult,
@@ -87,6 +85,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
+from nvidia_resiliency_ext.shared_utils.logger import log
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:

@@ -14,12 +14,12 @@
 # limitations under the License.
 
 import dataclasses
-import logging
 import os
 import socket
 from typing import Any, Collection, Mapping, Optional
 
 from nvidia_resiliency_ext.shared_utils.logger import log
+
 from .data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,

@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 import traceback
-from typing import Mapping, Optional, Dict
+from typing import Dict, Mapping, Optional
 
 import torch
 import torch.multiprocessing as mp
@@ -539,7 +539,11 @@ class RankMonitorServer:
 
     @staticmethod
     def run_in_subprocess(
-        cfg, ipc_socket_path: str, is_restarter_logger: bool = False, mp_ctx=torch.multiprocessing, env=None
+        cfg,
+        ipc_socket_path: str,
+        is_restarter_logger: bool = False,
+        mp_ctx=torch.multiprocessing,
+        env=None,
     ):
         rank_monitor_ready_event = mp_ctx.Event()
 
@@ -552,8 +556,7 @@ class RankMonitorServer:
         }
 
         rank_monitor_process = mp_ctx.Process(
-            target=RankMonitorServer.run,
-            kwargs=rank_monitor_process_kwargs
+            target=RankMonitorServer.run, kwargs=rank_monitor_process_kwargs
         )
 
         rank_monitor_process.daemon = True

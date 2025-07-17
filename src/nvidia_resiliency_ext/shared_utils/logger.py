@@ -57,14 +57,15 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Optional, Union, TextIO
-from pathlib import Path
+from typing import Optional
+
 
 class LogMessage:
     """Represents a log message with metadata."""
 
-    def __init__(self, level: int, message: str, rank: int, local_rank: int,
-                 hostname: str, timestamp: float):
+    def __init__(
+        self, level: int, message: str, rank: int, local_rank: int, hostname: str, timestamp: float
+    ):
         self.level = level
         self.message = message
         self.rank = rank
@@ -198,9 +199,7 @@ class LogManager:
             return
 
         self._aggregator_thread = threading.Thread(
-            target=self._aggregator_loop,
-            daemon=True,
-            name=f"LogAggregator-{self._rank}"
+            target=self._aggregator_loop, daemon=True, name=f"LogAggregator-{self._rank}"
         )
         self._aggregator_thread.start()
 
@@ -251,7 +250,7 @@ class LogManager:
             rank=self._rank,
             local_rank=self._local_rank,
             hostname=self._hostname,
-            timestamp=time.time()
+            timestamp=time.time(),
         )
 
         # If this is the aggregator, queue directly
@@ -276,7 +275,9 @@ class LogManager:
         try:
             # Append message to the rank's message file
             with open(msg_file, 'a') as f:
-                f.write(f"{log_msg.level}\t{log_msg.message}\t{log_msg.rank}\t{log_msg.local_rank}\t{log_msg.hostname}\t{log_msg.timestamp}\n")
+                f.write(
+                    f"{log_msg.level}\t{log_msg.message}\t{log_msg.rank}\t{log_msg.local_rank}\t{log_msg.hostname}\t{log_msg.timestamp}\n"
+                )
                 f.flush()  # Ensure message is written immediately
 
         except Exception as e:
@@ -328,7 +329,9 @@ class LogManager:
                             if line:
                                 parts = line.split('\t')
                                 if len(parts) >= 6:
-                                    level, message, rank, local_rank, hostname, timestamp = parts[:6]
+                                    level, message, rank, local_rank, hostname, timestamp = parts[
+                                        :6
+                                    ]
 
                                     log_msg = LogMessage(
                                         level=int(level),
@@ -336,7 +339,7 @@ class LogManager:
                                         rank=int(rank),
                                         local_rank=int(local_rank),
                                         hostname=hostname,
-                                        timestamp=float(timestamp)
+                                        timestamp=float(timestamp),
                                     )
 
                                     with self._lock:
@@ -377,6 +380,7 @@ class LogManager:
         # Clean up temporary directory (only if this is the last rank on the node)
         try:
             import shutil
+
             if hasattr(self, '_temp_dir') and os.path.exists(self._temp_dir):
                 # Only clean up if this is the last rank (rank 0) to avoid conflicts
                 if self._is_aggregator:
@@ -413,14 +417,12 @@ class DistributedLogHandler(logging.Handler):
             msg = self.format(record)
 
             # Queue the message for aggregation (only if distributed logging is enabled)
-            self.log_manager._queue_message(
-                level=record.levelno,
-                message=msg
-            )
+            self.log_manager._queue_message(level=record.levelno, message=msg)
         except (OSError, IOError, RuntimeError):
             # Fallback to stderr if logging fails
             sys.stderr.write(f"Log handler error: {record.getMessage()}\n")
             sys.stderr.flush()
+
 
 # Distributed logging utilities
 def get_rank() -> int:
@@ -445,6 +447,7 @@ def get_rank() -> int:
         "Please set either RANK (torchrun) or SLURM_PROCID (Slurm) environment variable."
     )
 
+
 def get_local_rank() -> int:
     """Get the local rank from environment variables.
 
@@ -465,6 +468,7 @@ def get_local_rank() -> int:
 
 # Create and export a single shared logger instance
 _log_manager_instances = {}
+
 
 def setup_logger(log_dir=None) -> logging.Logger:
     """
@@ -496,6 +500,7 @@ def setup_logger(log_dir=None) -> logging.Logger:
 
     # Return the logger from the log manager
     return _log_manager_instances[process_id].logger
+
 
 # Create and export a single shared logger instance
 log = setup_logger()
