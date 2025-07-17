@@ -330,24 +330,26 @@ class GPUHealthCheck(PynvmlMixin):
                 return True
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_GPU_RESET:
                 self.log.warning(
-                    f"GPU {i}: Requires a reset to recover. Terminate GPU processes and reset the GPU."
+                    f"GPU {gpu_id}: Requires a reset to recover. Terminate GPU processes and reset the GPU."
                 )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NODE_REBOOT:
-                self.log.warning(f"GPU {i}: Requires a node reboot to recover. Reboot the system.")
+                self.log.warning(
+                    f"GPU {gpu_id}: Requires a node reboot to recover. Reboot the system."
+                )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_P2P:
                 self.log.warning(
-                    f"GPU {i}: Requires peer-to-peer traffic to be drained. Terminate related processes."
+                    f"GPU {gpu_id}: Requires peer-to-peer traffic to be drained. Terminate related processes."
                 )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_AND_RESET:
                 self.log.warning(
-                    f"GPU {i}: Operating at reduced capacity. Drain existing work and reset the GPU."
+                    f"GPU {gpu_id}: Operating at reduced capacity. Drain existing work and reset the GPU."
                 )
                 return False
             else:
-                self.log.warning(f"GPU {i}: Unknown recovery action status: {recovery_action}")
+                self.log.warning(f"GPU {gpu_id}: Unknown recovery action status: {recovery_action}")
                 return False
 
         except self.pynvml.NVMLError as e:
