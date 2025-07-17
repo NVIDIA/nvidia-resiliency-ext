@@ -17,11 +17,14 @@
 import abc
 import concurrent.futures
 import os
+
 import torch
+
+from nvidia_resiliency_ext.attribution.trace_analyzer.trace_collector import TorchFRTraceCollector
 
 from . import utils
 from .state import FrozenState
-from nvidia_resiliency_ext.attribution.trace_analyzer.trace_collector import TorchFRTraceCollector
+
 
 class Abort(abc.ABC):
     r'''
@@ -105,6 +108,7 @@ class AbortTorchDistributed(Abort):
                 if os.environ.get(env_var, '0') == '0':
                     return False
             return True
+
         if _check_fr_env() is True:
             trace_path = os.environ.get('NVRX_FR_TRACE_PATH', None)
             if trace_path is None:
@@ -114,7 +118,6 @@ class AbortTorchDistributed(Abort):
             trace_analyzer = TorchFRTraceCollector(trace_path)
             trace_analyzer.collect()
 
-        
     def __call__(self, state: FrozenState) -> FrozenState:
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             AbortTorchDistributed.collect_fr_trace()
