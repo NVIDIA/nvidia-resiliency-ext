@@ -3,7 +3,9 @@ import logging
 import os
 import pickle
 from abc import ABC
+
 import torch
+
 from nvidia_resiliency_ext.attribution.utils import capture_logs
 from nvidia_resiliency_ext.shared_utils.health_check import GPUHealthCheck, NicHealthCheck
 
@@ -76,7 +78,7 @@ class TorchFRTraceCollector(TraceCollector):
 
         This method performs the following steps:
         - Creates a unique output path for the trace file
-        - Opens the file in write mode  
+        - Opens the file in write mode
         - Writes the trace data to the file
         - Flushes the file to ensure all data is written
         """
@@ -88,9 +90,7 @@ class TorchFRTraceCollector(TraceCollector):
             output_path = output_path + '.json'
             mode = 'w'
         with open(output_path, mode) as f:
-            logger.info(
-                f"{self.rank} is about to dump its trace to {output_path}"
-            )
+            logger.info(f"{self.rank} is about to dump its trace to {output_path}")
             dumped_dict = pickle.loads(self.trace)
             local_rank = self.rank % torch.cuda.device_count()
             health_check_results = TorchFRTraceCollector.get_health_check_results(local_rank)

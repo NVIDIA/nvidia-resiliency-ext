@@ -1,7 +1,7 @@
 import logging
+import sys
 from contextlib import contextmanager
 from io import StringIO
-import sys
 
 
 @contextmanager
@@ -19,6 +19,7 @@ def capture_logs(logger_name=None):
     finally:
         # Restore original handlers
         logger.handlers = original_handlers
+
 
 @contextmanager
 def capture_stdout(logger_name=None):
