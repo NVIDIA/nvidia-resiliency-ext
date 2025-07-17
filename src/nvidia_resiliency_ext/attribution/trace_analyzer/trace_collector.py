@@ -15,18 +15,7 @@ logger = logging.getLogger(__name__)
 class TraceCollector(ABC):
     """
     Base class for trace analyzers that process runtime-collected traces.
-
-    This class provides a framework for collecting, dumping, and analyzing traces.
-    It optionally manages an internal thread (`timeout_thread`) to periodically dump traces
-    at configurable intervals.
-
-    Derived classes must implement:
-    - `dump()`: Writes collected traces to a file.
-    - `collect()`: Gathers trace data at runtime.
-    - `analyze()`: Processes and extracts insights from traces.
-
-    The `update_timeout(timeout: int)` method allows adjusting the trace collection interval.
-    Subclasses should define specific logic for trace handling.
+    Derived classes must implement `collect()` to gather trace data at runtime.
     """
 
     def __init__(
@@ -106,6 +95,14 @@ class TorchFRTraceCollector(TraceCollector):
 
     @staticmethod
     def get_health_check_results(local_rank: int):
+        """
+        Performs health checks on the GPU and NIC for a given local rank.
+
+        This method performs the following steps:
+        - Performs GPU health check
+        - Performs NIC health check
+        - Returns the bypassed output strings for GPU and NIC health checks
+        """
         health_check_results = {}
 
         with capture_logs() as stderr_gpu:
