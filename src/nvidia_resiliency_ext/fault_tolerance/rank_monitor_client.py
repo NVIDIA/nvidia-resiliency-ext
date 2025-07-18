@@ -41,6 +41,7 @@ from .utils import read_obj_from_ipc_socket, write_object_to_ipc_socket
 # Get the nvrx logger
 logger = logging.getLogger("nvrx")
 
+
 class RankMonitorClientError(Exception):
     pass
 

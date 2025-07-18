@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import asyncio
+import logging
 import os
 import threading
 import traceback
@@ -23,8 +24,6 @@ from functools import wraps
 from typing import Callable, Optional, Union
 
 import defusedxml.ElementTree as ET
-
-import logging
 
 # Get the nvrx logger
 logger = logging.getLogger("nvrx")
@@ -271,7 +270,9 @@ class GPUHealthCheck(PynvmlMixin):
                     )
                     return False
                 elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NODE_REBOOT:
-                    logger.warning(f"GPU {i}: Requires a node reboot to recover. Reboot the system.")
+                    logger.warning(
+                        f"GPU {i}: Requires a node reboot to recover. Reboot the system."
+                    )
                     return False
                 elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_P2P:
                     logger.warning(
@@ -469,7 +470,9 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
             local_rank (int): Local rank of the GPU.
         """
         if self._gpu_ib_map is None:
-            logger.error(f"gpu_ib_map is empty. Disable NIC health check for local_rank: {local_rank}")
+            logger.error(
+                f"gpu_ib_map is empty. Disable NIC health check for local_rank: {local_rank}"
+            )
             return
 
         self._local_rank = local_rank
@@ -547,6 +550,8 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
                 return False
             self._prev_link_downed = link_downed_value
         except Exception:
-            logger.warning("Exception while reading link_downed counter: %s" % traceback.format_exc())
+            logger.warning(
+                "Exception while reading link_downed counter: %s" % traceback.format_exc()
+            )
 
         return True

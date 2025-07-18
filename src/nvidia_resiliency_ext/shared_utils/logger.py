@@ -117,7 +117,7 @@ class LogManager:
     is enabled (NVRX_DIST_LOG_DIR is set), each node logs independently to avoid
     overwhelming centralized logging systems. Local rank 0 acts as the node aggregator,
     collecting logs from all ranks on the same node and writing them to a per-node log file.
-    
+
     Fork-safe: Child processes automatically disable aggregation to avoid conflicts.
     """
 
@@ -447,25 +447,25 @@ class DistributedLogHandler(logging.Handler):
 
 class DynamicLogFormatter(logging.Formatter):
     """Dynamic formatter that reads rank information at runtime with lazy initialization."""
-    
+
     def __init__(self, fmt=None, datefmt=None):
         super().__init__(fmt, datefmt)
         # Cache for rank information - initialized on first use
         self._rank = None
         self._local_rank = None
-    
+
     def format(self, record):
         # Initialize rank cache on first use
         if self._rank is None:
             self._update_rank_cache()
-        
+
         # Add cached rank info to the record
         record.rank = self._rank
         record.local_rank = self._local_rank
-        
+
         # Use the parent's format method
         return super().format(record)
-    
+
     def _update_rank_cache(self):
         """Initialize the cached rank information."""
         try:
@@ -546,10 +546,10 @@ def setup_logger(log_dir=None, force_reset=False) -> logging.Logger:
         # In main script (launcher.py) or training subprocess
         from nvidia_resiliency_ext.shared_utils.logger import setup_logger
         logger = setup_logger()
-        
+
         # In subprocesses that need fresh logger setup
         logger = setup_logger(force_reset=True)
-        
+
         # In other modules
         import logging
         logger = logging.getLogger("nvrx")
@@ -557,7 +557,7 @@ def setup_logger(log_dir=None, force_reset=False) -> logging.Logger:
     """
     # Check if the nvrx logger is already configured
     logger = logging.getLogger("nvrx")
-    
+
     # If force_reset is True or the logger has no handlers, configure it
     if force_reset or not logger.handlers:
         # Clear existing handlers if force_reset is True
@@ -567,18 +567,18 @@ def setup_logger(log_dir=None, force_reset=False) -> logging.Logger:
             # Clear any stored log manager to force fresh creation
             if hasattr(setup_logger, '_log_manager'):
                 delattr(setup_logger, '_log_manager')
-        
+
         # Create a LogManager instance to handle the configuration
         log_manager = LogManager(log_dir=log_dir)
-        
+
         # Get the configured logger from the log manager
         logger = log_manager.logger
-        
+
         # Store the log manager instance to prevent garbage collection
         # This ensures the aggregator thread keeps running
         setup_logger._log_manager = log_manager
     else:
         # Logger is already configured, just return the existing logger
         logger = logging.getLogger("nvrx")
-    
+
     return logger

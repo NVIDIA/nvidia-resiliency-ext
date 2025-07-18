@@ -99,7 +99,7 @@ class RankMonitorLogger(logging.Logger):
 def log_restarter_event(is_restarter_logger, message, *args, **kwargs):
     """
     Log a restart event that should always be visible, but only if restarter logging is enabled.
-    
+
     Args:
         is_restarter_logger: Whether restarter logging is enabled
         message: The message to log
@@ -269,7 +269,7 @@ class RankMonitorServer:
         # Update NIC health checker on the rank to monitor.
         if self.nic_health_checker is not None:
             self.nic_health_checker.set_nic_device(local_rank=self.rank_info.local_rank)
-        
+
         # Check that the rank info matches the environment variable
         env_rank = int(os.environ.get('RANK', '0'))
         if msg.rank_info.global_rank != env_rank:
@@ -277,7 +277,7 @@ class RankMonitorServer:
                 f"Rank mismatch: rank_info.global_rank={msg.rank_info.global_rank}, "
                 f"environment RANK={env_rank}"
             )
-        
+
         await write_obj_to_ipc_stream(OkMsg(cfg=self.cfg), writer)
 
     async def _handle_heartbeat_msg(self, msg, writer):
@@ -543,7 +543,7 @@ class RankMonitorServer:
 
         # Set up the nvrx logger - force fresh setup for subprocess
         from nvidia_resiliency_ext.shared_utils.logger import setup_logger
-        
+
         # Force fresh logger setup for subprocess
         logger = setup_logger(force_reset=True)
 
