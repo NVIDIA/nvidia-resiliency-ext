@@ -541,10 +541,9 @@ class RankMonitorServer:
             for key, value in env.items():
                 os.environ[key] = value
 
-        # Set up the nvrx logger - force fresh setup for subprocess
+        # Set up the nvrx logger for subprocess
+        # Use force_reset=True to ensure fresh logger setup with correct rank info
         from nvidia_resiliency_ext.shared_utils.logger import setup_logger
-
-        # Force fresh logger setup for subprocess
         logger = setup_logger(force_reset=True)
 
         try:

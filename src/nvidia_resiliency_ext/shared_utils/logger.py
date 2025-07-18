@@ -24,10 +24,10 @@ of GPUs. The design automatically adapts based on environment configuration.
 Key Design Principles:
 - Environment-driven behavior: NVRX_DIST_LOG_DIR controls distributed vs regular logging
 - Per-node aggregation: When distributed logging is enabled, local rank 0 aggregates logs
-- All ranks log to stderr: Ensures immediate visibility in all cases
-- Simple and reliable: No complex failover mechanisms
+- Dynamic rank detection: Automatically reads rank info from environment variables
 - Scalable: Works with 3K+ GPUs without overwhelming logging infrastructure
 - Fork-safe: All ranks use file-based messaging to ensure child processes can log
+- Subprocess-safe: Supports force_reset=True for fresh logger setup in subprocesses
 
 Features:
 - Dual mode operation: Regular logging (stderr/stdout) or distributed logging (file aggregation)
