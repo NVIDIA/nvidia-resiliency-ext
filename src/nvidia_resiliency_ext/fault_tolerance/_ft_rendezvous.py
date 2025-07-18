@@ -760,8 +760,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
 
         self._state.last_heartbeats[self._node] = datetime.utcnow()
 
-
-
     def _add_to_participants(self) -> None:
 
         msg = (
