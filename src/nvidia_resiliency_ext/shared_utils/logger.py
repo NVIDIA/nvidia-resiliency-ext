@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-Log Manager for Large-Scale LLM Training
+NVRx Logger for Large-Scale LLM Training
 
 This module provides a simple and efficient log manager that supports both
 regular logging and distributed logging for large-scale training with thousands
