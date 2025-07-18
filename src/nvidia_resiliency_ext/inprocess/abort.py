@@ -110,7 +110,18 @@ class AbortTorchDistributed(Abort):
             rank = torch.distributed.get_rank()
             for env_var in check_env_variables:
                 env_value = os.environ.get(env_var, '0')
-                if bool(int(env_value)) is False and rank == 0 and not cls._logging_printed:
+                # Convert string boolean values to integers
+                if env_value.lower() in ('true', '1', 'yes', 'on'):
+                    env_value_int = 1
+                elif env_value.lower() in ('false', '0', 'no', 'off'):
+                    env_value_int = 0
+                else:
+                    try:
+                        env_value_int = int(env_value)
+                    except ValueError:
+                        env_value_int = 0  # Default to False for invalid values
+
+                if bool(env_value_int) is False and rank == 0 and not cls._logging_printed:
                     log = logging.getLogger(__name__)
                     log.info(
                         f"Environment variable {env_var} is set to {env_value}"
