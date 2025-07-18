@@ -17,7 +17,8 @@ from datetime import timedelta
 from typing import Any, Optional, Tuple, cast
 
 from torch.distributed import FileStore, Store, TCPStore
-from nvidia_resiliency_ext.shared_utils.logger import log
+# Get the nvrx logger
+logger = logging.getLogger("nvrx")
 from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events import (
     NodeState,
     construct_and_record_rdzv_event,
@@ -170,7 +171,7 @@ def _create_tcp_store(params: RendezvousParameters) -> TCPStore:
                 construct_and_record_rdzv_event(
                     run_id=params.run_id, message=msg, node_state=NodeState.INIT
                 )
-                log.info(msg)
+                logger.info(msg)
 
             break
         except (ValueError, RuntimeError, TimeoutError) as exc:

@@ -27,6 +27,7 @@ Key Design Principles:
 - All ranks log to stderr: Ensures immediate visibility in all cases
 - Simple and reliable: No complex failover mechanisms
 - Scalable: Works with 3K+ GPUs without overwhelming logging infrastructure
+- Fork-safe: All ranks use file-based messaging to ensure child processes can log
 
 Features:
 - Dual mode operation: Regular logging (stderr/stdout) or distributed logging (file aggregation)
@@ -34,6 +35,7 @@ Features:
 - Automatic rank and node identification in log messages
 - Thread-safe logging with proper synchronization
 - Environment variable configuration for easy deployment
+- Fork-safe design with file-based message passing for all ranks
 
 Environment Variables:
     NVRX_DIST_LOG_DIR: Directory for log files. If set, enables distributed logging with aggregation.
@@ -42,12 +44,40 @@ Environment Variables:
     NVRX_LOG_TO_STDOUT: Set to "1" to log to stdout instead of stderr
 
 Usage:
-    from nvidia_resiliency_ext.shared_utils.log import nvrx_logger as logger
+    # In main script (launcher.py)
+    from nvidia_resiliency_ext.shared_utils.log import setup_logger
+    logger = setup_logger()  # Call once at startup
+    
+    # In other modules
+    import logging
+    logger = logging.getLogger("nvrx")
     logger.info("Training started")
     logger.debug("Debug information")
     logger.error("Error occurred")
     logger.warning("Warning message")
     logger.critical("Critical error")
+
+Forking Support:
+    The logger is designed to work safely with process forking. When using fork():
+    
+    # In parent process
+    from nvidia_resiliency_ext.shared_utils.log import setup_logger
+    logger = setup_logger()  # Setup before forking
+    logger.info("Parent process logging")
+    
+    # Fork child process
+    pid = os.fork()
+    if pid == 0:
+        # In child process - logger will work normally
+        import logging
+        logger = logging.getLogger("nvrx")
+        logger.info("Child process logging")
+    else:
+        # Parent continues normally
+        logger.info("Parent continues")
+    
+    All ranks use file-based message passing, ensuring child processes can log
+    even when they don't inherit the aggregator thread from the parent.
 """
 
 import logging
@@ -87,6 +117,8 @@ class LogManager:
     is enabled (NVRX_DIST_LOG_DIR is set), each node logs independently to avoid
     overwhelming centralized logging systems. Local rank 0 acts as the node aggregator,
     collecting logs from all ranks on the same node and writing them to a per-node log file.
+    
+    Fork-safe: Child processes automatically disable aggregation to avoid conflicts.
     """
 
     def __init__(self, log_dir: Optional[str] = None):
@@ -152,8 +184,8 @@ class LogManager:
 
     def _setup_logger(self) -> logging.Logger:
         """Setup the logger with appropriate handlers."""
-        # Use a single logger name since rank is already in the log message
-        logger = logging.getLogger("nvrx.dist")
+        # Configure the standard "nvrx" logger
+        logger = logging.getLogger("nvrx")
         logger.setLevel(self.log_level)
 
         # Clear existing handlers
@@ -165,9 +197,9 @@ class LogManager:
             handler = DistributedLogHandler(self)
             handler.setLevel(self.log_level)
 
-            # Use standard formatter with distributed info
-            formatter = logging.Formatter(
-                fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}:{self._rank}({self._local_rank})] %(filename)s:%(lineno)d %(message)s"
+            # Use dynamic formatter with static hostname and dynamic rank info
+            formatter = DynamicLogFormatter(
+                fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}:%(rank)s(%(local_rank)s)] %(filename)s:%(lineno)d %(message)s"
             )
 
             handler.setFormatter(formatter)
@@ -181,9 +213,9 @@ class LogManager:
 
             handler.setLevel(self.log_level)
 
-            # Use standard formatter with distributed info
-            formatter = logging.Formatter(
-                fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}:{self._rank}({self._local_rank})] %(filename)s:%(lineno)d %(message)s"
+            # Use dynamic formatter with static hostname and dynamic rank info
+            formatter = DynamicLogFormatter(
+                fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}:%(rank)s(%(local_rank)s)] %(filename)s:%(lineno)d %(message)s"
             )
 
             handler.setFormatter(formatter)
@@ -253,15 +285,9 @@ class LogManager:
             timestamp=time.time(),
         )
 
-        # If this is the aggregator, queue directly
-        if self._is_aggregator:
-            with self._lock:
-                self._log_queue.append(log_msg)
-        else:
-            # For non-aggregator ranks, we need to send to aggregator
-            # Since we don't have inter-rank communication in this simple design,
-            # we'll use a file-based message passing system
-            self._send_message_to_aggregator(log_msg)
+        # All ranks (including aggregator) use file-based message passing
+        # This ensures child processes can log even when they don't have the aggregator thread
+        self._send_message_to_aggregator(log_msg)
 
     def _send_message_to_aggregator(self, log_msg: LogMessage):
         """Send a message to the aggregator using file-based communication."""
@@ -295,7 +321,7 @@ class LogManager:
             return
 
         try:
-            # Look for message files from other ranks
+            # Look for message files from all ranks (including this aggregator rank)
             for filename in os.listdir(msg_dir):
                 if filename.startswith('rank_') and filename.endswith('.msg'):
                     msg_file = os.path.join(msg_dir, filename)
@@ -375,7 +401,7 @@ class LogManager:
         if self.distributed_logging_enabled and self._is_aggregator:
             self._stop_event.set()
             if self._aggregator_thread:
-                self._aggregator_thread.join(timeout=5.0)
+                self._aggregator_thread.join()
 
         # Clean up temporary directory (only if this is the last rank on the node)
         try:
@@ -408,12 +434,7 @@ class DistributedLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord):
         """Emit a log record."""
         try:
-            # Add distributed info to the record
-            record.hostname = self.log_manager._hostname
-            record.rank = self.log_manager._rank
-            record.local_rank = self.log_manager._local_rank
-
-            # Format the message
+            # Format the message using the formatter (which handles rank info dynamically)
             msg = self.format(record)
 
             # Queue the message for aggregation (only if distributed logging is enabled)
@@ -422,6 +443,38 @@ class DistributedLogHandler(logging.Handler):
             # Fallback to stderr if logging fails
             sys.stderr.write(f"Log handler error: {record.getMessage()}\n")
             sys.stderr.flush()
+
+
+class DynamicLogFormatter(logging.Formatter):
+    """Dynamic formatter that reads rank information at runtime with lazy initialization."""
+    
+    def __init__(self, fmt=None, datefmt=None):
+        super().__init__(fmt, datefmt)
+        # Cache for rank information - initialized on first use
+        self._rank = None
+        self._local_rank = None
+    
+    def format(self, record):
+        # Initialize rank cache on first use
+        if self._rank is None:
+            self._update_rank_cache()
+        
+        # Add cached rank info to the record
+        record.rank = self._rank
+        record.local_rank = self._local_rank
+        
+        # Use the parent's format method
+        return super().format(record)
+    
+    def _update_rank_cache(self):
+        """Initialize the cached rank information."""
+        try:
+            self._rank = get_rank()
+            self._local_rank = get_local_rank()
+        except (RuntimeError, OSError):
+            # Fallback if rank info is not available
+            self._rank = 0
+            self._local_rank = 0
 
 
 # Distributed logging utilities
@@ -466,41 +519,66 @@ def get_local_rank() -> int:
     return 0
 
 
-# Create and export a single shared logger instance
-_log_manager_instances = {}
-
-
-def setup_logger(log_dir=None) -> logging.Logger:
+def setup_logger(log_dir=None, force_reset=False) -> logging.Logger:
     """
-    Setup a logger using LogManager.
+    Setup the distributed logger.
+
+    This function configures the standard Python logger "nvrx" with appropriate
+    handlers for distributed logging. It's safe to call multiple times - if the
+    logger is already configured, it won't be reconfigured unless force_reset=True.
 
     The logger automatically adapts to distributed or regular mode based on
     whether NVRX_DIST_LOG_DIR is set. If set, enables distributed logging
     with aggregation. If not set, logs go directly to stderr/stdout.
 
-    This function is a singleton per process - each process gets its own logger instance.
+    The logger is fork-safe: all ranks use file-based message passing to ensure
+    child processes can log even when they don't inherit the aggregator thread.
 
     Args:
         log_dir: Optional directory path for log files. If None, uses NVRX_DIST_LOG_DIR env var.
+        force_reset: If True, force reconfiguration even if logger is already configured.
+                    Useful for subprocesses that need fresh logger setup.
 
     Returns:
-        logging.Logger: Configured logger instance from LogManager
+        logging.Logger: Configured logger instance
+
+    Example:
+        # In main script (launcher.py) or training subprocess
+        from nvidia_resiliency_ext.shared_utils.logger import setup_logger
+        logger = setup_logger()
+        
+        # In subprocesses that need fresh logger setup
+        logger = setup_logger(force_reset=True)
+        
+        # In other modules
+        import logging
+        logger = logging.getLogger("nvrx")
+        logger.info("Some message")
     """
-    global _log_manager_instances
-
-    # Use process ID to create process-specific logger instances
-    process_id = os.getpid()
-
-    # Return existing logger if already configured for this process
-    if process_id in _log_manager_instances:
-        return _log_manager_instances[process_id].logger
-
-    # Create a LogManager instance with the specified log directory
-    _log_manager_instances[process_id] = LogManager(log_dir=log_dir)
-
-    # Return the logger from the log manager
-    return _log_manager_instances[process_id].logger
-
-
-# Create and export a single shared logger instance
-log = setup_logger()
+    # Check if the nvrx logger is already configured
+    logger = logging.getLogger("nvrx")
+    
+    # If force_reset is True or the logger has no handlers, configure it
+    if force_reset or not logger.handlers:
+        # Clear existing handlers if force_reset is True
+        if force_reset:
+            for handler in logger.handlers[:]:
+                logger.removeHandler(handler)
+            # Clear any stored log manager to force fresh creation
+            if hasattr(setup_logger, '_log_manager'):
+                delattr(setup_logger, '_log_manager')
+        
+        # Create a LogManager instance to handle the configuration
+        log_manager = LogManager(log_dir=log_dir)
+        
+        # Get the configured logger from the log manager
+        logger = log_manager.logger
+        
+        # Store the log manager instance to prevent garbage collection
+        # This ensures the aggregator thread keeps running
+        setup_logger._log_manager = log_manager
+    else:
+        # Logger is already configured, just return the existing logger
+        logger = logging.getLogger("nvrx")
+    
+    return logger
