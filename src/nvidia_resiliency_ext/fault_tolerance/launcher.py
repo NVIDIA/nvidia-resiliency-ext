@@ -86,19 +86,24 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
+from nvidia_resiliency_ext.shared_utils.logger import setup_logger
 
-logging.basicConfig(
-    level=os.getenv('FT_LAUNCHER_LOGLEVEL', 'INFO'),
-    format=f"[%(asctime)s] [%(levelname)s] [ft_launcher{os.getpid()}@{socket.gethostname()}] %(message)s",
-)
-
-logger = logging.getLogger(__name__)
+# Deprecation warning for FT_LAUNCHER_LOGLEVEL
+if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
+    warnings.warn(
+        "FT_LAUNCHER_LOGLEVEL environment variable is deprecated. "
+        "Use NVRX_LOG_DEBUG=1 for debug logging instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
 
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
+# Setup the nvrx logger at module import time
+logger = setup_logger()
 
 def _register_ft_rdzv_handler():
 
@@ -142,6 +147,10 @@ class LocalElasticAgent(SimpleElasticAgent):
     python multiprocessing compatible. To pass multiprocessing data structures
     to the workers you may create the data structure in the same multiprocessing
     context as the specified ``start_method`` and pass it as a function argument.
+    
+    Note: If your training script uses the nvrx logger, make sure to call
+    ``setup_logger()`` at the beginning of your training function to ensure
+    the logger is properly set up in each subprocess.
 
     The ``exit_barrier_timeout`` specifies the amount of time (in seconds) to wait
     for other agents to finish. This acts as a safety net to handle cases where
@@ -176,6 +185,15 @@ class LocalElasticAgent(SimpleElasticAgent):
     ::
 
         def trainer(args) -> str:
+            # Ensure nvrx logger is set up in this subprocess
+            from nvidia_resiliency_ext.shared_utils.logger import setup_logger
+            setup_logger()
+            
+            # Use the nvrx logger
+            import logging
+            logger = logging.getLogger("nvrx")
+            logger.info("Training started")
+            
             return "do train"
 
         def main():
@@ -455,20 +473,25 @@ class LocalElasticAgent(SimpleElasticAgent):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
+        """Setup rank monitors for each local rank."""
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
         for worker_env in envs.values():
-            # Start rank monitors if not already started
-            # Each rank (re)connects to its rank monitor when it starts
             # Monitor of the local rank0 on the store hosting node is the restarter logger
             local_rank = int(worker_env['LOCAL_RANK'])
             is_restarter_logger = self._is_store_host and local_rank == 0
             rmon_ipc_socket = worker_env[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR]
             if local_rank not in self._local_rank_to_rmon:
+                # Pass LOCAL_RANK and RANK environment variables to the rank monitor
+                rank_env = {
+                    'LOCAL_RANK': worker_env['LOCAL_RANK'],
+                    'RANK': worker_env['RANK']
+                }
                 self._local_rank_to_rmon[local_rank] = RankMonitorServer.run_in_subprocess(
                     cfg=self._ft_cfg,
                     ipc_socket_path=rmon_ipc_socket,
                     is_restarter_logger=is_restarter_logger,
                     mp_ctx=fork_mp_ctx,
+                    env=rank_env,
                 )
 
     def shutdown_rank_monitors(self):
