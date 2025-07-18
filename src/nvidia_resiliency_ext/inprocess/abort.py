@@ -16,8 +16,12 @@
 
 import abc
 import concurrent.futures
+import logging
+import os
 
 import torch
+
+from nvidia_resiliency_ext.attribution.trace_analyzer.trace_collector import TorchFRTraceCollector
 
 from . import utils
 from .state import FrozenState
@@ -64,6 +68,8 @@ class AbortTorchDistributed(Abort):
     thread for each distributed group that has been created.
     '''
 
+    _logging_printed: bool = False
+
     @staticmethod
     def shutdown_all_process_group_backends():
         device = torch.device('cuda')
@@ -97,8 +103,46 @@ class AbortTorchDistributed(Abort):
                 else:
                     backend.abort()
 
+    @classmethod
+    def collect_fr_trace(cls):
+        def _check_fr_env():
+            check_env_variables = ['TORCH_NCCL_DUMP_ON_TIMEOUT', 'TORCH_NCCL_ENABLE_MONITORING']
+            rank = torch.distributed.get_rank()
+            for env_var in check_env_variables:
+                env_value = os.environ.get(env_var, '0')
+                # Convert string boolean values to integers
+                if env_value.lower() in ('true', '1', 'yes', 'on'):
+                    env_value_int = 1
+                elif env_value.lower() in ('false', '0', 'no', 'off'):
+                    env_value_int = 0
+                else:
+                    try:
+                        env_value_int = int(env_value)
+                    except ValueError:
+                        env_value_int = 0  # Default to False for invalid values
+
+                if bool(env_value_int) is False and rank == 0 and not cls._logging_printed:
+                    log = logging.getLogger(__name__)
+                    log.info(
+                        f"Environment variable {env_var} is set to {env_value}"
+                        f", FR trace collection is disabled"
+                    )
+                    cls._logging_printed = True
+                    return False
+            return True
+
+        if _check_fr_env() is True:
+            trace_path = os.environ.get('NVRX_FR_TRACE_PATH', None)
+            if trace_path is None:
+                return
+            if not os.path.exists(trace_path):
+                os.makedirs(trace_path)
+            trace_analyzer = TorchFRTraceCollector(trace_path)
+            trace_analyzer.collect()
+
     def __call__(self, state: FrozenState) -> FrozenState:
         if torch.distributed.is_available() and torch.distributed.is_initialized():
+            self.collect_fr_trace()
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
         return state
