@@ -573,9 +573,7 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         if settings is None:
             settings = self._create_settings()
 
-        return _DistributedRendezvousOpExecutor(
-            self._node, self._state_holder, settings
-        )
+        return _DistributedRendezvousOpExecutor(self._node, self._state_holder, settings)
 
     def _run_action(self, action: _Action) -> None:
         op_executor = self._create_op_executor()
@@ -834,8 +832,6 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
             mock_delay.assert_called_once_with(seconds=1)
 
         self.assertListEqual(self._mock_state_holder.mock_calls, [call.sync(), call.sync()])
-
-
 
 
 class AbstractTestRendezvousOp(ABC):
@@ -1735,12 +1731,8 @@ class IntegrationTest(TestCase):
                 else:
                     pass
 
-            handler1.ensure_node_is_healthy = MethodType(
-                __mock_ensure_node_is_healthy, handler1
-            )
-            handler2.ensure_node_is_healthy = MethodType(
-                __mock_ensure_node_is_healthy, handler2
-            )
+            handler1.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler1)
+            handler2.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler2)
 
             handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
             handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
@@ -2067,9 +2059,7 @@ class IntegrationTest(TestCase):
         def __mock_ensure_node_is_healthy(self, *args, **kwargs):
             raise UnhealthyNodeException("Node has an unhealthy GPU")
 
-        handler1.ensure_node_is_healthy = MethodType(
-            __mock_ensure_node_is_healthy, handler1
-        )
+        handler1.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler1)
         with self.assertRaises(UnhealthyNodeException):
             handler1.next_rendezvous()
 
@@ -2079,7 +2069,9 @@ class IntegrationTest(TestCase):
 
         # Wait for handler1 to be removed from the rendezvous state due to heartbeat expiration
         # This requires: keep_alive_interval * keep_alive_max_attempt = 5s * 3 = 15s + buffer
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1, timeout=20)
+        _wait_for(
+            lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1, timeout=20
+        )
 
         # node2 and node3 should be available for the next round
         handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
