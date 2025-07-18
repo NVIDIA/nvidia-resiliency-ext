@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import pickle
-from abc import ABC
+from abc import ABC, abstractmethod
 
 import torch
 
@@ -24,6 +24,7 @@ class TraceCollector(ABC):
     ):
         self.path = path
 
+    @abstractmethod
     def collect(self):
         pass
 
