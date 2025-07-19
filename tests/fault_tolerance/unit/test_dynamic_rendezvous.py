@@ -573,13 +573,7 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         if settings is None:
             settings = self._create_settings()
 
-        ranks_connector = MagicMock()
-        ranks_connector.received.return_value = []  # Default no messages
-        ranks_connector.clear.return_value = None  # Default behavior for clear()
-
-        return _DistributedRendezvousOpExecutor(
-            self._node, self._state_holder, settings, ranks_connector
-        )
+        return _DistributedRendezvousOpExecutor(self._node, self._state_holder, settings)
 
     def _run_action(self, action: _Action) -> None:
         op_executor = self._create_op_executor()
@@ -838,53 +832,6 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
             mock_delay.assert_called_once_with(seconds=1)
 
         self.assertListEqual(self._mock_state_holder.mock_calls, [call.sync(), call.sync()])
-
-    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
-    def test_run_adds_to_participants_if_node_was_in_waitlist_health_check_success(
-        self, MockGPUHealthCheck
-    ):
-        """Test that node is added to participants if it was in the waitlist and passes health check."""
-        # Simulate a successful health check
-        mock_health_checker = MockGPUHealthCheck.return_value
-        mock_health_checker.return_value = True
-
-        # Add the node to the waitlist
-        self._state.wait_list.add(self._node)
-
-        # Set up the expected state after addition
-        expected_state = _RendezvousState()
-        expected_state.participants[self._node] = 0
-        expected_state.last_heartbeats[self._node] = self._now
-
-        # Set min and max nodes
-        self._min_nodes = 2
-        self._max_nodes = 2
-
-        # Verify that the node is added to participants
-        self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
-
-    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
-    def test_run_does_not_add_to_participants_if_health_check_fails(self, MockGPUHealthCheck):
-        """Test that node is not added to participants if it was in the waitlist but fails health check."""
-
-        # Mock the health check to fail
-        mock_health_checker = MockGPUHealthCheck.return_value
-        mock_health_checker.return_value = False
-
-        # Add the node to the waitlist
-        self._state.wait_list.add(self._node)
-
-        # Set up the expected state (no changes because health check fails)
-        expected_state = _RendezvousState()
-        # `participants` and `last_heartbeats` should remain empty due to health check failure
-
-        # Set min and max nodes
-        self._min_nodes = 2
-        self._max_nodes = 2
-
-        # Run the action and verify the node was not added
-        with self.assertRaises(UnhealthyNodeException):
-            self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
 
 
 class AbstractTestRendezvousOp(ABC):
@@ -1779,17 +1726,13 @@ class IntegrationTest(TestCase):
 
             # Simulate first node as healthy and second node as unhealthy
             def __mock_ensure_node_is_healthy(self, *args, **kwargs):
-                if self is handler2._op_executor:
+                if self is handler2:
                     raise UnhealthyNodeException("Node has an unhealthy GPU")
                 else:
                     pass
 
-            handler1._op_executor._ensure_node_is_healthy = MethodType(
-                __mock_ensure_node_is_healthy, handler1._op_executor
-            )
-            handler2._op_executor._ensure_node_is_healthy = MethodType(
-                __mock_ensure_node_is_healthy, handler2._op_executor
-            )
+            handler1.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler1)
+            handler2.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler2)
 
             handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
             handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
@@ -2116,23 +2059,35 @@ class IntegrationTest(TestCase):
         def __mock_ensure_node_is_healthy(self, *args, **kwargs):
             raise UnhealthyNodeException("Node has an unhealthy GPU")
 
-        handler1._op_executor._ensure_node_is_healthy = MethodType(
-            __mock_ensure_node_is_healthy, handler1._op_executor
-        )
+        handler1.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler1)
         with self.assertRaises(UnhealthyNodeException):
             handler1.next_rendezvous()
 
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1)
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 1)
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0)
+        # Explicitly stop handler1's heartbeats to simulate node failure/crash
+        # This ensures other nodes will detect it as dead through sanitization
+        handler1._stop_heartbeats()
+
+        # Wait for handler1 to be removed from the rendezvous state due to heartbeat expiration
+        # This requires: keep_alive_interval * keep_alive_max_attempt = 5s * 3 = 15s + buffer
+        _wait_for(
+            lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1, timeout=20
+        )
 
         # node2 and node3 should be available for the next round
-        handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
         handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
+        handler3_thread_new = _CapturingThread(target=handler3.next_rendezvous)  # New thread!
 
         handler2_thread.start()
-        handler2_thread.join()
-        handler3_thread.join()
+        handler3_thread_new.start()  # Start new thread
+
+        # Wait for both threads to complete the new rendezvous
+        store2, rank2, world_size2 = handler2_thread.join()
+        store3, rank3, world_size3 = handler3_thread_new.join()
+
+        # Verify the rendezvous completed successfully
+        self.assertEqual(world_size2, 2)
+        self.assertEqual(world_size3, 2)
+        self.assertNotEqual(rank2, rank3)
 
         _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 2)
         _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 0)

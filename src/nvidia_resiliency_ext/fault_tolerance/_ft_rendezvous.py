@@ -644,7 +644,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
     _state: _RendezvousState
     _state_holder: _RendezvousStateHolder
     _settings: RendezvousSettings
-    _ranks_connector: IpcConnector
     _prev_participants: Dict[_NodeDesc, int]
     _prev_round: Optional[int]
 
@@ -653,12 +652,10 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         node: _NodeDesc,
         state_holder: _RendezvousStateHolder,
         settings: RendezvousSettings,
-        ranks_connector: IpcConnector,
     ) -> None:
         self._node = node
         self._state_holder = state_holder
         self._settings = settings
-        self._ranks_connector = ranks_connector
         self._prev_participants = {}
         self._prev_round = None
 
@@ -763,45 +760,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
 
         self._state.last_heartbeats[self._node] = datetime.utcnow()
 
-    def _ensure_node_is_healthy(self) -> None:
-        # Record the health check message
-        msg = f"Checking health status of {self._node}."
-        self._record(message=msg)
-        # Perform GPU health check
-        health_checker = GPUHealthCheck()
-        try:
-            health_status = health_checker()
-            if not health_status:
-                raise UnhealthyNodeException(f"Node {self._node} has an unhealthy GPU.")
-        except UnhealthyNodeException as e:
-            # Log specific health check failure
-            log.error(f"Health check failed for node {self._node}: {str(e)}")
-            raise
-        except Exception as e:
-            # General exception for unexpected issues during health check
-            log.error(f"Unexpected error during health check for node {self._node}: {str(e)}")
-            raise UnhealthyNodeException(str(e))
-
-    def _handle_control_requests_from_rank(self) -> None:
-        # Check control messages received from local ranks
-        excl_this_node = False
-        shutdown_workload = False
-        for rank, req in self._ranks_connector.fetch_received():
-            log.error(f"Received request from rank={rank}: req={req}")
-            if req.action == WorkloadAction.ExcludeThisNode:
-                excl_this_node = True
-            if req.action == WorkloadAction.ShutdownWorkload:
-                shutdown_workload = True
-        if shutdown_workload:
-            self._mark_rendezvous_closed()
-        if excl_this_node:
-            raise UnhealthyNodeException(
-                f"Node {self._node} is excluded from the training due to an user request."
-            )
-
     def _add_to_participants(self) -> None:
-        self._ensure_node_is_healthy()
-        self._handle_control_requests_from_rank()
 
         msg = (
             f"The node '{self._node}' added itself to the participants of round "
@@ -832,8 +791,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             log.debug("Rendezvous marked as complete due to max nodes reached.")
 
     def _add_to_wait_list(self) -> None:
-        self._ensure_node_is_healthy()
-        self._handle_control_requests_from_rank()
 
         msg = (
             f"The node '{self._node}' added itself to the wait list of round "
@@ -849,8 +806,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         self._keep_alive()
 
     def _add_to_redundancy_list(self) -> None:
-        self._ensure_node_is_healthy()
-        self._handle_control_requests_from_rank()
 
         msg = (
             f"The node '{self._node}' added itself to the redundancy list of round "
@@ -1266,7 +1221,6 @@ class FtRendezvousHandler(RendezvousHandler):
             self._this_node,
             self._state_holder,
             self._settings,
-            self._ranks_connector,
         )
 
         self._heartbeat_lock = threading.Lock()
@@ -1299,8 +1253,47 @@ class FtRendezvousHandler(RendezvousHandler):
         """See base class."""
         return self._backend_name
 
+    def ensure_node_is_healthy(self) -> None:
+        """Perform GPU health check for this node."""
+        # Record the health check message
+        msg = f"Checking health status of {self._this_node}."
+        self._record(message=msg)
+        # Perform GPU health check
+        health_checker = GPUHealthCheck()
+        try:
+            health_status = health_checker()
+            if not health_status:
+                raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
+        except UnhealthyNodeException as e:
+            # Log specific health check failure
+            log.error(f"Health check failed for node {self._this_node}: {str(e)}")
+            raise
+        except Exception as e:
+            # General exception for unexpected issues during health check
+            log.error(f"Unexpected error during health check for node {self._this_node}: {str(e)}")
+            raise UnhealthyNodeException(str(e))
+
+    def handle_control_requests_from_rank(self) -> None:
+        """Check control messages received from local ranks."""
+        # Check control messages received from local ranks
+        excl_this_node = False
+        shutdown_workload = False
+        for rank, req in self._ranks_connector.fetch_received():
+            log.error(f"Received request from rank={rank}: req={req}")
+            if req.action == WorkloadAction.ExcludeThisNode:
+                excl_this_node = True
+            if req.action == WorkloadAction.ShutdownWorkload:
+                shutdown_workload = True
+        if shutdown_workload:
+            self._close()
+        if excl_this_node:
+            raise UnhealthyNodeException(
+                f"Node {self._this_node} is excluded from the training due to an user request."
+            )
+
     def next_rendezvous(self) -> Tuple[Store, int, int]:
         """See base class."""
+
         msg = (
             f"The node '{self._this_node}' attempts to join the next round of the rendezvous "
             f"'{self._settings.run_id}'."
@@ -1310,6 +1303,10 @@ class FtRendezvousHandler(RendezvousHandler):
 
         try:
             self._stop_heartbeats()
+
+            # Check node health and control requests before starting rendezvous
+            self.ensure_node_is_healthy()
+            self.handle_control_requests_from_rank()
 
             # Delay the execution for a small random amount of time if this is our
             # first run. This will slightly skew the rendezvous attempts across the
