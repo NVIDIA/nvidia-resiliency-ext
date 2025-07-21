@@ -119,6 +119,9 @@ class Wrapper:
         monitor_process_logfile: Absolute filepath for the monitor process
             logfile. It may contain "{rank}" placeholder, to be filled with
             initial integer rank id.
+        monitor_process_pidfile: Absolute filepath for the monitor process
+            pidfile. It may contain "{rank}" placeholder, to be filled with
+            initial integer rank id.
         enabled: Enables the wrapper.
 
     Returns:
@@ -153,6 +156,7 @@ class Wrapper:
         last_call_wait: datetime.timedelta = timedelta(seconds=1),
         termination_grace_time: datetime.timedelta = timedelta(seconds=5),
         monitor_process_logfile: Optional[str] = None,
+        monitor_process_pidfile: Optional[str] = None,
         enabled: bool = True,
         completion: Optional[Completion] = None,
         terminate: Optional[Terminate] = None,
@@ -177,6 +181,7 @@ class Wrapper:
         enforce_type('last_call_wait', datetime.timedelta)
         enforce_type('termination_grace_time', datetime.timedelta)
         enforce_type('monitor_process_logfile', (str, type(None)))
+        enforce_type('monitor_process_pidfile', (str, type(None)))
         enforce_type('enabled', bool)
         enforce_type('completion', (Completion, type(None)))
         enforce_type('terminate', (Terminate, type(None)))
@@ -192,6 +197,9 @@ class Wrapper:
 
         if monitor_process_logfile is not None:
             enforce_value(pathlib.Path(monitor_process_logfile).is_absolute())
+
+        if monitor_process_pidfile is not None:
+            enforce_value(pathlib.Path(monitor_process_pidfile).is_absolute())
 
         enforce_value(torch.distributed.is_available())
 
@@ -227,6 +235,7 @@ class Wrapper:
         self.last_call_wait = last_call_wait
         self.termination_grace_time = termination_grace_time
         self.monitor_process_logfile = monitor_process_logfile
+        self.monitor_process_pidfile = monitor_process_pidfile
         self.enabled = enabled
         self.completion = completion
         self.terminate = terminate
@@ -286,6 +295,7 @@ class CallWrapper:
                 heartbeat_interval=wrapper.heartbeat_interval,
                 heartbeat_timeout=wrapper.heartbeat_timeout,
                 log_filename=wrapper.monitor_process_logfile,
+                pid_filename=wrapper.monitor_process_pidfile,
                 store_factory=wrapper.store_factory,
                 store_kwargs=wrapper.store_kwargs,
             )
