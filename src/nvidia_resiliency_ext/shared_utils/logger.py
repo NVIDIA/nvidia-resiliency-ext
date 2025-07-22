@@ -28,6 +28,7 @@ Key Design Principles:
 - Scalable: Works with 3K+ GPUs without overwhelming logging infrastructure
 - Fork-safe: All ranks use file-based messaging to ensure child processes can log
 - Subprocess-safe: Supports force_reset=True for fresh logger setup in subprocesses
+- Service-based aggregation: Aggregator can run as a separate service for reliable log collection
 
 Features:
 - Dual mode operation: Regular logging (stderr/stdout) or distributed logging (file aggregation)
@@ -36,12 +37,21 @@ Features:
 - Thread-safe logging with proper synchronization
 - Environment variable configuration for easy deployment
 - Fork-safe design with file-based message passing for all ranks
+- Separate aggregator service: Can run independently of training processes
+- Configurable temp directory: Customizable location for pending message files
 
 Environment Variables:
-    NVRX_DIST_LOG_DIR: Directory for log files. If set, enables distributed logging with aggregation.
-                       If not set, logs go directly to stderr/stdout.
+    NVRX_LOG_DIR: Directory for log files. If set, enables distributed logging with aggregation.
+                   If not set, logs go directly to stderr/stdout.
     NVRX_LOG_DEBUG: Set to "1", "true", "yes", or "on" to enable DEBUG level logging (default: INFO)
     NVRX_LOG_TO_STDOUT: Set to "1" to log to stdout instead of stderr
+    NVRX_LOG_TEMP_DIR: Directory for temporary log files (default: /tmp)
+    NVRX_LOG_AGGREGATOR: Set to "1" to run aggregator as a separate service
+    NVRX_LOG_MAX_FILE_SIZE_MB: Maximum size of temporary message files in MB before rotation (default: 10)
+    NVRX_LOG_MAX_BACKUP_FILES: Maximum number of backup files to keep per rank (default: 5)
+    
+Note: File rotation is designed to be safe for the aggregator service. When files are rotated,
+the aggregator will automatically read from both current and backup files to ensure no messages are lost.
 
 Usage:
     # In main script (launcher.py)
@@ -78,6 +88,21 @@ Forking Support:
     
     All ranks use file-based message passing, ensuring child processes can log
     even when they don't inherit the aggregator thread from the parent.
+
+Separate Aggregator Service:
+    The aggregator can run as a separate service for reliable log collection:
+    
+    # Start aggregator service (step 0 in slurm)
+    python -m nvidia_resiliency_ext.shared_utils.log_aggregator \
+        --log-dir /path/to/logs \
+        --temp-dir /path/to/temp \
+        --wait-file /path/to/shutdown.signal
+    
+    # In training processes (step 1 in slurm)
+    export NVRX_LOG_DIR=/path/to/logs
+    export NVRX_LOG_TEMP_DIR=/path/to/temp
+    export NVRX_LOG_AGGREGATOR=1
+    ft_launcher ... your_training_script.py
 """
 
 import logging
@@ -90,23 +115,13 @@ from datetime import datetime
 from typing import Optional
 
 
+
+
 class LogMessage:
-    """Represents a log message with metadata."""
+    """Represents a log message."""
 
-    def __init__(
-        self, level: int, message: str, rank: int, local_rank: int, hostname: str, timestamp: float
-    ):
-        self.level = level
+    def __init__(self, message: str):
         self.message = message
-        self.rank = rank
-        self.local_rank = local_rank
-        self.hostname = hostname
-        self.timestamp = timestamp
-
-    def __str__(self):
-        level_name = logging.getLevelName(self.level)
-        timestamp_str = datetime.fromtimestamp(self.timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        return f"[{timestamp_str}] [{level_name}] [{self.hostname}:{self.rank}({self.local_rank})] {self.message}"
 
 
 class LogManager:
@@ -119,14 +134,16 @@ class LogManager:
     collecting logs from all ranks on the same node and writing them to a per-node log file.
 
     Fork-safe: Child processes automatically disable aggregation to avoid conflicts.
+    Service-based: Aggregator can run as a separate service for reliable log collection.
     """
 
-    def __init__(self, log_dir: Optional[str] = None):
+    def __init__(self, log_dir: Optional[str] = None, temp_dir: Optional[str] = None):
         """
         Initialize the distributed log manager.
 
         Args:
             log_dir: Directory for log files. If None, uses NVRX_DIST_LOG_DIR env var
+            temp_dir: Directory for temporary files. If None, uses NVRX_TEMP_DIR env var or /tmp
         """
         self._lock = threading.Lock()
         self._log_queue = []
@@ -140,47 +157,68 @@ class LogManager:
         self.node_id = self._hostname
 
         # Get distributed info once during initialization
-        self._rank = get_rank()
-        self._local_rank = get_local_rank()
-        self._is_aggregator = self._local_rank == 0
+        self._workload_rank = int(os.environ.get("RANK", "0")) if os.environ.get("RANK") else None
+        self._workload_local_rank = int(os.environ.get("LOCAL_RANK", "0")) if os.environ.get("LOCAL_RANK") else None
+        self._infra_rank = int(os.environ.get("SLURM_PROCID", "0")) if os.environ.get("SLURM_PROCID") else None
+        self._infra_local_rank = int(os.environ.get("SLURM_LOCALID", "0")) if os.environ.get("SLURM_LOCALID") else None
 
         # Use NVRX_LOG_DEBUG environment variable to determine log level
         debug_enabled = os.environ.get("NVRX_LOG_DEBUG", "").lower() in ("1", "true", "yes", "on")
         self.log_level = logging.DEBUG if debug_enabled else logging.INFO
 
-        # Determine if distributed logging is enabled
-        self._log_dir = log_dir or os.environ.get("NVRX_DIST_LOG_DIR", None)
-        self.distributed_logging_enabled = self._log_dir is not None
+        # Set log directory
+        self._log_dir = log_dir or os.environ.get("NVRX_LOG_DIR", None)
 
-        # Use shared temporary directory for pending messages (avoid Lustre for temp files)
-        # Use /tmp with node_id to ensure all ranks on the same node use the same directory
-        self._temp_dir = os.path.join("/tmp", f"nvrx_log_{self.node_id}")
+        # Check if running as aggregator service
+        self._is_aggregator_service = os.environ.get("NVRX_LOG_AGGREGATOR", "").lower() in ("1", "true", "yes", "on")
+
+        # Use configurable temporary directory for pending messages
+        self._temp_dir = temp_dir or os.environ.get("NVRX_LOG_TEMP_DIR", "/tmp")
+        # Use node_id to ensure all ranks on the same node use the same directory
+        self._temp_dir = os.path.join(self._temp_dir, f"nvrx_log_{self.node_id}")
         os.makedirs(self._temp_dir, exist_ok=True)
 
         # Track file positions for each rank to avoid re-reading
         self._file_positions = {}
+        
+        # File rotation settings (in bytes)
+        max_file_size_mb = int(os.environ.get("NVRX_LOG_MAX_FILE_SIZE_MB", "10"))
+        self._max_msg_file_size = max_file_size_mb * 1024 * 1024  # Convert MB to bytes
+        self._max_backup_files = int(os.environ.get("NVRX_LOG_MAX_BACKUP_FILES", "5"))  # Keep at most 5 backup files per rank
 
         # Create logger
         self._logger = self._setup_logger()
 
-        # Start aggregator if distributed logging is enabled and this is the aggregator
-        if self.distributed_logging_enabled and self._is_aggregator:
+        # Validate configuration for log aggregator service
+        if self._is_aggregator_service:
+            if self._log_dir is None:
+                raise RuntimeError("Log directory must be set for log aggregator service")
             self._start_aggregator()
 
     @property
-    def rank(self) -> int:
-        """Get the global rank."""
-        return self._rank
+    def distributed_logging_enabled(self) -> bool:
+        """Check if distributed logging is enabled."""
+        return self._log_dir is not None
 
     @property
-    def local_rank(self) -> int:
-        """Get the local rank."""
-        return self._local_rank
+    def workload_rank(self) -> Optional[int]:
+        """Get the workload rank (from RANK env var)."""
+        return self._workload_rank
 
     @property
-    def is_aggregator(self) -> bool:
-        """Check if this rank should be the node aggregator."""
-        return self._is_aggregator
+    def workload_local_rank(self) -> Optional[int]:
+        """Get the workload local rank (from LOCAL_RANK env var)."""
+        return self._workload_local_rank
+
+    @property
+    def infra_rank(self) -> Optional[int]:
+        """Get the infrastructure rank (from SLURM_PROCID env var)."""
+        return self._infra_rank
+
+    @property
+    def infra_local_rank(self) -> Optional[int]:
+        """Get the infrastructure local rank (from SLURM_LOCALID env var)."""
+        return self._infra_local_rank
 
     def _setup_logger(self) -> logging.Logger:
         """Setup the logger with appropriate handlers."""
@@ -195,32 +233,26 @@ class LogManager:
         if self.distributed_logging_enabled:
             # Add custom handler that sends messages to aggregator
             handler = DistributedLogHandler(self)
-            handler.setLevel(self.log_level)
 
             # Use dynamic formatter with static hostname and dynamic rank info
             formatter = DynamicLogFormatter(
-                fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}:%(rank)s(%(local_rank)s)] %(filename)s:%(lineno)d %(message)s"
+                self, fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}] [workload:%(workload_rank)s(%(workload_local_rank)s) infra:%(infra_rank)s(%(infra_local_rank)s)] %(filename)s:%(lineno)d %(message)s"
             )
-
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
         else:
-            # Simple logging to stderr or file
+            # Simple logging to stderr or stdout
             if os.environ.get("NVRX_LOG_TO_STDOUT", "").lower() in ("1", "true", "yes", "on"):
                 handler = logging.StreamHandler(sys.stdout)
             else:
                 handler = logging.StreamHandler(sys.stderr)
 
-            handler.setLevel(self.log_level)
-
             # Use dynamic formatter with static hostname and dynamic rank info
             formatter = DynamicLogFormatter(
-                fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}:%(rank)s(%(local_rank)s)] %(filename)s:%(lineno)d %(message)s"
-            )
+                self, fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}] [workload:%(workload_rank)s(%(workload_local_rank)s) infra:%(infra_rank)s(%(infra_local_rank)s)] %(filename)s:%(lineno)d %(message)s"
+            )            
 
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-
+        handler.setLevel(self.log_level)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
         logger.propagate = False
 
         return logger
@@ -231,7 +263,7 @@ class LogManager:
             return
 
         self._aggregator_thread = threading.Thread(
-            target=self._aggregator_loop, daemon=True, name=f"LogAggregator-{self._rank}"
+            target=self._aggregator_loop, daemon=True, name=f"LogAggregator-{self._workload_rank}"
         )
         self._aggregator_thread.start()
 
@@ -257,7 +289,8 @@ class LogManager:
                 # Write messages to output
                 for msg in messages:
                     try:
-                        output.write(str(msg) + '\n')
+                        # The message is already formatted by the formatter, just write it
+                        output.write(msg.message + '\n')
                         output.flush()
                     except Exception as e:
                         # Fallback to stderr if output fails
@@ -270,22 +303,12 @@ class LogManager:
         finally:
             output.close()
 
-    def _queue_message(self, level: int, message: str):
+    def _queue_message(self, message: str):
         """Queue a log message for aggregation."""
-        if not self.distributed_logging_enabled:
-            return
-
         # Create log message
-        log_msg = LogMessage(
-            level=level,
-            message=message,
-            rank=self._rank,
-            local_rank=self._local_rank,
-            hostname=self._hostname,
-            timestamp=time.time(),
-        )
+        log_msg = LogMessage(message=message)
 
-        # All ranks (including aggregator) use file-based message passing
+        # All ranks use file-based message passing
         # This ensures child processes can log even when they don't have the aggregator thread
         self._send_message_to_aggregator(log_msg)
 
@@ -296,91 +319,122 @@ class LogManager:
         os.makedirs(msg_dir, exist_ok=True)
 
         # Use a single message file per rank
-        msg_file = os.path.join(msg_dir, f"rank_{self._local_rank}.msg")
+        msg_file = os.path.join(msg_dir, f"rank_{self._workload_local_rank}.msg")
 
-        try:
-            # Append message to the rank's message file
-            with open(msg_file, 'a') as f:
-                f.write(
-                    f"{log_msg.level}\t{log_msg.message}\t{log_msg.rank}\t{log_msg.local_rank}\t{log_msg.hostname}\t{log_msg.timestamp}\n"
-                )
-                f.flush()  # Ensure message is written immediately
+        # Check if file needs rotation
+        if os.path.exists(msg_file):
+            try:
+                file_size = os.path.getsize(msg_file)
+                if file_size > self._max_msg_file_size:
+                    # Rotate the file with atomic operation
+                    backup_file = f"{msg_file}.{int(time.time())}"
+                    os.rename(msg_file, backup_file)
+                    # Clean up old backup files
+                    self._cleanup_old_backup_files(msg_dir, f"rank_{self._workload_local_rank}.msg")
+            except (OSError, IOError):
+                # File might be being read by aggregator, skip rotation for now
+                pass
 
-        except Exception as e:
-            # If file-based communication fails, just log to stderr
-            sys.stderr.write(f"Failed to send message to aggregator: {e}\n")
-            sys.stderr.flush()
+        # Append message to the rank's message file
+        with open(msg_file, 'a') as f:
+            f.write(f"{log_msg.message}\n")
+            f.flush()  # Ensure message is written immediately
 
     def _check_pending_messages(self):
         """Check for pending messages from other ranks (aggregator only)."""
-        if not self._is_aggregator:
+        if not self._is_aggregator_service:
             return
 
         msg_dir = os.path.join(self._temp_dir, "pending_messages")
         if not os.path.exists(msg_dir):
             return
 
+        # Check if we can access the directory
+        if not os.access(msg_dir, os.R_OK):
+            return
+
+        # Look for message files from all ranks (including this aggregator rank)
+        for filename in os.listdir(msg_dir):
+            if not filename.startswith('rank_') or not filename.endswith('.msg'):
+                continue
+                
+            msg_file = os.path.join(msg_dir, filename)
+            
+            # Check for backup files for this rank
+            backup_files = []
+            base_filename = filename
+            for backup_filename in os.listdir(msg_dir):
+                if backup_filename.startswith(f"{base_filename}."):
+                    backup_files.append(os.path.join(msg_dir, backup_filename))
+            
+            # Sort backup files by timestamp (oldest first)
+            backup_files.sort(key=lambda f: os.path.getmtime(f))
+            
+            # Process backup files first (if any)
+            for backup_file in backup_files:
+                self._process_message_file(backup_file)
+            
+            # Process current file
+            self._process_message_file(msg_file)
+
+    def _process_message_file(self, msg_file: str):
+        """Process a single message file (current or backup)."""
         try:
-            # Look for message files from all ranks (including this aggregator rank)
-            for filename in os.listdir(msg_dir):
-                if filename.startswith('rank_') and filename.endswith('.msg'):
-                    msg_file = os.path.join(msg_dir, filename)
-                    try:
-                        # Get current file size
-                        try:
-                            file_size = os.path.getsize(msg_file)
-                        except (IOError, OSError):
-                            # File doesn't exist or can't be accessed, skip
-                            continue
+            file_size = os.path.getsize(msg_file)
+        except (IOError, OSError) as e:
+            # File doesn't exist or can't be accessed - skip it
+            return
 
-                        # Get the last known position for this file
-                        last_position = self._file_positions.get(msg_file, 0)
+        # Get the last known position for this file
+        last_position = self._file_positions.get(msg_file, 0)
 
-                        # If file hasn't grown, skip it
-                        if file_size <= last_position:
-                            continue
+        # If file hasn't grown, skip it
+        if file_size <= last_position:
+            return
 
-                        # Try to read new content from the file
-                        try:
-                            with open(msg_file, 'r') as f:
-                                f.seek(last_position)
-                                lines = f.readlines()
-                        except (IOError, OSError):
-                            # File is being written by another process, skip this cycle
-                            continue
+        # Read new content from the file
+        try:
+            with open(msg_file, 'r') as f:
+                f.seek(last_position)
+                lines = f.readlines()
+        except (IOError, OSError) as e:
+            # File is being written by another process - skip it
+            return
 
-                        # Process each line
-                        for line in lines:
-                            line = line.strip()
-                            if line:
-                                parts = line.split('\t')
-                                if len(parts) >= 6:
-                                    level, message, rank, local_rank, hostname, timestamp = parts[
-                                        :6
-                                    ]
+        # Process each line
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            log_msg = LogMessage(message=line)
 
-                                    log_msg = LogMessage(
-                                        level=int(level),
-                                        message=message,
-                                        rank=int(rank),
-                                        local_rank=int(local_rank),
-                                        hostname=hostname,
-                                        timestamp=float(timestamp),
-                                    )
+            with self._lock:
+                self._log_queue.append(log_msg)
 
-                                    with self._lock:
-                                        self._log_queue.append(log_msg)
+        # Update the position for this file
+        self._file_positions[msg_file] = file_size
 
-                        # Update the position for this file
-                        self._file_positions[msg_file] = file_size
-
-                    except (OSError, IOError) as e:
-                        # If we can't read the file, skip it this cycle
-                        continue
-
-        except (OSError, IOError):
-            # If we can't access the message directory, just continue
-            pass
+    def _cleanup_old_backup_files(self, msg_dir: str, base_filename: str):
+        """Clean up old backup files, keeping only the most recent ones."""
+        # Find all backup files for this rank
+        backup_files = []
+        for filename in os.listdir(msg_dir):
+            if filename.startswith(f"{base_filename}."):
+                backup_files.append(os.path.join(msg_dir, filename))
+        
+        # Sort by modification time (oldest first)
+        backup_files.sort(key=lambda f: os.path.getmtime(f))
+        
+        # Remove oldest files if we have too many
+        if len(backup_files) > self._max_backup_files:
+            for old_file in backup_files[:-self._max_backup_files]:
+                try:
+                    os.remove(old_file)
+                except (OSError, IOError):
+                    # Log the error but don't fail the entire operation
+                    sys.stderr.write(f"Failed to remove backup file {old_file}: {e}\n")
+                    sys.stderr.flush()
 
     @property
     def logger(self) -> logging.Logger:
@@ -398,19 +452,17 @@ class LogManager:
 
     def shutdown(self):
         """Shutdown the log manager."""
-        if self.distributed_logging_enabled and self._is_aggregator:
+        if self._is_aggregator_service:
             self._stop_event.set()
             if self._aggregator_thread:
                 self._aggregator_thread.join()
 
-        # Clean up temporary directory (only if this is the last rank on the node)
+        # Clean up temporary directory (only if this is the aggregator service)
         try:
             import shutil
 
-            if hasattr(self, '_temp_dir') and os.path.exists(self._temp_dir):
-                # Only clean up if this is the last rank (rank 0) to avoid conflicts
-                if self._is_aggregator:
-                    shutil.rmtree(self._temp_dir)
+            if self._is_aggregator_service:
+                shutil.rmtree(self._temp_dir)
         except (OSError, IOError):
             # Ignore cleanup errors
             pass
@@ -438,7 +490,7 @@ class DistributedLogHandler(logging.Handler):
             msg = self.format(record)
 
             # Queue the message for aggregation (only if distributed logging is enabled)
-            self.log_manager._queue_message(level=record.levelno, message=msg)
+            self.log_manager._queue_message(message=msg)
         except (OSError, IOError, RuntimeError):
             # Fallback to stderr if logging fails
             sys.stderr.write(f"Log handler error: {record.getMessage()}\n")
@@ -446,80 +498,25 @@ class DistributedLogHandler(logging.Handler):
 
 
 class DynamicLogFormatter(logging.Formatter):
-    """Dynamic formatter that reads rank information at runtime with lazy initialization."""
+    """Dynamic formatter that reads rank information from LogManager."""
 
-    def __init__(self, fmt=None, datefmt=None):
+    def __init__(self, log_manager, fmt=None, datefmt=None):
         super().__init__(fmt, datefmt)
-        # Cache for rank information - initialized on first use
-        self._rank = None
-        self._local_rank = None
+        self.log_manager = log_manager
 
     def format(self, record):
-        # Initialize rank cache on first use
-        if self._rank is None:
-            self._update_rank_cache()
-
-        # Add cached rank info to the record
-        record.rank = self._rank
-        record.local_rank = self._local_rank
+        # Get rank info from LogManager, with fallback to "?" for None values
+        record.workload_rank = self.log_manager.workload_rank if self.log_manager.workload_rank is not None else "?"
+        record.workload_local_rank = self.log_manager.workload_local_rank if self.log_manager.workload_local_rank is not None else "?"
+        record.infra_rank = self.log_manager.infra_rank if self.log_manager.infra_rank is not None else "?"
+        record.infra_local_rank = self.log_manager.infra_local_rank if self.log_manager.infra_local_rank is not None else "?"
 
         # Use the parent's format method
         return super().format(record)
 
-    def _update_rank_cache(self):
-        """Initialize the cached rank information."""
-        try:
-            self._rank = get_rank()
-            self._local_rank = get_local_rank()
-        except (RuntimeError, OSError):
-            # Fallback if rank info is not available
-            self._rank = 0
-            self._local_rank = 0
 
 
-# Distributed logging utilities
-def get_rank() -> int:
-    """Get the global rank from environment variables.
-
-    Supports both Slurm (SLURM_PROCID) and torchrun (RANK) conventions.
-    Environment variables must be set for distributed logging to work.
-    """
-    # Try torchrun convention first
-    rank = os.environ.get("RANK")
-    if rank is not None:
-        return int(rank)
-
-    # Try Slurm convention
-    rank = os.environ.get("SLURM_PROCID")
-    if rank is not None:
-        return int(rank)
-
-    # Environment variables must be set for distributed logging
-    raise RuntimeError(
-        "Distributed logging requires environment variables to be set. "
-        "Please set either RANK (torchrun) or SLURM_PROCID (Slurm) environment variable."
-    )
-
-
-def get_local_rank() -> int:
-    """Get the local rank from environment variables.
-
-    Supports both Slurm (SLURM_LOCALID) and torchrun (LOCAL_RANK) conventions.
-    """
-    # Try torchrun convention first
-    local_rank = os.environ.get("LOCAL_RANK")
-    if local_rank is not None:
-        return int(local_rank)
-
-    # Try Slurm convention
-    local_rank = os.environ.get("SLURM_LOCALID")
-    if local_rank is not None:
-        return int(local_rank)
-
-    return 0
-
-
-def setup_logger(log_dir=None, force_reset=False) -> logging.Logger:
+def setup_logger(log_dir=None, temp_dir=None, force_reset=False) -> logging.Logger:
     """
     Setup the distributed logger.
 
@@ -536,6 +533,7 @@ def setup_logger(log_dir=None, force_reset=False) -> logging.Logger:
 
     Args:
         log_dir: Optional directory path for log files. If None, uses NVRX_DIST_LOG_DIR env var.
+        temp_dir: Optional directory path for temporary files. If None, uses NVRX_TEMP_DIR env var or /tmp.
         force_reset: If True, force reconfiguration even if logger is already configured.
                     Useful for subprocesses that need fresh logger setup.
 
@@ -569,7 +567,7 @@ def setup_logger(log_dir=None, force_reset=False) -> logging.Logger:
                 delattr(setup_logger, '_log_manager')
 
         # Create a LogManager instance to handle the configuration
-        log_manager = LogManager(log_dir=log_dir)
+        log_manager = LogManager(log_dir=log_dir, temp_dir=temp_dir)
 
         # Get the configured logger from the log manager
         logger = log_manager.logger
@@ -582,3 +580,6 @@ def setup_logger(log_dir=None, force_reset=False) -> logging.Logger:
         logger = logging.getLogger("nvrx")
 
     return logger
+
+
+
