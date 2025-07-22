@@ -331,9 +331,11 @@ class LogManager:
                     os.rename(msg_file, backup_file)
                     # Clean up old backup files
                     self._cleanup_old_backup_files(msg_dir, f"rank_{self._workload_local_rank}.msg")
-            except (OSError, IOError):
+            except (OSError, IOError) as e:
                 # File might be being read by aggregator, skip rotation for now
-                pass
+                # Log this as it might indicate a real problem
+                sys.stderr.write(f"File rotation error for {msg_file}: {e}\n")
+                sys.stderr.flush()
 
         # Append message to the rank's message file
         with open(msg_file, 'a') as f:
@@ -381,8 +383,17 @@ class LogManager:
         """Process a single message file (current or backup)."""
         try:
             file_size = os.path.getsize(msg_file)
+        except FileNotFoundError as e:
+            # File was deleted/renamed between discovery and processing
+            # This can happen due to race conditions, but should be logged for debugging
+            sys.stderr.write(f"File not found during processing {msg_file}: {e}\n")
+            sys.stderr.flush()
+            return
         except (IOError, OSError) as e:
-            # File doesn't exist or can't be accessed - skip it
+            # Unexpected: Permission issues, disk problems, etc.
+            # Log this as it might indicate a real problem
+            sys.stderr.write(f"Unexpected error accessing {msg_file}: {e}\n")
+            sys.stderr.flush()
             return
 
         # Get the last known position for this file
@@ -397,8 +408,16 @@ class LogManager:
             with open(msg_file, 'r') as f:
                 f.seek(last_position)
                 lines = f.readlines()
+        except FileNotFoundError as e:
+            # File was deleted between size check and read
+            sys.stderr.write(f"File not found during read {msg_file}: {e}\n")
+            sys.stderr.flush()
+            return
         except (IOError, OSError) as e:
-            # File is being written by another process - skip it
+            # File is being written by another process or other I/O error
+            # Log this as it might indicate a real problem
+            sys.stderr.write(f"IO error reading {msg_file}: {e}\n")
+            sys.stderr.flush()
             return
 
         # Process each line
@@ -431,7 +450,7 @@ class LogManager:
             for old_file in backup_files[:-self._max_backup_files]:
                 try:
                     os.remove(old_file)
-                except (OSError, IOError):
+                except (OSError, IOError) as e:
                     # Log the error but don't fail the entire operation
                     sys.stderr.write(f"Failed to remove backup file {old_file}: {e}\n")
                     sys.stderr.flush()
@@ -463,9 +482,10 @@ class LogManager:
 
             if self._is_aggregator_service:
                 shutil.rmtree(self._temp_dir)
-        except (OSError, IOError):
-            # Ignore cleanup errors
-            pass
+        except (OSError, IOError) as e:
+            # Log cleanup errors for debugging
+            sys.stderr.write(f"Cleanup error during shutdown: {e}\n")
+            sys.stderr.flush()
 
     def __enter__(self):
         """Context manager entry."""
