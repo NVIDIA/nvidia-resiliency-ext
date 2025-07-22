@@ -105,6 +105,7 @@ Separate Aggregator Service:
     ft_launcher ... your_training_script.py
 """
 
+import heapq
 import logging
 import os
 import socket
@@ -275,7 +276,9 @@ class LogManager:
         # Setup per-node log file
         log_file = os.path.join(self._log_dir, f"node_{self.node_id}.log")
         output = open(log_file, 'a', buffering=1)  # Line buffered
-
+        msg_lists = []
+        sorted_logs = []
+        heap = []
         try:
             while not self._stop_event.is_set():
                 # Check for pending messages from other ranks
@@ -285,9 +288,24 @@ class LogManager:
                 with self._lock:
                     messages = self._log_queue.copy()
                     self._log_queue.clear()
+                    msg_lists.append(messages)
+
+            # Initialize heap with the first log of each list
+            for i, messages in enumerate(msg_lists):
+                if messages:
+                    lm = LogMessage(messages[0])
+                    heapq.heappush(heap, lm.timestamp, i, 0, lm)
+
+            while heap:
+                ts, list_idx, entry_idx, log_entry = heapq.heappop(heap)
+                sorted_logs.append(log_entry)
+                next_entry_idx = entry_idx + 1
+                if next_entry_idx < len(msg_lists[list_idx]):
+                    next_log = LogMessage(msg_lists[list_idx][next_entry_idx])
+                    heapq.heappush(heap, (next_log.timestamp, list_idx, next_entry_idx, next_log))
 
                 # Write messages to output
-                for msg in messages:
+                for msg in sorted_logs:
                     try:
                         # The message is already formatted by the formatter, just write it
                         output.write(msg.message + '\n')
@@ -297,8 +315,8 @@ class LogManager:
                         sys.stderr.write(f"Log output error: {e}\n")
                         sys.stderr.flush()
 
-                # Sleep briefly to avoid busy waiting
-                time.sleep(0.01)
+            # Sleep briefly to avoid busy waiting
+            time.sleep(0.01)
 
         finally:
             output.close()
