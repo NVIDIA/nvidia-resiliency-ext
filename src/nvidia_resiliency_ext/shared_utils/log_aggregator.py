@@ -52,35 +52,45 @@ def main():
     """Main function for running the log aggregator as a separate service."""
     parser = argparse.ArgumentParser(description="NVRx Log Aggregator Service")
     parser.add_argument("--log-dir", required=True, help="Directory for log files")
-    parser.add_argument("--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)")
+    parser.add_argument(
+        "--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)"
+    )
 
-    parser.add_argument("--wait-file", required=True, help="File to wait for before shutting down (required to keep service running)")
-    parser.add_argument("--check-interval", type=float, default=1.0, 
-                       help="Interval in seconds to check for shutdown file (default: 1.0)")
-    
+    parser.add_argument(
+        "--wait-file",
+        required=True,
+        help="File to wait for before shutting down (required to keep service running)",
+    )
+    parser.add_argument(
+        "--check-interval",
+        type=float,
+        default=1.0,
+        help="Interval in seconds to check for shutdown file (default: 1.0)",
+    )
+
     args = parser.parse_args()
-    
+
     # Set environment variables for the service
     os.environ["NVRX_LOG_DIR"] = args.log_dir
     os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
     os.environ["NVRX_LOG_AGGREGATOR"] = "1"
-    
+
     print(f"Starting NVRx Log Aggregator Service")
     print(f"  Log directory: {args.log_dir}")
     print(f"  Temp directory: {args.temp_dir}")
     print(f"  Node ID: {socket.gethostname()}")
-    
+
     # Create log manager
     log_manager = LogManager(log_dir=args.log_dir, temp_dir=args.temp_dir)
-    
+
     print("Log aggregator service is running...")
-    
+
     # Wait for shutdown file
     print(f"Waiting for shutdown file: {args.wait_file}")
     while not os.path.exists(args.wait_file):
         time.sleep(args.check_interval)
     print("Shutdown file detected")
-    
+
     # Shutdown gracefully
     print("Shutting down log aggregator service...")
     log_manager.shutdown()
@@ -88,4 +98,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

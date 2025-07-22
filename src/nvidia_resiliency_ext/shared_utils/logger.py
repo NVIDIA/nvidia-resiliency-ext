@@ -116,8 +116,6 @@ from datetime import datetime
 from typing import Optional
 
 
-
-
 class LogMessage:
     """Represents a log message."""
 
@@ -159,9 +157,15 @@ class LogManager:
 
         # Get distributed info once during initialization
         self._workload_rank = int(os.environ.get("RANK", "0")) if os.environ.get("RANK") else None
-        self._workload_local_rank = int(os.environ.get("LOCAL_RANK", "0")) if os.environ.get("LOCAL_RANK") else None
-        self._infra_rank = int(os.environ.get("SLURM_PROCID", "0")) if os.environ.get("SLURM_PROCID") else None
-        self._infra_local_rank = int(os.environ.get("SLURM_LOCALID", "0")) if os.environ.get("SLURM_LOCALID") else None
+        self._workload_local_rank = (
+            int(os.environ.get("LOCAL_RANK", "0")) if os.environ.get("LOCAL_RANK") else None
+        )
+        self._infra_rank = (
+            int(os.environ.get("SLURM_PROCID", "0")) if os.environ.get("SLURM_PROCID") else None
+        )
+        self._infra_local_rank = (
+            int(os.environ.get("SLURM_LOCALID", "0")) if os.environ.get("SLURM_LOCALID") else None
+        )
 
         # Use NVRX_LOG_DEBUG environment variable to determine log level
         debug_enabled = os.environ.get("NVRX_LOG_DEBUG", "").lower() in ("1", "true", "yes", "on")
@@ -171,7 +175,12 @@ class LogManager:
         self._log_dir = log_dir or os.environ.get("NVRX_LOG_DIR", None)
 
         # Check if running as aggregator service
-        self._is_aggregator_service = os.environ.get("NVRX_LOG_AGGREGATOR", "").lower() in ("1", "true", "yes", "on")
+        self._is_aggregator_service = os.environ.get("NVRX_LOG_AGGREGATOR", "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
         # Use configurable temporary directory for pending messages
         self._temp_dir = temp_dir or os.environ.get("NVRX_LOG_TEMP_DIR", "/tmp")
@@ -181,11 +190,13 @@ class LogManager:
 
         # Track file positions for each rank to avoid re-reading
         self._file_positions = {}
-        
+
         # File rotation settings (in bytes)
         max_file_size_mb = int(os.environ.get("NVRX_LOG_MAX_FILE_SIZE_MB", "10"))
         self._max_msg_file_size = max_file_size_mb * 1024 * 1024  # Convert MB to bytes
-        self._max_backup_files = int(os.environ.get("NVRX_LOG_MAX_BACKUP_FILES", "5"))  # Keep at most 5 backup files per rank
+        self._max_backup_files = int(
+            os.environ.get("NVRX_LOG_MAX_BACKUP_FILES", "5")
+        )  # Keep at most 5 backup files per rank
 
         # Create logger
         self._logger = self._setup_logger()
@@ -237,7 +248,8 @@ class LogManager:
 
             # Use dynamic formatter with static hostname and dynamic rank info
             formatter = DynamicLogFormatter(
-                self, fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}] [workload:%(workload_rank)s(%(workload_local_rank)s) infra:%(infra_rank)s(%(infra_local_rank)s)] %(filename)s:%(lineno)d %(message)s"
+                self,
+                fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}] [workload:%(workload_rank)s(%(workload_local_rank)s) infra:%(infra_rank)s(%(infra_local_rank)s)] %(filename)s:%(lineno)d %(message)s",
             )
         else:
             # Simple logging to stderr or stdout
@@ -248,8 +260,9 @@ class LogManager:
 
             # Use dynamic formatter with static hostname and dynamic rank info
             formatter = DynamicLogFormatter(
-                self, fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}] [workload:%(workload_rank)s(%(workload_local_rank)s) infra:%(infra_rank)s(%(infra_local_rank)s)] %(filename)s:%(lineno)d %(message)s"
-            )            
+                self,
+                fmt=f"%(asctime)s [%(levelname)s] [{self._hostname}] [workload:%(workload_rank)s(%(workload_local_rank)s) infra:%(infra_rank)s(%(infra_local_rank)s)] %(filename)s:%(lineno)d %(message)s",
+            )
 
         handler.setLevel(self.log_level)
         handler.setFormatter(formatter)
@@ -377,23 +390,23 @@ class LogManager:
         for filename in os.listdir(msg_dir):
             if not filename.startswith('rank_') or not filename.endswith('.msg'):
                 continue
-                
+
             msg_file = os.path.join(msg_dir, filename)
-            
+
             # Check for backup files for this rank
             backup_files = []
             base_filename = filename
             for backup_filename in os.listdir(msg_dir):
                 if backup_filename.startswith(f"{base_filename}."):
                     backup_files.append(os.path.join(msg_dir, backup_filename))
-            
+
             # Sort backup files by timestamp (oldest first)
             backup_files.sort(key=lambda f: os.path.getmtime(f))
-            
+
             # Process backup files first (if any)
             for backup_file in backup_files:
                 self._process_message_file(backup_file)
-            
+
             # Process current file
             self._process_message_file(msg_file)
 
@@ -443,7 +456,7 @@ class LogManager:
             line = line.strip()
             if not line:
                 continue
-                
+
             log_msg = LogMessage(message=line)
 
             with self._lock:
@@ -459,13 +472,13 @@ class LogManager:
         for filename in os.listdir(msg_dir):
             if filename.startswith(f"{base_filename}."):
                 backup_files.append(os.path.join(msg_dir, filename))
-        
+
         # Sort by modification time (oldest first)
         backup_files.sort(key=lambda f: os.path.getmtime(f))
-        
+
         # Remove oldest files if we have too many
         if len(backup_files) > self._max_backup_files:
-            for old_file in backup_files[:-self._max_backup_files]:
+            for old_file in backup_files[: -self._max_backup_files]:
                 try:
                     os.remove(old_file)
                 except (OSError, IOError) as e:
@@ -544,14 +557,25 @@ class DynamicLogFormatter(logging.Formatter):
 
     def format(self, record):
         # Get rank info from LogManager, with fallback to "?" for None values
-        record.workload_rank = self.log_manager.workload_rank if self.log_manager.workload_rank is not None else "?"
-        record.workload_local_rank = self.log_manager.workload_local_rank if self.log_manager.workload_local_rank is not None else "?"
-        record.infra_rank = self.log_manager.infra_rank if self.log_manager.infra_rank is not None else "?"
-        record.infra_local_rank = self.log_manager.infra_local_rank if self.log_manager.infra_local_rank is not None else "?"
+        record.workload_rank = (
+            self.log_manager.workload_rank if self.log_manager.workload_rank is not None else "?"
+        )
+        record.workload_local_rank = (
+            self.log_manager.workload_local_rank
+            if self.log_manager.workload_local_rank is not None
+            else "?"
+        )
+        record.infra_rank = (
+            self.log_manager.infra_rank if self.log_manager.infra_rank is not None else "?"
+        )
+        record.infra_local_rank = (
+            self.log_manager.infra_local_rank
+            if self.log_manager.infra_local_rank is not None
+            else "?"
+        )
 
         # Use the parent's format method
         return super().format(record)
-
 
 
 def setup_logger(log_dir=None, temp_dir=None, force_reset=False) -> logging.Logger:
@@ -618,6 +642,3 @@ def setup_logger(log_dir=None, temp_dir=None, force_reset=False) -> logging.Logg
         logger = logging.getLogger("nvrx")
 
     return logger
-
-
-
