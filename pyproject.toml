@@ -20,7 +20,7 @@ packages = [
 ]
 
 exclude = [
-    "src/nvidia_resiliency_ext/straggler/cupti_src"
+    "src/nvidia_resiliency_ext/attribution/straggler/cupti_src"
 ]
 
 [tool.poetry.build]
