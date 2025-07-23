@@ -105,6 +105,7 @@ Separate Aggregator Service:
     ft_launcher ... your_training_script.py
 """
 
+import re
 import heapq
 import logging
 import os
@@ -115,12 +116,40 @@ import time
 from datetime import datetime
 from typing import Optional
 
+log_pattern = re.compile(
+    r"(?P<asctime>[\d-]+\s[\d:,]+) \[(?P<levelname>\w+)\] \[(?P<hostname>[\w.-]+)\] "
+    r"\[workload:(?P<workload_rank>\d+)\((?P<workload_local_rank>\d+)\) infra:(?P<infra_rank>\d+)\((?P<infra_local_rank>\d+)\)\] "
+    r"(?P<filename>[\w.]+):(?P<lineno>\d+) (?P<message>.+)"
+)
+
 
 class LogMessage:
     """Represents a log message."""
 
-    def __init__(self, message: str):
-        self.message = message
+    def __init__(self, full_message: str):
+        self.full_message = full_message
+        self.hash_table = {}
+        match = log_pattern.match(full_message)
+        if match:
+            log_fields = match.groupdict()
+            for key, value in log_fields.items():
+                if key == 'asctime':
+                    # Convert asctime to a datetime object, then to a Unix timestamp
+                    dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S,%f')
+                    timestamp = int(dt.timestamp())
+                    self.hash_table[key] = value
+                else:
+                    self.hash_table[key] = value
+
+        if 'asctime' not in self.hash_table:
+            current_datetime = datetime.now()
+            self.hash_table['asctime'] = int(current_datetime.timestamp())
+
+    def getts(self):
+        return self.hash_table['asctime']
+
+    def __str__(self):
+        return self.full_message
 
 
 class LogManager:
@@ -281,6 +310,47 @@ class LogManager:
         )
         self._aggregator_thread.start()
 
+    def _process_messages(self, output):
+        msg_lists = []
+        sorted_msgs = []
+        heap = []
+
+        # Check for pending messages from other ranks
+        while not self._stop_event.is_set():
+            # Check for pending messages from other ranks
+            self._check_pending_messages()
+
+            # Process queued messages
+            with self._lock:
+                messages = self._log_queue.copy()
+                self._log_queue.clear()
+                msg_lists.append(messages)
+
+        # Initialize heap with the first log of each list
+        for i, messages in enumerate(msg_lists):
+            if messages:
+                lm = messages[0]
+                heapq.heappush(heap, (lm.getts(), i, 0, lm))
+
+        while heap:
+            ts, list_idx, entry_idx, log_entry = heapq.heappop(heap)
+            sorted_msgs.append(log_entry)
+            next_entry_idx = entry_idx + 1
+            if next_entry_idx < len(msg_lists[list_idx]):
+                next_log = LogMessage(msg_lists[list_idx][next_entry_idx])
+                heapq.heappush(heap, (next_log.getts(), list_idx, next_entry_idx, next_log))
+
+        # Write messages to output
+        for msg in sorted_msgs:
+            try:
+                # The message is already formatted by the formatter, just write it
+                output.write(msg.full_message + '\n')
+                output.flush()
+            except Exception as e:
+                # Fallback to stderr if output fails
+                sys.stderr.write(f"Log output error: {e}\n")
+                sys.stderr.flush()
+
     def _aggregator_loop(self):
         """Main loop for the log aggregator."""
         # Create log directory if it doesn't exist
@@ -289,44 +359,8 @@ class LogManager:
         # Setup per-node log file
         log_file = os.path.join(self._log_dir, f"node_{self.node_id}.log")
         output = open(log_file, 'a', buffering=1)  # Line buffered
-        msg_lists = []
-        sorted_logs = []
-        heap = []
         try:
-            while not self._stop_event.is_set():
-                # Check for pending messages from other ranks
-                self._check_pending_messages()
-
-                # Process queued messages
-                with self._lock:
-                    messages = self._log_queue.copy()
-                    self._log_queue.clear()
-                    msg_lists.append(messages)
-
-            # Initialize heap with the first log of each list
-            for i, messages in enumerate(msg_lists):
-                if messages:
-                    lm = LogMessage(messages[0])
-                    heapq.heappush(heap, lm.timestamp, i, 0, lm)
-
-            while heap:
-                ts, list_idx, entry_idx, log_entry = heapq.heappop(heap)
-                sorted_logs.append(log_entry)
-                next_entry_idx = entry_idx + 1
-                if next_entry_idx < len(msg_lists[list_idx]):
-                    next_log = LogMessage(msg_lists[list_idx][next_entry_idx])
-                    heapq.heappush(heap, (next_log.timestamp, list_idx, next_entry_idx, next_log))
-
-                # Write messages to output
-                for msg in sorted_logs:
-                    try:
-                        # The message is already formatted by the formatter, just write it
-                        output.write(msg.message + '\n')
-                        output.flush()
-                    except Exception as e:
-                        # Fallback to stderr if output fails
-                        sys.stderr.write(f"Log output error: {e}\n")
-                        sys.stderr.flush()
+            self._process_messages(output)
 
             # Sleep briefly to avoid busy waiting
             time.sleep(0.01)
@@ -336,14 +370,12 @@ class LogManager:
 
     def _queue_message(self, message: str):
         """Queue a log message for aggregation."""
-        # Create log message
-        log_msg = LogMessage(message=message)
 
         # All ranks use file-based message passing
         # This ensures child processes can log even when they don't have the aggregator thread
-        self._send_message_to_aggregator(log_msg)
+        self._send_message_to_aggregator(message)
 
-    def _send_message_to_aggregator(self, log_msg: LogMessage):
+    def _send_message_to_aggregator(self, message: str):
         """Send a message to the aggregator using file-based communication."""
         # Create message directory in temp dir
         msg_dir = os.path.join(self._temp_dir, "pending_messages")
@@ -370,7 +402,7 @@ class LogManager:
 
         # Append message to the rank's message file
         with open(msg_file, 'a') as f:
-            f.write(f"{log_msg.message}\n")
+            f.write(f"{message}\n")
             f.flush()  # Ensure message is written immediately
 
     def _check_pending_messages(self):
@@ -457,7 +489,7 @@ class LogManager:
             if not line:
                 continue
 
-            log_msg = LogMessage(message=line)
+            log_msg = LogMessage(line)
 
             with self._lock:
                 self._log_queue.append(log_msg)
