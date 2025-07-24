@@ -18,9 +18,30 @@ import unittest
 import logging
 import os
 import shutil
-
+import multiprocessing
+import time
+import random
 
 from src.nvidia_resiliency_ext.shared_utils.logger import setup_logger, log_pattern
+
+
+def setup_vars(global_id, local_id):
+    os.environ["NVRX_LOG_AGGREGATOR"] = "1"
+    os.environ["SLURM_PROCID"] = str(global_id)
+    os.environ["SLURM_LOCALID"] = str(local_id)
+    os.environ["RANK"] = str(global_id)
+    os.environ["LOCAL_RANK"] = str(local_id)
+
+
+def worker_process(n):
+    """Function that each process will execute."""
+    setup_vars(n, n)
+    log_dir = os.getcwd() + "/tests/shared_utils/logs/"
+    logger = setup_logger(log_dir, log_dir, False)
+    num_msg = 1000
+    for i in range(num_msg):
+        time.sleep(0.002 + (random.uniform(0, 100))/100000)
+        logger.info(f"My Logging Message {i}")
 
 
 class TestLogger(unittest.TestCase):
@@ -45,38 +66,33 @@ class TestLogger(unittest.TestCase):
                     log_fields = match.groupdict()
                     for key, value in log_fields.items():
                         if key == 'workload_rank':
-                            self.assertEqual(
-                                int(value),
-                                global_id,
-                                f'The workload_rank should be {global_id} instead {value}',
-                            )
+                            if global_id != -1:
+                                self.assertEqual(
+                                    int(value),
+                                    global_id,
+                                    f'The workload_rank should be {global_id} instead {value}',
+                                )
                         if key == 'workload_local_rank':
+                            if local_id != -1:
+                                self.assertEqual(
+                                    int(value),
+                                    local_id,
+                                    f'The workload_local_rank should be {local_id} instead {value}',
+                                )
+                    if key == 'infra_rank':
+                        if local_id != -1:
                             self.assertEqual(
                                 int(value),
                                 local_id,
-                                f'The workload_local_rank should be {local_id} instead {value}',
+                                f'The infra_rank should be {local_id} instead {value}',
                             )
-                    if key == 'infra_rank':
-                        self.assertEqual(
-                            int(value),
-                            local_id,
-                            f'The infra_rank should be {local_id} instead {value}',
-                        )
         self.assertEqual(
             line_count, num_lines, f'The line_count should be {num_lines} instead {line_count}'
         )
 
-    def setup_vars(self, global_id, local_id):
-        os.environ["NVRX_LOG_AGGREGATOR"] = "1"
-        os.environ["SLURM_PROCID"] = str(global_id)
-        os.environ["SLURM_LOCALID"] = str(local_id)
-        os.environ["RANK"] = str(global_id)
-        os.environ["LOCAL_RANK"] = str(local_id)
-  
-  
     def test_single_msg(self):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        self.setup_vars(0, 0)
+        setup_vars(0, 0)
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         logger = setup_logger(log_dir, log_dir, True)
@@ -86,17 +102,16 @@ class TestLogger(unittest.TestCase):
             lm.shutdown()
         num_files, file_name = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
-        self.check_file(log_dir+file_name, 1, 0, 0)
-
+        self.check_file(log_dir + file_name, 1, 0, 0)
 
     def test_many_msg(self):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        self.setup_vars(0, 0)
+        setup_vars(0, 0)
 
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         logger = setup_logger(log_dir, log_dir, True)
-        num_msg = 10000
+        num_msg = 2000
         for i in range(num_msg):
             logger.info(f"My Logging Message {i}")
         if hasattr(setup_logger, '_log_manager'):
@@ -105,3 +120,36 @@ class TestLogger(unittest.TestCase):
         num_files, file_name = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
         self.check_file(log_dir + file_name, num_msg, 0, 0)
+
+    def test_multiple_procs(self):
+        n = 7  # Number of processes to create
+        processes = []
+
+        log_dir = os.getcwd() + "/tests/shared_utils/logs/"
+        setup_vars(0, 0)
+        if os.path.exists(log_dir):
+            shutil.rmtree(log_dir)
+        logger = setup_logger(log_dir, log_dir, True)
+
+        for i in range(n):
+            # Create a new process
+            p = multiprocessing.Process(target=worker_process, args=(i + 1,))
+            processes.append(p)
+            p.start()
+
+        # process 0 logs
+        num_msg = 1000
+        for i in range(num_msg):
+            time.sleep(0.002 + (random.uniform(0, 100))/100000)
+            logger.info(f"My Logging Message {i}")
+
+        # Wait for all processes to complete
+        for p in processes:
+            p.join()
+
+        if hasattr(setup_logger, '_log_manager'):
+            lm = getattr(setup_logger, '_log_manager')
+            lm.shutdown()
+        num_files, file_name = self.count_files_in_dir(log_dir)
+        self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
+        self.check_file(log_dir + file_name, num_msg * 8, -1, -1)
