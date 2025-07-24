@@ -337,7 +337,7 @@ class LogManager:
             sorted_msgs.append(log_entry)
             next_entry_idx = entry_idx + 1
             if next_entry_idx < len(msg_lists[list_idx]):
-                next_log = LogMessage(msg_lists[list_idx][next_entry_idx])
+                next_log = msg_lists[list_idx][next_entry_idx]
                 heapq.heappush(heap, (next_log.getts(), list_idx, next_entry_idx, next_log))
 
         # Write messages to output
@@ -471,6 +471,7 @@ class LogManager:
             with open(msg_file, 'r') as f:
                 f.seek(last_position)
                 lines = f.readlines()
+                file_size = f.tell()
         except FileNotFoundError as e:
             # File was deleted between size check and read
             sys.stderr.write(f"File not found during read {msg_file}: {e}\n")
@@ -488,7 +489,6 @@ class LogManager:
             line = line.strip()
             if not line:
                 continue
-
             log_msg = LogMessage(line)
 
             with self._lock:
