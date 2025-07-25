@@ -121,29 +121,25 @@ class TestLogger(unittest.TestCase):
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
         self.check_file(log_dir + file_name, num_msg, 0, 0)
 
-    def test_one_proc(self):
-        n = 1  # Number of processes to create
-        num_msg = 10
-        processes = []
 
+    def multiple_processes(self, num_procs, num_msg):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
         setup_vars(0, 0, "1")
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         logger = setup_logger(log_dir, log_dir, True)
 
-        for i in range(n):
+        processes = []
+        for i in range(num_procs):
             # Create a new process
             p = multiprocessing.Process(target=worker_process, args=(i + 1, num_msg))
             processes.append(p)
             p.start()
 
         # process 0 logs
-        '''
         for i in range(num_msg):
             time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
             logger.info(f"My Logging Message {i}")
-        '''
 
         # Wait for all processes to complete
         for p in processes:
@@ -154,4 +150,7 @@ class TestLogger(unittest.TestCase):
             lm.shutdown()
         num_files, file_name = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
-        self.check_file(log_dir + file_name, num_msg * n, -1, -1)
+        self.check_file(log_dir + file_name, num_msg * (num_procs+1), -1, -1)
+
+    def test_one_proc(self):
+        self.multiple_processes(1, 2000)

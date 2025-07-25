@@ -343,10 +343,10 @@ class LogManager:
 
     def _process_messages(self, output):
         # Check for pending messages from other ranks
-        keep_processing = 10
+        keep_processing = 1
         while keep_processing:
             if self._stop_event.is_set():
-                keep_processing -= 1
+                keep_processing = 0
             msg_lists = []
             # Check for pending messages from other ranks
             self._check_pending_messages()
