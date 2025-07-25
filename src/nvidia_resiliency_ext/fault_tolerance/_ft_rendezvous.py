@@ -6,11 +6,11 @@
 
 # SPDX-License-Identifier: BSD-3-Clause
 # Modifications made by NVIDIA
-# All occurences of 'torch.distributed.elastic' were replaced with 'nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat'
+# This file now uses PyTorch's distributed elastic module directly
 # Added suppression for pickle low serverity issue
 
 
-# This file is based on _torch_elastic_compat/rendezvous/dynamic_rendezvous.py
+# This file is based on torch.distributed.elastic.rendezvous.dynamic_rendezvous
 # It includes NVRx related modifications for the node health checking, KSO and others.
 
 
@@ -34,21 +34,22 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 
 from torch.distributed import PrefixStore, Store
-
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import WorkerState
-
-from ..shared_utils.health_check import GPUHealthCheck
-from ._torch_elastic_compat.events import NodeState, construct_and_record_rdzv_event
-from ._torch_elastic_compat.rendezvous.api import (
+from torch.distributed.elastic.agent.server.api import WorkerState
+from torch.distributed.elastic.events import NodeState, construct_and_record_rdzv_event
+from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
     RendezvousError,
     RendezvousGracefulExitError,
     RendezvousHandler,
+    RendezvousInfo,
     RendezvousParameters,
     RendezvousStateError,
+    RendezvousStoreInfo,
     RendezvousTimeoutError,
 )
-from ._torch_elastic_compat.rendezvous.utils import _delay, _PeriodicTimer
+from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
+
+from ..shared_utils.health_check import GPUHealthCheck
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
@@ -1253,6 +1254,11 @@ class FtRendezvousHandler(RendezvousHandler):
         """See base class."""
         return self._backend_name
 
+    @property
+    def use_agent_store(self) -> bool:
+        """See base class."""
+        return False
+
     def ensure_node_is_healthy(self) -> None:
         """Perform GPU health check for this node."""
         # Record the health check message
@@ -1341,7 +1347,16 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg, rank=rank)
         log.info(msg)
 
-        return store, rank, world_size
+        # TCPStore sharing is disabled, TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1.
+        bootstrap_store_info = RendezvousStoreInfo.build(
+            rank, store, local_addr=self._this_node.addr
+        )
+        return RendezvousInfo(
+            store,
+            rank,
+            world_size,
+            bootstrap_store_info,
+        )
 
     def is_closed(self) -> bool:
         """See base class."""
