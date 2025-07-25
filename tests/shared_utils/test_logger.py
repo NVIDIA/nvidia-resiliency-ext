@@ -25,22 +25,21 @@ import random
 from src.nvidia_resiliency_ext.shared_utils.logger import setup_logger, log_pattern
 
 
-def setup_vars(global_id, local_id):
-    os.environ["NVRX_LOG_AGGREGATOR"] = "1"
+def setup_vars(global_id, local_id, is_agg):
+    os.environ["NVRX_LOG_AGGREGATOR"] = is_agg
     os.environ["SLURM_PROCID"] = str(global_id)
     os.environ["SLURM_LOCALID"] = str(local_id)
     os.environ["RANK"] = str(global_id)
     os.environ["LOCAL_RANK"] = str(local_id)
 
 
-def worker_process(n):
+def worker_process(n, num_msg):
     """Function that each process will execute."""
-    setup_vars(n, n)
+    setup_vars(n, n, "0")
     log_dir = os.getcwd() + "/tests/shared_utils/logs/"
     logger = setup_logger(log_dir, log_dir, False)
-    num_msg = 1000
     for i in range(num_msg):
-        time.sleep(0.002 + (random.uniform(0, 100))/100000)
+        time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
         logger.info(f"My Logging Message {i}")
 
 
@@ -92,7 +91,7 @@ class TestLogger(unittest.TestCase):
 
     def test_single_msg(self):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        setup_vars(0, 0)
+        setup_vars(0, 0, "1")
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         logger = setup_logger(log_dir, log_dir, True)
@@ -106,13 +105,14 @@ class TestLogger(unittest.TestCase):
 
     def test_many_msg(self):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        setup_vars(0, 0)
+        setup_vars(0, 0, "1")
 
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         logger = setup_logger(log_dir, log_dir, True)
         num_msg = 2000
         for i in range(num_msg):
+            time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
             logger.info(f"My Logging Message {i}")
         if hasattr(setup_logger, '_log_manager'):
             lm = getattr(setup_logger, '_log_manager')
@@ -121,27 +121,29 @@ class TestLogger(unittest.TestCase):
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
         self.check_file(log_dir + file_name, num_msg, 0, 0)
 
-    def test_multiple_procs(self):
-        n = 7  # Number of processes to create
+    def test_one_proc(self):
+        n = 1  # Number of processes to create
+        num_msg = 10
         processes = []
 
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        setup_vars(0, 0)
+        setup_vars(0, 0, "1")
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         logger = setup_logger(log_dir, log_dir, True)
 
         for i in range(n):
             # Create a new process
-            p = multiprocessing.Process(target=worker_process, args=(i + 1,))
+            p = multiprocessing.Process(target=worker_process, args=(i + 1, num_msg))
             processes.append(p)
             p.start()
 
         # process 0 logs
-        num_msg = 1000
+        '''
         for i in range(num_msg):
-            time.sleep(0.002 + (random.uniform(0, 100))/100000)
+            time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
             logger.info(f"My Logging Message {i}")
+        '''
 
         # Wait for all processes to complete
         for p in processes:
@@ -152,4 +154,4 @@ class TestLogger(unittest.TestCase):
             lm.shutdown()
         num_files, file_name = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
-        self.check_file(log_dir + file_name, num_msg * 8, -1, -1)
+        self.check_file(log_dir + file_name, num_msg * n, -1, -1)

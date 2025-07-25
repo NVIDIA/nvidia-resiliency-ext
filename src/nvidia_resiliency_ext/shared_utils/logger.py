@@ -310,13 +310,44 @@ class LogManager:
         )
         self._aggregator_thread.start()
 
-    def _process_messages(self, output):
-        msg_lists = []
-        sorted_msgs = []
-        heap = []
+    def _write_messages_to_file(self, messages, output):
+        # Write messages to output
+        for msg in messages:
+            try:
+                # The message is already formatted by the formatter, just write it
+                output.write(msg.full_message + '\n')
+                output.flush()
+            except Exception as e:
+                # Fallback to stderr if output fails
+                sys.stderr.write(f"Log output error: {e}\n")
+                sys.stderr.flush()
 
+    def _sort_message_lists(self, msg_lists) -> list:
+        heap = []
+        # Initialize heap with the first log of each list
+        for i, messages in enumerate(msg_lists):
+            if messages:
+                lm = messages[0]
+                heapq.heappush(heap, (lm.getts(), i, 0, lm))
+
+        sorted_msgs = []
+        while heap:
+            ts, list_idx, entry_idx, log_entry = heapq.heappop(heap)
+            sorted_msgs.append(log_entry)
+            next_entry_idx = entry_idx + 1
+            if next_entry_idx < len(msg_lists[list_idx]):
+                next_log = msg_lists[list_idx][next_entry_idx]
+                heapq.heappush(heap, (next_log.getts(), list_idx, next_entry_idx, next_log))
+
+        return sorted_msgs
+
+    def _process_messages(self, output):
         # Check for pending messages from other ranks
-        while not self._stop_event.is_set():
+        keep_processing = 10
+        while keep_processing:
+            if self._stop_event.is_set():
+                keep_processing -= 1
+            msg_lists = []
             # Check for pending messages from other ranks
             self._check_pending_messages()
 
@@ -326,30 +357,10 @@ class LogManager:
                 self._log_queue.clear()
                 msg_lists.append(messages)
 
-        # Initialize heap with the first log of each list
-        for i, messages in enumerate(msg_lists):
-            if messages:
-                lm = messages[0]
-                heapq.heappush(heap, (lm.getts(), i, 0, lm))
-
-        while heap:
-            ts, list_idx, entry_idx, log_entry = heapq.heappop(heap)
-            sorted_msgs.append(log_entry)
-            next_entry_idx = entry_idx + 1
-            if next_entry_idx < len(msg_lists[list_idx]):
-                next_log = msg_lists[list_idx][next_entry_idx]
-                heapq.heappush(heap, (next_log.getts(), list_idx, next_entry_idx, next_log))
-
-        # Write messages to output
-        for msg in sorted_msgs:
-            try:
-                # The message is already formatted by the formatter, just write it
-                output.write(msg.full_message + '\n')
-                output.flush()
-            except Exception as e:
-                # Fallback to stderr if output fails
-                sys.stderr.write(f"Log output error: {e}\n")
-                sys.stderr.flush()
+            sorted_msgs = self._sort_message_lists(msg_lists)
+            self._write_messages_to_file(sorted_msgs, output)
+            # Sleep briefly to avoid busy waiting
+            time.sleep(0.01)
 
     def _aggregator_loop(self):
         """Main loop for the log aggregator."""
@@ -361,10 +372,6 @@ class LogManager:
         output = open(log_file, 'a', buffering=1)  # Line buffered
         try:
             self._process_messages(output)
-
-            # Sleep briefly to avoid busy waiting
-            time.sleep(0.01)
-
         finally:
             output.close()
 
@@ -472,6 +479,7 @@ class LogManager:
                 f.seek(last_position)
                 lines = f.readlines()
                 file_size = f.tell()
+
         except FileNotFoundError as e:
             # File was deleted between size check and read
             sys.stderr.write(f"File not found during read {msg_file}: {e}\n")
