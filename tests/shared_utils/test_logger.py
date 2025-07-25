@@ -22,6 +22,7 @@ import multiprocessing
 import time
 import random
 
+from datetime import datetime
 from src.nvidia_resiliency_ext.shared_utils.logger import setup_logger, log_pattern
 
 
@@ -57,6 +58,8 @@ class TestLogger(unittest.TestCase):
 
     def check_file(self, file_path, num_lines, global_id, local_id):
         line_count = 0
+        curr_ts = 0
+        curr_dt = 0
         with open(file_path, 'r') as file:
             for line in file:
                 match = log_pattern.match(line)
@@ -64,6 +67,18 @@ class TestLogger(unittest.TestCase):
                     line_count += 1
                     log_fields = match.groupdict()
                     for key, value in log_fields.items():
+                        if key == 'asctime':
+                            # Convert asctime to a datetime object, then to a Unix timestamp
+                            dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S,%f')
+                            line_ts = dt.timestamp()
+                            self.assertLess(
+                                curr_ts,
+                                line_ts,
+                                f'The timestamp of {curr_dt} is > {value}',
+                            )
+                            curr_ts = line_ts
+                            curr_dt = value
+
                         if key == 'workload_rank':
                             if global_id != -1:
                                 self.assertEqual(
@@ -121,7 +136,6 @@ class TestLogger(unittest.TestCase):
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
         self.check_file(log_dir + file_name, num_msg, 0, 0)
 
-
     def multiple_processes(self, num_procs, num_msg):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
         setup_vars(0, 0, "1")
@@ -150,7 +164,7 @@ class TestLogger(unittest.TestCase):
             lm.shutdown()
         num_files, file_name = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
-        self.check_file(log_dir + file_name, num_msg * (num_procs+1), -1, -1)
+        self.check_file(log_dir + file_name, num_msg * (num_procs + 1), -1, -1)
 
     def test_one_proc(self):
         self.multiple_processes(1, 2000)
