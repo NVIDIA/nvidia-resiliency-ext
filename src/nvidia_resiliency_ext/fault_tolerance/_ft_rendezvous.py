@@ -41,12 +41,20 @@ from torch.distributed.elastic.rendezvous.api import (
     RendezvousError,
     RendezvousGracefulExitError,
     RendezvousHandler,
-    RendezvousInfo,
     RendezvousParameters,
     RendezvousStateError,
-    RendezvousStoreInfo,
     RendezvousTimeoutError,
 )
+
+# Try to import newer PyTorch features, fall back gracefully if not available
+try:
+    from torch.distributed.elastic.rendezvous.api import RendezvousInfo, RendezvousStoreInfo
+
+    _RENDEZVOUS_INFO_AVAILABLE = True
+except ImportError:
+    _RENDEZVOUS_INFO_AVAILABLE = False
+    RendezvousInfo = None
+    RendezvousStoreInfo = None
 from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 
 from ..shared_utils.health_check import GPUHealthCheck
@@ -1297,8 +1305,13 @@ class FtRendezvousHandler(RendezvousHandler):
                 f"Node {self._this_node} is excluded from the training due to an user request."
             )
 
-    def next_rendezvous(self) -> Tuple[Store, int, int]:
-        """See base class."""
+    def next_rendezvous(self) -> Union[RendezvousInfo, Tuple[Store, int, int]]:
+        """See base class.
+
+        Returns:
+            RendezvousInfo object if supported by PyTorch version,
+            otherwise tuple of (store, rank, world_size)
+        """
 
         msg = (
             f"The node '{self._this_node}' attempts to join the next round of the rendezvous "
@@ -1347,16 +1360,23 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg, rank=rank)
         log.info(msg)
 
-        # TCPStore sharing is disabled, TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1.
-        bootstrap_store_info = RendezvousStoreInfo.build(
-            rank, store, local_addr=self._this_node.addr
-        )
-        return RendezvousInfo(
-            store,
-            rank,
-            world_size,
-            bootstrap_store_info,
-        )
+        # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
+        # Fall back to tuple format if RendezvousInfo is not supported
+        if _RENDEZVOUS_INFO_AVAILABLE:
+            # TCPStore sharing is disabled, TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1.
+            bootstrap_store_info = RendezvousStoreInfo.build(
+                rank, store, local_addr=self._this_node.addr
+            )
+            return RendezvousInfo(
+                store,
+                rank,
+                world_size,
+                bootstrap_store_info,
+            )
+        else:
+            # RendezvousInfo not supported, use tuple format
+            log.debug("RendezvousInfo not available, using tuple format")
+            return store, rank, world_size
 
     def is_closed(self) -> bool:
         """See base class."""
