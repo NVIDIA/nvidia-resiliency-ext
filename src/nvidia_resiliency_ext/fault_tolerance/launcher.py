@@ -35,20 +35,17 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
 import torch
 from torch.distributed.argparse_util import check_env, env
-
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat import events, metrics, timer
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import (
+from torch.distributed.elastic import events, metrics, timer
+from torch.distributed.elastic.agent.server.api import (
     RunResult,
     SimpleElasticAgent,
     WorkerGroup,
     WorkerSpec,
     WorkerState,
 )
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.api import (
-    EventMetadataValue,
-)
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.metrics.api import prof, put_metric
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing import (
+from torch.distributed.elastic.events.api import EventMetadataValue
+from torch.distributed.elastic.metrics.api import prof, put_metric
+from torch.distributed.elastic.multiprocessing import (
     DefaultLogsSpecs,
     LogsSpecs,
     PContext,
@@ -56,25 +53,17 @@ from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing
     Std,
     start_processes,
 )
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.multiprocessing.errors import (
-    ChildFailedError,
-    record,
-)
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import (
-    RendezvousParameters,
-)
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous import (
-    registry as rdzv_registry,
-)
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous.api import (
-    RendezvousGracefulExitError,
-)
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous.utils import (
+from torch.distributed.elastic.multiprocessing.errors import ChildFailedError, record
+from torch.distributed.elastic.rendezvous import RendezvousParameters
+from torch.distributed.elastic.rendezvous import registry as rdzv_registry
+from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
+from torch.distributed.elastic.rendezvous.utils import (
     _matches_machine_hostname,
     _parse_rendezvous_config,
     parse_rendezvous_endpoint,
 )
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.utils import macros
+from torch.distributed.elastic.utils import macros
+
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
@@ -102,9 +91,10 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 
 def _register_ft_rdzv_handler():
 
+    from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
+    from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
+
     from ._ft_rendezvous import FtRendezvousHandler, create_handler
-    from ._torch_elastic_compat.rendezvous import rendezvous_handler_registry
-    from ._torch_elastic_compat.rendezvous.c10d_rendezvous_backend import create_backend
 
     def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousHandler:
         backend, store = create_backend(params)
@@ -246,7 +236,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     DEFAULT_ROLE = "default"  # FIXME
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
-    #  `nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.metrics.prof`.
+    #  `torch.distributed.elastic.metrics.prof`.
     @prof
     def run(self, role: str = DEFAULT_ROLE) -> RunResult:
         start_time = time.monotonic()
@@ -549,7 +539,13 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
-    def _stop_workers(self, worker_group: WorkerGroup) -> None:
+    def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
+        # Support both old and new SimpleElasticAgent._stop_workers signatures:
+        # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
+        # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None  
+        # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
+        # We use *args and **kwargs to handle both cases transparently
+        
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Send close message to rank monitors
@@ -578,10 +574,9 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec = worker_group.spec
         store = worker_group.store
         assert store is not None
-        master_addr, master_port = super()._get_master_addr_port(store)
         restart_count = spec.max_restarts - self._remaining_restarts
 
-        use_agent_store = spec.rdzv_handler.get_backend() == "static"
+        use_agent_store = spec.rdzv_handler.use_agent_store
 
         args: Dict[int, Tuple] = {}
         envs: Dict[int, Dict[str, str]] = {}
@@ -598,8 +593,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 "WORLD_SIZE": str(worker.world_size),
                 "GROUP_WORLD_SIZE": str(worker_group.group_world_size),
                 "ROLE_WORLD_SIZE": str(worker.role_world_size),
-                "MASTER_ADDR": master_addr,
-                "MASTER_PORT": str(master_port),
+                "MASTER_ADDR": worker_group.master_addr,
+                "MASTER_PORT": str(worker_group.master_port),
                 "TORCHELASTIC_RESTART_COUNT": str(restart_count),
                 "TORCHELASTIC_MAX_RESTARTS": str(spec.max_restarts),
                 "TORCHELASTIC_RUN_ID": spec.rdzv_handler.get_run_id(),
