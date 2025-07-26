@@ -1364,9 +1364,14 @@ class FtRendezvousHandler(RendezvousHandler):
         # Fall back to tuple format if RendezvousInfo is not supported
         if _RENDEZVOUS_INFO_AVAILABLE:
             # TCPStore sharing is disabled, TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1.
-            bootstrap_store_info = RendezvousStoreInfo.build(
-                rank, store, local_addr=self._this_node.addr
-            )
+            # Handle backward compatibility for RendezvousStoreInfo.build
+            try:
+                bootstrap_store_info = RendezvousStoreInfo.build(
+                    rank, store, local_addr=self._this_node.addr
+                )
+            except TypeError:
+                # For older PyTorch versions (<= 2.5.1), local_addr parameter is not supported
+                bootstrap_store_info = RendezvousStoreInfo.build(rank, store)
             return RendezvousInfo(
                 store,
                 rank,
