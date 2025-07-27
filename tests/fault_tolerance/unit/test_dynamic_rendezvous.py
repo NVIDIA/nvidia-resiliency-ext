@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from base64 import b64encode
 from datetime import datetime, timedelta
 from types import MethodType
-from typing import Callable, Optional, Tuple, Union, cast
+from typing import Callable, Optional, Tuple, cast
 from unittest import TestCase
 from unittest.mock import MagicMock, Mock, call, patch
 
