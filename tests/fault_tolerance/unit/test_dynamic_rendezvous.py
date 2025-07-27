@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from base64 import b64encode
 from datetime import datetime, timedelta
 from types import MethodType
-from typing import Callable, Optional, Tuple, cast
+from typing import Callable, Optional, Tuple, Union, cast
 from unittest import TestCase
 from unittest.mock import MagicMock, Mock, call, patch
 
@@ -50,6 +50,40 @@ from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
     _RendezvousStateHolder,
     create_handler,
 )
+
+
+def _extract_rendezvous_info(rendezvous_result) -> Tuple[int, int]:
+    """Extract rank and world_size from either RendezvousInfo or tuple.
+
+    Args:
+        rendezvous_result: Either a RendezvousInfo object or a tuple (store, rank, world_size)
+
+    Returns:
+        Tuple of (rank, world_size)
+    """
+    try:
+        # Try to access as RendezvousInfo object
+        return rendezvous_result.rank, rendezvous_result.world_size
+    except AttributeError:
+        # Fall back to tuple format (store, rank, world_size)
+        return rendezvous_result[1], rendezvous_result[2]
+
+
+def _extract_store(rendezvous_result) -> Store:
+    """Extract store from either RendezvousInfo or tuple.
+
+    Args:
+        rendezvous_result: Either a RendezvousInfo object or a tuple (store, rank, world_size)
+
+    Returns:
+        Store object
+    """
+    try:
+        # Try to access as RendezvousInfo object
+        return rendezvous_result.store
+    except AttributeError:
+        # Fall back to tuple format (store, rank, world_size)
+        return rendezvous_result[0]
 
 
 class CustomAssertMixin:
@@ -1255,18 +1289,20 @@ class DynamicRendezvousHandlerTest(TestCase):
 
         rendezvous_info = handler.next_rendezvous()
 
-        self.assertEqual(rendezvous_info.rank, 2)
-        self.assertEqual(rendezvous_info.world_size, 3)
+        rank, world_size = _extract_rendezvous_info(rendezvous_info)
+        self.assertEqual(rank, 2)
+        self.assertEqual(world_size, 3)
 
         # Test that the store works correctly with prefixed keys
         # The PrefixStore will add the prefix to the key
         expected_key = "torch.rendezvous.dummy_run_id.0/dummy_key"
 
         # Set a value first
-        rendezvous_info.store.set("dummy_key", b"test_value")
+        store = _extract_store(rendezvous_info)
+        store.set("dummy_key", b"test_value")
 
         # Then get it back
-        value = rendezvous_info.store.get("dummy_key")
+        value = store.get("dummy_key")
         self.assertEqual(value, b"test_value")
 
     def test_next_rendezvous_respects_the_requested_timeout(self) -> None:
@@ -1714,13 +1750,21 @@ class IntegrationTest(TestCase):
 
         rendezvous_info1 = handler1_thread.join()
         rendezvous_info2 = handler2_thread.join()
-        self.assertEqual(rendezvous_info1.store.underlying_store, self._store)
-        self.assertEqual(rendezvous_info2.store.underlying_store, self._store)
 
-        self.assertNotEqual(rendezvous_info1.rank, rendezvous_info2.rank)
+        # Extract store, rank, and world_size
+        store1 = _extract_store(rendezvous_info1)
+        store2 = _extract_store(rendezvous_info2)
 
-        self.assertEqual(rendezvous_info1.world_size, 2)
-        self.assertEqual(rendezvous_info2.world_size, 2)
+        self.assertEqual(store1.underlying_store, self._store)
+        self.assertEqual(store2.underlying_store, self._store)
+
+        rank1, world_size1 = _extract_rendezvous_info(rendezvous_info1)
+        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
+
+        self.assertNotEqual(rank1, rank2)
+
+        self.assertEqual(world_size1, 2)
+        self.assertEqual(world_size2, 2)
 
     @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
     def test_all_nodes_join_rendezvous_with_health_check_(self, MockGPUHealthCheck) -> None:
@@ -1740,13 +1784,21 @@ class IntegrationTest(TestCase):
 
         rendezvous_info1 = handler1_thread.join()
         rendezvous_info2 = handler2_thread.join()
-        self.assertEqual(rendezvous_info1.store.underlying_store, self._store)
-        self.assertEqual(rendezvous_info2.store.underlying_store, self._store)
 
-        self.assertNotEqual(rendezvous_info1.rank, rendezvous_info2.rank)
+        # Extract store, rank, and world_size
+        store1 = _extract_store(rendezvous_info1)
+        store2 = _extract_store(rendezvous_info2)
 
-        self.assertEqual(rendezvous_info1.world_size, 2)
-        self.assertEqual(rendezvous_info2.world_size, 2)
+        self.assertEqual(store1.underlying_store, self._store)
+        self.assertEqual(store2.underlying_store, self._store)
+
+        rank1, world_size1 = _extract_rendezvous_info(rendezvous_info1)
+        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
+
+        self.assertNotEqual(rank1, rank2)
+
+        self.assertEqual(world_size1, 2)
+        self.assertEqual(world_size2, 2)
 
     @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
     def test_all_nodes_failed_rendezvous_with_health_check_(self, MockGPUHealthCheck) -> None:
@@ -2158,9 +2210,12 @@ class IntegrationTest(TestCase):
         rendezvous_info3 = handler3_thread_new.join()
 
         # Verify the rendezvous completed successfully
-        self.assertEqual(rendezvous_info2.world_size, 2)
-        self.assertEqual(rendezvous_info3.world_size, 2)
-        self.assertNotEqual(rendezvous_info2.rank, rendezvous_info3.rank)
+        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
+        rank3, world_size3 = _extract_rendezvous_info(rendezvous_info3)
+
+        self.assertEqual(world_size2, 2)
+        self.assertEqual(world_size3, 2)
+        self.assertNotEqual(rank2, rank3)
 
         _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 2)
         _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 0)
