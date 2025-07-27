@@ -542,10 +542,10 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
         # Support both old and new SimpleElasticAgent._stop_workers signatures:
         # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
-        # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None  
+        # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
-        
+
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Send close message to rank monitors
@@ -583,6 +583,14 @@ class LocalElasticAgent(SimpleElasticAgent):
         log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
         for worker in worker_group.workers:
             local_rank = worker.local_rank
+            # Get master_addr and master_port, handling compatibility with older PyTorch versions
+            try:
+                master_addr = worker_group.master_addr
+                master_port = worker_group.master_port
+            except AttributeError:
+                # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
+                master_addr, master_port = super()._get_master_addr_port(store)
+
             worker_env = {
                 "LOCAL_RANK": str(local_rank),
                 "RANK": str(worker.global_rank),
@@ -593,8 +601,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 "WORLD_SIZE": str(worker.world_size),
                 "GROUP_WORLD_SIZE": str(worker_group.group_world_size),
                 "ROLE_WORLD_SIZE": str(worker.role_world_size),
-                "MASTER_ADDR": worker_group.master_addr,
-                "MASTER_PORT": str(worker_group.master_port),
+                "MASTER_ADDR": master_addr,
+                "MASTER_PORT": str(master_port),
                 "TORCHELASTIC_RESTART_COUNT": str(restart_count),
                 "TORCHELASTIC_MAX_RESTARTS": str(spec.max_restarts),
                 "TORCHELASTIC_RUN_ID": spec.rdzv_handler.get_run_id(),
