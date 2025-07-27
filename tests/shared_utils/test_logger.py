@@ -173,3 +173,11 @@ class TestLogger(unittest.TestCase):
 
     def test_one_proc(self):
         self.multiple_processes(1, 2000)
+
+    def test_four_proc(self):
+        # gb200 has 4 GPU's, check that config
+        self.multiple_processes(3, 2000)
+
+    def test_eight_proc(self):
+        # h100 has 8 GPU's, check that config
+        self.multiple_processes(7, 2000)
