@@ -113,8 +113,10 @@ import socket
 import sys
 import threading
 import time
+import queue
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, List
+
 
 log_pattern = re.compile(
     r"(?P<asctime>[\d-]+\s[\d:,]+) \[(?P<levelname>\w+)\] \[(?P<hostname>[\w.-]+)\] "
@@ -174,7 +176,7 @@ class LogManager:
             temp_dir: Directory for temporary files. If None, uses NVRX_TEMP_DIR env var or /tmp
         """
         self._lock = threading.Lock()
-        self._log_queue = []
+        self._log_dict_queue = {}
         self._aggregator_thread = None
         self._stop_event = threading.Event()
 
@@ -322,45 +324,65 @@ class LogManager:
                 sys.stderr.write(f"Log output error: {e}\n")
                 sys.stderr.flush()
 
-    def _sort_message_lists(self, msg_lists) -> list:
-        heap = []
+    def _merge_sort_streaming_lists(
+        self, msg_dict: Dict[str, queue.SimpleQueue], heap: List
+    ) -> list:
         # Initialize heap with the first log of each list
-        for i, messages in enumerate(msg_lists):
-            if messages:
-                lm = messages[0]
-                heapq.heappush(heap, (lm.getts(), i, 0, lm))
+        heap_keys = {}
+        i = 0
+        for _, key, lm in heap:
+            heap_keys[key] = i
+            i += 1
+
+        for key, msg_q in msg_dict.items():
+            # print(f"msg_q {type(msg_q)}")
+            if msg_q and msg_q.qsize() > 0:
+                if key not in heap_keys:
+                    lm = msg_q.get()
+                    # push <ts, q, entry, log>
+                    heapq.heappush(heap, (lm.getts(), key, lm))
 
         sorted_msgs = []
         while heap:
-            ts, list_idx, entry_idx, log_entry = heapq.heappop(heap)
+            ts, key, log_entry = heapq.heappop(heap)
             sorted_msgs.append(log_entry)
-            next_entry_idx = entry_idx + 1
-            if next_entry_idx < len(msg_lists[list_idx]):
-                next_log = msg_lists[list_idx][next_entry_idx]
-                heapq.heappush(heap, (next_log.getts(), list_idx, next_entry_idx, next_log))
+            msg_q = msg_dict[key]
+            if msg_q.qsize() > 0:
+                next_log = msg_q.get()
+                heapq.heappush(heap, (next_log.getts(), key, next_log))
+            else:
+                break
 
         return sorted_msgs
 
     def _process_messages(self, output):
         # Check for pending messages from other ranks
         keep_processing = 1
+        msg_dict = {}
+        heap = []
+
         while keep_processing:
             if self._stop_event.is_set():
                 keep_processing = 0
-            msg_lists = []
             # Check for pending messages from other ranks
             self._check_pending_messages()
 
             # Process queued messages
             with self._lock:
-                messages = self._log_queue.copy()
-                self._log_queue.clear()
-                msg_lists.append(messages)
+                messages = self._log_dict_queue.copy()
+                for key, lm_q in self._log_dict_queue.items():
+                    if key in msg_dict:
+                        curr_q = msg_dict[key]
+                        while not lm_q.empty():
+                            curr_q.put(lm_q.get())
+                    else:
+                        msg_dict[key] = lm_q
+                self._log_dict_queue.clear()
 
-            sorted_msgs = self._sort_message_lists(msg_lists)
+            sorted_msgs = self._merge_sort_streaming_lists(msg_dict, heap)
             self._write_messages_to_file(sorted_msgs, output)
             # Sleep briefly to avoid busy waiting
-            time.sleep(0.01)
+            time.sleep(0.025)
 
     def _aggregator_loop(self):
         """Main loop for the log aggregator."""
@@ -493,14 +515,16 @@ class LogManager:
             return
 
         # Process each line
+        log_msg_q = queue.SimpleQueue()
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             log_msg = LogMessage(line)
+            log_msg_q.put(log_msg)
 
-            with self._lock:
-                self._log_queue.append(log_msg)
+        with self._lock:
+            self._log_dict_queue[msg_file] = log_msg_q
 
         # Update the position for this file
         self._file_positions[msg_file] = file_size

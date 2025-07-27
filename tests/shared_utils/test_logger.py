@@ -34,14 +34,21 @@ def setup_vars(global_id, local_id, is_agg):
     os.environ["LOCAL_RANK"] = str(local_id)
 
 
+def gen_log_msg(logger, num_msg):
+    for i in range(num_msg):
+        skip = random.uniform(1, 50)
+        skip -= 1
+        if skip == 0:
+            time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
+        logger.info(f"My Logging Message {i}")
+
+
 def worker_process(n, num_msg):
     """Function that each process will execute."""
     setup_vars(n, n, "0")
     log_dir = os.getcwd() + "/tests/shared_utils/logs/"
     logger = setup_logger(log_dir, log_dir, False)
-    for i in range(num_msg):
-        time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
-        logger.info(f"My Logging Message {i}")
+    gen_log_msg(logger, num_msg)
 
 
 class TestLogger(unittest.TestCase):
@@ -71,7 +78,7 @@ class TestLogger(unittest.TestCase):
                             # Convert asctime to a datetime object, then to a Unix timestamp
                             dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S,%f')
                             line_ts = dt.timestamp()
-                            self.assertLess(
+                            self.assertLessEqual(
                                 curr_ts,
                                 line_ts,
                                 f'The timestamp of {curr_dt} is > {value}',
@@ -151,9 +158,7 @@ class TestLogger(unittest.TestCase):
             p.start()
 
         # process 0 logs
-        for i in range(num_msg):
-            time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
-            logger.info(f"My Logging Message {i}")
+        gen_log_msg(logger, num_msg)
 
         # Wait for all processes to complete
         for p in processes:
