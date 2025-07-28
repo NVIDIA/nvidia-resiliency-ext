@@ -97,7 +97,8 @@ if is_wandb_available():
 
 logger = logging.getLogger(__name__)
 
-# NVIDIA modification: Removed the log validation function
+
+# NVIDIA modification: Removed log validation because it is not being used
 
 
 def parse_args():
