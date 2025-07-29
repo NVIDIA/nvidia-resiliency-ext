@@ -15,8 +15,11 @@
 
 import glob
 import os
+import subprocess
+from pathlib import Path
 
-from pybind11.setup_helpers import Pybind11Extension, build_ext
+from pybind11.setup_helpers import Pybind11Extension
+from setuptools.command.build_ext import build_ext as build_ext_orig
 
 
 def find_file_in_dir(cuda_path, sfile):
@@ -29,9 +32,8 @@ def find_file_in_dir(cuda_path, sfile):
         sfile (str): The file to look for (e.g., 'libcupti.so').
 
     Returns:
-        tuple: (directory_of_file1, directory_of_file2) or (None, None) if either file is not found.
+        str: Directory path where the file is found or None.
     """
-
     for root, _, files in os.walk(cuda_path):
         if sfile in files:
             return root
@@ -43,11 +45,30 @@ def _skip_ext_build():
     return ans.lower() in ['1', 'on', 'yes', 'true']
 
 
+class PatchelfBuildExt(build_ext_orig):
+    def run(self):
+        super().run()
+        self._patch_shared_objects()
+
+    def _patch_shared_objects(self):
+        print("Running patchelf to replace libcupti.so.12 with libcupti.so...")
+        build_lib = Path(self.build_lib)
+        for so_file in build_lib.rglob("nvrx_cupti_module*.so"):
+            try:
+                subprocess.run(
+                    ["patchelf", "--replace-needed", "libcupti.so.12", "libcupti.so", str(so_file)],
+                    check=True,
+                )
+                print(f"✅ Patched: {so_file}")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Failed to patch {so_file}: {e}")
+
+
 def build(setup_kwargs):
 
     if _skip_ext_build():
         print(
-            "WARNING! CUPTI extension wont be build due to STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD flag."
+            "WARNING! CUPTI extension won't be built due to STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD flag."
         )
         return
 
@@ -56,7 +77,7 @@ def build(setup_kwargs):
 
     cuda_path = os.environ.get("CUDA_PATH", "/usr/local/cuda")
     if not os.path.isdir(cuda_path):
-        raise FileNotFoundError("cuda installation not found in /usr/local/cuda or $CUDA_PATH")
+        raise FileNotFoundError("CUDA installation not found in /usr/local/cuda or $CUDA_PATH")
 
     cupti_h = "cupti.h"
     libcupti_so = "libcupti.so"
@@ -66,7 +87,7 @@ def build(setup_kwargs):
         include_dirs = [idir]
         library_dirs = [ldir]
     else:
-        raise FileNotFoundError(f"required files {libcupti_so} and {cupti_h} not found")
+        raise FileNotFoundError(f"Required files {libcupti_so} and {cupti_h} not found")
 
     cpp_extension = Pybind11Extension(
         'nvrx_cupti_module',
@@ -79,13 +100,12 @@ def build(setup_kwargs):
         language='c++',
         cxx_std=17,
     )
-    ext_modules = [
-        cpp_extension,
-    ]
+    ext_modules = [cpp_extension]
+
     setup_kwargs.update(
         {
             "ext_modules": ext_modules,
-            "cmdclass": {"build_ext": build_ext},
+            "cmdclass": {"build_ext": PatchelfBuildExt},
             "zip_safe": False,
         }
     )
