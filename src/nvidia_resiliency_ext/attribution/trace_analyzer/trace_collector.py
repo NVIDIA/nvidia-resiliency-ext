@@ -74,7 +74,9 @@ class TorchFRTraceCollector(TraceCollector):
         """
 
         output_path = f"{self.path}/_dump_{self.rank}"
-        self.trace = self.dump_fn(includeCollectives=True, onlyActive=True)
+        self.trace = self.dump_fn(
+            includeCollectives=True, includeStackTraces=False, onlyActive=True
+        )
         mode = 'wb'
         if self.json:
             output_path = output_path + '.json'
