@@ -83,9 +83,7 @@ def get_cuda_path():
                 return match.group(1)
             else:
                 # fallback: get directory where nvcc is located
-                cuda_dir = os.path.dirname(os.path.dirname(nvcc_path))
-                if os.path.isdir(cuda_dir):
-                    return cuda_dir
+                return os.path.dirname(os.path.dirname(nvcc_path))
         except Exception:
             pass
 
