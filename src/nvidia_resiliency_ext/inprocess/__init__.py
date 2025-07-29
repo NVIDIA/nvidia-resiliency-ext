@@ -15,6 +15,7 @@
 # limitations under the License.
 
 from . import (
+    auto_restart,
     completion,
     exception,
     finalize,
@@ -26,6 +27,7 @@ from . import (
     state,
     terminate,
 )
+from .auto_restart import monitor_and_restart
 from .compose import Compose
 from .state import FrozenState, Mode, State
 from .wrap import CallWrapper, Wrapper
