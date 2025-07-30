@@ -61,7 +61,7 @@ _results_queue = None
 def _get_write_results_queue():
     global _results_queue
     if _results_queue is None:
-        ctx = mp.get_context('fork')
+        ctx = mp.get_context('spawn')
         with _disable_gc():
             _results_queue = ctx.Manager().Queue()
     return _results_queue
@@ -481,7 +481,10 @@ class FileSystemWriterAsync(FileSystemWriter):
                 storage_md.update({wr.index: wr.storage_data for wr in wr_list})
 
             metadata.storage_data = storage_md
-            metadata.storage_meta = self.storage_meta()
+
+            # storage_meta was introduced since PyTorch 2.4
+            if "storage_meta" in inspect.signature(Metadata).parameters:
+                metadata.stoage_meta = self.storage_meta()
 
             path = os.path.join(self.checkpoint_dir, ".metadata")
 

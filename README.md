@@ -1,31 +1,36 @@
 # NVIDIA Resiliency Extension
 
-The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused solutions for PyTorch-based workloads.
+The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused solutions for PyTorch-based workloads. Users can modularly integrate NVRx capabilities into their own infrastructure to maximize AI training productivity at scale. NVRx maximizes goodput by enabling system-wide health checks, quickly detecting faults at runtime and resuming training automatically. NVRx minimizes loss of work by enabling fast and frequent checkpointing. 
+
+For detailed documentation and usage information about each component, please refer to https://nvidia.github.io/nvidia-resiliency-ext/.
+
+> ⚠️ NOTE: This project is still experimental and under active development. The code, features, and documentation are evolving rapidly. Please expect frequent updates and breaking changes. Contributions are welcome and we encourage you to watch for updates.
 
 <img src="/docs/source/media/nvrx_core_features.png" alt="Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks" width="950" height="350">
 
 
 ## Core Components and Capabilities
 
-- **[Fault Tolerance](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/index.rst)**
+- **[Fault Tolerance](https://nvidia.github.io/nvidia-resiliency-ext/fault_tolerance/index.html)**
   - Detection of hung ranks.  
   - Restarting training in-job, without the need to reallocate SLURM nodes.
 
-- **[In-Process Restarting](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/inprocess/index.rst)**
+- **[In-Process Restarting](https://nvidia.github.io/nvidia-resiliency-ext/inprocess/index.html)**
   - Detecting failures and enabling quick recovery.
 
-- **[Async Checkpointing](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/async/index.rst)**
+- **[Async Checkpointing](https://nvidia.github.io/nvidia-resiliency-ext/checkpointing/async/index.html)**
   - Providing an efficient framework for asynchronous checkpointing.
 
-- **[Local Checkpointing](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/local/index.rst)**
+- **[Local Checkpointing](https://nvidia.github.io/nvidia-resiliency-ext/checkpointing/local/index.html)**
   - Providing an efficient framework for local checkpointing.
 
-- **[Straggler Detection](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/straggler_det/index.rst)**
+- **[Straggler Detection](https://nvidia.github.io/nvidia-resiliency-ext/straggler_det/index.html)**
   - Monitoring GPU and CPU performance of ranks.  
   - Identifying slower ranks that may impede overall training efficiency.
 
-- **[PyTorch Lightning Callbacks](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/integration/ptl.rst)**
-  - Facilitating seamless NVRx integration with PyTorch Lightning.
+- **Framework Integration**
+  - Facilitating seamless [fault tolerance](https://nvidia.github.io/nvidia-resiliency-ext/fault_tolerance/integration/ptl.html) and [straggler detection](https://nvidia.github.io/nvidia-resiliency-ext/straggler_det/usage_guide.html#integration-guide) integration with PyTorch Lightning based workloads.
+  - Providing integration with NVIDIA [NeMo](https://docs.nvidia.com/nemo-framework/user-guide/latest/resiliency.html) framework, a scalable and cloud-native generative AI framework built for researchers and developers working on Large Language Models, Multimodal, and Speech AI (e.g. Automatic Speech Recognition and Text-to-Speech).
 
 ## Installation
 
@@ -50,6 +55,3 @@ The NVIDIA Resiliency Extension (NVRx) integrates multiple resiliency-focused so
 | NVML Driver          | >= 535 (570 required for GPU health check)                                 |
 | NCCL Version         | >= 2.21.5 (injob & chkpt), >= 2.26.2 (inprocess)                           |
 
-## Usage
-
-For detailed documentation and usage information about each component, please refer to the https://nvidia.github.io/nvidia-resiliency-ext/.

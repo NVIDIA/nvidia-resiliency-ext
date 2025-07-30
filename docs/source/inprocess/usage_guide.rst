@@ -10,10 +10,10 @@ functionality provided by the :py:class:`Wrapper`.
 
 Requirements
 ------------
-In-process restart functionality requires 
-`PyTorch <https://pypi.org/project/torch/>`_ v2.5.1 or higher 
+In-process restart functionality requires
+`PyTorch <https://pypi.org/project/torch/>`_ v2.5.1 or higher
 and
-`NCCL <https://github.com/NVIDIA/nccl>`_ v2.26.2 or higher 
+`NCCL <https://github.com/NVIDIA/nccl>`_ v2.26.2 or higher
 For further limitations and compatibility details, refer to the :ref:`Known
 issues <known_issues>` section.
 
@@ -52,10 +52,13 @@ Requirements for the wrapped function
   to read `standard PyTorch distributed variables
   <https://pytorch.org/docs/stable/distributed.html#environment-variable-initialization>`_
   (``RANK``, ``WORLD_SIZE``, ``MASTER_ADDR``, ``MASTER_PORT`` and
-  ``LOCAL_RANK``) from the environment. Users can use torchrun to override the environment 
-  variables (--master_addr=127.0.0.1, --master_port=29500, etc.) depending on 
-  their cluster requirements and also to run the provided examples ``torchrun --nproc_per_node=8 
-  --nnodes=1 --node_rank=0 basic_example.py``. 
+  ``LOCAL_RANK``) from the environment. Users can use torchrun to override the environment
+  variables (--master_addr=127.0.0.1, --master_port=29500, etc.) depending on
+  their cluster requirements and also to run the provided examples ``torchrun --nproc_per_node=8
+  --nnodes=1 --node_rank=0 basic_example.py``. For other environment variables when running
+  with torchrun, please refer to the `run_inprocess_injob_example.sh <https://github.com/NVIDIA/nvidia-resiliency-
+  ext/blob/main/examples/fault_tolerance/run_inprocess_injob_example.sh>`_ example for the recommended
+  default values (for example, --monitor-interval=5).
 
 - it's heavily recommended for the wrapped function to load the state affected
   by distributed collectives from a checkpoint on every restart (e.g. load
@@ -123,7 +126,7 @@ purposes only and may omit certain implementation details.
   initial_barrier()
   rank_assignment()
   rank_filter()  # deprecated
-  
+
   while True:
       initialize()
       health_check()
@@ -174,7 +177,7 @@ Rank assignment and filtering
 Rank assignment
 ^^^^^^^^^^^^^^^
 The :py:class:`Wrapper` needs to ensure that the wrapped function is restarted
-with a consecutive sequence of integer rank indices, from ``0`` to 
+with a consecutive sequence of integer rank indices, from ``0`` to
 ``WORLD_SIZE - 1``, as some of the ranks from previous iteration may have been
 terminated or are in an unhealthy state. Rank reassignment and new world size
 computation is performed by
@@ -252,6 +255,9 @@ number of restart attempts or to halt execution if the number of healthy
 workers drops below a specified threshold.
 
 Multiple initializers could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose`.
+The composition order follows mathematical composition. Therefore, the last listed function is called first.
+Consequently, when using nested restarters, the :py:class:`nvidia_resiliency_ext.inprocess.nested_restarter.NestedRestarterHandlingCompleted`
+should be listed first, as handling a restart is not complete until the end of the `Initialize`.
 
 Wrapped function termination mechanism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -339,15 +345,15 @@ process is terminated promptly.
 Reporting progress
 ^^^^^^^^^^^^^^^^^^
 Timeout events are triggered when the wrapped function didn't report progress
-in the specified timeout interval. 
+in the specified timeout interval.
 
 There are two methods to record progress:
 
 - Automatic heartbeat: the :py:class:`Wrapper` periodically checks if the main
-  thread of the Python interpreter keeps executing new bytecode instructions; 
+  thread of the Python interpreter keeps executing new bytecode instructions;
 
   - this method is always active and protects against hangs in calls that block
-    Python interpreter, even in case when a blocking call released GIL, 
+    Python interpreter, even in case when a blocking call released GIL,
 
   - it doesn't protect against while-true-like livelocks, where the interpreter
     keeps executing new bytecode instructions but doesn't make meaningful
@@ -430,7 +436,7 @@ loop iteration, the thread queries the distributed store by invoking
 :py:meth:`torch.distributed.Store.get`. For workloads with a large number of
 distributed workers, it may be necessary to increase the
 ``monitor_thread_interval`` to avoid creating a communication bottleneck in the
-distributed store caused by concurrent queries from multiple workers. 
+distributed store caused by concurrent queries from multiple workers.
 
 Monitor Process
 ^^^^^^^^^^^^^^^
