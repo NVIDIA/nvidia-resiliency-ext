@@ -377,6 +377,55 @@ There are two methods to record progress:
 Timeout event is triggered if either of the active progress monitoring methods
 didn't record a heartbeat in the specified time interval.
 
+Disabling hang protection
+^^^^^^^^^^^^^^^^^^^^^^^^^
+In some cases, certain operations within the wrapped function may legitimately
+take longer than the configured ``soft_timeout`` or ``hard_timeout`` intervals.
+For such operations, the :py:class:`Wrapper` provides a
+:py:meth:`inprocess.CallWrapper.disable_hang_protection` context manager that
+temporarily disables timeout-based hang detection.
+
+.. warning::
+    The :py:meth:`inprocess.CallWrapper.disable_hang_protection` context manager
+    disables critical safety mechanisms designed to protect against hangs and
+    deadlocks. Use with extreme caution and only for operations you are confident
+    will complete.
+
+The context manager is typically used for operations such as:
+
+- Large data loading operations that may take unpredictable amounts of time
+- Complex initialization routines
+- Other legitimate long-running operations that should not be interrupted
+
+When the context manager exits (either normally or due to an exception), hang
+protection is automatically re-enabled.
+
+.. code-block:: python
+
+    def my_training_function(call_wrapper: CallWrapper):
+        # Normal operations are subject to hang protection
+        train_step()
+
+        # Disable hang protection for long-running data loading
+        with call_wrapper.disable_hang_protection():
+            load_large_dataset()  # This won't trigger timeout restarts
+
+        # Hang protection is automatically re-enabled
+        train_step()  # This will trigger hang detection if it hangs
+
+**Important considerations:**
+
+- **Exception handling**: The context manager only disables timeout-based
+  restarts. Exceptions raised within the disabled region will still trigger
+  restarts as expected.
+
+- **Scope minimization**: Use the context manager for the smallest possible
+  scope. Avoid wrapping entire training loops or large code sections.
+
+- **Testing**: Thoroughly test operations within the disabled context to ensure
+  they complete reliably, as the normal hang detection safety net is temporarily
+  removed.
+
 Finalize
 ~~~~~~~~
 The :py:class:`Wrapper` accepts optional, user-provided

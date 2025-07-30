@@ -390,6 +390,43 @@ class CallWrapper:
         finally:
             self.atomic_lock.release()
 
+    @contextlib.contextmanager
+    def disable_hang_protection(self):
+        r'''
+        A context manager that temporarily disables hang protection (soft and hard timeouts) in the monitor process.
+
+        WARNING: This disables critical safety mechanisms that protect against hangs and deadlocks.
+        Use with extreme caution and only for operations you know will complete.
+
+        This is useful for operations that may take a long time to complete and should not
+        be interrupted by hang detection mechanisms, such as some aspects of data loading.
+
+        The hang protection is automatically re-enabled when exiting the context, even if an
+        exception occurs within the context.
+
+        Example:
+            def my_training_function(call_wrapper: CallWrapper):
+                # Normal operations subject to hang protection
+                train_step()
+
+                # Disable hang protection for long-running checkpoint operation
+                with call_wrapper.disable_hang_protection():
+                    load_data()  # This won't trigger hang detection
+
+                train_step()   # This will trigger hang detection
+
+                # Hang protection is automatically re-enabled
+                train_step()
+        '''
+        self.monitor_process.disable_timeouts()
+        try:
+            yield
+        finally:
+            # Reset the progress watchdog timestamp before re-enabling timeouts
+            # to prevent immediate timeout due to stale timestamp
+            self.progress_watchdog.reset()
+            self.monitor_process.enable_timeouts()
+
     @reraise_if_unraisable(RankShouldRestart)
     def __call__(self, fn, args, kwargs):
         log = logging.getLogger(__name__)
