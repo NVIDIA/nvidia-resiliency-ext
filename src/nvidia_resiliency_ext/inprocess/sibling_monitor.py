@@ -126,7 +126,8 @@ class SiblingMonitor(threading.Thread):
             new_unresponsive_ranks = current_unresponsive_ranks - self.seen_unresponsive_ranks
 
             if new_unresponsive_ranks:
-                log.debug(f'{utils.format_rank_set(new_unresponsive_ranks)=}')
+                formatted_ranks=utils.format_rank_set(new_unresponsive_ranks)
+                log.debug(f'{formatted_ranks=}')
                 self.terminate_unresponsive_ranks(new_unresponsive_ranks)
                 self.seen_unresponsive_ranks.update(new_unresponsive_ranks)
 
