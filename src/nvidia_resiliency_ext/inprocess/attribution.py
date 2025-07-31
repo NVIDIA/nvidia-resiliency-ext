@@ -19,6 +19,8 @@ import enum
 import re
 from collections import defaultdict
 
+from .utils import format_rank_set
+
 
 class Interruption(enum.Enum):
     EXCEPTION = enum.auto()
@@ -59,17 +61,7 @@ def format_interruption_records(records):
     # Format the message with sample ranks and counts for debugging
     msg_parts = []
     for interruption, ranks in grouped.items():
-        rank_count = len(ranks)
-        sorted_ranks = sorted(ranks)
-
-        # Show all ranks if 16 or fewer, otherwise show first 5 and last 5
-        if rank_count <= 16:
-            ranks_str = f"ranks {sorted_ranks}"
-        else:
-            first_ranks = sorted_ranks[:5]
-            last_ranks = sorted_ranks[-5:]
-            ranks_str = f"ranks {first_ranks}...{last_ranks} (total: {rank_count})"
-
-        msg_parts.append(f"{interruption} affecting {ranks_str}")
+        ranks_str = format_rank_set(ranks)
+        msg_parts.append(f"{interruption} affecting ranks {ranks_str}")
 
     return ', '.join(msg_parts)

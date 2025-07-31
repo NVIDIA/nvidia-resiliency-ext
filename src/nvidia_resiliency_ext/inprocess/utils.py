@@ -38,6 +38,33 @@ def format_exc(exc: BaseException):
     return ' <- '.join(excs)
 
 
+def format_rank_set(ranks, max_show=16):
+    """
+    Format a set of ranks for logging, showing partial ranks and total count for large sets.
+
+    Args:
+        ranks: Set or list of rank numbers
+        max_show: Maximum number of ranks to show before truncating
+
+    Returns:
+        str: Formatted rank set string
+    """
+    if not ranks:
+        return "{}"
+
+    rank_count = len(ranks)
+    sorted_ranks = sorted(ranks)
+
+    # Show all ranks if count is small enough
+    if rank_count <= max_show:
+        return f"{{{', '.join(map(str, sorted_ranks))}}}"
+
+    # For large sets, show first few and last few with total count
+    first_ranks = sorted_ranks[:5]
+    last_ranks = sorted_ranks[-5:]
+    return f"{{{', '.join(map(str, first_ranks))}...{', '.join(map(str, last_ranks))} (total: {rank_count})}}"
+
+
 def format_exc_chain(exc: BaseException):
     """
     Format exception chain showing full stack trace for the first exception,

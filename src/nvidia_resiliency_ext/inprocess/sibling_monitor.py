@@ -19,7 +19,7 @@ import threading
 import time
 from datetime import timedelta
 
-from . import exception
+from . import exception, utils
 from .attribution import Interruption, InterruptionRecord
 
 
@@ -126,7 +126,7 @@ class SiblingMonitor(threading.Thread):
             new_unresponsive_ranks = current_unresponsive_ranks - self.seen_unresponsive_ranks
 
             if new_unresponsive_ranks:
-                log.debug(f'{new_unresponsive_ranks=}')
+                log.debug(f'{utils.format_rank_set(new_unresponsive_ranks)=}')
                 self.terminate_unresponsive_ranks(new_unresponsive_ranks)
                 self.seen_unresponsive_ranks.update(new_unresponsive_ranks)
 
