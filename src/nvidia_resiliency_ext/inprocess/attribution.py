@@ -16,7 +16,6 @@
 
 import dataclasses
 import enum
-import itertools
 import re
 from collections import defaultdict
 
@@ -57,8 +56,28 @@ def format_interruption_records(records):
     for record in records:
         grouped[record.interruption].add(record.rank)
 
-    # Format the message with counts instead of individual ranks
-    msg = ', '.join(
-        f'{interruption} affecting {len(ranks)} rank(s)' for interruption, ranks in grouped.items()
-    )
-    return msg
+    # Format the message with sample ranks and counts for debugging
+    msg_parts = []
+    for interruption, ranks in grouped.items():
+        rank_count = len(ranks)
+        if rank_count <= 16:
+            # For small numbers (up to 2 H100 nodes), show all ranks
+            ranks_str = f"ranks {sorted(ranks)}"
+        else:
+            # For large numbers, show first few and last few ranks
+            sorted_ranks = sorted(ranks)
+            sample_size = 5
+            if rank_count <= 32:
+                sample_size = 3
+
+            first_ranks = sorted_ranks[:sample_size]
+            last_ranks = sorted_ranks[-sample_size:]
+
+            if rank_count <= 2 * sample_size:
+                ranks_str = f"ranks {sorted(ranks)}"
+            else:
+                ranks_str = f"ranks {first_ranks}...{last_ranks} (total: {rank_count})"
+
+        msg_parts.append(f"{interruption} affecting {ranks_str}")
+
+    return ', '.join(msg_parts)
