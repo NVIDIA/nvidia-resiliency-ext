@@ -32,10 +32,9 @@ from typing import Optional
 
 import torch
 
-from . import exception
+from . import exception, utils
 from .attribution import InterruptionRecord
 from .state import Mode
-from .utils import log_exc
 
 
 class BarrierError(exception.RestartError):
@@ -419,7 +418,9 @@ class StoreMixin:
 
         if arrived_count > rendezvous_count:
             arrived_ranks = sorted([int(r) for r in self.get_packed(arrived_key, ',') if r.strip()])
-            raise BarrierOverflow(f'{ranks=} {rendezvous_count=} {group_name=} {arrived_ranks=}')
+            raise BarrierOverflow(
+                f'{ranks=} {rendezvous_count=} {group_name=} {utils.format_rank_set(arrived_ranks)=}'
+            )
 
         if arrived_count == rendezvous_count:
             self.set(last_worker_arrived_key, '1')
@@ -475,7 +476,7 @@ class StoreMixin:
         arrived_key = f'{store_key}:arrived'
         self.append(arrived_key, '')
         arrived_ranks = set([int(r) for r in self.get_packed(arrived_key, ',') if r.strip()])
-        log.debug(f'{rank=} {arrived_ranks=}')
+        log.debug(f'{rank=} {utils.format_rank_set(arrived_ranks)=}')
         arrived = rank in arrived_ranks
         if arrived:
             log.debug(f'{rank=} already arrived {group_name=}')
@@ -505,7 +506,9 @@ class StoreMixin:
 
         if arrived_count > rendezvous_count:
             arrived_ranks = sorted(list(arrived_ranks))
-            raise BarrierOverflow(f'{ranks=} {rendezvous_count=} {group_name=} {arrived_ranks=}')
+            raise BarrierOverflow(
+                f'{ranks=} {rendezvous_count=} {group_name=} {utils.format_rank_set(arrived_ranks)=}'
+            )
 
         if arrived_count == rendezvous_count:
             self.set(last_worker_arrived_key, '1')
@@ -622,7 +625,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
                 super().__init__(is_master=True, **kwargs)
                 log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
             except Exception as store_ex:
-                log.debug(log_exc(rank, store_ex, 'store_ex'))
+                log.debug(utils.log_exc(rank, store_ex, 'store_ex'))
                 super().__init__(is_master=False, **kwargs)
         else:
             super().__init__(is_master=False, **kwargs)
