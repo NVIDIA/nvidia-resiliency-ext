@@ -211,10 +211,8 @@ class StoreMixin:
 
         if arrived_count > rendezvous_count:
             arrived_ranks = sorted([int(r) for r in self.get_packed(arrived_key, ',') if r.strip()])
-            formatted_ranks=utils.format_rank_set(arrived_ranks)
-            raise BarrierOverflow(
-                f'{ranks=} {rendezvous_count=} {group_name=} {formatted_ranks=}'
-            )
+            formatted_ranks = utils.format_rank_set(arrived_ranks)
+            raise BarrierOverflow(f'{ranks=} {rendezvous_count=} {group_name=} {formatted_ranks=}')
 
         if arrived_count == rendezvous_count:
             self.set(last_worker_arrived_key, '1')
@@ -250,7 +248,7 @@ class StoreMixin:
         arrived_key = f'{store_key}:arrived'
         self.append(arrived_key, '')
         arrived_ranks = set([int(r) for r in self.get_packed(arrived_key, ',') if r.strip()])
-        formatted_ranks=utils.format_rank_set(arrived_ranks)
+        formatted_ranks = utils.format_rank_set(arrived_ranks)
         log.debug(f'{rank=} {formatted_ranks=}')
         arrived = rank in arrived_ranks
         if arrived:
@@ -281,10 +279,8 @@ class StoreMixin:
 
         if arrived_count > rendezvous_count:
             arrived_ranks = sorted(list(arrived_ranks))
-            formatted_ranks=utils.format_rank_set(arrived_ranks)
-            raise BarrierOverflow(
-                f'{ranks=} {rendezvous_count=} {group_name=} {formatted_ranks=}'
-            )
+            formatted_ranks = utils.format_rank_set(arrived_ranks)
+            raise BarrierOverflow(f'{ranks=} {rendezvous_count=} {group_name=} {formatted_ranks=}')
 
         if arrived_count == rendezvous_count:
             self.set(last_worker_arrived_key, '1')
