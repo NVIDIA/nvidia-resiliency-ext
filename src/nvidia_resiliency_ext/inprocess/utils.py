@@ -38,12 +38,53 @@ def format_exc(exc: BaseException):
     return ' <- '.join(excs)
 
 
+def format_exc_chain(exc: BaseException):
+    """
+    Format exception chain showing full stack trace for the first exception,
+    and just the current exception name for chained exceptions.
+    """
+    # If this exception has no cause, it's the first exception - show full stack trace
+    if exc.__cause__ is None:
+        return repr(exc)
+
+    # Otherwise, it's a chained exception - show only the current exception name
+    return type(exc).__name__
+
+
 def log_exc(rank_or_state, exc, name):
+    """
+    Log exception with clean chain formatting to reduce log volume.
+
+    Args:
+        rank_or_state: Rank number or state object
+        exc: Exception to log
+        name: Name identifier for the exception
+
+    Returns:
+        str: Formatted exception message
+    """
+    return log_exc_controlled(rank_or_state, exc, name)
+
+
+def log_exc_controlled(rank_or_state, exc, name):
+    """
+    Controlled exception logging with clean chain formatting.
+
+    Args:
+        rank_or_state: Rank number or state object
+        exc: Exception to log
+        name: Name identifier for the exception
+
+    Returns:
+        str: Formatted exception message
+    """
     if isinstance(rank_or_state, int):
         rank = rank_or_state
     else:
         rank = rank_or_state.rank
-    return f'{rank=} {name}: {format_exc(exc)}'
+
+    formatted_exc = format_exc_chain(exc)
+    return f'{rank=} {name}: {formatted_exc}'
 
 
 @contextlib.contextmanager
@@ -95,6 +136,7 @@ def find_nearest_handler(logger, handler_cls):
 
 
 class Logging:
+
     @classmethod
     def initialize(cls):
         parent_module_name = cls.__module__.split('.')[-2]
