@@ -60,23 +60,15 @@ def format_interruption_records(records):
     msg_parts = []
     for interruption, ranks in grouped.items():
         rank_count = len(ranks)
+        sorted_ranks = sorted(ranks)
+
+        # Show all ranks if 16 or fewer, otherwise show first 5 and last 5
         if rank_count <= 16:
-            # For small numbers (up to 2 H100 nodes), show all ranks
-            ranks_str = f"ranks {sorted(ranks)}"
+            ranks_str = f"ranks {sorted_ranks}"
         else:
-            # For large numbers, show first few and last few ranks
-            sorted_ranks = sorted(ranks)
-            sample_size = 5
-            if rank_count <= 32:
-                sample_size = 3
-
-            first_ranks = sorted_ranks[:sample_size]
-            last_ranks = sorted_ranks[-sample_size:]
-
-            if rank_count <= 2 * sample_size:
-                ranks_str = f"ranks {sorted(ranks)}"
-            else:
-                ranks_str = f"ranks {first_ranks}...{last_ranks} (total: {rank_count})"
+            first_ranks = sorted_ranks[:5]
+            last_ranks = sorted_ranks[-5:]
+            ranks_str = f"ranks {first_ranks}...{last_ranks} (total: {rank_count})"
 
         msg_parts.append(f"{interruption} affecting {ranks_str}")
 
