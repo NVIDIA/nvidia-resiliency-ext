@@ -38,7 +38,7 @@ def format_exc(exc: BaseException):
     return ' <- '.join(excs)
 
 
-def format_rank_set(ranks, max_show=16):
+def format_rank_set(ranks, max_show=8):
     """
     Format a set of ranks for logging, showing partial ranks and total count for large sets.
 
@@ -60,8 +60,8 @@ def format_rank_set(ranks, max_show=16):
         return f"{{{', '.join(map(str, sorted_ranks))}}}"
 
     # For large sets, show first few and last few with total count
-    first_ranks = sorted_ranks[:5]
-    last_ranks = sorted_ranks[-5:]
+    first_ranks = sorted_ranks[:4]
+    last_ranks = sorted_ranks[-4:]
     return f"{{{', '.join(map(str, first_ranks))}...{', '.join(map(str, last_ranks))} (total: {rank_count})}}"
 
 
