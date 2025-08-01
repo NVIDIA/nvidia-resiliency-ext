@@ -21,17 +21,19 @@ import shutil
 import multiprocessing
 import time
 import random
+import socket
 
 from datetime import datetime
 from src.nvidia_resiliency_ext.shared_utils.logger import setup_logger, log_pattern
 
 
-def setup_vars(global_id, local_id, is_agg):
+def setup_vars(global_id, local_id, is_agg, file_size):
     os.environ["NVRX_LOG_AGGREGATOR"] = is_agg
     os.environ["SLURM_PROCID"] = str(global_id)
     os.environ["SLURM_LOCALID"] = str(local_id)
     os.environ["RANK"] = str(global_id)
     os.environ["LOCAL_RANK"] = str(local_id)
+    os.environ["NVRX_LOG_MAX_FILE_SIZE_KB"] = str(file_size)
 
 
 def gen_log_msg(logger, num_msg):
@@ -43,9 +45,9 @@ def gen_log_msg(logger, num_msg):
         logger.info(f"My Logging Message {i}")
 
 
-def worker_process(n, num_msg):
+def worker_process(id, num_msg, file_size):
     """Function that each process will execute."""
-    setup_vars(n, n, "0")
+    setup_vars(id, id, "0", file_size)
     log_dir = os.getcwd() + "/tests/shared_utils/logs/"
     logger = setup_logger(log_dir, log_dir, False)
     gen_log_msg(logger, num_msg)
@@ -54,20 +56,21 @@ def worker_process(n, num_msg):
 class TestLogger(unittest.TestCase):
 
     def count_files_in_dir(self, dir_path):
-        filename = ""
+        filename = []
         file_count = 0
         with os.scandir(dir_path) as entries:
             for entry in entries:
                 if entry.is_file():
-                    filename = entry.name
+                    filename.append(entry.name)
                     file_count += 1
         return file_count, filename
 
-    def check_file(self, file_path, num_lines, global_id, local_id):
+    def check_a_file(self, filename, num_lines, global_id, local_id):
         line_count = 0
         curr_ts = 0
         curr_dt = 0
-        with open(file_path, 'r') as file:
+
+        with open(filename, 'r') as file:
             for line in file:
                 match = log_pattern.match(line)
                 if match:
@@ -107,45 +110,54 @@ class TestLogger(unittest.TestCase):
                                 local_id,
                                 f'The infra_rank should be {local_id} instead {value}',
                             )
+        if num_lines != -1:
+            self.assertEqual(
+                line_count, num_lines, f'The line_count should be {num_lines} instead {line_count}'
+            )
+
+    def check_files(self, log_dir, filenames, num_lines, global_id, local_id):
+        for fname in filenames:
+            self.check_a_file(log_dir + fname, num_lines, global_id, local_id)
+
+    def check_msg(self, num_msg, file_size_kb, pm_files, is_agg):
+        log_dir = os.getcwd() + "/tests/shared_utils/logs/"
+        setup_vars(0, 0, is_agg, file_size_kb)
+        if os.path.exists(log_dir):
+            shutil.rmtree(log_dir)
+        logger = setup_logger(log_dir, log_dir, True)
+        gen_log_msg(logger, num_msg)
+
+        time.sleep(1)
+        pm = log_dir + "nvrx_log_" + socket.gethostname() + "/pending_messages/"
+        num_files, file_names = self.count_files_in_dir(pm)
         self.assertEqual(
-            line_count, num_lines, f'The line_count should be {num_lines} instead {line_count}'
+            num_files, pm_files, f'The number of files should be {pm_files}, instead {num_files}'
         )
+        self.check_files(pm, file_names, -1, 0, 0)
+
+        if hasattr(setup_logger, '_log_manager'):
+            lm = getattr(setup_logger, '_log_manager')
+            lm.shutdown()
+        if is_agg == "1":
+            num_files, file_names = self.count_files_in_dir(log_dir)
+            self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
+            self.check_files(log_dir, file_names, num_msg, 0, 0)
 
     def test_single_msg(self):
-        log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        setup_vars(0, 0, "1")
-        if os.path.exists(log_dir):
-            shutil.rmtree(log_dir)
-        logger = setup_logger(log_dir, log_dir, True)
-        logger.info("My Logging Message 1")
-        if hasattr(setup_logger, '_log_manager'):
-            lm = getattr(setup_logger, '_log_manager')
-            lm.shutdown()
-        num_files, file_name = self.count_files_in_dir(log_dir)
-        self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
-        self.check_file(log_dir + file_name, 1, 0, 0)
+        self.check_msg(1, 1024, 1, "1")
 
     def test_many_msg(self):
-        log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        setup_vars(0, 0, "1")
+        self.check_msg(2000, 1024, 1, "1")
 
-        if os.path.exists(log_dir):
-            shutil.rmtree(log_dir)
-        logger = setup_logger(log_dir, log_dir, True)
-        num_msg = 2000
-        for i in range(num_msg):
-            time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
-            logger.info(f"My Logging Message {i}")
-        if hasattr(setup_logger, '_log_manager'):
-            lm = getattr(setup_logger, '_log_manager')
-            lm.shutdown()
-        num_files, file_name = self.count_files_in_dir(log_dir)
-        self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
-        self.check_file(log_dir + file_name, num_msg, 0, 0)
+    def test_rotation(self):
+        self.check_msg(300, 10, 4, "0")
 
-    def multiple_processes(self, num_procs, num_msg):
+    def test_rotation_cleanup(self):
+        self.check_msg(2000, 10, 1, "1")
+
+    def multiple_processes(self, num_procs, num_msg, file_size):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        setup_vars(0, 0, "1")
+        setup_vars(0, 0, "1", file_size)
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         logger = setup_logger(log_dir, log_dir, True)
@@ -153,7 +165,7 @@ class TestLogger(unittest.TestCase):
         processes = []
         for i in range(num_procs):
             # Create a new process
-            p = multiprocessing.Process(target=worker_process, args=(i + 1, num_msg))
+            p = multiprocessing.Process(target=worker_process, args=(i + 1, num_msg, file_size))
             processes.append(p)
             p.start()
 
@@ -167,17 +179,21 @@ class TestLogger(unittest.TestCase):
         if hasattr(setup_logger, '_log_manager'):
             lm = getattr(setup_logger, '_log_manager')
             lm.shutdown()
-        num_files, file_name = self.count_files_in_dir(log_dir)
+        num_files, file_names = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
-        self.check_file(log_dir + file_name, num_msg * (num_procs + 1), -1, -1)
+        self.check_files(log_dir, file_names, num_msg * (num_procs + 1), -1, -1)
 
     def test_one_proc(self):
-        self.multiple_processes(1, 2000)
+        self.multiple_processes(1, 2000, 1024)
 
     def test_four_proc(self):
         # gb200 has 4 GPU's, check that config
-        self.multiple_processes(3, 2000)
+        self.multiple_processes(3, 2000, 1024)
 
     def test_eight_proc(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(7, 2000)
+        self.multiple_processes(7, 2000, 1024)
+
+    def test_eight_proc_w_rotate(self):
+        # h100 has 8 GPU's, check that config
+        self.multiple_processes(7, 2000, 10)

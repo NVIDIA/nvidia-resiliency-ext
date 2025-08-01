@@ -223,11 +223,11 @@ class LogManager:
         self._file_positions = {}
 
         # File rotation settings (in bytes)
-        max_file_size_mb = int(os.environ.get("NVRX_LOG_MAX_FILE_SIZE_MB", "10"))
-        self._max_msg_file_size = max_file_size_mb * 1024 * 1024  # Convert MB to bytes
+        max_file_size_kb = int(os.environ.get("NVRX_LOG_MAX_FILE_SIZE_KB", "10240"))
+        self._max_msg_file_size = max_file_size_kb * 1024  # Convert KB to bytes
         self._max_backup_files = int(
-            os.environ.get("NVRX_LOG_MAX_BACKUP_FILES", "5")
-        )  # Keep at most 5 backup files per rank
+            os.environ.get("NVRX_LOG_MAX_BACKUP_FILES", "3")
+        )  # Keep default 3 backup files per rank
 
         # Create logger
         self._logger = self._setup_logger()
@@ -275,7 +275,9 @@ class LogManager:
 
         if self.distributed_logging_enabled:
             # Add custom handler that sends messages to aggregator
-            handler = DistributedLogHandler(self)
+            handler = DistributedLogHandler(
+                self.workload_local_rank, self._temp_dir, self._max_msg_file_size
+            )
 
             # Use dynamic formatter with static hostname and dynamic rank info
             formatter = DynamicLogFormatter(
@@ -398,43 +400,6 @@ class LogManager:
         finally:
             output.close()
 
-    def _queue_message(self, message: str):
-        """Queue a log message for aggregation."""
-
-        # All ranks use file-based message passing
-        # This ensures child processes can log even when they don't have the aggregator thread
-        self._send_message_to_aggregator(message)
-
-    def _send_message_to_aggregator(self, message: str):
-        """Send a message to the aggregator using file-based communication."""
-        # Create message directory in temp dir
-        msg_dir = os.path.join(self._temp_dir, "pending_messages")
-        os.makedirs(msg_dir, exist_ok=True)
-
-        # Use a single message file per rank
-        msg_file = os.path.join(msg_dir, f"rank_{self._workload_local_rank}.msg")
-
-        # Check if file needs rotation
-        if os.path.exists(msg_file):
-            try:
-                file_size = os.path.getsize(msg_file)
-                if file_size > self._max_msg_file_size:
-                    # Rotate the file with atomic operation
-                    backup_file = f"{msg_file}.{int(time.time())}"
-                    os.rename(msg_file, backup_file)
-                    # Clean up old backup files
-                    self._cleanup_old_backup_files(msg_dir, f"rank_{self._workload_local_rank}.msg")
-            except (OSError, IOError) as e:
-                # File might be being read by aggregator, skip rotation for now
-                # Log this as it might indicate a real problem
-                sys.stderr.write(f"File rotation error for {msg_file}: {e}\n")
-                sys.stderr.flush()
-
-        # Append message to the rank's message file
-        with open(msg_file, 'a') as f:
-            f.write(f"{message}\n")
-            f.flush()  # Ensure message is written immediately
-
     def _check_pending_messages(self):
         """Check for pending messages from other ranks (aggregator only)."""
         if not self._is_aggregator_service:
@@ -450,25 +415,9 @@ class LogManager:
 
         # Look for message files from all ranks (including this aggregator rank)
         for filename in os.listdir(msg_dir):
-            if not filename.startswith('rank_') or not filename.endswith('.msg'):
+            if not filename.startswith('rank_'):
                 continue
-
             msg_file = os.path.join(msg_dir, filename)
-
-            # Check for backup files for this rank
-            backup_files = []
-            base_filename = filename
-            for backup_filename in os.listdir(msg_dir):
-                if backup_filename.startswith(f"{base_filename}."):
-                    backup_files.append(os.path.join(msg_dir, backup_filename))
-
-            # Sort backup files by timestamp (oldest first)
-            backup_files.sort(key=lambda f: os.path.getmtime(f))
-
-            # Process backup files first (if any)
-            for backup_file in backup_files:
-                self._process_message_file(backup_file)
-
             # Process current file
             self._process_message_file(msg_file)
 
@@ -492,8 +441,9 @@ class LogManager:
         # Get the last known position for this file
         last_position = self._file_positions.get(msg_file, 0)
 
-        # If file hasn't grown, skip it
-        if file_size <= last_position:
+        # If file hasn't grown, check if can be deleted
+        if file_size <= last_position and file_size >= self._max_msg_file_size:
+            self._cleanup_old_backup_files(os.path.basename(msg_file))
             return
 
         # Read new content from the file
@@ -530,25 +480,28 @@ class LogManager:
         # Update the position for this file
         self._file_positions[msg_file] = file_size
 
-    def _cleanup_old_backup_files(self, msg_dir: str, base_filename: str):
-        """Clean up old backup files, keeping only the most recent ones."""
+    def _cleanup_old_backup_files(self, msg_file: str):
+        """Clean up old backup files, keeping only the most recent one."""
         # Find all backup files for this rank
-        backup_files = []
+        match = re.match(r"rank_(\d+)\.msg\.(\d+)", msg_file)
+        if not match:
+            return
+        to_del_rank = match.group(1)
+        to_del_ts = match.group(2)
+        msg_dir = os.path.join(self._temp_dir, "pending_messages")
+        if not os.path.exists(msg_dir):
+            return
         for filename in os.listdir(msg_dir):
-            if filename.startswith(f"{base_filename}."):
-                backup_files.append(os.path.join(msg_dir, filename))
-
-        # Sort by modification time (oldest first)
-        backup_files.sort(key=lambda f: os.path.getmtime(f))
-
-        # Remove oldest files if we have too many
-        if len(backup_files) > self._max_backup_files:
-            for old_file in backup_files[: -self._max_backup_files]:
+            match = re.match(rf"rank_{to_del_rank}.msg\.(\d+)", filename)
+            if not match:
+                continue
+            cur_file_ts = match.group(1)
+            if int(cur_file_ts) > int(to_del_ts):
                 try:
-                    os.remove(old_file)
+                    os.remove(os.path.join(msg_dir, msg_file))
                 except (OSError, IOError) as e:
                     # Log the error but don't fail the entire operation
-                    sys.stderr.write(f"Failed to remove backup file {old_file}: {e}\n")
+                    sys.stderr.write(f"Failed to remove backup file {msg_file}: {e}\n")
                     sys.stderr.flush()
 
     @property
@@ -577,7 +530,8 @@ class LogManager:
             import shutil
 
             if self._is_aggregator_service:
-                shutil.rmtree(self._temp_dir)
+                pass
+                # shutil.rmtree(self._temp_dir)
         except (OSError, IOError) as e:
             # Log cleanup errors for debugging
             sys.stderr.write(f"Cleanup error during shutdown: {e}\n")
@@ -595,9 +549,12 @@ class LogManager:
 class DistributedLogHandler(logging.Handler):
     """Custom log handler that sends messages to the log manager."""
 
-    def __init__(self, log_manager: LogManager):
+    def __init__(self, rank_id, file_path, max_file_size):
         super().__init__()
-        self.log_manager = log_manager
+        self.fname = None
+        self.rank_id = rank_id
+        self.file_path = os.path.join(file_path, "pending_messages")
+        self.max_file_size = max_file_size
 
     def emit(self, record: logging.LogRecord):
         """Emit a log record."""
@@ -606,11 +563,38 @@ class DistributedLogHandler(logging.Handler):
             msg = self.format(record)
 
             # Queue the message for aggregation (only if distributed logging is enabled)
-            self.log_manager._queue_message(message=msg)
+            self._queue_message(message=msg)
         except (OSError, IOError, RuntimeError):
             # Fallback to stderr if logging fails
             sys.stderr.write(f"Log handler error: {record.getMessage()}\n")
             sys.stderr.flush()
+
+    def _log_file_namer(self):
+        return f"rank_{self.rank_id}.msg.{int(time.time()*1000)}"
+
+    def _queue_message(self, message: str):
+        """Send a message to the aggregator using file-based communication."""
+
+        if self.fname == None:
+            # Create message directory in temp dir
+            os.makedirs(self.file_path, exist_ok=True)
+            self.fname = os.path.join(self.file_path, self._log_file_namer())
+        # Check if file needs rotation
+        if os.path.exists(self.fname):
+            try:
+                file_size = os.path.getsize(self.fname)
+                if file_size > self.max_file_size:
+                    self.fname = os.path.join(self.file_path, self._log_file_namer())
+            except (OSError, IOError) as e:
+                # File might be being read by aggregator, skip rotation for now
+                # Log this as it might indicate a real problem
+                sys.stderr.write(f"File rotation error for {self.fname}: {e}\n")
+                sys.stderr.flush()
+
+        # Append message to the rank's message file
+        with open(self.fname, 'a') as f:
+            f.write(f"{message}\n")
+            f.flush()  # Ensure message is written immediately
 
 
 class DynamicLogFormatter(logging.Formatter):
