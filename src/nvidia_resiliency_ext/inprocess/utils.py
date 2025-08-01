@@ -142,13 +142,15 @@ def log_exc(rank_or_state, exc, name):
     Returns:
         str: Formatted exception message
     """
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
+
     if isinstance(rank_or_state, int):
         rank = rank_or_state
     else:
         rank = rank_or_state.rank
 
     formatted_exc = format_exc(exc)
-    return f'{rank=} {name}: {formatted_exc}'
+    return f'[{timestamp}] {rank=} {name}: {formatted_exc}'
 
 
 @contextlib.contextmanager
