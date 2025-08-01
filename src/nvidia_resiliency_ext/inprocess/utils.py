@@ -38,31 +38,38 @@ def format_exc(exc: BaseException):
     return ' <- '.join(excs)
 
 
-def format_rank_set(ranks, max_show=8):
+def format_rank_set(ranks):
     """
-    Format a set of ranks for logging, showing partial ranks and total count for large sets.
+    Format a set of ranks for logging using range compression (e.g., "1-3, 5, 7-9").
 
     Args:
         ranks: Set or list of rank numbers
-        max_show: Maximum number of ranks to show before truncating
 
     Returns:
-        str: Formatted rank set string
+        str: Formatted rank set string with ranges
     """
     if not ranks:
         return "{}"
 
-    rank_count = len(ranks)
-    sorted_ranks = sorted(ranks)
+    # Convert to sorted list of unique ranks
+    sorted_ranks = sorted(set(ranks))
 
-    # Show all ranks if count is small enough
-    if rank_count <= max_show:
-        return f"{{{', '.join(map(str, sorted_ranks))}}}"
+    # Compress consecutive ranks into ranges
+    ranges = []
+    if sorted_ranks:
+        start = end = sorted_ranks[0]
 
-    # For large sets, show first few and last few with total count
-    first_ranks = sorted_ranks[:4]
-    last_ranks = sorted_ranks[-4:]
-    return f"{{{', '.join(map(str, first_ranks))}...{', '.join(map(str, last_ranks))} (total: {rank_count})}}"
+        for n in sorted_ranks[1:]:
+            if n == end + 1:
+                end = n
+            else:
+                ranges.append(f"{start}-{end}" if start != end else str(start))
+                start = end = n
+
+        ranges.append(f"{start}-{end}" if start != end else str(start))
+
+    result = ", ".join(ranges)
+    return f"{{{result}}}"
 
 
 def format_exc_chain(exc: BaseException):
