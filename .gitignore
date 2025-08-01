@@ -4,3 +4,4 @@ dist
 __pycache__
 cupti_module.*.so
 .pytest_cache
+tests/shared_utils/logs

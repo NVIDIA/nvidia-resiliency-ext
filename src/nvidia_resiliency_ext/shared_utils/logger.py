@@ -359,7 +359,7 @@ class LogManager:
 
     def _process_messages(self, output):
         # Check for pending messages from other ranks
-        keep_processing = 10
+        keep_processing = 50
         msg_dict = {}
         heap = []
 
@@ -499,6 +499,7 @@ class LogManager:
             if int(cur_file_ts) > int(to_del_ts):
                 try:
                     os.remove(os.path.join(msg_dir, msg_file))
+                    break
                 except (OSError, IOError) as e:
                     # Log the error but don't fail the entire operation
                     sys.stderr.write(f"Failed to remove backup file {msg_file}: {e}\n")
@@ -530,8 +531,7 @@ class LogManager:
             import shutil
 
             if self._is_aggregator_service:
-                pass
-                # shutil.rmtree(self._temp_dir)
+                shutil.rmtree(self._temp_dir)
         except (OSError, IOError) as e:
             # Log cleanup errors for debugging
             sys.stderr.write(f"Cleanup error during shutdown: {e}\n")

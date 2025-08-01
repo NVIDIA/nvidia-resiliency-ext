@@ -194,6 +194,12 @@ class TestLogger(unittest.TestCase):
         # h100 has 8 GPU's, check that config
         self.multiple_processes(7, 2000, 1024)
 
+    def test_one_proc_w_rotate(self):
+        self.multiple_processes(1, 2000, 10)
+
+    def test_four_proc_w_rotate(self):
+        self.multiple_processes(1, 2000, 10)
+
     def test_eight_proc_w_rotate(self):
         # h100 has 8 GPU's, check that config
         self.multiple_processes(7, 2000, 10)
