@@ -118,4 +118,12 @@ class AbortTransformerEngine(Abort):
         else:
             te.module.base.destroy_ub()
 
+        try:
+            import transformer_engine.pytorch.fp8 as te_fp8
+        except Exception:
+            pass
+        else:
+            # Clear a class-member containing a process group
+            te_fp8.FP8GlobalStateManager.reset()
+
         return state
