@@ -32,11 +32,7 @@ def torch_older_than(version):
 
 
 def format_exc(exc: BaseException):
-    excs = [repr(exc)]
-    while (exc := exc.__cause__) is not None:
-        excs.append(repr(exc))
-    return ' <- '.join(excs)
-
+    return repr(exc)
 
 def format_rank_set_verbose(ranks):
     """
@@ -132,38 +128,9 @@ def format_rank_set(ranks):
         # Default to brief display mode
         return format_rank_set_brief(ranks)
 
-
-def format_exc_chain(exc: BaseException):
-    """
-    Format exception chain showing full stack trace for the first exception,
-    and just the current exception name for chained exceptions.
-    """
-    # If this exception has no cause, it's the first exception - show full stack trace
-    if exc.__cause__ is None:
-        return repr(exc)
-
-    # Otherwise, it's a chained exception - show only the current exception name
-    return type(exc).__name__
-
-
 def log_exc(rank_or_state, exc, name):
     """
     Log exception with clean chain formatting to reduce log volume.
-
-    Args:
-        rank_or_state: Rank number or state object
-        exc: Exception to log
-        name: Name identifier for the exception
-
-    Returns:
-        str: Formatted exception message
-    """
-    return log_exc_controlled(rank_or_state, exc, name)
-
-
-def log_exc_controlled(rank_or_state, exc, name):
-    """
-    Controlled exception logging with clean chain formatting.
 
     Args:
         rank_or_state: Rank number or state object
@@ -178,7 +145,7 @@ def log_exc_controlled(rank_or_state, exc, name):
     else:
         rank = rank_or_state.rank
 
-    formatted_exc = format_exc_chain(exc)
+    formatted_exc = format_exc(exc)
     return f'{rank=} {name}: {formatted_exc}'
 
 
