@@ -34,6 +34,7 @@ def torch_older_than(version):
 def format_exc(exc: BaseException):
     return repr(exc)
 
+
 def format_rank_set_verbose(ranks):
     """
     Format a set of ranks for logging using range compression (e.g., "1-3, 5, 7-9").
@@ -127,6 +128,7 @@ def format_rank_set(ranks):
     else:
         # Default to brief display mode
         return format_rank_set_brief(ranks)
+
 
 def log_exc(rank_or_state, exc, name):
     """
