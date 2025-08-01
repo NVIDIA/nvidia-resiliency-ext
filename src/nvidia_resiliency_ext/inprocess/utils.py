@@ -38,7 +38,7 @@ def format_exc(exc: BaseException):
     return ' <- '.join(excs)
 
 
-def format_rank_set(ranks):
+def format_rank_set_verbose(ranks):
     """
     Format a set of ranks for logging using range compression (e.g., "1-3, 5, 7-9").
 
@@ -70,6 +70,67 @@ def format_rank_set(ranks):
 
     result = ", ".join(ranges)
     return f"{{{result}}}"
+
+
+def format_rank_set_brief(ranks, max_show=8):
+    """
+    Format a set of ranks for logging, showing partial ranks and total count for large sets.
+
+    Args:
+        ranks: Set or list of rank numbers
+        max_show: Maximum number of ranks to show before truncating
+
+    Returns:
+        str: Formatted rank set string
+    """
+    if not ranks:
+        return "{}"
+
+    rank_count = len(ranks)
+    sorted_ranks = sorted(ranks)
+
+    # Show all ranks if count is small enough
+    if rank_count <= max_show:
+        return f"{{{', '.join(map(str, sorted_ranks))}}}"
+
+    # For large sets, show first few and last few with total count
+    first_ranks = sorted_ranks[:4]
+    last_ranks = sorted_ranks[-4:]
+    return f"{{{', '.join(map(str, first_ranks))}...{', '.join(map(str, last_ranks))} (total: {rank_count})}}"
+
+
+def format_rank_set(ranks):
+    """
+    Format a set of ranks for logging using either range compression or partial display.
+
+    The formatting method is controlled by the environment variable
+    'NVRX_LOG_RANK_FORMAT_VERBOSE':
+    - True: Use range compression (e.g., "1-3, 5, 7-9")
+    - False/not set: Use partial display with total count for large sets
+
+    Args:
+        ranks: Set or list of rank numbers
+
+    Returns:
+        str: Formatted rank set string
+
+    Environment Variables:
+        NVRX_LOG_RANK_FORMAT_VERBOSE: Controls the formatting method
+            (True for verbose ranges, False/not set for partial display)
+    """
+    # Get verbose mode from environment variable, default to False (partial display)
+    verbose_mode = os.getenv('NVRX_LOG_RANK_FORMAT_VERBOSE', 'false').lower() in (
+        'true',
+        '1',
+        'yes',
+        'on',
+    )
+
+    if verbose_mode:
+        return format_rank_set_verbose(ranks)
+    else:
+        # Default to brief display mode
+        return format_rank_set_brief(ranks)
 
 
 def format_exc_chain(exc: BaseException):

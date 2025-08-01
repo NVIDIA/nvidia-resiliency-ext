@@ -636,11 +636,7 @@ class CallWrapper:
                 raise terminate_ex from exit_ex
 
             # Re-raise the final exception without preserving the chain
-            # For SystemExit, preserve the original exit code
-            if isinstance(exit_ex, SystemExit):
-                raise SystemExit(exit_ex.code) from None
-            else:
-                raise exit_ex.__class__(str(exit_ex)) from None
+            raise exit_ex from None
 
         try:
             if wrapper.completion is not None:
