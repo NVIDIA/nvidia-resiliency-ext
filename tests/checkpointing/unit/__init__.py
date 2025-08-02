@@ -68,13 +68,19 @@ class TempNamedDir(TemporaryDirectory):
         if Utils.rank == 0:
             super().cleanup()
 
-    def __enter__(self):
+    def path(self):
         path = Path(super().__enter__())
         if self.sync:
             import torch
 
             torch.distributed.barrier()
         return path
+
+    def __enter__(self):
+        return self.path()
+
+    def __fspath__(self):
+        return self.path().__fspath__()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         raised = exc_type is not None
