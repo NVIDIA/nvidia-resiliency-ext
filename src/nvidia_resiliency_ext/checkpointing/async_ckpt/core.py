@@ -115,18 +115,19 @@ class AsyncRequest(NamedTuple):
             call_idx: The call_idx of async request that has been finalized
         """
         with debug_time("finalize", logger):
-            for finalize_fn in self.finalize_fns:
-                finalize_fn()
-
-            # Validate that matching call_idx are invoked from all ranks.
-            # This ensures all ranks are correctly participating in CP save invocations
-            if validate_matching_call_idx:
-                ten = torch.tensor(
-                    [self.call_idx], dtype=torch.int, device=torch.cuda.current_device()
-                )
-                torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
-                assert ten.item() == self.call_idx, "Unmatched async calls. "
-                "That probably means not all ranks are participating in async finalization"
+            try:
+                for finalize_fn in self.finalize_fns:
+                    finalize_fn()  # can throw an exception
+            finally:
+                # Validate that matching call_idx are invoked from all ranks.
+                # This ensures all ranks are correctly participating in CP save invocations
+                if validate_matching_call_idx:
+                    ten = torch.tensor(
+                        [self.call_idx], dtype=torch.int, device=torch.cuda.current_device()
+                    )
+                    torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
+                    assert ten.item() == self.call_idx, "Unmatched async calls. "
+                    "That probably means not all ranks are participating in async finalization"
         return self.call_idx
 
 
@@ -299,7 +300,7 @@ class TemporalAsyncCaller(AsyncCaller):
         return is_done
 
     def close(self, abort=False):
-        """For TemporalAsyncCaller, this method is called explictly in `is_current_async_calls_done`
+        """For TemporalAsyncCaller, this method is called explictly in `is_current_async_call_done`
 
         This method make sure the TemporalAsyncCaller terminated
         with all its assigned async request completed
