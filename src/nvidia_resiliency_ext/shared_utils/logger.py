@@ -47,8 +47,8 @@ Environment Variables:
     NVRX_LOG_TO_STDOUT: Set to "1" to log to stdout instead of stderr
     NVRX_LOG_TEMP_DIR: Directory for temporary log files (default: /tmp)
     NVRX_LOG_AGGREGATOR: Set to "1" to run aggregator as a separate service
-    NVRX_LOG_MAX_FILE_SIZE_MB: Maximum size of temporary message files in MB before rotation (default: 10)
-    NVRX_LOG_MAX_BACKUP_FILES: Maximum number of backup files to keep per rank (default: 5)
+    NVRX_LOG_MAX_FILE_SIZE_KB: Maximum size of temporary message files in KB before rotation (default: 10)
+    NVRX_LOG_MAX_BACKUP_FILES: Maximum number of backup files to keep per rank (default: 3)
     
 Note: File rotation is designed to be safe for the aggregator service. When files are rotated,
 the aggregator will automatically read from both current and backup files to ensure no messages are lost.
@@ -354,7 +354,6 @@ class LogManager:
                 heapq.heappush(heap, (next_log.getts(), key, next_log))
             else:
                 break
-
         return sorted_msgs
 
     def _process_messages(self, output):

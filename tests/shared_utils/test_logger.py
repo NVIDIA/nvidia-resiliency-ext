@@ -27,22 +27,26 @@ from datetime import datetime
 from src.nvidia_resiliency_ext.shared_utils.logger import setup_logger, log_pattern
 
 
-def setup_vars(global_id, local_id, is_agg, file_size):
+def setup_vars(global_id, local_id, is_agg, file_size, dbg_on="0"):
     os.environ["NVRX_LOG_AGGREGATOR"] = is_agg
     os.environ["SLURM_PROCID"] = str(global_id)
     os.environ["SLURM_LOCALID"] = str(local_id)
     os.environ["RANK"] = str(global_id)
     os.environ["LOCAL_RANK"] = str(local_id)
     os.environ["NVRX_LOG_MAX_FILE_SIZE_KB"] = str(file_size)
+    os.environ["NVRX_LOG_DEBUG"] = dbg_on
 
 
-def gen_log_msg(logger, num_msg):
+def gen_log_msg(logger, num_msg, log_type="info"):
     for i in range(num_msg):
         skip = random.uniform(1, 50)
         skip -= 1
         if skip == 0:
             time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
-        logger.info(f"My Logging Message {i}")
+        if log_type == "info":
+            logger.info(f"My Info Logging Message {i}")
+        if log_type == "debug":
+            logger.debug(f"My Debug Logging Message {i}")
 
 
 def worker_process(id, num_msg, file_size):
@@ -119,13 +123,13 @@ class TestLogger(unittest.TestCase):
         for fname in filenames:
             self.check_a_file(log_dir + fname, num_lines, global_id, local_id)
 
-    def check_msg(self, num_msg, file_size_kb, pm_files, is_agg):
+    def check_msg(self, num_msg, file_size_kb, pm_files, is_agg, log_type="info", dbg_on="0"):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        setup_vars(0, 0, is_agg, file_size_kb)
+        setup_vars(0, 0, is_agg, file_size_kb, dbg_on)
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         logger = setup_logger(log_dir, log_dir, True)
-        gen_log_msg(logger, num_msg)
+        gen_log_msg(logger, num_msg, log_type)
 
         time.sleep(1)
         pm = log_dir + "nvrx_log_" + socket.gethostname() + "/pending_messages/"
@@ -144,7 +148,10 @@ class TestLogger(unittest.TestCase):
             self.check_files(log_dir, file_names, num_msg, 0, 0)
 
     def test_single_msg(self):
-        self.check_msg(1, 1024, 1, "1")
+        self.check_msg(1, 1024, 1, "1", "info", "0")
+
+    def test_single_dbg_msg(self):
+        self.check_msg(1, 1024, 1, "1", "debug", "1")
 
     def test_many_msg(self):
         self.check_msg(2000, 1024, 1, "1")
