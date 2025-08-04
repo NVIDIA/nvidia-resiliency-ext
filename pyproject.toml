@@ -4,7 +4,7 @@
 [tool.poetry]
 name = "nvidia-resiliency-ext"
 repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
-version = "0.4.0"
+version = "0.4.1"
 description = "NVIDIA Resiliency Package"
 authors = ["NVIDIA Corporation"]
 readme = "README.md"
@@ -20,7 +20,7 @@ packages = [
 ]
 
 exclude = [
-    "src/nvidia_resiliency_ext/straggler/cupti_src"
+    "src/nvidia_resiliency_ext/attribution/straggler/cupti_src"
 ]
 
 [tool.poetry.build]
