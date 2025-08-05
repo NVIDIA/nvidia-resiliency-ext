@@ -104,6 +104,11 @@ class StoreMixin:
 
     def get_global_iteration_counter(self) -> int:
         """Get the current global iteration counter value."""
+        # First check if the key exists (non-blocking)
+        if not self.check([self.GLOBAL_ITERATION_COUNTER]):
+            # Key doesn't exist, return 0 as the initial value
+            return 0
+
         try:
             return int(self.get(self.GLOBAL_ITERATION_COUNTER))
         except (torch.distributed.DistStoreError, ValueError):
@@ -404,6 +409,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         wait_for_workers: bool = True,
         multi_tenant: bool = False,
         use_libuv: bool = True,
+        tcp_store_host_rank: Optional[int] = None,
     ):
         log = logging.getLogger(__name__)
 
@@ -416,6 +422,9 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
 
         rank = int(os.environ['RANK'])
 
+        # Save the host rank for later use
+        self.tcp_store_host_rank = tcp_store_host_rank or self.TCP_STORE_HOST_RANK
+
         kwargs = {
             'host_name': host_name,
             'port': port,
@@ -426,19 +435,21 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
             'use_libuv': use_libuv,
         }
 
-        if rank == self.TCP_STORE_HOST_RANK:
-            try:
-                super().__init__(is_master=True, **kwargs)
-                log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
-            except Exception as store_ex:
-                log.debug(log_exc(rank, store_ex, 'store_ex'))
-                super().__init__(is_master=False, **kwargs)
+        if rank == self.tcp_store_host_rank:
+            super().__init__(is_master=True, **kwargs)
+            log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
         else:
             super().__init__(is_master=False, **kwargs)
 
+        # Log successful connection
+        if rank == 0:
+            log.info(f'Rank {rank}: Successfully connected to TCPStore at {host_name}:{port}')
+
     @property
     def critical_ranks(self):
-        return (self.TCP_STORE_HOST_RANK,)
+        if self.tcp_store_host_rank == -1:
+            return ()
+        return (self.tcp_store_host_rank,)
 
 
 class PrefixStore(torch.distributed.PrefixStore, StoreMixin):

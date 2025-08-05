@@ -295,10 +295,6 @@ class CallWrapper:
                 store_kwargs=wrapper.store_kwargs,
             )
 
-            store_kwargs = wrapper.store_kwargs
-            base_store = wrapper.store_factory(**store_kwargs)
-            log.debug(f'{base_store=} {store_kwargs=}')
-
             base_store.initial_barrier(
                 ranks=[state.rank],
                 rendezvous_count=state.world_size,
