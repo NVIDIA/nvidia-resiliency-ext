@@ -28,8 +28,8 @@ def log_message(message: str) -> None:
     Args:
         message: The message to log
     """
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    sys.stderr.write(f"[{timestamp}] {message}\n")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+    sys.stderr.write(f"{timestamp} {message}\n")
 
 
 def fork_and_monitor(restart_delay: float = 5.0) -> None:

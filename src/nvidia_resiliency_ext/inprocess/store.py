@@ -35,7 +35,6 @@ import torch
 from . import exception
 from .attribution import InterruptionRecord
 from .state import Mode
-from .utils import log_exc
 
 
 class BarrierError(exception.RestartError):
@@ -86,7 +85,6 @@ class StoreMixin:
     def clear_initial_barrier_keys(self):
         """Clear all initial barrier related keys from the store."""
         log = logging.getLogger(__name__)
-        log.debug(f'Clearing initial barrier keys')
 
         # Keys to clear
         keys_to_clear = [
