@@ -273,7 +273,12 @@ class CallWrapper:
 
             enforce_value(not torch.distributed.is_initialized())
 
-            state = State.from_env()
+            # Create base store first to get global iteration counter
+            store_kwargs = wrapper.store_kwargs
+            base_store = wrapper.store_factory(**store_kwargs)
+            log.debug(f'{base_store=} {store_kwargs=}')
+
+            state = State.from_env(store=base_store)
 
             self.monitor_process = MonitorProcess(
                 rank=state.rank,
@@ -297,8 +302,16 @@ class CallWrapper:
             base_store.initial_barrier(
                 ranks=[state.rank],
                 rendezvous_count=state.world_size,
+                timeout=datetime.timedelta.max,
+            )
+
+            # Two-step acknowledge phase for Rank 0 to clear initial barrier keys
+            base_store.initial_barrier_acknowledge(
+                rank=state.rank,
+                world_size=state.world_size,
                 timeout=wrapper.barrier_timeout,
             )
+
             base_store.set_initial_rank(state.rank, state.initial_rank)
             self.monitor_process.can_create_store()
 

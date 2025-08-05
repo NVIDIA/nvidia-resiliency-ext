@@ -73,9 +73,80 @@ class StoreMixin:
     ITERATION_BARRIER = 'iteration_barrier'
     TERMINATION_BARRIER = 'termination_barrier'
 
+    # Two-step acknowledge phase keys
+    INITIAL_BARRIER_ACK = 'initial_barrier_ack'
+
+    # Global iteration counter
+    GLOBAL_ITERATION_COUNTER = 'global_iteration_counter'
+
     @property
     def critical_ranks(self):
         return ()
+
+    def clear_initial_barrier_keys(self):
+        """Clear all initial barrier related keys from the store."""
+        log = logging.getLogger(__name__)
+        log.debug(f'Clearing initial barrier keys')
+
+        # Keys to clear
+        keys_to_clear = [
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}:last_worker_arrived',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}:arrived',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER_ACK}',
+        ]
+
+        try:
+            for key in keys_to_clear:
+                self.delete_key(key)
+        except Exception as e:
+            log.warning(f'Failed to clear some initial barrier keys: {e}')
+
+    def get_global_iteration_counter(self) -> int:
+        """Get the current global iteration counter value."""
+        try:
+            return int(self.get(self.GLOBAL_ITERATION_COUNTER))
+        except (torch.distributed.DistStoreError, ValueError):
+            # If the key doesn't exist, return 0 as the initial value
+            return 0
+
+    def increment_global_iteration_counter(self, delta: int = 100) -> int:
+        """Increment the global iteration counter by delta and return the new value."""
+        return self.add(self.GLOBAL_ITERATION_COUNTER, delta)
+
+    def initial_barrier_acknowledge(self, rank: int, world_size: int, timeout: datetime.timedelta):
+        """Two-step acknowledge phase for initial barrier completion.
+
+        Step 1: All ranks acknowledge that initial barrier is completed
+        Step 2: Rank 0 waits for all acknowledgments and then clears the keys
+        """
+        log = logging.getLogger(__name__)
+
+        # Step 1: All ranks acknowledge completion
+        ack_key = f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER_ACK}'
+
+        # Add this rank's acknowledgment
+        arrived_count = self.add(ack_key, 1)
+        log.debug(f'{rank=} acknowledged initial barrier completion, count={arrived_count}')
+
+        # Step 2: Rank 0 waits for all acknowledgments and clears keys
+        if rank == 0:
+            # Wait for all ranks to acknowledge
+            start = time.monotonic()
+            while True:
+                try:
+                    current_count = int(self.get(ack_key))
+                    if current_count >= world_size:
+                        log.debug(f'{rank=} all ranks acknowledged, clearing initial barrier keys')
+                        self.clear_initial_barrier_keys()
+                        # Increment global iteration counter by 100
+                        new_iteration = self.increment_global_iteration_counter(100)
+                        break
+                except (torch.distributed.DistStoreError, ValueError) as ex:
+                    if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
+                        log.warning(f'{rank=} timeout waiting for all acknowledgments: {ex}')
+                        break
+                    time.sleep(sys.getswitchinterval())
 
     def get_packed(self, key: str, sep: str):
         return self.get(key).decode().rstrip(sep).split(sep)

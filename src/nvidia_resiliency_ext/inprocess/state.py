@@ -81,14 +81,21 @@ class State:
             self.initial_world_size = self.world_size
 
     @classmethod
-    def from_env(cls):
+    def from_env(cls, store=None):
         rank = int(os.getenv('RANK', 0))
         world_size = int(os.getenv('WORLD_SIZE', 1))
+
+        # Get iteration from global counter if store is provided
+        iteration = 0
+        if store is not None:
+            iteration = store.get_global_iteration_counter()
+
         return cls(
             rank=rank,
             world_size=world_size,
             initial_rank=rank,
             initial_world_size=world_size,
+            iteration=iteration,
         )
 
     def set_distributed_vars(self):
