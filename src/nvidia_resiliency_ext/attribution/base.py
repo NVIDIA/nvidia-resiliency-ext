@@ -15,6 +15,8 @@ class AttributionState(Enum):
 
 class NVRxAttribution(Generic[T, R]):
     """A class that implements a three-step attribution process.
+    This class is designed to be used in a pipeline of attribution modules.
+    The output of one attribution module can be used as the input to the next attribution module.
 
     This class handles:
     1. Input preprocessing - can handle single objects or lists of objects
@@ -87,7 +89,9 @@ class NVRxAttribution(Generic[T, R]):
                 - An awaitable that resolves to either of the above
 
         Returns:
-            Preprocessed data ready for attribution
+            Preprocessed data ready for attribution, and a flag to indicate if the attribution should continue.
+            If the flag is AttributionState.STOP, the attribution should stop and the preprocessed data should be returned.
+            If the flag is AttributionState.CONTINUE, the attribution should continue.
         """
         # Handle awaitable inputs (e.g., from other attribution modules)
         # Await on awaitable objects in the list input_data
