@@ -559,11 +559,11 @@ class CallWrapper:
                     state.set_distributed_vars()
                 else:
                     break
-                finally:
-                    while gc.collect():
-                        pass
 
                 state.advance()
+
+                while gc.collect():
+                    pass
 
         except BaseException as exit_ex:
 

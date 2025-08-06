@@ -15,7 +15,9 @@
 
 import glob
 import os
-
+import re
+import shutil
+import subprocess
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 
 
@@ -43,6 +45,54 @@ def _skip_ext_build():
     return ans.lower() in ['1', 'on', 'yes', 'true']
 
 
+def get_cuda_path():
+    """
+    Determines the path to the CUDA installation.
+
+    Find the CUDA root directory under stanadard paths or using nvcc
+    as it's typically done in build systems like CMake.
+
+    1. Check if $CUDA_PATH is set or /usr/local/cuda exists; return it if so.
+    2. If not, check if nvcc is in PATH. If yes, run "nvcc -v test.cu" and parse output for CUDA root.
+    3. If neither method works, raise FileNotFoundError.
+
+    Returns:
+        str: The path to the CUDA installation directory.
+
+    Raises:
+        FileNotFoundError: If the CUDA installation cannot be found.
+    """
+    cuda_path = os.environ.get("CUDA_PATH", "/usr/local/cuda")
+    if os.path.isdir(cuda_path):
+        return cuda_path
+
+    nvcc_path = shutil.which("nvcc")
+    if nvcc_path:
+        try:
+            # try to extract CUDA root from nvcc output
+            result = subprocess.run(
+                [nvcc_path, "-v", "test.cu"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                universal_newlines=True,
+            )
+            # match "#$ TOP=..." in output
+            match = re.search(r'#\$ TOP=([^\r\n]*)', result.stdout)
+            if match and os.path.isdir(match.group(1)):
+                return match.group(1)
+            else:
+                # fallback: get directory where nvcc is located
+                return os.path.dirname(os.path.dirname(nvcc_path))
+        except Exception:
+            pass
+
+    raise FileNotFoundError(
+        "CUDA installation not found in /usr/local/cuda or $CUDA_PATH, "
+        "and could not determine CUDA path from nvcc"
+    )
+
+
 def build(setup_kwargs):
 
     if _skip_ext_build():
@@ -54,9 +104,7 @@ def build(setup_kwargs):
     include_dirs = None
     library_dirs = None
 
-    cuda_path = os.environ.get("CUDA_PATH", "/usr/local/cuda")
-    if not os.path.isdir(cuda_path):
-        raise FileNotFoundError("cuda installation not found in /usr/local/cuda or $CUDA_PATH")
+    cuda_path = get_cuda_path()
 
     cupti_h = "cupti.h"
     libcupti_so = "libcupti.so"
@@ -71,7 +119,7 @@ def build(setup_kwargs):
     cpp_extension = Pybind11Extension(
         'nvrx_cupti_module',
         # Sort .cpp files for reproducibility
-        sorted(glob.glob('src/nvidia_resiliency_ext/straggler/cupti_src/*.cpp')),
+        sorted(glob.glob('src/nvidia_resiliency_ext/attribution/straggler/cupti_src/*.cpp')),
         include_dirs=include_dirs,
         library_dirs=library_dirs,
         libraries=['cupti'],

@@ -16,8 +16,12 @@
 
 import abc
 import datetime
+import logging
+import os
 import threading
 from typing import Any, Callable, Optional
+
+import torch
 
 from . import exception
 from .state import FrozenState
@@ -93,11 +97,32 @@ class ThreadedFinalize(Finalize):
 
     def __call__(self, state: FrozenState) -> FrozenState:
         rank = state.rank
+
+        # Ensure CUDA is available and initialized, raise exception if not
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available")
+        if not torch.cuda.is_initialized():
+            raise RuntimeError("CUDA is not initialized")
+
+        # Determine device in main thread before creating the thread
+        if (local_rank := os.getenv('LOCAL_RANK', None)) is not None:
+            device_id = torch.device(int(local_rank))
+        else:
+            device_id = torch.device(torch.cuda.current_device())
+
+        def wrapped_fn():
+            # Set CUDA device in the thread
+            if device_id is not None:
+                log = logging.getLogger(__name__)
+                log.debug(f'Setting CUDA device to {device_id} in ThreadedFinalize')
+                torch.cuda.set_device(device_id)
+
+            # Call the original function
+            return self.fn(*self.args, **self.kwargs)
+
         thread = threading.Thread(
-            target=self.fn,
+            target=wrapped_fn,
             name=f'{type(self).__name__}-{rank}',
-            args=self.args,
-            kwargs=self.kwargs,
             daemon=True,
         )
         thread.start()
