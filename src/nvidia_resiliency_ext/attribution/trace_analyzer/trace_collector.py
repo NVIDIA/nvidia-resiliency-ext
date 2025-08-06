@@ -1,7 +1,12 @@
 import json
 import logging
 import os
-import pickle
+
+# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
+# Severity: Low   Confidence: High
+# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+# More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
+import pickle  # nosec
 from abc import ABC, abstractmethod
 
 import torch
