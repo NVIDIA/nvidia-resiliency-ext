@@ -6,7 +6,7 @@
 
 # SPDX-License-Identifier: BSD-3-Clause
 # Modifications made by NVIDIA
-# This file now uses PyTorch's distributed elastic module directly
+# This file uses PyTorch's distributed elastic module directly
 # Added suppression for pickle low serverity issue
 
 
