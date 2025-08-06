@@ -35,6 +35,7 @@ import torch
 from . import exception
 from .attribution import InterruptionRecord
 from .state import Mode
+from .utils import log_exc
 
 
 class BarrierError(exception.RestartError):
@@ -434,8 +435,12 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         }
 
         if rank == self.tcp_store_host_rank:
-            super().__init__(is_master=True, **kwargs)
-            log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
+            try:
+                super().__init__(is_master=True, **kwargs)
+                log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
+            except Exception as store_ex:
+                log.debug(log_exc(rank, store_ex, 'store_ex'))
+                super().__init__(is_master=False, **kwargs)
         else:
             super().__init__(is_master=False, **kwargs)
 

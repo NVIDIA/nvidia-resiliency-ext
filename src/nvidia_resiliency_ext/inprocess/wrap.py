@@ -273,12 +273,19 @@ class CallWrapper:
 
             enforce_value(not torch.distributed.is_initialized())
 
-            # Create base store first to get global iteration counter
+            # Determine if TCP store is hosted externally or internally
             store_kwargs = wrapper.store_kwargs
-            base_store = wrapper.store_factory(**store_kwargs)
-            log.debug(f'{base_store=} {store_kwargs=}')
+            is_external_tcp_store = store_kwargs.get('tcp_store_host_rank', None) == -1
 
-            state = State.from_env(store=base_store)
+            if is_external_tcp_store:
+                # TCP store is hosted externally. The initial state.iteration value is
+                # persisted in the store.
+                base_store = wrapper.store_factory(**store_kwargs)
+                log.debug(f'{base_store=} {store_kwargs=}')
+                state = State.from_env(store=base_store)
+            else:
+                # TCP store should be hosted by the MonitorProcess when it is hosted internally.
+                state = State.from_env()
 
             self.monitor_process = MonitorProcess(
                 rank=state.rank,
@@ -294,6 +301,12 @@ class CallWrapper:
                 store_factory=wrapper.store_factory,
                 store_kwargs=wrapper.store_kwargs,
             )
+
+            if not is_external_tcp_store:
+                # TCP store is hosted internally by the MonitorProcess.
+                # Here we just create a TCPStore client.
+                base_store = wrapper.store_factory(**store_kwargs)
+                log.debug(f'{base_store=} {store_kwargs=}')
 
             # Use different timeout strategies based on iteration
             if state.iteration == 0:
