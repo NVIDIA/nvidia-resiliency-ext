@@ -438,6 +438,30 @@ class CallWrapper:
         finally:
             self.atomic_lock.release()
 
+    def _disable_hang_protection(self):
+        '''
+        Disables hang protection (soft and hard timeouts) in the monitor process.
+
+        This method is exposed to allow hang protection to be disabled over long sections
+        of code and across multiple functions.  When using this method directly, the partner
+        `_enable_hang_protection` method must be called to re-enable hang protection.
+
+        Using this method directly is not recommended.  Instead, use the context manager
+        `disable_hang_protection` to disable hang protection for a specific section of code.
+        '''
+
+        self.monitor_process.disable_timeouts()
+
+    def _enable_hang_protection(self):
+        '''
+        Partner method to `_disable_hang_protection`.
+        '''
+
+        # Reset the progress watchdog timestamp before re-enabling timeouts
+        # to prevent immediate timeout due to stale timestamp
+        self.progress_watchdog.reset()
+        self.monitor_process.enable_timeouts()
+
     @contextlib.contextmanager
     def disable_hang_protection(self):
         r'''
@@ -466,14 +490,11 @@ class CallWrapper:
                 # Hang protection is automatically re-enabled
                 train_step()
         '''
-        self.monitor_process.disable_timeouts()
+        self._disable_hang_protection()
         try:
             yield
         finally:
-            # Reset the progress watchdog timestamp before re-enabling timeouts
-            # to prevent immediate timeout due to stale timestamp
-            self.progress_watchdog.reset()
-            self.monitor_process.enable_timeouts()
+            self._enable_hang_protection()
 
     @reraise_if_unraisable(RankShouldRestart)
     def __call__(self, fn, args, kwargs):
