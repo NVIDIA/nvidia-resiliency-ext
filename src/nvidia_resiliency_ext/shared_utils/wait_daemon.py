@@ -10,20 +10,20 @@ This script waits for all "python" processes launched by the current user to
 finish before terminating the SLURM job, or waits for a given list of PIDs if provided in a file.
 """
 
+import argparse
 import os
 import sys
 import time
-import argparse
 from typing import List
 
 
 def wait_for_pids(pids: List[int]) -> None:
     """Wait for all specified PIDs to finish."""
     print(f"Monitoring {len(pids)} PIDs: {pids}")
-    
+
     while pids:
         finished_pids = []
-        
+
         for pid in pids:
             try:
                 # Check if process exists by sending signal 0
@@ -31,12 +31,12 @@ def wait_for_pids(pids: List[int]) -> None:
             except OSError:
                 # Process has finished or doesn't exist
                 finished_pids.append(pid)
-        
+
         # Remove finished/invalid PIDs from the monitoring list
         for pid in finished_pids:
             pids.remove(pid)
             print(f"PID {pid} has finished or is invalid. {len(pids)} PIDs remaining: {pids}")
-        
+
         if pids:
             time.sleep(1)
 
@@ -53,7 +53,7 @@ def read_pids_from_file(pidfile: str) -> List[int]:
     except (IOError, ValueError) as e:
         print(f"Error reading PID file {pidfile}: {e}")
         return []
-    
+
     return pids
 
 
@@ -63,12 +63,12 @@ def wait_daemon(pidfile: str) -> None:
     if not os.path.exists(pidfile):
         print(f"Error: PID file {pidfile} does not exist. Exiting.")
         sys.exit(1)
-    
+
     pids = read_pids_from_file(pidfile)
     if not pids:
         print(f"No valid PIDs found in {pidfile}")
         return
-    
+
     print(f"Waiting for PIDs from file: {pidfile}")
     wait_for_pids(pids)
     print("All monitored processes have exited.")
@@ -78,16 +78,13 @@ def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Wait for Python processes to finish before terminating SLURM job. "
-                   "If PID file doesn't exist, exits immediately. Invalid PIDs are excluded from monitoring."
+        "If PID file doesn't exist, exits immediately. Invalid PIDs are excluded from monitoring."
     )
-    parser.add_argument(
-        'pidfile', 
-        help='File containing PIDs to wait for'
-    )
+    parser.add_argument('pidfile', help='File containing PIDs to wait for')
     args = parser.parse_args()
-    
+
     wait_daemon(args.pidfile)
 
 
 if __name__ == "__main__":
-    main() 
+    main()

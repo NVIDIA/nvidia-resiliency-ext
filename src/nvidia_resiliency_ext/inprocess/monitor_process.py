@@ -324,7 +324,6 @@ class MonitorProcess:
             if sibling_monitor is not None:
                 sibling_monitor.shutdown()
 
-
     def can_create_store(self):
         self.main_store_created.set()
 
