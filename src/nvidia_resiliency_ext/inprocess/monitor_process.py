@@ -324,14 +324,6 @@ class MonitorProcess:
             if sibling_monitor is not None:
                 sibling_monitor.shutdown()
 
-            # Clean up PID file
-            if pid_filename is not None:
-                try:
-                    if os.path.exists(pid_filename):
-                        os.remove(pid_filename)
-                except Exception as e:
-                    # Log the error but don't fail the process
-                    log.error(f"Failed to remove PID file {pid_filename}: {e}")
 
     def can_create_store(self):
         self.main_store_created.set()
