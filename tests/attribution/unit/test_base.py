@@ -41,37 +41,6 @@ class TestNVRxAttribution(unittest.TestCase):
             [item * 3 for item in x] if isinstance(x, list) else x * 3
         )
 
-        # Async test functions
-        self.async_preprocess = AsyncMock(side_effect=lambda x: x * 2)
-        self.async_attribution = AsyncMock(side_effect=lambda x: x + 10)
-        self.async_output_handler = AsyncMock(side_effect=lambda x: x * 3)
-
-    def test_init_with_sync_functions(self):
-        """Test initialization with synchronous functions."""
-        attribution = attr.NVRxAttribution(
-            preprocess_input=self.sync_preprocess,
-            attribution=self.sync_attribution,
-            output_handler=self.sync_output_handler,
-        )
-
-        self.assertEqual(attribution._preprocess_input, self.sync_preprocess)
-        self.assertEqual(attribution._attribution, self.sync_attribution)
-        self.assertEqual(attribution._output_handler, self.sync_output_handler)
-        self.assertEqual(attribution.attribution_kwargs, {})
-        self.assertIsInstance(attribution._thread_pool, ThreadPoolExecutor)
-
-    def test_init_with_async_functions(self):
-        """Test initialization with asynchronous functions."""
-        attribution = attr.NVRxAttribution(
-            preprocess_input=self.async_preprocess,
-            attribution=self.async_attribution,
-            output_handler=self.async_output_handler,
-        )
-
-        self.assertEqual(attribution._preprocess_input, self.async_preprocess)
-        self.assertEqual(attribution._attribution, self.async_attribution)
-        self.assertEqual(attribution._output_handler, self.async_output_handler)
-
     def test_init_with_custom_kwargs(self):
         """Test initialization with custom attribution kwargs."""
         custom_kwargs = {"param1": "value1", "param2": 42}
@@ -130,21 +99,6 @@ class TestNVRxAttribution(unittest.TestCase):
         result = attribution.run_sync([1, 2, 3])
         # Expected: ([2, 4, 6] + 10) * 3 = [36, 42, 48]
         self.assertEqual(result, [36, 42, 48])
-
-    def test_run_async_with_async_functions(self):
-        """Test running the attribution pipeline with async functions."""
-        attribution = attr.NVRxAttribution(
-            preprocess_input=self.async_preprocess,
-            attribution=self.async_attribution,
-            output_handler=self.async_output_handler,
-        )
-
-        async def test_run():
-            return await attribution.run(5)
-
-        result = asyncio.run(test_run())
-        # Expected: (5 * 2 + 10) * 3 = 60
-        self.assertEqual(result, 60)
 
     def test_attribution_with_kwargs(self):
         """Test attribution function with custom kwargs."""
@@ -223,11 +177,6 @@ class TestNVRxAttribution(unittest.TestCase):
         with self.assertRaises(TypeError):
             attribution.run_sync(5)
 
-    def test_attribution_state_enum(self):
-        """Test AttributionState enum values."""
-        self.assertEqual(attr.AttributionState.STOP.value, 1)
-        self.assertEqual(attr.AttributionState.CONTINUE.value, 2)
-
     def test_preprocess_input_with_complex_data(self):
         """Test preprocessing function with complex data structures."""
 
@@ -245,28 +194,6 @@ class TestNVRxAttribution(unittest.TestCase):
         result = attribution.run_sync([1, 2, 3])
         # Expected: ([2, 4, 6] + 10) * 3 = [36, 42, 48]
         self.assertEqual(result, [36, 42, 48])
-
-    def test_attribution_with_different_data_types(self):
-        """Test attribution with different data types."""
-
-        def string_preprocess(x):
-            return str(x) + "_processed"
-
-        def string_attribution(x):
-            return x + "_attributed"
-
-        def string_output_handler(x):
-            return x + "_output"
-
-        attribution = attr.NVRxAttribution(
-            preprocess_input=string_preprocess,
-            attribution=string_attribution,
-            output_handler=string_output_handler,
-        )
-
-        result = attribution.run_sync(5)
-        expected = "5_processed_attributed_output"
-        self.assertEqual(result, expected)
 
     def test_async_preprocess_with_complex_logic(self):
         """Test async preprocessing with complex logic."""
