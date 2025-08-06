@@ -125,8 +125,7 @@ class AbortTorchDistributed(Abort):
                 else:
                     backend.abort()
 
-    @classmethod
-    def collect_fr_trace(cls):
+    def collect_fr_trace(self):
         def _check_fr_env():
             check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE']
             rank = torch.distributed.get_rank()
@@ -137,18 +136,18 @@ class AbortTorchDistributed(Abort):
                 except ValueError:
                     env_value_int = 0
 
-                if env_value_int <= 0 and rank == 0 and not cls._logging_printed:
+                if env_value_int <= 0 and rank == 0 and not AbortTorchDistributed._logging_printed:
                     log = logging.getLogger(__name__)
                     log.info(
                         f"Environment variable {env_var} is set to {env_value}"
                         f", FR trace collection is disabled"
                     )
-                    cls._logging_printed = True
+                    AbortTorchDistributed._logging_printed = True
                     return False
             return True
 
         if _check_fr_env() is True:
-            if self.trace_path is None:
+            if self.torch_fr_trace_path is None:
                 return
             if not os.path.exists(self.torch_fr_trace_path):
                 os.makedirs(self.torch_fr_trace_path)
