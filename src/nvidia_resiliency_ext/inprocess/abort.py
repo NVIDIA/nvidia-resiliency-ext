@@ -70,8 +70,27 @@ class AbortTorchDistributed(Abort):
 
     _logging_printed: bool = False
 
-    def __init__(self, trace_path: str = None):
-        self.trace_path = trace_path
+    def __init__(self, torch_fr_trace_path: str = None):
+        r'''
+        This class is used to abort PyTorch distributed collectives, and destroy all PyTorch
+        distributed process groups.
+
+        It also collects PyTorch Flight Recorder traces, which can be used to analyze the
+        behavior of the distributed collectives.
+
+        PyTorch Flight Recorder traces are collected by setting the
+        TORCH_NCCL_TRACE_BUFFER_SIZE environment variable to a non-zero value.
+        We disable the collection of stack traces by default, which requires GIL, leading to a deadlock.
+        This feature is still experimental and need to be used with care.
+
+        The traces are collected in the directory specified by torch_fr_trace_path.
+        If the directory does not exist, it will be created.
+        If the directory is not provided, the traces will not be collected.
+
+        Args:
+            torch_fr_trace_path: Path to collect PyTorch Flight Recorder traces.
+        '''
+        self.torch_fr_trace_path = torch_fr_trace_path
 
     @staticmethod
     def shutdown_all_process_group_backends():
@@ -131,9 +150,9 @@ class AbortTorchDistributed(Abort):
         if _check_fr_env() is True:
             if self.trace_path is None:
                 return
-            if not os.path.exists(self.trace_path):
-                os.makedirs(self.trace_path)
-            trace_analyzer = TorchFRTraceCollector(self.trace_path)
+            if not os.path.exists(self.torch_fr_trace_path):
+                os.makedirs(self.torch_fr_trace_path)
+            trace_analyzer = TorchFRTraceCollector(self.torch_fr_trace_path)
             trace_analyzer.collect()
 
     def __call__(self, state: FrozenState) -> FrozenState:
