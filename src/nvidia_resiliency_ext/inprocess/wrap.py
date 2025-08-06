@@ -295,10 +295,18 @@ class CallWrapper:
                 store_kwargs=wrapper.store_kwargs,
             )
 
+            # Use different timeout strategies based on iteration
+            if state.iteration == 0:
+                # Very first start: use configured barrier timeout
+                initial_barrier_timeout = wrapper.barrier_timeout
+            else:
+                # Restart scenario: always use max timeout to wait for others
+                initial_barrier_timeout = datetime.timedelta.max
+
             base_store.initial_barrier(
                 ranks=[state.rank],
                 rendezvous_count=state.world_size,
-                timeout=datetime.timedelta.max,
+                timeout=initial_barrier_timeout,
             )
 
             # Two-step acknowledge phase for Rank 0 to clear initial barrier keys
