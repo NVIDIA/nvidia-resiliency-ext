@@ -43,11 +43,6 @@ class TCPStoreService:
         self.store = None
         self.running = False
 
-        # Setup logging
-        logging.basicConfig(
-            format="%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d %(message)s",
-            level=getattr(logging, log_level.upper()),
-        )
         self.logger = logging.getLogger(__name__)
 
         # Setup signal handlers
@@ -177,7 +172,7 @@ def main():
 
     # Setup logging first
     logging.basicConfig(
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        format="%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d %(message)s",
         level=getattr(logging, args.log_level.upper()),
     )
     logger = logging.getLogger(__name__)
