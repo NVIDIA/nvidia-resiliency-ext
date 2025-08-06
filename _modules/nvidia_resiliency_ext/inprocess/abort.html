@@ -207,6 +207,14 @@
         <span class="k">else</span><span class="p">:</span>
             <span class="n">te</span><span class="o">.</span><span class="n">module</span><span class="o">.</span><span class="n">base</span><span class="o">.</span><span class="n">destroy_ub</span><span class="p">()</span>
 
+        <span class="k">try</span><span class="p">:</span>
+            <span class="kn">import</span><span class="w"> </span><span class="nn">transformer_engine.pytorch.fp8</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">te_fp8</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="k">pass</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># Clear a class-member containing a process group</span>
+            <span class="n">te_fp8</span><span class="o">.</span><span class="n">FP8GlobalStateManager</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+
         <span class="k">return</span> <span class="n">state</span></div>
 
 </pre></div>
