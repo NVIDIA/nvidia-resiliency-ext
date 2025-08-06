@@ -70,6 +70,9 @@ class AbortTorchDistributed(Abort):
 
     _logging_printed: bool = False
 
+    def __init__(self, trace_path: str = None):
+        self.trace_path = trace_path
+
     @staticmethod
     def shutdown_all_process_group_backends():
         device = torch.device('cuda')
@@ -126,12 +129,11 @@ class AbortTorchDistributed(Abort):
             return True
 
         if _check_fr_env() is True:
-            trace_path = os.environ.get('NVRX_FR_TRACE_PATH', None)
-            if trace_path is None:
+            if self.trace_path is None:
                 return
-            if not os.path.exists(trace_path):
-                os.makedirs(trace_path)
-            trace_analyzer = TorchFRTraceCollector(trace_path)
+            if not os.path.exists(self.trace_path):
+                os.makedirs(self.trace_path)
+            trace_analyzer = TorchFRTraceCollector(self.trace_path)
             trace_analyzer.collect()
 
     def __call__(self, state: FrozenState) -> FrozenState:
