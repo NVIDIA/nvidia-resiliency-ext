@@ -45,7 +45,7 @@ import sys
 import time
 from typing import Optional
 
-from .logger import LogManager
+from log_manager import LogManager
 
 
 def main():

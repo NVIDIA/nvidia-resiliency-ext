@@ -5,3 +5,4 @@ __pycache__
 cupti_module.*.so
 .pytest_cache
 tests/shared_utils/logs
+tests/shared_utils/tmp
