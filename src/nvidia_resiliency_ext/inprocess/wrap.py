@@ -156,6 +156,7 @@ class Wrapper:
         enabled: bool = True,
         completion: Optional[Completion] = None,
         terminate: Optional[Terminate] = None,
+        active_world_size: Optional[int] = None,
     ):
         enforce_subclass('store_factory', StoreMixin)
         enforce_type('store_kwargs', (dict, type(None)))
@@ -180,6 +181,7 @@ class Wrapper:
         enforce_type('enabled', bool)
         enforce_type('completion', (Completion, type(None)))
         enforce_type('terminate', (Terminate, type(None)))
+        enforce_type('active_world_size', (int, type(None)))
 
         enforce_value(soft_timeout < hard_timeout < barrier_timeout)
         enforce_value(monitor_process_interval < barrier_timeout)
@@ -230,6 +232,21 @@ class Wrapper:
         self.enabled = enabled
         self.completion = completion
         self.terminate = terminate
+        self.active_world_size = active_world_size
+
+    def get_hot_spare_count(self, total_world_size: int) -> int:
+        """
+        Calculate the number of hot spare ranks.
+
+        Args:
+            total_world_size: Total number of ranks in the job
+
+        Returns:
+            Number of hot spare ranks
+        """
+        if self.active_world_size is None:
+            return 0  # No hot spares if active_world_size is not specified
+        return max(0, total_world_size - self.active_world_size)
 
     def __call__(self, fn):
         if not self.enabled:
@@ -312,14 +329,27 @@ class CallWrapper:
             if state.iteration == 0:
                 # Very first start: use configured barrier timeout
                 initial_barrier_timeout = wrapper.barrier_timeout
+                hot_spare_count = None
+                base_timeout = None
+                log.debug(
+                    f'{state.rank=} first iteration: using configured barrier timeout {initial_barrier_timeout}'
+                )
             else:
-                # Restart scenario: always use max timeout to wait for others
+                # Restart scenario: use intelligent timeout based on hot spares
+                hot_spare_count = wrapper.get_hot_spare_count(state.world_size)
+                base_timeout = wrapper.barrier_timeout
+                # Use max timeout as fallback, but intelligent calculation will happen inside barrier
                 initial_barrier_timeout = datetime.timedelta.max
+                log.debug(
+                    f'{state.rank=} restart iteration: hot_spare_count={hot_spare_count}, base_timeout={base_timeout}'
+                )
 
             base_store.initial_barrier(
                 ranks=[state.rank],
                 rendezvous_count=state.world_size,
                 timeout=initial_barrier_timeout,
+                hot_spare_count=hot_spare_count,
+                base_timeout=base_timeout,
             )
 
             # Two-step acknowledge phase for Rank 0 to clear initial barrier keys
