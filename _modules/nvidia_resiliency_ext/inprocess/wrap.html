@@ -664,7 +664,8 @@
                 <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">terminate_ex</span><span class="p">,</span> <span class="s1">&#39;terminate_ex&#39;</span><span class="p">))</span>
                 <span class="k">raise</span> <span class="n">terminate_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">exit_ex</span>
 
-            <span class="k">raise</span> <span class="n">exit_ex</span>
+            <span class="c1"># Re-raise the final exception without preserving the chain</span>
+            <span class="k">raise</span> <span class="n">exit_ex</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
 
         <span class="k">try</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">completion</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
