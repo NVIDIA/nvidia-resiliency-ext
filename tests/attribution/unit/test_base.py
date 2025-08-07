@@ -17,7 +17,7 @@
 import asyncio
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import nvidia_resiliency_ext.attribution.base as attr
 
