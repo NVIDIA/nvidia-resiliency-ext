@@ -41,6 +41,8 @@ class Message(enum.Enum):
     DAEMON_PID = enum.auto()
     ITERATION_START = enum.auto()
     TERMINATE = enum.auto()
+    DISABLE_TIMEOUTS = enum.auto()
+    ENABLE_TIMEOUTS = enum.auto()
 
 
 def is_process_active(process):
@@ -193,6 +195,8 @@ class MonitorProcess:
         initial_hard_timeout = hard_timeout
         soft_timeout_expired = False
         timestamp = Timestamp(auto=time.monotonic())
+        timeouts_enabled = True  # Flag to track if timeouts are enabled
+
         sibling_monitor = None
 
         try:
@@ -223,6 +227,12 @@ class MonitorProcess:
                         case Message.DISABLE_SIBLING_MONITOR:
                             if sibling_monitor is not None:
                                 sibling_monitor.shutdown()
+                        case Message.DISABLE_TIMEOUTS:
+                            timeouts_enabled = False
+                            log.info('Soft and hard timeouts disabled')
+                        case Message.ENABLE_TIMEOUTS:
+                            timeouts_enabled = True
+                            log.info('Soft and hard timeouts enabled')
                         case Message.TERMINATE:
                             break
                         case Message.RECORD_INTERRUPTED:
@@ -239,23 +249,26 @@ class MonitorProcess:
                     status = ex
                 log.debug(f'{status=} {timestamp=}')
 
-                if not soft_timeout_expired and timestamp.is_timed_out(soft_timeout):
-                    store.record_interrupted([InterruptionRecord(rank, Interruption.SOFT_TIMEOUT)])
-                    soft_timeout_expired = True
+                if timeouts_enabled:
+                    if not soft_timeout_expired and timestamp.is_timed_out(soft_timeout):
+                        store.record_interrupted(
+                            [InterruptionRecord(rank, Interruption.SOFT_TIMEOUT)]
+                        )
+                        soft_timeout_expired = True
 
-                if timestamp.is_timed_out(hard_timeout):
-                    already_arrived = store.is_rank_at_reentrant_barrier(
-                        rank=rank,
-                        group_name=StoreMixin.ITERATION_BARRIER,
-                    )
-                    if already_arrived and hard_timeout != barrier_timeout:
-                        hard_timeout = barrier_timeout
-                        continue
+                    if timestamp.is_timed_out(hard_timeout):
+                        already_arrived = store.is_rank_at_reentrant_barrier(
+                            rank=rank,
+                            group_name=StoreMixin.ITERATION_BARRIER,
+                        )
+                        if already_arrived and hard_timeout != barrier_timeout:
+                            hard_timeout = barrier_timeout
+                            continue
 
-                    interruption = Interruption.HARD_TIMEOUT
-                    store.record_interrupted([InterruptionRecord(rank, interruption)])
-                    store.record_terminated_ranks([rank])
-                    terminate_process(target_process, termination_grace_time)
+                        interruption = Interruption.HARD_TIMEOUT
+                        store.record_interrupted([InterruptionRecord(rank, interruption)])
+                        store.record_terminated_ranks([rank])
+                        terminate_process(target_process, termination_grace_time)
 
                 if not is_process_active(target_process):
                     log.info('target process is terminated')
@@ -322,6 +335,12 @@ class MonitorProcess:
 
     def disable_sibling_monitor(self):
         self.msg_queue.put((Message.DISABLE_SIBLING_MONITOR, None))
+
+    def disable_timeouts(self):
+        self.msg_queue.put((Message.DISABLE_TIMEOUTS, None))
+
+    def enable_timeouts(self):
+        self.msg_queue.put((Message.ENABLE_TIMEOUTS, None))
 
     def send_timestamp(self, timestamp):
         self.msg_queue.put((Message.TIMESTAMP, timestamp))
