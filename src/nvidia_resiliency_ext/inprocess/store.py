@@ -72,9 +72,84 @@ class StoreMixin:
     ITERATION_BARRIER = 'iteration_barrier'
     TERMINATION_BARRIER = 'termination_barrier'
 
+    # Two-step acknowledge phase keys
+    INITIAL_BARRIER_ACK = 'initial_barrier_ack'
+
+    # Global iteration counter
+    GLOBAL_ITERATION_COUNTER = 'global_iteration_counter'
+
     @property
     def critical_ranks(self):
         return ()
+
+    def clear_initial_barrier_keys(self):
+        """Clear all initial barrier related keys from the store."""
+        log = logging.getLogger(__name__)
+
+        # Keys to clear
+        keys_to_clear = [
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}:last_worker_arrived',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}:arrived',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER_ACK}',
+        ]
+
+        try:
+            for key in keys_to_clear:
+                self.delete_key(key)
+        except Exception as e:
+            log.warning(f'Failed to clear some initial barrier keys: {e}')
+
+    def get_global_iteration_counter(self) -> int:
+        """Get the current global iteration counter value."""
+        # First check if the key exists (non-blocking)
+        if not self.check([self.GLOBAL_ITERATION_COUNTER]):
+            # Key doesn't exist, return 0 as the initial value
+            return 0
+
+        try:
+            return int(self.get(self.GLOBAL_ITERATION_COUNTER))
+        except (torch.distributed.DistStoreError, ValueError):
+            # If the key doesn't exist, return 0 as the initial value
+            return 0
+
+    def increment_global_iteration_counter(self, delta: int = 100) -> int:
+        """Increment the global iteration counter by delta and return the new value."""
+        return self.add(self.GLOBAL_ITERATION_COUNTER, delta)
+
+    def initial_barrier_acknowledge(self, rank: int, world_size: int, timeout: datetime.timedelta):
+        """Two-step acknowledge phase for initial barrier completion.
+
+        Step 1: All ranks acknowledge that initial barrier is completed
+        Step 2: Rank 0 waits for all acknowledgments and then clears the keys
+        """
+        log = logging.getLogger(__name__)
+
+        # Step 1: All ranks acknowledge completion
+        ack_key = f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER_ACK}'
+
+        # Add this rank's acknowledgment
+        arrived_count = self.add(ack_key, 1)
+        log.debug(f'{rank=} acknowledged initial barrier completion, count={arrived_count}')
+
+        # Step 2: Rank 0 waits for all acknowledgments and clears keys
+        if rank == 0:
+            # Wait for all ranks to acknowledge
+            start = time.monotonic()
+            while True:
+                try:
+                    current_count = int(self.get(ack_key))
+                    if current_count >= world_size:
+                        log.debug(f'{rank=} all ranks acknowledged, clearing initial barrier keys')
+                        self.clear_initial_barrier_keys()
+                        # Increment global iteration counter by 100
+                        new_iteration = self.increment_global_iteration_counter(100)
+                        break
+                except (torch.distributed.DistStoreError, ValueError) as ex:
+                    if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
+                        log.warning(f'{rank=} timeout waiting for all acknowledgments: {ex}')
+                        break
+                    time.sleep(sys.getswitchinterval())
 
     def get_packed(self, key: str, sep: str):
         return self.get(key).decode().rstrip(sep).split(sep)
@@ -189,6 +264,56 @@ class StoreMixin:
         )
         return terminated_ranks
 
+    def _calculate_intelligent_timeout(
+        self,
+        store_key: str,
+        hot_spare_count: Optional[int],
+        base_timeout: Optional[datetime.timedelta],
+        timeout: datetime.timedelta,
+        last_arrived_count: int,
+        group_name: str,
+    ) -> tuple[datetime.timedelta, int]:
+        """
+        Calculate intelligent timeout based on hot spare configuration and current arrived ranks.
+
+        Args:
+            store_key: Key to check for current arrived count
+            hot_spare_count: Number of hot spare ranks
+            base_timeout: Base timeout for intelligent calculation
+            timeout: Fallback timeout (typically timedelta.max)
+            last_arrived_count: Cached arrived count from last check
+            group_name: Name of the barrier group for logging
+
+        Returns:
+            Tuple of (intelligent_timeout, current_arrived_count)
+        """
+        log = logging.getLogger(__name__)
+
+        if hot_spare_count is not None and base_timeout is not None:
+            try:
+                current_arrived_count = int(self.get(store_key))
+            except (torch.distributed.DistStoreError, ValueError):
+                # Fall back to original timeout if we can't get current count
+                intelligent_timeout = timeout
+                current_arrived_count = last_arrived_count  # Use cached value
+                log.debug(
+                    f'{group_name=} fallback timeout: {intelligent_timeout} (could not get current arrived count)'
+                )
+            else:
+                # Successfully got the count, calculate intelligent timeout
+                intelligent_timeout = (
+                    base_timeout if current_arrived_count > hot_spare_count else timeout
+                )
+                log.debug(
+                    f'{group_name=} intelligent timeout: {intelligent_timeout} (active ranks: {current_arrived_count}, hot spares: {hot_spare_count})'
+                )
+        else:
+            # Fall back to original timeout logic
+            intelligent_timeout = timeout
+            current_arrived_count = last_arrived_count
+
+        return intelligent_timeout, current_arrived_count
+
     def barrier(
         self,
         ranks: Iterable[int],
@@ -196,7 +321,34 @@ class StoreMixin:
         rendezvous_count: int,
         timeout: datetime.timedelta,
         timeout_chunk: Optional[datetime.timedelta] = None,
+        hot_spare_count: Optional[int] = None,
+        base_timeout: Optional[datetime.timedelta] = None,
     ):
+        """
+        Distributed barrier with intelligent timeout based on hot spare configuration.
+
+        When hot_spare_count and base_timeout are provided, the barrier uses intelligent
+        timeout calculation that dynamically adjusts inside the waiting loop:
+        - Checks the current number of arrived ranks on each iteration
+        - If current_arrived_ranks > hot_spare_count: use base_timeout (shorter timeout)
+        - Otherwise: use timeout (typically timedelta.max to wait indefinitely)
+
+        This allows faster recovery when enough active ranks have arrived, while still
+        waiting indefinitely for the remaining active ranks until the maximum timeout.
+        The 60-second chunk timeout naturally limits the frequency of store operations.
+
+        Note: When timeout is timedelta.max and timeout_chunk is not provided, a default
+        chunk timeout of 60 seconds is used to balance responsiveness with store load.
+
+        Args:
+            ranks: Ranks participating in the barrier
+            group_name: Name of the barrier group
+            rendezvous_count: Total number of ranks expected
+            timeout: Maximum timeout for the barrier (typically timedelta.max for initial barrier)
+            timeout_chunk: Chunk timeout for polling (defaults to 60s when timeout is timedelta.max)
+            hot_spare_count: Number of hot spare ranks (optional)
+            base_timeout: Base timeout for intelligent calculation (typically wrapper.barrier_timeout)
+        """
         log = logging.getLogger(__name__)
         cn = inspect.currentframe().f_code.co_name
         log.debug(f'{ranks=} enter {group_name=} {cn} {rendezvous_count=}')
@@ -220,20 +372,40 @@ class StoreMixin:
             self.set(last_worker_arrived_key, '1')
 
         if timeout_chunk is None:
-            timeout_chunk = timeout
+            # Use a reasonable default chunk timeout if the main timeout is very large
+            if timeout == datetime.timedelta.max:
+                # Default to 60 seconds for chunk timeout to align with caching interval
+                timeout_chunk = datetime.timedelta(seconds=60)
+            else:
+                timeout_chunk = timeout
         else:
             timeout_chunk = min(timeout_chunk, timeout)
 
         if timeout and timeout_chunk:
             start = time.monotonic()
+            last_arrived_count = 0  # Cache for optimization
+
             while True:
+                # Calculate intelligent timeout if hot spare information is provided
+                intelligent_timeout, last_arrived_count = self._calculate_intelligent_timeout(
+                    store_key,
+                    hot_spare_count,
+                    base_timeout,
+                    timeout,
+                    last_arrived_count,
+                    group_name,
+                )
+
+                # Use the intelligent timeout for this iteration
+                current_timeout_chunk = min(timeout_chunk, intelligent_timeout)
+
                 try:
-                    self.wait([last_worker_arrived_key], timeout_chunk)
+                    self.wait([last_worker_arrived_key], current_timeout_chunk)
                     break
                 except torch.distributed.DistStoreError as ex:
-                    if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
+                    if datetime.timedelta(seconds=(time.monotonic() - start)) > intelligent_timeout:
                         raise BarrierTimeout(
-                            f'{ranks=} {rendezvous_count=} {group_name=} ' f'{timeout=}'
+                            f'{ranks=} {rendezvous_count=} {group_name=} ' f'{intelligent_timeout=}'
                         ) from ex
                     time.sleep(sys.getswitchinterval())
 
@@ -309,7 +481,38 @@ class StoreMixin:
 
         log.debug(f'{ranks=} exits {group_name=} {cn} {rendezvous_count=}')
 
-    initial_barrier = functools.partialmethod(
+    def initial_barrier(
+        self,
+        ranks: Iterable[int],
+        rendezvous_count: int,
+        timeout: datetime.timedelta,
+        timeout_chunk: Optional[datetime.timedelta] = None,
+        hot_spare_count: Optional[int] = None,
+        base_timeout: Optional[datetime.timedelta] = None,
+    ):
+        """
+        Initial barrier with intelligent timeout based on hot spare count.
+
+        Args:
+            ranks: Ranks participating in the barrier
+            rendezvous_count: Total number of ranks expected
+            timeout: Maximum timeout for the barrier
+            timeout_chunk: Chunk timeout for polling
+            hot_spare_count: Number of hot spare ranks (optional)
+            base_timeout: Base timeout for intelligent calculation (optional)
+        """
+        return self.barrier(
+            ranks=ranks,
+            group_name=self.INITIAL_BARRIER,
+            rendezvous_count=rendezvous_count,
+            timeout=timeout,
+            timeout_chunk=timeout_chunk,
+            hot_spare_count=hot_spare_count,
+            base_timeout=base_timeout,
+        )
+
+    # Keep the original partial method for backward compatibility
+    _initial_barrier = functools.partialmethod(
         barrier,
         group_name=INITIAL_BARRIER,
     )
@@ -339,6 +542,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         wait_for_workers: bool = True,
         multi_tenant: bool = False,
         use_libuv: bool = True,
+        tcp_store_host_rank: Optional[int] = None,
     ):
         log = logging.getLogger(__name__)
 
@@ -351,6 +555,9 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
 
         rank = int(os.environ['RANK'])
 
+        # Save the host rank for later use
+        self.tcp_store_host_rank = tcp_store_host_rank or self.TCP_STORE_HOST_RANK
+
         kwargs = {
             'host_name': host_name,
             'port': port,
@@ -361,7 +568,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
             'use_libuv': use_libuv,
         }
 
-        if rank == self.TCP_STORE_HOST_RANK:
+        if rank == self.tcp_store_host_rank:
             try:
                 super().__init__(is_master=True, **kwargs)
                 log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
@@ -371,9 +578,15 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         else:
             super().__init__(is_master=False, **kwargs)
 
+        # Log successful connection
+        if rank == 0:
+            log.info(f'Rank {rank}: Successfully connected to TCPStore at {host_name}:{port}')
+
     @property
     def critical_ranks(self):
-        return (self.TCP_STORE_HOST_RANK,)
+        if self.tcp_store_host_rank == -1:
+            return ()
+        return (self.tcp_store_host_rank,)
 
 
 class PrefixStore(torch.distributed.PrefixStore, StoreMixin):
