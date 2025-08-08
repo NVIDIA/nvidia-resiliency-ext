@@ -12,13 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import torch
 import pytest
+import torch
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 
 from . import TempNamedDir
 from .test_utilities import Model, Utils
+
 
 @pytest.mark.skip(reason='broken test, needs reviving')
 class TestAsyncSave:
