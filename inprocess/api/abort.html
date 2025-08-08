@@ -139,12 +139,28 @@ communicate with a terminated rank.</p>
 
 <dl class="py class" id="module-nvidia_resiliency_ext.inprocess.abort">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">AbortTorchDistributed</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#AbortTorchDistributed"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">AbortTorchDistributed</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">torch_fr_trace_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#AbortTorchDistributed"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="Link to this definition"></a></dt>
 <dd><p>Aborts PyTorch distributed collectives, and destroys all PyTorch
 distributed process groups.</p>
 <p>This functionality is implemented by invoking
 <code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.destroy_process_group()</span></code> in a separate Python
 thread for each distributed group that has been created.</p>
+<p>This class is used to abort PyTorch distributed collectives, and destroy all PyTorch
+distributed process groups.</p>
+<p>It also collects PyTorch Flight Recorder traces, which can be used to analyze the
+behavior of the distributed collectives.</p>
+<p>PyTorch Flight Recorder traces are collected by setting the
+TORCH_NCCL_TRACE_BUFFER_SIZE environment variable to a non-zero value.
+We disable the collection of stack traces by default, which requires GIL, leading to a deadlock.
+This feature is still experimental and need to be used with care.</p>
+<p>The traces are collected in the directory specified by torch_fr_trace_path.
+If the directory does not exist, it will be created.
+If the directory is not provided, the traces will not be collected.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>torch_fr_trace_path</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – Path to collect PyTorch Flight Recorder traces.</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py class">
