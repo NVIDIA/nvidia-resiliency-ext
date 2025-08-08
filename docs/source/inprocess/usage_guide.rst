@@ -80,6 +80,36 @@ Requirements for the execution environment
   early or if the main process is terminated; instead, it should wait until all
   user-launched processes have fully exited before ending the distributed job.
 
+- When using SLURM, the job must be launched using the `wait_daemon.py` utility to
+  ensure proper cleanup of monitoring daemon processes. The :ref:`Monitor Process
+  <monitor_process>` operates as a separate daemon process that participates in
+  the distributed store and hosts the TCPStore for communication between ranks.
+  SLURM by default terminates all user processes when the main job process
+  finishes, which would immediately terminate the Monitor Process and prevent it
+  from properly finalizing the distributed job by waiting on the termination
+  barrier. The `wait_daemon.py` utility ensures that the Monitor Process is the
+  last process to exit, allowing it to complete its cleanup responsibilities.
+  Use the following command format:
+
+  .. code-block:: bash
+
+    srun <srun_options> bash -c "
+    python -u ${run_cmd}
+    ret=\$?
+    python -m nvidia_resiliency_ext.shared_utils.wait_daemon /tmp/inprocess_monitor\${SLURM_PROCID}.pid
+    exit \$ret"
+
+  When creating the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`, the training program must specify the
+  ``monitor_process_pidfile`` parameter to match the path used in the wait_daemon
+  command:
+
+  .. code-block:: python
+
+    train = inprocess.Wrapper(
+        monitor_process_pidfile="/tmp/inprocess_monitor_{rank}.pid",
+        # ... other parameters ...
+    )(train)
+
 Restrictions
 ------------
 - node failure on rank 0 causes termination of the entire job; by default, rank
