@@ -25,7 +25,7 @@ import random
 import socket
 import sys
 
-sys.path.append(os.getcwd() + "/src/nvidia_resiliency_ext/shared_utils")
+sys.path.append(os.getcwd() + "/src/")
 
 from datetime import datetime
 from src.nvidia_resiliency_ext.shared_utils.log_distributed import LogMessage

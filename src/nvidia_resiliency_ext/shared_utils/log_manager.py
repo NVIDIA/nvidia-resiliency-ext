@@ -115,7 +115,7 @@ import sys
 import threading
 import time
 import queue
-from log_distributed import (
+from nvidia_resiliency_ext.shared_utils.log_distributed import (
     DistributedLogHandler,
     DynamicLogFormatter,
     LogMessage,

@@ -113,7 +113,6 @@ def parse_args():
         default=logging.INFO,
         help='logging level',
     )
-    parser.add_argument("--log-dir", default="/log", help="Directory for log files")
     parser.add_argument(
         "--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)"
     )
@@ -251,15 +250,9 @@ if __name__ == '__main__':
     # be initialized and configured before the Wrapper is launched.
     args = parse_args()
 
-    job_id = os.environ.get('SLURM_JOB_ID')
-    args.log_dir = os.path.join(args.log_dir, job_id)
-
     # Set environment variables for the service
-    os.environ["NVRX_LOG_DIR"] = args.log_dir
     os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
-    os.environ["NVRX_LOG_AGGREGATOR"] = "1"
     if args.log_level == logging.DEBUG:
         os.environ["NVRX_LOG_DEBUG"] = "1"
-    os.environ["NVRX_LOG_EN_CHRONO_ORDER"] = "0"
 
     main()
