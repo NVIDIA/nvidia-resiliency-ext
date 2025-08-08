@@ -16,9 +16,7 @@ import filecmp
 import pickle
 from copy import deepcopy
 from dataclasses import fields
-
-import os
-from typing import Any, IO
+from typing import IO, Any
 
 import pytest
 import torch
@@ -42,16 +40,16 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 from nvidia_resiliency_ext.checkpointing.utils import diff
 from tests.checkpointing.unit import TempNamedDir
 from tests.checkpointing.unit.test_utilities import Model, Utils
-from logging import getLogger
-import logging
+
 
 def mock_open(
-        self,
-        path: str,
-        mode: str = "rb",
-    ) -> IO[Any]:
+    self,
+    path: str,
+    mode: str = "rb",
+) -> IO[Any]:
     """Function matching the system open() signature that always raises an error."""
     raise OSError('worker critical failure during open()')
+
 
 class TestAsyncSave:
     def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
@@ -68,10 +66,19 @@ class TestAsyncSave:
         return AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
 
     def async_save_checkpoint(
-        self, checkpoint_dir, state_dict, planner, async_queue: AsyncCallsQueue, thread_count=1, caching=False, open_file=open
+        self,
+        checkpoint_dir,
+        state_dict,
+        planner,
+        async_queue: AsyncCallsQueue,
+        thread_count=1,
+        caching=False,
+        open_file=open,
     ):
         """Performs an asynchronous model checkpoint save."""
-        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count, open_file=open_file)
+        writer = FileSystemWriterAsync(
+            checkpoint_dir, thread_count=thread_count, open_file=open_file
+        )
         coordinator_rank = 0
 
         save_state_dict_ret = save_state_dict_async_plan(
@@ -154,7 +161,9 @@ class TestAsyncSave:
             open_file = open
 
         with TempNamedDir(tmp_path_dist_ckpt / 'test_errors_are_reported', sync=True) as ckpt_dir:
-            self.async_save_checkpoint(ckpt_dir, state_dict, planner, async_queue, open_file=open_file)
+            self.async_save_checkpoint(
+                ckpt_dir, state_dict, planner, async_queue, open_file=open_file
+            )
             if Utils.rank == 0:
                 with pytest.raises(CheckpointException) as exc_info:
                     async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)

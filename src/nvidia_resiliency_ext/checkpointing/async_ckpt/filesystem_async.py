@@ -209,6 +209,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             return None, None, []
         if self.use_msc:
             import multistorageclient as msc
+
             open_file = msc.open
         else:
             open_file = self.open_file
@@ -295,7 +296,9 @@ class FileSystemWriterAsync(FileSystemWriter):
 
                 p_list.append(
                     ctx.Process(
-                        target=partial(FileSystemWriterAsync.write_preloaded_data, transform_list, open_file),
+                        target=partial(
+                            FileSystemWriterAsync.write_preloaded_data, transform_list, open_file
+                        ),
                         kwargs=kwargs,
                     )
                 )
@@ -445,15 +448,19 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         if isinstance(write_results_or_exc, Exception):
             try:
-                raise RuntimeError(f'Worker failure: {write_results_or_exc}') from write_results_or_exc
+                raise RuntimeError(
+                    f'Worker failure: {write_results_or_exc}'
+                ) from write_results_or_exc
             except Exception as e:
                 return _wrap_exception(e)
         write_results: dict = write_results_or_exc
         if len(write_results) != len(self.write_buckets):
-            return _wrap_exception(RuntimeError(
-                f'Incomplete worker results (expected {len(self.write_buckets)},'
-                f' got {len(write_results)}. This probably indicates a worker failure.'
-            ))
+            return _wrap_exception(
+                RuntimeError(
+                    f'Incomplete worker results (expected {len(self.write_buckets)},'
+                    f' got {len(write_results)}. This probably indicates a worker failure.'
+                )
+            )
         return list(chain.from_iterable(write_results.values()))
 
     def prepare_decentralized_global_plan(self, local_plan: SavePlan) -> SavePlan:
