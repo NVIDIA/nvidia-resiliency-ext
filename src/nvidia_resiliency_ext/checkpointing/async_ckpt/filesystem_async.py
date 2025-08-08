@@ -207,7 +207,6 @@ class FileSystemWriterAsync(FileSystemWriter):
         """
         if not self.write_buckets:
             return None, None, []
-        # TODO: refactor this for true storage fungibility.
         if self.use_msc:
             import multistorageclient as msc
             open_file = msc.open
@@ -430,9 +429,9 @@ class FileSystemWriterAsync(FileSystemWriter):
         Turn the latest dict including write results from `self.results_queue`
             into a single results lists. Includes error check.
 
-        Returns (List[WriteResult]): the list of write results
-            from all local processes performing the save.
-
+        Returns (Union(List[WriteResult], WRAPPED_EXCEPTION): the list of write results
+            from all local processes performing the save, or a WRAPPED_EXCEPTION if
+            an exception was raised during the writing process.
         """
         assert self.write_buckets is not None
 
