@@ -543,7 +543,7 @@ class RankMonitorServer:
 
         # Set up the nvrx logger for subprocess
         # Use force_reset=True to ensure fresh logger setup with correct rank info
-        from nvidia_resiliency_ext.shared_utils.logger import setup_logger
+        from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
         logger = setup_logger(force_reset=True)
 

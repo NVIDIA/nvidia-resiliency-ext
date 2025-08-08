@@ -56,7 +56,7 @@ the aggregator will automatically read from both current and backup files to ens
 
 Usage:
     # In main script (launcher.py)
-    from nvidia_resiliency_ext.shared_utils.log import setup_logger
+    from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
     logger = setup_logger()  # Call once at startup
     
     # In other modules
@@ -72,7 +72,7 @@ Forking Support:
     The logger is designed to work safely with process forking. When using fork():
     
     # In parent process
-    from nvidia_resiliency_ext.shared_utils.log import setup_logger
+    from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
     logger = setup_logger()  # Setup before forking
     logger.info("Parent process logging")
     
@@ -352,7 +352,7 @@ def setup_logger(log_dir=None, temp_dir=None, force_reset=False) -> logging.Logg
 
     Example:
         # In main script (launcher.py) or training subprocess
-        from nvidia_resiliency_ext.shared_utils.logger import setup_logger
+        from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
         logger = setup_logger()
 
         # In subprocesses that need fresh logger setup

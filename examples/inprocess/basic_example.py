@@ -43,6 +43,7 @@ os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
+from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
 raise_timestamp = None
 
@@ -112,6 +113,10 @@ def parse_args():
         type=lambda s: logging._nameToLevel[s.upper()],
         default=logging.INFO,
         help='logging level',
+    )
+    parser.add_argument("--log-dir", required=True, help="Directory for log files")
+    parser.add_argument(
+        "--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)"
     )
 
     return parser.parse_args()
@@ -246,8 +251,16 @@ if __name__ == '__main__':
     # example the Wrapper is applied to ``main()``, therefore logging needs to
     # be initialized and configured before the Wrapper is launched.
     args = parse_args()
-    logging.basicConfig(
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        level=args.log_level,
-    )
+
+    job_id = os.environ.get('SLURM_JOB_ID')
+    args.log_dir = os.path.join(args.log_dir, job_id)
+
+    # Set environment variables for the service
+    os.environ["NVRX_LOG_DIR"] = args.log_dir
+    os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
+    os.environ["NVRX_LOG_AGGREGATOR"] = "1"
+    if args.log_level == logging.DEBUG:
+        os.environ["NVRX_LOG_DEBUG"] = "1"
+    os.environ["NVRX_LOG_EN_CHRONO_ORDER"] = "0"
+
     main()

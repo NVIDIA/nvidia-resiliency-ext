@@ -86,7 +86,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
-from nvidia_resiliency_ext.shared_utils.logger import setup_logger
+from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -186,7 +186,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         def trainer(args) -> str:
             # Ensure nvrx logger is set up in this subprocess
-            from nvidia_resiliency_ext.shared_utils.logger import setup_logger
+            from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
             setup_logger()
             
             # Use the nvrx logger

@@ -70,6 +70,9 @@ def main():
 
     args = parser.parse_args()
 
+    job_id = os.environ.get('SLURM_JOB_ID')
+    args.log_dir = os.path.join(args.log_dir, job_id)
+
     # Set environment variables for the service
     os.environ["NVRX_LOG_DIR"] = args.log_dir
     os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
