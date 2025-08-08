@@ -100,6 +100,7 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">enum</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">heapq</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">itertools</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Union</span>
 
@@ -275,6 +276,12 @@
         <span class="k">else</span><span class="p">:</span>
             <span class="n">mode</span> <span class="o">=</span> <span class="n">Mode</span><span class="o">.</span><span class="n">INACTIVE</span>
             <span class="n">active_rank</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="c1"># Log deactivation if transitioning from ACTIVE to INACTIVE</span>
+            <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="n">Mode</span><span class="o">.</span><span class="n">ACTIVE</span><span class="p">:</span>
+                <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+                <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;[In-process] Rank deactivated (rank=</span><span class="si">{</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">) due to max active world size limit (</span><span class="si">{</span><span class="n">active_world_size</span><span class="si">}</span><span class="s2">)&quot;</span>
+                <span class="p">)</span>
 
         <span class="n">state</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span>
             <span class="n">state</span><span class="p">,</span>
@@ -319,6 +326,12 @@
         <span class="k">else</span><span class="p">:</span>
             <span class="n">mode</span> <span class="o">=</span> <span class="n">Mode</span><span class="o">.</span><span class="n">INACTIVE</span>
             <span class="n">active_rank</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="c1"># Log deactivation if transitioning from ACTIVE to INACTIVE</span>
+            <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="n">Mode</span><span class="o">.</span><span class="n">ACTIVE</span><span class="p">:</span>
+                <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+                <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;[In-process] Rank deactivated (rank=</span><span class="si">{</span><span class="n">state</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">) due to divisibility requirement (active_world_size=</span><span class="si">{</span><span class="n">active_world_size</span><span class="si">}</span><span class="s2">, divisor=</span><span class="si">{</span><span class="n">divisor</span><span class="si">}</span><span class="s2">)&quot;</span>
+                <span class="p">)</span>
 
         <span class="n">state</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span>
             <span class="n">state</span><span class="p">,</span>
@@ -624,6 +637,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">tree</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_map</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">init_rank_map</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">current_state</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">build_tree</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">):</span>
         <span class="n">key</span> <span class="o">=</span> <span class="p">[</span>
@@ -673,6 +687,8 @@
     <span class="k">def</span><span class="w"> </span><span class="nf">replace_with_inactive</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">terminated_active_ranks</span><span class="p">):</span>
         <span class="n">replaced_terminate_active_ranks</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
 
+        <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
         <span class="k">for</span> <span class="n">terminated_active_rank</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">terminated_active_ranks</span><span class="p">):</span>
             <span class="n">terminated_active_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_map</span><span class="p">[</span><span class="n">terminated_active_rank</span><span class="p">]</span>
 
@@ -684,6 +700,14 @@
             <span class="p">):</span>
                 <span class="k">if</span> <span class="n">parent</span><span class="o">.</span><span class="n">inactive_nodes</span><span class="p">:</span>
                     <span class="n">_</span><span class="p">,</span> <span class="n">inactive</span> <span class="o">=</span> <span class="n">parent</span><span class="o">.</span><span class="n">inactive_nodes</span><span class="o">.</span><span class="n">popitem</span><span class="p">()</span>
+
+                    <span class="c1"># If this rank is an inactive rank becoming active, log the transition</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_state</span><span class="o">.</span><span class="n">initial_rank</span> <span class="o">==</span> <span class="n">inactive</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">:</span>
+                        <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                            <span class="sa">f</span><span class="s2">&quot;[In-process] Hot spare activated: terminated rank (initial_rank=</span><span class="si">{</span><span class="n">terminated_active_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="si">}</span><span class="s2">, active_rank=</span><span class="si">{</span><span class="n">terminated_active_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="si">}</span><span class="s2">) &quot;</span>
+                            <span class="sa">f</span><span class="s2">&quot;replaced by spare rank (initial_rank=</span><span class="si">{</span><span class="n">inactive</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="si">}</span><span class="s2">, new_active_rank=</span><span class="si">{</span><span class="n">terminated_active_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="si">}</span><span class="s2">)&quot;</span>
+                        <span class="p">)</span>
+
                     <span class="n">inactive</span><span class="o">.</span><span class="n">activate</span><span class="p">(</span><span class="n">terminated_active_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="p">)</span>
                     <span class="n">replaced_terminate_active_ranks</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">terminated_active_rank</span><span class="p">)</span>
                     <span class="k">break</span>
@@ -714,12 +738,19 @@
                 <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">node</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="p">,</span>
             <span class="p">)</span>
 
+            <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
             <span class="k">for</span> <span class="n">backfill_node</span><span class="p">,</span> <span class="n">terminated_node</span> <span class="ow">in</span> <span class="n">itertools</span><span class="o">.</span><span class="n">zip_longest</span><span class="p">(</span>
                 <span class="nb">reversed</span><span class="p">(</span><span class="n">largest_active_nodes</span><span class="p">),</span>
                 <span class="n">terminated_nodes</span><span class="p">,</span>
                 <span class="n">fillvalue</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
             <span class="p">):</span>
                 <span class="k">if</span> <span class="n">backfill_node</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="c1"># If this rank is being backfilled, log it</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_state</span><span class="o">.</span><span class="n">initial_rank</span> <span class="o">==</span> <span class="n">backfill_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">:</span>
+                        <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                            <span class="sa">f</span><span class="s2">&quot;[In-process] Rank backfilled (initial_rank=</span><span class="si">{</span><span class="n">backfill_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="si">}</span><span class="s2">) &quot;</span>
+                            <span class="sa">f</span><span class="s2">&quot;active_rank changed from </span><span class="si">{</span><span class="n">backfill_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">terminated_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="si">}</span><span class="s2">)&quot;</span>
+                        <span class="p">)</span>
                     <span class="n">replaced_active</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">backfill_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="p">)</span>
                     <span class="n">backfill_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span> <span class="o">=</span> <span class="n">terminated_node</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span>
                 <span class="k">else</span><span class="p">:</span>
@@ -729,13 +760,24 @@
 
     <span class="k">def</span><span class="w"> </span><span class="nf">shift_ranks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">replaced_active</span><span class="p">,</span> <span class="n">unhandled_terminations</span><span class="p">):</span>
         <span class="n">sorted_replaced_active</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">replaced_active</span><span class="p">)</span>
+        <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
 
         <span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_map</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
             <span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_world_size</span> <span class="o">-=</span> <span class="nb">len</span><span class="p">(</span><span class="n">unhandled_terminations</span><span class="p">)</span>
 
             <span class="k">if</span> <span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">old_active_rank</span> <span class="o">=</span> <span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span>
                 <span class="n">count_less</span> <span class="o">=</span> <span class="n">bisect</span><span class="o">.</span><span class="n">bisect_left</span><span class="p">(</span><span class="n">sorted_replaced_active</span><span class="p">,</span> <span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="p">)</span>
                 <span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span> <span class="o">-=</span> <span class="n">count_less</span>
+
+                <span class="c1"># If this rank&#39;s active_rank shifted, log it</span>
+                <span class="k">if</span> <span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">current_state</span><span class="o">.</span><span class="n">initial_rank</span> <span class="o">==</span> <span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span>
+                    <span class="ow">and</span> <span class="n">old_active_rank</span> <span class="o">!=</span> <span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span>
+                <span class="p">):</span>
+                    <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;[In-process] Rank shifted (initial_rank=</span><span class="si">{</span><span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="si">}</span><span class="s2">, active_rank changed from </span><span class="si">{</span><span class="n">old_active_rank</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">n</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="si">}</span><span class="s2">)&quot;</span>
+                    <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">filter_active_world_size</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="n">active_world_size</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_map</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_world_size</span>
@@ -743,9 +785,16 @@
         <span class="n">new_active_world_size</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">world_size_filter</span><span class="p">(</span><span class="n">active_world_size</span><span class="p">)</span>
         <span class="k">assert</span> <span class="n">new_active_world_size</span> <span class="o">&lt;=</span> <span class="n">active_world_size</span>
 
+        <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
         <span class="k">for</span> <span class="n">leaf</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">tree</span><span class="o">.</span><span class="n">iter_leaves</span><span class="p">():</span>
             <span class="n">leaf</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_world_size</span> <span class="o">=</span> <span class="n">new_active_world_size</span>
             <span class="k">if</span> <span class="n">leaf</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="n">Mode</span><span class="o">.</span><span class="n">ACTIVE</span> <span class="ow">and</span> <span class="n">leaf</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span> <span class="o">&gt;=</span> <span class="n">new_active_world_size</span><span class="p">:</span>
+                <span class="c1"># If this rank is being deactivated due to world size filter, log it</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_state</span><span class="o">.</span><span class="n">initial_rank</span> <span class="o">==</span> <span class="n">leaf</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">:</span>
+                    <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;[In-process] Rank deactivated (initial_rank=</span><span class="si">{</span><span class="n">leaf</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="si">}</span><span class="s2">, &quot;</span>
+                        <span class="sa">f</span><span class="s2">&quot;active_rank=</span><span class="si">{</span><span class="n">leaf</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">active_rank</span><span class="si">}</span><span class="s2">) due to world size filter (&gt;= </span><span class="si">{</span><span class="n">new_active_world_size</span><span class="si">}</span><span class="s2">)&quot;</span>
+                    <span class="p">)</span>
                 <span class="n">leaf</span><span class="o">.</span><span class="n">deactivate</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">recompute_rank</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -780,6 +829,9 @@
         <span class="n">store</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">store</span>
         <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">terminated_ranks</span>
 
+        <span class="c1"># Store the current rank&#39;s initial_rank for logging purposes</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">current_state</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
+
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">tree</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">build_tree</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">)</span>
 
@@ -798,7 +850,14 @@
         <span class="n">terminated_active_ranks</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span>
             <span class="n">rank</span> <span class="k">for</span> <span class="n">rank</span> <span class="ow">in</span> <span class="n">terminated_ranks</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_map</span><span class="p">[</span><span class="n">rank</span><span class="p">]</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="n">Mode</span><span class="o">.</span><span class="n">ACTIVE</span>
         <span class="p">)</span>
+
+        <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
         <span class="k">for</span> <span class="n">terminated_rank</span> <span class="ow">in</span> <span class="n">terminated_ranks</span><span class="p">:</span>
+            <span class="c1"># If this rank is being terminated, log it</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_state</span><span class="o">.</span><span class="n">initial_rank</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_map</span><span class="p">[</span><span class="n">terminated_rank</span><span class="p">]</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">initial_rank</span><span class="p">:</span>
+                <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;[In-process] Rank terminated (initial_rank=</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">current_state</span><span class="o">.</span><span class="n">initial_rank</span><span class="si">}</span><span class="s2">)&quot;</span>
+                <span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">rank_map</span><span class="p">[</span><span class="n">terminated_rank</span><span class="p">]</span><span class="o">.</span><span class="n">terminate</span><span class="p">()</span>
 
         <span class="n">replaced_terminate_active_ranks</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">replace_with_inactive</span><span class="p">(</span><span class="n">terminated_active_ranks</span><span class="p">)</span>
@@ -865,7 +924,12 @@
             <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">format_rank_set</span><span class="p">(</span><span class="n">terminated_ranks</span><span class="p">)</span>
             <span class="k">raise</span> <span class="n">RankDiscarded</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">terminated_ranks</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
         <span class="k">elif</span> <span class="n">rank</span> <span class="o">&gt;=</span> <span class="n">world_size</span><span class="p">:</span>
+            <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+            <span class="n">old_rank</span> <span class="o">=</span> <span class="n">rank</span>
             <span class="n">rank</span> <span class="o">=</span> <span class="n">ordered_terminated_ranks</span><span class="p">[</span><span class="n">rank</span> <span class="o">-</span> <span class="n">world_size</span><span class="p">]</span>
+            <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;[In-process] Rank reassigned (rank changed from </span><span class="si">{</span><span class="n">old_rank</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">) to fill gap&quot;</span>
+            <span class="p">)</span>
 
         <span class="n">state</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span>
             <span class="n">state</span><span class="p">,</span>
@@ -921,7 +985,11 @@
             <span class="n">terminated_ranks</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">format_rank_set</span><span class="p">(</span><span class="n">terminated_ranks</span><span class="p">)</span>
             <span class="k">raise</span> <span class="n">RankDiscarded</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> </span><span class="si">{</span><span class="n">terminated_ranks</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
+            <span class="n">old_rank</span> <span class="o">=</span> <span class="n">rank</span>
             <span class="n">rank</span> <span class="o">=</span> <span class="n">rank</span> <span class="o">-</span> <span class="nb">sum</span><span class="p">(</span><span class="n">rank</span> <span class="o">&gt;</span> <span class="n">terminated_rank</span> <span class="k">for</span> <span class="n">terminated_rank</span> <span class="ow">in</span> <span class="n">terminated_ranks</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">old_rank</span> <span class="o">!=</span> <span class="n">rank</span><span class="p">:</span>
+                <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+                <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[In-process] Rank shifted (rank changed from </span><span class="si">{</span><span class="n">old_rank</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
 
         <span class="n">state</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span>
             <span class="n">state</span><span class="p">,</span>
@@ -1034,7 +1102,12 @@
                 <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">timeout</span><span class="p">,</span>
             <span class="p">)</span>
 
-            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">condition</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">store</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">prefixed_key</span><span class="p">))):</span>
+            <span class="n">group_count</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">store</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">prefixed_key</span><span class="p">))</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">condition</span><span class="p">(</span><span class="n">group_count</span><span class="p">):</span>
+                <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+                <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;[In-process] Rank marked for termination (rank=</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, group_key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">, group_count=</span><span class="si">{</span><span class="n">group_count</span><span class="si">}</span><span class="s2">) due to failed group condition&quot;</span>
+                <span class="p">)</span>
                 <span class="n">store</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">RANKS_TO_TERMINATE</span><span class="p">,</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s1">,&#39;</span><span class="p">)</span>
 
             <span class="n">store</span><span class="o">.</span><span class="n">barrier</span><span class="p">(</span>
