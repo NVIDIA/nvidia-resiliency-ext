@@ -43,7 +43,6 @@ os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
-from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
 raise_timestamp = None
 
@@ -114,7 +113,7 @@ def parse_args():
         default=logging.INFO,
         help='logging level',
     )
-    parser.add_argument("--log-dir", required=True, help="Directory for log files")
+    parser.add_argument("--log-dir", default="/log", help="Directory for log files")
     parser.add_argument(
         "--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)"
     )

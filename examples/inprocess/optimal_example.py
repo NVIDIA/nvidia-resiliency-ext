@@ -121,7 +121,7 @@ def parse_args():
         action='store_true',
         help='extra logging for the nested restarter',
     )
-    parser.add_argument("--log-dir", required=True, help="Directory for log files")
+    parser.add_argument("--log-dir", default="/log", help="Directory for log files")
     parser.add_argument(
         "--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)"
     )
