@@ -50,8 +50,8 @@ def mock_open(
         path: str,
         mode: str = "rb",
     ) -> IO[Any]:
-    """Raises an error on worker #2 during storage save"""
-    raise OSError('worker #2 critical failure')
+    """Function matching the system open() signature that always raises an error."""
+    raise OSError('worker critical failure during open()')
 
 class TestAsyncSave:
     def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
