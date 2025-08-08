@@ -27,11 +27,11 @@ from typing import Any, Optional
 
 import psutil
 
+from . import utils
 from .attribution import Interruption, InterruptionRecord
 from .progress_watchdog import Timestamp
 from .sibling_monitor import SiblingMonitor
 from .store import PrefixStore, StoreMixin
-from .utils import find_nearest_handler
 
 
 class Message(enum.Enum):
@@ -151,7 +151,7 @@ class MonitorProcess:
         parent_logger.propagate = True
 
         try:
-            nearest_file_handler = find_nearest_handler(
+            nearest_file_handler = utils.find_nearest_handler(
                 logging.getLogger(__name__),
                 logging.FileHandler,
             )

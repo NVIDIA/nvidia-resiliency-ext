@@ -585,7 +585,8 @@ class CallWrapper:
                 log.error(log_exc(state, terminate_ex, 'terminate_ex'))
                 raise terminate_ex from exit_ex
 
-            raise exit_ex
+            # Re-raise the final exception without preserving the chain
+            raise exit_ex from None
 
         try:
             if wrapper.completion is not None:
