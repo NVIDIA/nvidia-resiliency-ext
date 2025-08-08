@@ -46,10 +46,8 @@ Environment Variables:
     NVRX_LOG_DEBUG: Set to "1", "true", "yes", or "on" to enable DEBUG level logging (default: INFO)
     NVRX_LOG_TO_STDOUT: Set to "1" to log to stdout instead of stderr
     NVRX_LOG_TEMP_DIR: Directory for temporary log files (default: /tmp)
-    NVRX_LOG_AGGREGATOR: Set to "1" to run aggregator as a separate service
     NVRX_LOG_MAX_FILE_SIZE_KB: Maximum size of temporary message files in KB before rotation (default: 10)
     NVRX_LOG_MAX_BACKUP_FILES: Maximum number of backup files to keep per rank (default: 3)
-    NVRX_LOG_EN_CHRONO_ORDER: Enable Chronological Ordering (default: off)
     
 Note: File rotation is designed to be safe for the aggregator service. When files are rotated,
 the aggregator will automatically read from both current and backup files to ensure no messages are lost.
@@ -140,7 +138,13 @@ class LogManager:
 
     file_prefix = "nvrx_log_"
 
-    def __init__(self, log_dir: Optional[str] = None, temp_dir: Optional[str] = None):
+    def __init__(
+        self,
+        log_dir: Optional[str] = None,
+        temp_dir: Optional[str] = None,
+        is_aggregator_service: bool = False,
+        en_chrono_ord: bool = False,
+    ):
         """
         Initialize the distributed log manager.
 
@@ -165,12 +169,7 @@ class LogManager:
         )
 
         # Enable Chronological Ordering
-        self.en_chrono_ord = os.environ.get("NVRX_LOG_EN_CHRONO_ORDER", "").lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+        self.en_chrono_ord = en_chrono_ord
 
         # Use NVRX_LOG_DEBUG environment variable to determine log level
         debug_enabled = os.environ.get("NVRX_LOG_DEBUG", "").lower() in ("1", "true", "yes", "on")
@@ -181,12 +180,8 @@ class LogManager:
         self._log_file = f"{LogManager.file_prefix}{self.node_id}.log"
 
         # Check if running as aggregator service
-        self._is_aggregator_service = os.environ.get("NVRX_LOG_AGGREGATOR", "").lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
+        self._is_aggregator_service = is_aggregator_service
+
         # Validate configuration for log aggregator service
         if self._is_aggregator_service:
             if self._log_dir is None:
@@ -326,7 +321,9 @@ class LogManager:
         self.shutdown()
 
 
-def setup_logger(log_dir=None, temp_dir=None, force_reset=False) -> logging.Logger:
+def setup_logger(
+    log_dir=None, temp_dir=None, force_reset=False, is_aggregator_service=False, en_chrono_ord=False
+) -> logging.Logger:
     """
     Setup the distributed logger.
 
@@ -377,7 +374,12 @@ def setup_logger(log_dir=None, temp_dir=None, force_reset=False) -> logging.Logg
                 delattr(setup_logger, '_log_manager')
 
         # Create a LogManager instance to handle the configuration
-        log_manager = LogManager(log_dir=log_dir, temp_dir=temp_dir)
+        log_manager = LogManager(
+            log_dir=log_dir,
+            temp_dir=temp_dir,
+            is_aggregator_service=is_aggregator_service,
+            en_chrono_ord=en_chrono_ord,
+        )
 
         # Get the configured logger from the log manager
         logger = log_manager.logger

@@ -32,15 +32,13 @@ from src.nvidia_resiliency_ext.shared_utils.log_distributed import LogMessage
 from src.nvidia_resiliency_ext.shared_utils.log_manager import setup_logger, LogManager
 
 
-def setup_vars(global_id, local_id, is_agg, file_size, dbg_on="0", chrono_on="1"):
-    os.environ["NVRX_LOG_AGGREGATOR"] = is_agg
+def setup_vars(global_id, local_id, file_size, dbg_on="0"):
     os.environ["SLURM_PROCID"] = str(global_id)
     os.environ["SLURM_LOCALID"] = str(local_id)
     os.environ["RANK"] = str(global_id)
     os.environ["LOCAL_RANK"] = str(local_id)
     os.environ["NVRX_LOG_MAX_FILE_SIZE_KB"] = str(file_size)
     os.environ["NVRX_LOG_DEBUG"] = dbg_on
-    os.environ["NVRX_LOG_EN_CHRONO_ORDER"] = chrono_on
 
 
 def gen_log_msg(logger, num_msg, log_type="info"):
@@ -57,10 +55,10 @@ def gen_log_msg(logger, num_msg, log_type="info"):
 
 def worker_process(id, num_msg, file_size):
     """Function that each process will execute."""
-    setup_vars(id, id, "0", file_size)
+    setup_vars(id, id, file_size)
     log_dir = os.getcwd() + "/tests/shared_utils/logs/"
     temp_dir = os.getcwd() + "/tests/shared_utils/tmp/"
-    logger = setup_logger(log_dir, temp_dir, False)
+    logger = setup_logger(log_dir, temp_dir, True, False)
     gen_log_msg(logger, num_msg)
 
 
@@ -92,7 +90,7 @@ class TestLogger(unittest.TestCase):
                             # Convert asctime to a datetime object, then to a Unix timestamp
                             dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S,%f')
                             line_ts = dt.timestamp()
-                            if chrono_on == "1":
+                            if chrono_on:
                                 self.assertLessEqual(
                                     curr_ts,
                                     line_ts,
@@ -133,15 +131,15 @@ class TestLogger(unittest.TestCase):
                 os.path.join(log_dir, fname), num_lines, global_id, local_id, chrono_on
             )
 
-    def check_msg(self, num_msg, file_size_kb, pm_files, is_agg, log_type="info", dbg_on="0"):
+    def check_msg(self, num_msg, file_size_kb, pm_files, is_agg: bool, log_type="info", dbg_on="0"):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
         temp_dir = os.getcwd() + "/tests/shared_utils/tmp/"
-        setup_vars(0, 0, is_agg, file_size_kb, dbg_on)
+        setup_vars(0, 0, file_size_kb, dbg_on)
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-        logger = setup_logger(log_dir, temp_dir, True)
+        logger = setup_logger(log_dir, temp_dir, True, is_agg)
         gen_log_msg(logger, num_msg, log_type)
 
         time.sleep(1)
@@ -161,37 +159,35 @@ class TestLogger(unittest.TestCase):
             self.check_files(log_dir, file_names, num_msg, 0, 0, "1")
 
     def test_single_msg(self):
-        self.check_msg(1, 1024, 1, "1", "info", "0")
+        self.check_msg(1, 1024, 1, True, "info", "0")
 
     def test_single_dbg_msg(self):
-        self.check_msg(1, 1024, 1, "1", "debug", "1")
+        self.check_msg(1, 1024, 1, True, "debug", "1")
 
     def test_many_msg(self):
-        self.check_msg(2000, 1024, 1, "1")
+        self.check_msg(2000, 1024, 1, True)
 
     def test_rotation(self):
-        self.check_msg(300, 10, 4, "0")
+        self.check_msg(300, 10, 4, False)
 
     def test_rotation_cleanup(self):
-        self.check_msg(2000, 10, 1, "1")
+        self.check_msg(2000, 10, 1, True)
 
-    def multiple_processes(self, num_procs, num_msg, file_size, chrono_on="1"):
+    def multiple_processes(self, num_procs, num_msg, file_size, chrono_on=True):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
         temp_dir = os.getcwd() + "/tests/shared_utils/tmp/"
         setup_vars(
             global_id=0,
             local_id=0,
-            is_agg="1",
             file_size=file_size,
             dbg_on="0",
-            chrono_on=chrono_on,
         )
         if os.path.exists(log_dir):
             shutil.rmtree(log_dir)
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
 
-        logger = setup_logger(log_dir, temp_dir, True)
+        logger = setup_logger(log_dir, temp_dir, True, True, chrono_on)
 
         processes = []
         for i in range(num_procs):
@@ -236,8 +232,8 @@ class TestLogger(unittest.TestCase):
         self.multiple_processes(7, 2000, 10)
 
     def test_four_proc_w_rotate_nochrono(self):
-        self.multiple_processes(1, 2000, 10, "0")
+        self.multiple_processes(1, 2000, 10, False)
 
     def test_eight_proc_w_rotate_nochrono(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(7, 2000, 10, "0")
+        self.multiple_processes(7, 2000, 1000, False)

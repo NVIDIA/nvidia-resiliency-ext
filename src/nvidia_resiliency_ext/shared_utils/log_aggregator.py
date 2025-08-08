@@ -55,7 +55,9 @@ def main():
     parser.add_argument(
         "--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)"
     )
-
+    parser.add_argument(
+        "--en_chrono_ord", action='store_true', help="en_chrono_ord (default: False)"
+    )
     parser.add_argument(
         "--wait-file",
         required=True,
@@ -73,18 +75,19 @@ def main():
     job_id = os.environ.get('SLURM_JOB_ID')
     args.log_dir = os.path.join(args.log_dir, job_id)
 
-    # Set environment variables for the service
-    os.environ["NVRX_LOG_DIR"] = args.log_dir
-    os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
-    os.environ["NVRX_LOG_AGGREGATOR"] = "1"
-
     print(f"Starting NVRx Log Aggregator Service")
     print(f"  Log directory: {args.log_dir}")
     print(f"  Temp directory: {args.temp_dir}")
     print(f"  Node ID: {socket.gethostname()}")
+    print(f"  en_chrono_ord: {args.en_chrono_ord}")
 
     # Create log manager
-    log_manager = LogManager(log_dir=args.log_dir, temp_dir=args.temp_dir)
+    log_manager = LogManager(
+        log_dir=args.log_dir,
+        temp_dir=args.temp_dir,
+        is_aggregator_service=True,
+        en_chrono_ord=args.en_chrono_ord,
+    )
 
     print("Log aggregator service is running...")
 
