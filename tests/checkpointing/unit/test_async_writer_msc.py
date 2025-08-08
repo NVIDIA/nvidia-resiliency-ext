@@ -24,7 +24,7 @@ from torch.distributed.checkpoint import (
     state_dict_saver,
 )
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue, AsyncRequest
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncRequest
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     save_state_dict_async_finalize,
@@ -32,7 +32,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 )
 
 from . import TempNamedDir
-from .test_utilities import TestModel, Utils
+from .test_utilities import Model, Utils
 
 
 class TestAsyncSaveWithMSC:
@@ -78,11 +78,10 @@ class TestAsyncSaveWithMSC:
         )
         return state_dict
 
-    def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt):
+    def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt, async_queue):
         """Verifies that async checkpointing produces the same results as sync checkpointing."""
         Utils.initialize_distributed()
-        model = TestModel((1024, 1024), 10)
-        async_queue = AsyncCallsQueue()
+        model = Model((1024, 1024), 10)
 
         with (
             TempNamedDir(tmp_path_dist_ckpt / 'async_checkpoint', sync=True) as async_ckpt_dir,
