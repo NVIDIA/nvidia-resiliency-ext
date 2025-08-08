@@ -211,7 +211,7 @@ class LogManager:
     @property
     def distributed_logging_enabled(self) -> bool:
         """Check if distributed logging is enabled."""
-        return self._log_dir is not None
+        return self._temp_dir is not None
 
     @property
     def workload_rank(self) -> Optional[int]:

@@ -339,9 +339,6 @@ class CallWrapper:
         if self.monitor_process is not None:
             self.monitor_process.shutdown()
 
-        log = logging.getLogger("nvrx")
-        log.shutdown()
-
     def __enter__(self):
         return self
 
