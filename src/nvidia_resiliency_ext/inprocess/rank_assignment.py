@@ -25,7 +25,7 @@ import itertools
 import warnings
 from typing import Callable, Optional, Union
 
-from . import exception
+from . import exception, utils
 from .state import Mode, State
 from .store import StoreMixin
 
@@ -656,6 +656,7 @@ class Tree(RankAssignment):
         tree_state = self.init_rank_map[state.initial_rank].state
 
         if tree_state.mode == Mode.TERMINATED:
+            terminated_ranks = utils.format_rank_set(terminated_ranks)
             raise RankDiscarded(f'{state.rank=} {terminated_ranks=}')
 
         state = State(**dataclasses.asdict(tree_state))
@@ -745,6 +746,7 @@ class FillGaps(RankAssignment):
         world_size = world_size - len(terminated_ranks)
 
         if rank in terminated_ranks:
+            terminated_ranks = utils.format_rank_set(terminated_ranks)
             raise RankDiscarded(f'{rank=} {terminated_ranks=}')
         elif rank >= world_size:
             rank = ordered_terminated_ranks[rank - world_size]
@@ -797,6 +799,7 @@ class ShiftRanks(RankAssignment):
 
         world_size = world_size - len(terminated_ranks)
         if rank in terminated_ranks:
+            terminated_ranks = utils.format_rank_set(terminated_ranks)
             raise RankDiscarded(f'{rank=} {terminated_ranks=}')
         else:
             rank = rank - sum(rank > terminated_rank for terminated_rank in terminated_ranks)

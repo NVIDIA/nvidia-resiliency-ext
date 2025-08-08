@@ -6,11 +6,11 @@
 
 # SPDX-License-Identifier: BSD-3-Clause
 # Modifications made by NVIDIA
-# All occurences of 'torch.distributed.elastic' were replaced with 'nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat'
+# This file uses PyTorch's distributed elastic module directly
 # Added suppression for pickle low serverity issue
 
 
-# This file is based on _torch_elastic_compat/rendezvous/dynamic_rendezvous.py
+# This file is based on torch.distributed.elastic.rendezvous.dynamic_rendezvous
 # It includes NVRx related modifications for the node health checking, KSO and others.
 
 
@@ -31,15 +31,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, cast
 
 from torch.distributed import PrefixStore, Store
-
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import WorkerState
-
-from ..shared_utils.health_check import GPUHealthCheck
-from ._torch_elastic_compat.events import NodeState, construct_and_record_rdzv_event
-from ._torch_elastic_compat.rendezvous.api import (
+from torch.distributed.elastic.agent.server.api import WorkerState
+from torch.distributed.elastic.events import NodeState, construct_and_record_rdzv_event
+from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
     RendezvousError,
     RendezvousGracefulExitError,
@@ -48,7 +45,19 @@ from ._torch_elastic_compat.rendezvous.api import (
     RendezvousStateError,
     RendezvousTimeoutError,
 )
-from ._torch_elastic_compat.rendezvous.utils import _delay, _PeriodicTimer
+
+# Try to import newer PyTorch features, fall back gracefully if not available
+try:
+    from torch.distributed.elastic.rendezvous.api import RendezvousInfo, RendezvousStoreInfo
+
+    _RENDEZVOUS_INFO_AVAILABLE = True
+except ImportError:
+    _RENDEZVOUS_INFO_AVAILABLE = False
+    RendezvousInfo = None
+    RendezvousStoreInfo = None
+from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
+
+from ..shared_utils.health_check import GPUHealthCheck
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
@@ -1253,6 +1262,11 @@ class FtRendezvousHandler(RendezvousHandler):
         """See base class."""
         return self._backend_name
 
+    @property
+    def use_agent_store(self) -> bool:
+        """See base class."""
+        return False
+
     def ensure_node_is_healthy(self) -> None:
         """Perform GPU health check for this node."""
         # Record the health check message
@@ -1291,8 +1305,13 @@ class FtRendezvousHandler(RendezvousHandler):
                 f"Node {self._this_node} is excluded from the training due to an user request."
             )
 
-    def next_rendezvous(self) -> Tuple[Store, int, int]:
-        """See base class."""
+    def next_rendezvous(self) -> Union[RendezvousInfo, Tuple[Store, int, int]]:
+        """See base class.
+
+        Returns:
+            RendezvousInfo object if supported by PyTorch version,
+            otherwise tuple of (store, rank, world_size)
+        """
 
         msg = (
             f"The node '{self._this_node}' attempts to join the next round of the rendezvous "
@@ -1341,7 +1360,28 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg, rank=rank)
         log.info(msg)
 
-        return store, rank, world_size
+        # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
+        # Fall back to tuple format if RendezvousInfo is not supported
+        if _RENDEZVOUS_INFO_AVAILABLE:
+            # TCPStore sharing is disabled, TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1.
+            # Handle backward compatibility for RendezvousStoreInfo.build
+            try:
+                bootstrap_store_info = RendezvousStoreInfo.build(
+                    rank, store, local_addr=self._this_node.addr
+                )
+            except TypeError:
+                # For older PyTorch versions (<= 2.5.1), local_addr parameter is not supported
+                bootstrap_store_info = RendezvousStoreInfo.build(rank, store)
+            return RendezvousInfo(
+                store,
+                rank,
+                world_size,
+                bootstrap_store_info,
+            )
+        else:
+            # RendezvousInfo not supported, use tuple format
+            log.debug("RendezvousInfo not available, using tuple format")
+            return store, rank, world_size
 
     def is_closed(self) -> bool:
         """See base class."""
