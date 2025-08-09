@@ -333,7 +333,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         global_results_queue.put(write_results_or_exc)
 
         w_end = time()
-        logger.debug(f"{w_end}, rank: {rank}," f" write(sync,parallel): {w_end - w_start}")
+        logger.info(f"Async CP Save background write time: {w_end - w_start} s for rank: {rank}")
 
     @staticmethod
     @_disable_gc()
