@@ -25,6 +25,7 @@ import os
 # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
 import pickle  # nosec
 import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from heapq import heappop, heappush
 from itertools import chain
@@ -207,7 +208,12 @@ class FileSystemWriterAsync(FileSystemWriter):
             return None, None, ()
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
         return (
-            partial(self.write_preloaded_data_multiproc, transform_list, self.use_msc),
+            # partial(self.write_preloaded_data_multiproc, transform_list, self.use_msc),
+            partial(
+                self.write_preloaded_data_multithread_launcher,
+                transform_list,
+                self.use_msc,
+            ),
             partial(self.preload_tensors, self.write_buckets, True),
             [torch.distributed.get_rank(), self.write_buckets, self.results_queue],
         )
@@ -333,7 +339,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         global_results_queue.put(write_results_or_exc)
 
         w_end = time()
-        logger.debug(f"{w_end}, rank: {rank}," f" write(sync,parallel): {w_end - w_start}")
+        logger.info(f"Background Async worker time to persist: {w_end - w_start} s for rank={rank}")
 
     @staticmethod
     @_disable_gc()
@@ -416,6 +422,163 @@ class FileSystemWriterAsync(FileSystemWriter):
             f"{local_proc_idx} consumed: {mem_after - mem_before},"
             f" before: {mem_before}, after: {mem_after}"
         )
+
+    @staticmethod
+    def write_preloaded_data_multithread_launcher(
+        transform_list: List[_StorageWriterTransforms],
+        use_msc: bool,
+        rank: int,
+        write_buckets: List[WriteBucket],
+        global_results_queue: mp.Queue,
+    ) -> None:
+        """
+        Performs saving data to storage with multiple threads.
+
+        Args:
+            write_buckets (List[WriteBucket]): write plan
+            global_results_queue (mp.Queue): mp.Queue to collect Dict[List[WriteResults]]
+                (or an Exception) from parallel write processes to the main training process
+        Returns: None
+        """
+        logger = logging.getLogger(__name__)
+        w_start = time()
+        write_results_or_exc: Union[dict, Exception] = dict()
+        # Use ThreadPoolExecutor for efficient thread management
+        with ThreadPoolExecutor(max_workers=len(write_buckets)) as executor:
+            future_to_bucket = {}
+            for i, write_bucket in enumerate(write_buckets):
+                try:
+                    kwargs = {
+                        "local_proc_idx": i,
+                        "write_bucket": write_bucket,
+                        "use_fsync": True,
+                    }
+                    if use_msc:
+                        kwargs["use_msc"] = use_msc
+                    # Submit the task to the thread pool
+                    future = executor.submit(
+                        FileSystemWriterAsync.write_preloaded_data_thread,
+                        transform_list,
+                        **kwargs,
+                    )
+                    future_to_bucket[future] = i
+                except Exception as e:
+                    err_msg = f"An error is caught while a thread {i} is created, error: {e}"
+                    logger.error(err_msg)
+                    write_results_or_exc = RuntimeError(err_msg)
+
+        if not isinstance(write_results_or_exc, Exception):
+            logger.debug("FileSystemWriterAsync: collecting worker results...")
+            for future in as_completed(future_to_bucket):
+                bucket_idx = future_to_bucket[future]
+                try:
+                    local_results = future.result()
+
+                    if not local_results:
+                        # The write results list is empty. This is unexpected behavior
+                        # as we expect every thread to have some write work
+                        err_msg = (
+                            "Unexpected empty `local_results`"
+                            f"thread-id {bucket_idx} among {len(write_buckets)} "
+                            "did not have any items to write. Check split write buckets logic"
+                        )
+                        logger.error(err_msg)
+                        write_results_or_exc = RuntimeError(err_msg)
+                        break
+                    if isinstance(local_results, Exception):
+                        err_msg = f"Thread-ID {bucket_idx} encountered an error: {local_results}"
+                        logger.error(err_msg)
+                        write_results_or_exc = local_results
+                        break
+                    assert isinstance(local_results, list), type(local_results)
+                    write_results_or_exc[bucket_idx] = local_results
+                except Exception as e:
+                    err_msg = f"Local thread {bucket_idx} encountered an error: {e}"
+                    logger.error(err_msg)
+                    write_results_or_exc = e
+                    break
+            logger.debug("FileSystemWriterAsync: collected worker results successfully")
+
+        global_results_queue.put(write_results_or_exc)
+
+        w_end = time()
+        logger.info(f"Background Async worker time to persist: {w_end - w_start} s for rank={rank}")
+
+    @staticmethod
+    def write_preloaded_data_thread(
+        transform_list: List[_StorageWriterTransforms],
+        local_proc_idx: int,
+        write_bucket: WriteBucket,
+        use_fsync: bool,
+        **kwargs,
+    ) -> List[WriteResult]:
+        """
+        Performs actual data saving to storage when invoked in multi-thread fashion.
+
+        Args:
+            local_proc_idx (int): index of a local thread that performs writing
+            write_bucket (WriteBucket): data to write to storage
+            use_fsync (bool): if True, calls os.fsync at the end of saving
+
+        Returns: List[WriteResult] - the write results directly returned
+        """
+        logger = logging.getLogger(__name__)
+        logger.debug(f"{local_proc_idx} started")
+        mem_before = _process_memory()
+        use_msc = kwargs.get("use_msc", False)
+
+        local_results = []
+        try:
+            file_name, storage_key, (bytes_data, tensor_data) = write_bucket
+            extra_kwargs = {}
+            write_fn = _write_item
+            if "serialization_format" in inspect.signature(_write_item).parameters:
+                from torch.distributed.checkpoint.filesystem import SerializationFormat
+
+                extra_kwargs["serialization_format"] = SerializationFormat.TORCH_SAVE
+
+            if "transforms" in inspect.signature(_write_item).parameters:
+                assert len(transform_list) <= 1
+                write_fn = partial(_write_item, *transform_list)
+
+            if use_msc:
+                import multistorageclient as msc
+
+                open_file = msc.open
+            else:
+                open_file = open
+            with open_file(file_name, "wb") as stream:
+                for write_item, data in bytes_data:
+                    local_results.append(
+                        write_fn(stream, data, write_item, storage_key, **extra_kwargs)
+                    )
+
+                for write_item, tensor in tensor_data:
+                    assert tensor.is_cpu
+                    local_results.append(
+                        write_fn(stream, tensor, write_item, storage_key, **extra_kwargs)
+                    )
+
+                if use_fsync:
+                    if use_msc:
+                        stream.fsync()
+                    else:
+                        os.fsync(stream.fileno())
+            # clean up
+            # del bytes_data
+            # del tensor_data
+            # del write_bucket
+
+        except Exception as e:
+            logger.debug(f"{local_proc_idx} failed")
+            local_results = e  # type: ignore[assignment]
+
+        mem_after = _process_memory()
+        logger.debug(
+            f"{local_proc_idx} consumed: {mem_after - mem_before},"
+            f" before: {mem_before}, after: {mem_after}"
+        )
+        return local_results
 
     def write_data(self, plan: SavePlan, planner: SavePlanner) -> Future[List[WriteResult]]:
         """Write all items from ``plan``."""
