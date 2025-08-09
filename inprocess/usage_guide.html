@@ -55,6 +55,12 @@
 <li class="toctree-l4"><a class="reference internal" href="#requirements-for-the-execution-environment">Requirements for the execution environment</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="#running-with-slurm">Running with SLURM</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#slurm-configuration-requirements">SLURM Configuration Requirements</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#complete-slurm-launch-command">Complete SLURM Launch Command</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#wrapper-configuration">Wrapper Configuration</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="#restrictions">Restrictions</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#functionality-overview">Functionality overview</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#implementation-overview">Implementation overview</a></li>
@@ -71,8 +77,8 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="#restart-latency">Restart latency</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#known-issues">Known issues</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#id5">PyTorch</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#id6">NCCL</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id6">PyTorch</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id7">NCCL</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#cuda">CUDA</a></li>
 </ul>
 </li>
@@ -194,7 +200,56 @@ parameter set to <code class="docutils literal notranslate"><span class="pre">&q
 <li><p>The job scheduler must not terminate the entire job if a faulty rank exits
 early or if the main process is terminated; instead, it should wait until all
 user-launched processes have fully exited before ending the distributed job.</p></li>
+<li><p>When using SLURM, refer to the <a class="reference internal" href="#running-with-slurm"><span class="std std-ref">Running with SLURM</span></a> section
+for specific configuration requirements.</p></li>
 </ul>
+</section>
+</section>
+<section id="running-with-slurm">
+<span id="id1"></span><h2>Running with SLURM<a class="headerlink" href="#running-with-slurm" title="Link to this heading"></a></h2>
+<p>When using SLURM as the job scheduler, specific configuration is required to
+ensure the in-process restart functionality works correctly. SLURM has default
+behaviors that can interfere with the restart mechanism, so proper setup is
+essential.</p>
+<section id="slurm-configuration-requirements">
+<h3>SLURM Configuration Requirements<a class="headerlink" href="#slurm-configuration-requirements" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Use the <code class="docutils literal notranslate"><span class="pre">--kill-on-bad-exit=0</span></code> option with <code class="docutils literal notranslate"><span class="pre">srun</span></code> to prevent SLURM from
+terminating the entire job when some ranks exit on failure. This allows the
+in-process restart mechanism to handle failures and restart the distributed
+job without SLURM interference.</p></li>
+<li><p>The job must be launched using the <cite>wait_daemon.py</cite> utility to ensure proper
+cleanup of monitoring daemon processes. The <span class="xref std std-ref">Monitor Process</span> operates as a separate daemon process that participates in
+the distributed store and hosts the TCPStore for communication between ranks.
+SLURM by default terminates all user processes when the main job process
+finishes, which would immediately terminate the Monitor Process and prevent it
+from properly finalizing the distributed job by waiting on the termination
+barrier. The <cite>wait_daemon.py</cite> utility ensures that the Monitor Process is the
+last process to exit, allowing it to complete its cleanup responsibilities.</p></li>
+</ul>
+</section>
+<section id="complete-slurm-launch-command">
+<h3>Complete SLURM Launch Command<a class="headerlink" href="#complete-slurm-launch-command" title="Link to this heading"></a></h3>
+<p>Use the following command format to launch your job with SLURM:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>srun<span class="w"> </span>--kill-on-bad-exit<span class="o">=</span><span class="m">0</span><span class="w"> </span>&lt;other_srun_options&gt;<span class="w"> </span>bash<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">python -u </span><span class="si">${</span><span class="nv">run_cmd</span><span class="si">}</span>
+<span class="s2">ret=\$?</span>
+<span class="s2">python -m nvidia_resiliency_ext.shared_utils.wait_daemon /tmp/inprocess_monitor\${SLURM_PROCID}.pid</span>
+<span class="s2">exit \$ret&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="wrapper-configuration">
+<h3>Wrapper Configuration<a class="headerlink" href="#wrapper-configuration" title="Link to this heading"></a></h3>
+<p>When creating the <a class="reference internal" href="api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper" title="nvidia_resiliency_ext.inprocess.Wrapper"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Wrapper</span></code></a>, the training program
+must specify the <code class="docutils literal notranslate"><span class="pre">monitor_process_pidfile</span></code> parameter to match the path used in
+the wait_daemon command:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">train</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">Wrapper</span><span class="p">(</span>
+    <span class="n">monitor_process_pidfile</span><span class="o">=</span><span class="s2">&quot;/tmp/inprocess_monitor_</span><span class="si">{rank}</span><span class="s2">.pid&quot;</span><span class="p">,</span>
+    <span class="c1"># ... other parameters ...</span>
+<span class="p">)(</span><span class="n">train</span><span class="p">)</span>
+</pre></div>
+</div>
 </section>
 </section>
 <section id="restrictions">
@@ -416,7 +471,7 @@ ranks, and triggers an attempt to restart the wrapped function on all healthy
 ranks.</p>
 </section>
 <section id="hard-timeout">
-<span id="id1"></span><h4>Hard timeout<a class="headerlink" href="#hard-timeout" title="Link to this heading"></a></h4>
+<span id="id2"></span><h4>Hard timeout<a class="headerlink" href="#hard-timeout" title="Link to this heading"></a></h4>
 <p>The hard timeout mechanism forcefully terminates the main Python interpreter
 process by sending a sequence of signals to ensure proper shutdown.</p>
 <p>Initially, the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> sends the signals (<code class="docutils literal notranslate"><span class="pre">SIGCONT</span></code>, <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>)
@@ -436,7 +491,7 @@ where the process hangs. This minimizes restart latency while ensuring the
 process is terminated promptly.</p>
 </section>
 <section id="reporting-progress">
-<span id="id2"></span><h4>Reporting progress<a class="headerlink" href="#reporting-progress" title="Link to this heading"></a></h4>
+<span id="id3"></span><h4>Reporting progress<a class="headerlink" href="#reporting-progress" title="Link to this heading"></a></h4>
 <p>Timeout events are triggered when the wrapped function didn’t report progress
 in the specified timeout interval.</p>
 <p>There are two methods to record progress:</p>
@@ -510,7 +565,7 @@ main Python interpreter process on the local rank.</p>
 workload’s progress and enable rapid restart capabilities in the event of a
 fault.</p>
 <section id="monitor-thread">
-<span id="id3"></span><h4>Monitor Thread<a class="headerlink" href="#monitor-thread" title="Link to this heading"></a></h4>
+<span id="id4"></span><h4>Monitor Thread<a class="headerlink" href="#monitor-thread" title="Link to this heading"></a></h4>
 <p>The Monitor Thread runs as a separate <a class="reference external" href="https://docs.python.org/3/library/threading.html#threading.Thread" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">threading.Thread</span></code></a> and is
 tasked with periodically checking the distributed store for any faults reported
 by other distributed ranks. It also ensures that the local rank is
@@ -648,9 +703,9 @@ all pending CUDA kernels assumes that the training loop performs
 synchronization with the GPU at least once per training iteration.</p>
 </section>
 <section id="known-issues">
-<span id="id4"></span><h2>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading"></a></h2>
-<section id="id5">
-<h3>PyTorch<a class="headerlink" href="#id5" title="Link to this heading"></a></h3>
+<span id="id5"></span><h2>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading"></a></h2>
+<section id="id6">
+<h3>PyTorch<a class="headerlink" href="#id6" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
 <li><p><code class="xref py py-class docutils literal notranslate"><span class="pre">torch.distributed.ProcessGroupGloo</span></code> doesn’t offer <code class="docutils literal notranslate"><span class="pre">_shutdown()</span></code>
 method to terminate pending Gloo collectives (<a class="reference external" href="https://github.com/pytorch/pytorch/issues/130345">pytorch/#130345</a>); if a rank
@@ -686,8 +741,8 @@ PyTorch doesn’t contain the fix implemented in <a class="reference external" h
 the first iteration of a backward pass is in progress (<a class="reference external" href="https://github.com/pytorch/pytorch/issues/149418">pytorch/#149418</a>).</p></li>
 </ol>
 </section>
-<section id="id6">
-<h3>NCCL<a class="headerlink" href="#id6" title="Link to this heading"></a></h3>
+<section id="id7">
+<h3>NCCL<a class="headerlink" href="#id7" title="Link to this heading"></a></h3>
 <ol class="arabic simple">
 <li><p>Support for NVLink SHARP (NVLS) in NCCL must be disabled by setting the
 <code class="docutils literal notranslate"><span class="pre">NCCL_NVLS_ENABLE</span></code> environment variable to <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p></li>
