@@ -80,8 +80,28 @@ Requirements for the execution environment
   early or if the main process is terminated; instead, it should wait until all
   user-launched processes have fully exited before ending the distributed job.
 
-- When using SLURM, the job must be launched using the `wait_daemon.py` utility to
-  ensure proper cleanup of monitoring daemon processes. The :ref:`Monitor Process
+- When using SLURM, refer to the :ref:`Running with SLURM <running_with_slurm>` section
+  for specific configuration requirements.
+
+.. _running_with_slurm:
+
+Running with SLURM
+------------------
+When using SLURM as the job scheduler, specific configuration is required to
+ensure the in-process restart functionality works correctly. SLURM has default
+behaviors that can interfere with the restart mechanism, so proper setup is
+essential.
+
+SLURM Configuration Requirements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Use the ``--kill-on-bad-exit=0`` option with ``srun`` to prevent SLURM from
+  terminating the entire job when some ranks exit on failure. This allows the
+  in-process restart mechanism to handle failures and restart the distributed
+  job without SLURM interference.
+
+- The job must be launched using the `wait_daemon.py` utility to ensure proper
+  cleanup of monitoring daemon processes. The :ref:`Monitor Process
   <monitor_process>` operates as a separate daemon process that participates in
   the distributed store and hosts the TCPStore for communication between ranks.
   SLURM by default terminates all user processes when the main job process
@@ -89,26 +109,31 @@ Requirements for the execution environment
   from properly finalizing the distributed job by waiting on the termination
   barrier. The `wait_daemon.py` utility ensures that the Monitor Process is the
   last process to exit, allowing it to complete its cleanup responsibilities.
-  Use the following command format:
 
-  .. code-block:: bash
+Complete SLURM Launch Command
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Use the following command format to launch your job with SLURM:
 
-    srun <srun_options> bash -c "
-    python -u ${run_cmd}
-    ret=\$?
-    python -m nvidia_resiliency_ext.shared_utils.wait_daemon /tmp/inprocess_monitor\${SLURM_PROCID}.pid
-    exit \$ret"
+.. code-block:: bash
 
-  When creating the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`, the training program must specify the
-  ``monitor_process_pidfile`` parameter to match the path used in the wait_daemon
-  command:
+  srun --kill-on-bad-exit=0 <other_srun_options> bash -c "
+  python -u ${run_cmd}
+  ret=\$?
+  python -m nvidia_resiliency_ext.shared_utils.wait_daemon /tmp/inprocess_monitor\${SLURM_PROCID}.pid
+  exit \$ret"
 
-  .. code-block:: python
+Wrapper Configuration
+~~~~~~~~~~~~~~~~~~~~
+When creating the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`, the training program
+must specify the ``monitor_process_pidfile`` parameter to match the path used in
+the wait_daemon command:
 
-    train = inprocess.Wrapper(
-        monitor_process_pidfile="/tmp/inprocess_monitor_{rank}.pid",
-        # ... other parameters ...
-    )(train)
+.. code-block:: python
+
+  train = inprocess.Wrapper(
+      monitor_process_pidfile="/tmp/inprocess_monitor_{rank}.pid",
+      # ... other parameters ...
+  )(train)
 
 Restrictions
 ------------
