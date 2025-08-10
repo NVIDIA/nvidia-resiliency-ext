@@ -39,6 +39,7 @@ class DistributedLogHandler(logging.Handler):
     ):
         super().__init__()
         self.fname = None
+        self.flock = threading.Lock()
         self.rank_id = rank_id
         self.file_path = file_path
         self.max_file_size = max_file_size
@@ -57,7 +58,7 @@ class DistributedLogHandler(logging.Handler):
             sys.stderr.flush()
 
     def _log_file_namer(self):
-        return f"rank_{self.rank_id}.msg.{int(time.time()*1000)}"
+        return f"rank_{os.getpid()}.msg.{int(time.time()*1000)}"
 
     def _cleanup_old_backup_files(self):
         """Clean up old backup files, keeping only the most recent one's."""
@@ -79,24 +80,25 @@ class DistributedLogHandler(logging.Handler):
                 sys.stderr.flush()
 
     def _write_message(self, message: str):
-        if self.fname == None:
-            os.makedirs(self.file_path, exist_ok=True)
-            self.fname = os.path.join(self.file_path, self._log_file_namer())
-        # Check if file needs rotation
-        if os.path.exists(self.fname):
-            try:
-                file_size = os.path.getsize(self.fname)
-                if file_size > self.max_file_size:
-                    self.fname = os.path.join(self.file_path, self._log_file_namer())
-                    self._cleanup_old_backup_files()
-            except (OSError, IOError) as e:
-                sys.stderr.write(f"File rotation error for {self.fname}: {e}\n")
-                sys.stderr.flush()
+        with self.flock:
+            if self.fname == None:
+                os.makedirs(self.file_path, exist_ok=True)
+                self.fname = os.path.join(self.file_path, self._log_file_namer())
+            # Check if file needs rotation
+            if os.path.exists(self.fname):
+                try:
+                    file_size = os.path.getsize(self.fname)
+                    if file_size > self.max_file_size:
+                        self.fname = os.path.join(self.file_path, self._log_file_namer())
+                        self._cleanup_old_backup_files()
+                except (OSError, IOError) as e:
+                    sys.stderr.write(f"File rotation error for {self.fname}: {e}\n")
+                    sys.stderr.flush()
 
-        # Append message to the rank's message file
-        with open(self.fname, 'a') as f:
-            f.write(f"{message}\n")
-            f.flush()  # Ensure message is written immediately
+            # Append message to the rank's message file
+            with open(self.fname, 'a') as f:
+                f.write(f"{message}\n")
+                f.flush()  # Ensure message is written immediately
 
 
 class DynamicLogFormatter(logging.Formatter):
