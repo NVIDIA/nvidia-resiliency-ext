@@ -16,20 +16,18 @@
 
 
 import unittest
-import logging
 import os
 import shutil
 import multiprocessing
 import time
 import random
-import socket
 import sys
 
 sys.path.append(os.getcwd() + "/src/")
 
 from datetime import datetime
-from src.nvidia_resiliency_ext.shared_utils.log_distributed import LogMessage
-from src.nvidia_resiliency_ext.shared_utils.log_manager import setup_logger, LogManager
+from nvidia_resiliency_ext.shared_utils.log_distributed import LogMessage, NodeLogAggregator
+import nvidia_resiliency_ext.shared_utils.log_manager as LogMgr
 
 
 def setup_vars(global_id, local_id, file_size, dbg_on="0"):
@@ -58,7 +56,7 @@ def worker_process(id, num_msg, file_size):
     setup_vars(id, id, file_size)
     log_dir = os.getcwd() + "/tests/shared_utils/logs/"
     temp_dir = os.getcwd() + "/tests/shared_utils/tmp/"
-    logger = setup_logger(log_dir, temp_dir, True, False)
+    logger = LogMgr.setup_logger(log_dir, temp_dir, True, False)
     gen_log_msg(logger, num_msg)
 
 
@@ -139,21 +137,29 @@ class TestLogger(unittest.TestCase):
             shutil.rmtree(log_dir)
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-        logger = setup_logger(log_dir, temp_dir, True, is_agg)
+
+        if is_agg:
+            aggregator = NodeLogAggregator(
+                log_dir=LogMgr.get_log_dir(log_dir),
+                temp_dir=LogMgr.get_temp_dir(temp_dir),
+                log_file=LogMgr.get_log_file(),
+                max_file_size_kb=LogMgr.get_max_file_size_kb(file_size_kb),
+                en_chrono_ord=True,
+            )
+            aggregator.start_aggregator()
+        logger = LogMgr.setup_logger(log_dir, temp_dir, True, not is_agg)
         gen_log_msg(logger, num_msg, log_type)
 
         time.sleep(1)
-        pm = temp_dir + LogManager.file_prefix + socket.gethostname()
+        pm = LogMgr.get_temp_dir(temp_dir)
         num_files, file_names = self.count_files_in_dir(pm)
         self.assertEqual(
             num_files, pm_files, f'The number of files should be {pm_files}, instead {num_files}'
         )
         self.check_files(pm, file_names, -1, 0, 0, "1")
 
-        if hasattr(setup_logger, '_log_manager'):
-            lm = getattr(setup_logger, '_log_manager')
-            lm.shutdown()
-        if is_agg == "1":
+        if is_agg:
+            aggregator.shutdown()
             num_files, file_names = self.count_files_in_dir(log_dir)
             self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
             self.check_files(log_dir, file_names, num_msg, 0, 0, "1")
@@ -173,13 +179,13 @@ class TestLogger(unittest.TestCase):
     def test_rotation_cleanup(self):
         self.check_msg(2000, 10, 1, True)
 
-    def multiple_processes(self, num_procs, num_msg, file_size, chrono_on=True):
+    def multiple_processes(self, num_procs, num_msg, file_size_kb, chrono_on=True):
         log_dir = os.getcwd() + "/tests/shared_utils/logs/"
         temp_dir = os.getcwd() + "/tests/shared_utils/tmp/"
         setup_vars(
             global_id=0,
             local_id=0,
-            file_size=file_size,
+            file_size=file_size_kb,
             dbg_on="0",
         )
         if os.path.exists(log_dir):
@@ -187,39 +193,43 @@ class TestLogger(unittest.TestCase):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
 
-        logger = setup_logger(log_dir, temp_dir, True, True, chrono_on)
+        aggregator = NodeLogAggregator(
+            log_dir=LogMgr.get_log_dir(log_dir),
+            temp_dir=LogMgr.get_temp_dir(temp_dir),
+            log_file=LogMgr.get_log_file(),
+            max_file_size_kb=LogMgr.get_max_file_size_kb(file_size_kb),
+            en_chrono_ord=True,
+        )
+        aggregator.start_aggregator()
+        logger = LogMgr.setup_logger(log_dir, temp_dir, True, False)
 
         processes = []
         for i in range(num_procs):
             # Create a new process
-            p = multiprocessing.Process(target=worker_process, args=(i + 1, num_msg, file_size))
+            p = multiprocessing.Process(target=worker_process, args=(i + 1, num_msg, file_size_kb))
             processes.append(p)
             p.start()
-
-        # process 0 logs
-        gen_log_msg(logger, num_msg)
 
         # Wait for all processes to complete
         for p in processes:
             p.join()
-
-        if hasattr(setup_logger, '_log_manager'):
-            lm = getattr(setup_logger, '_log_manager')
-            lm.shutdown()
+        aggregator.shutdown()
+        if hasattr(LogMgr.setup_logger, '_log_manager'):
+            lm = getattr(LogMgr.setup_logger, '_log_manager')
         num_files, file_names = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
-        self.check_files(log_dir, file_names, num_msg * (num_procs + 1), -1, -1, chrono_on)
+        self.check_files(log_dir, file_names, num_msg * num_procs, -1, -1, chrono_on)
 
     def test_one_proc(self):
         self.multiple_processes(1, 2000, 1024)
 
     def test_four_proc(self):
         # gb200 has 4 GPU's, check that config
-        self.multiple_processes(3, 2000, 1024)
+        self.multiple_processes(4, 2000, 1024)
 
     def test_eight_proc(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(7, 2000, 1024)
+        self.multiple_processes(8, 2000, 1024)
 
     def test_one_proc_w_rotate(self):
         self.multiple_processes(1, 2000, 10)
@@ -229,11 +239,11 @@ class TestLogger(unittest.TestCase):
 
     def test_eight_proc_w_rotate(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(7, 2000, 10)
+        self.multiple_processes(8, 2000, 10)
 
     def test_four_proc_w_rotate_nochrono(self):
         self.multiple_processes(1, 2000, 10, False)
 
     def test_eight_proc_w_rotate_nochrono(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(7, 2000, 1000, False)
+        self.multiple_processes(8, 2000, 1000, False)

@@ -23,7 +23,7 @@ import threading
 import queue
 import heapq
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Dict, List
 
 
 class DistributedLogHandler(logging.Handler):

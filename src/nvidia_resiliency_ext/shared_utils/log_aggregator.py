@@ -40,24 +40,17 @@ Usage:
 
 import argparse
 import os
-import socket
-import sys
 import time
-from typing import Optional
-
-from log_manager import LogManager
+from nvidia_resiliency_ext.shared_utils.log_distributed import NodeLogAggregator
+import nvidia_resiliency_ext.shared_utils.log_manager as LogMgr
 
 
 def main():
     """Main function for running the log aggregator as a separate service."""
     parser = argparse.ArgumentParser(description="NVRx Log Aggregator Service")
-    parser.add_argument("--log-dir", required=True, help="Directory for log files")
-    parser.add_argument(
-        "--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)"
-    )
-    parser.add_argument(
-        "--en_chrono_ord", action='store_true', help="en_chrono_ord (default: False)"
-    )
+    parser.add_argument("--log-dir", help="Directory for log files")
+    parser.add_argument("--temp-dir", help="Directory for temporary files)")
+    parser.add_argument("--en_chrono_ord", help="Enable Chronological Ordering")
     parser.add_argument(
         "--wait-file",
         required=True,
@@ -72,23 +65,29 @@ def main():
 
     args = parser.parse_args()
 
-    job_id = os.environ.get('SLURM_JOB_ID')
-    args.log_dir = os.path.join(args.log_dir, job_id)
+    log_dir = LogMgr.get_log_dir(args.log_dir)
+    log_file = LogMgr.get_log_file()
+    temp_dir = LogMgr.get_temp_dir(args.temp_dir)
+    max_file_size_kb = LogMgr.get_max_file_size_kb()
+    en_chrono_ord = LogMgr.get_en_chrono_ord()
 
+    if log_dir is None:
+        raise RuntimeError("Log directory must be set for log aggregator service")
+    print(log_dir)
+    print(log_file)
     print(f"Starting NVRx Log Aggregator Service")
-    print(f"  Log directory: {args.log_dir}")
-    print(f"  Temp directory: {args.temp_dir}")
-    print(f"  Node ID: {socket.gethostname()}")
-    print(f"  en_chrono_ord: {args.en_chrono_ord}")
+    print(f"  Log Path: {os.path.join(log_dir, log_file)}")
+    print(f"  Temp directory: {temp_dir}")
+    print(f"  en_chrono_ord: {en_chrono_ord}")
 
-    # Create log manager
-    log_manager = LogManager(
-        log_dir=args.log_dir,
-        temp_dir=args.temp_dir,
-        is_aggregator_service=True,
-        en_chrono_ord=args.en_chrono_ord,
+    aggregator = NodeLogAggregator(
+        log_dir=log_dir,
+        temp_dir=temp_dir,
+        log_file=log_file,
+        max_file_size_kb=max_file_size_kb,
+        en_chrono_ord=en_chrono_ord,
     )
-
+    aggregator.start_aggregator()
     print("Log aggregator service is running...")
 
     # Wait for shutdown file
@@ -99,7 +98,7 @@ def main():
 
     # Shutdown gracefully
     print("Shutting down log aggregator service...")
-    log_manager.shutdown()
+    aggregator.shutdown()
     print("Log aggregator service stopped")
 
 
