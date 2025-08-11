@@ -49,7 +49,7 @@ def main():
     """Main function for running the log aggregator as a separate service."""
     parser = argparse.ArgumentParser(description="NVRx Log Aggregator Service")
     parser.add_argument("--log-dir", help="Directory for log files")
-    parser.add_argument("--temp-dir", help="Directory for temporary files)")
+    parser.add_argument("--temp-dir", default='/tmp', help="Directory for temporary files)")
     parser.add_argument("--en_chrono_ord", help="Enable Chronological Ordering")
     parser.add_argument(
         "--wait-file",
@@ -73,8 +73,6 @@ def main():
 
     if log_dir is None:
         raise RuntimeError("Log directory must be set for log aggregator service")
-    print(log_dir)
-    print(log_file)
     print(f"Starting NVRx Log Aggregator Service")
     print(f"  Log Path: {os.path.join(log_dir, log_file)}")
     print(f"  Temp directory: {temp_dir}")

@@ -113,7 +113,7 @@ class ThreadedFinalize(Finalize):
         def wrapped_fn():
             # Set CUDA device in the thread
             if device_id is not None:
-                log = logging.getLogger(__name__)
+                log = logging.getLogger("nvrx")
                 log.debug(f'Setting CUDA device to {device_id} in ThreadedFinalize')
                 torch.cuda.set_device(device_id)
 

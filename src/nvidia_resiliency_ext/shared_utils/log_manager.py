@@ -139,9 +139,9 @@ def get_log_file():
 
 def get_temp_dir(temp_dir=None):
     # Use configurable temporary directory for pending messages
-    temp_dir = temp_dir or os.environ.get("NVRX_LOG_TEMP_DIR", "/tmp")
+    temp_dir = temp_dir or os.environ.get("NVRX_LOG_TEMP_DIR")
     # Use node_id to ensure all ranks on the same node use the same directory
-    return os.path.join(temp_dir, f"{get_file_prefix()}{get_node_id()}")
+    return os.path.join(temp_dir, f"{get_file_prefix()}{get_node_id()}") if temp_dir else None
 
 
 def get_max_file_size_kb(file_size_kb=None):

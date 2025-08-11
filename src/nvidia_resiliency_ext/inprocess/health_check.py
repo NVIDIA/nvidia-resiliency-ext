@@ -82,7 +82,7 @@ class CudaHealthCheck(HealthCheck):
         self.timeout = timeout
 
     def __call__(self, state: FrozenState) -> FrozenState:
-        log = logging.getLogger(__name__)
+        log = logging.getLogger("nvrx")
         if torch.cuda.is_available() and torch.cuda.is_initialized():
             if (local_rank := os.getenv('LOCAL_RANK', None)) is not None:
                 device = torch.device(int(local_rank))

@@ -79,7 +79,7 @@ class ProgressWatchdog(threading.Thread):
         self.paused = threading.Event()
         self.should_stop = threading.Event()
 
-        self.log = logging.getLogger(__name__)
+        self.log = logging.getLogger("nvrx")
 
     def reset(self):
         self.timestamp = Timestamp(auto=time.monotonic())

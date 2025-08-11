@@ -113,9 +113,7 @@ def parse_args():
         default=logging.INFO,
         help='logging level',
     )
-    parser.add_argument(
-        "--temp-dir", default="/tmp", help="Directory for temporary files (default: /tmp)"
-    )
+    parser.add_argument("--temp-dir", help="Directory for temporary files")
 
     return parser.parse_args()
 
@@ -251,7 +249,8 @@ if __name__ == '__main__':
     args = parse_args()
 
     # Set environment variables for the service
-    os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
+    if args.temp_dir is not None:
+        os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
     if args.log_level == logging.DEBUG:
         os.environ["NVRX_LOG_DEBUG"] = "1"
 
