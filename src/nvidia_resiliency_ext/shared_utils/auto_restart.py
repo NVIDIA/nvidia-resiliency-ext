@@ -32,7 +32,7 @@ def log_message(message: str) -> None:
     sys.stderr.write(f"{timestamp} {message}\n")
 
 
-def fork_and_monitor(restart_delay: float = 5.0) -> None:
+def fork_and_monitor(restart_delay: float = 5.0, clean_exit_codes: set[int] = {130}) -> None:
     """
     Initiates monitor and restart by forking the process.
 
@@ -54,6 +54,9 @@ def fork_and_monitor(restart_delay: float = 5.0) -> None:
 
     Args:
         restart_delay: Delay in seconds between restart attempts
+        clean_exit_codes: Set of exit codes that indicate clean termination
+                         and should not trigger a restart. Default includes
+                         exit code 130 (used by RestartAbort).
 
     Returns:
         None.
@@ -104,8 +107,12 @@ def fork_and_monitor(restart_delay: float = 5.0) -> None:
         if os.WIFEXITED(ret):
             status = os.WEXITSTATUS(ret)
             log_message(f"Child {pid} exited with status {status}")
-            if status == 0:
-                os._exit(0)
+            if status == 0 or status in clean_exit_codes:
+                if status == 0:
+                    log_message("Child exited successfully")
+                else:
+                    log_message(f"Child exited with clean abort code {status}")
+                os._exit(0)  # Clean exit, don't restart
         elif os.WIFSIGNALED(ret):
             sig = os.WTERMSIG(ret)
             log_message(f"Child {pid} exited with signal {sig}")

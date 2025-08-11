@@ -79,6 +79,10 @@ class StoreMixin:
     # Global iteration counter
     GLOBAL_ITERATION_COUNTER = 'global_iteration_counter'
 
+    # Job restart counter and ranks restart counter
+    JOB_RESTART_COUNTER = 'job_restart_counter'
+    RANKS_RESTART_COUNTER = 'ranks_restart_counter'
+
     @property
     def critical_ranks(self):
         return ()
@@ -151,6 +155,57 @@ class StoreMixin:
                         log.warning(f'{rank=} timeout waiting for all acknowledgments: {ex}')
                         break
                     time.sleep(sys.getswitchinterval())
+
+    def get_job_restart_counter(self) -> int:
+        """Get the current job restart counter value."""
+        # First check if the key exists (non-blocking)
+        if not self.check([self.JOB_RESTART_COUNTER]):
+            # Key doesn't exist, return 0 as the initial value
+            return 0
+
+        try:
+            return int(self.get(self.JOB_RESTART_COUNTER))
+        except (torch.distributed.DistStoreError, ValueError):
+            # If the key doesn't exist, return 0 as the initial value
+            return 0
+
+    def increment_job_restart_counter(self, delta: int = 1) -> int:
+        """Increment the job restart counter by delta and return the new value."""
+        return self.add(self.JOB_RESTART_COUNTER, delta)
+
+    def get_ranks_restart_counter(self) -> int:
+        """Get the current ranks restart counter value for the current iteration.
+
+        This method is designed to be used with PrefixStore, which automatically handles the prefixing.
+        """
+        # First check if the key exists (non-blocking)
+        if not self.check([self.RANKS_RESTART_COUNTER]):
+            # Key doesn't exist, return 0 as the initial value
+            return 0
+
+        try:
+            return int(self.get(self.RANKS_RESTART_COUNTER))
+        except (torch.distributed.DistStoreError, ValueError):
+            # If the key doesn't exist, return 0 as the initial value
+            return 0
+
+    def increment_ranks_restart_counter(self, delta: int = 1) -> int:
+        """Increment the ranks restart counter for the current iteration by delta and return the new value.
+
+        This method is designed to be used with PrefixStore, which automatically handles the prefixing.
+        """
+        return self.add(self.RANKS_RESTART_COUNTER, delta)
+
+    def should_increment_job_restart_counter(self, active_world_size: int) -> bool:
+        """Check if the job restart counter should be incremented.
+
+        This method is designed to be used with PrefixStore, which automatically handles the prefixing.
+
+        Returns True if ranks_restart_counter >= active_world_size, indicating
+        that all active ranks have completed at least one iteration.
+        """
+        ranks_count = self.get_ranks_restart_counter()
+        return ranks_count >= active_world_size
 
     def get_packed(self, key: str, sep: str):
         return self.get(key).decode().rstrip(sep).split(sep)

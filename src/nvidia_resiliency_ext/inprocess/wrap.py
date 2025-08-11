@@ -610,7 +610,7 @@ class CallWrapper:
                 else:
                     break
 
-                state.advance()
+                state.advance(base_store=base_store, prefix_store=store)
 
                 while gc.collect():
                     pass

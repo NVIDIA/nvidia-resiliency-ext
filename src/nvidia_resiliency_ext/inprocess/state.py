@@ -54,7 +54,8 @@ class State:
         initial_rank: an distributed rank index, captured when the
             :py:class:`Wrapper` was invoked
         initial_world_size: a total number of initial distributed ranks
-        iteration: index of the current restart iteration
+        iteration: index of the current restart iteration (from global_iteration_counter)
+        job_restart_count: actual count of job restarts (from job_restart_counter)
         mode: operational mode
         fn_exception: an instance of :py:exc:`Exception` raised by the wrapped
             function in the current restart iteration, :py:obj:`None` if no
@@ -71,6 +72,7 @@ class State:
     initial_world_size: Optional[int] = None
 
     iteration: int = 0
+    job_restart_count: int = 0
     mode: Mode = Mode.INITIALIZED
     fn_exception: Optional[Exception] = None
 
@@ -87,8 +89,10 @@ class State:
 
         # Get iteration from global counter if store is provided
         iteration = 0
+        job_restart_count = 0
         if store is not None:
             iteration = store.get_global_iteration_counter()
+            job_restart_count = store.get_job_restart_counter()
 
         return cls(
             rank=rank,
@@ -96,15 +100,40 @@ class State:
             initial_rank=rank,
             initial_world_size=world_size,
             iteration=iteration,
+            job_restart_count=job_restart_count,
         )
 
     def set_distributed_vars(self):
         os.environ['RANK'] = str(self.active_rank)
         os.environ['WORLD_SIZE'] = str(self.active_world_size)
 
-    def advance(self):
+    def advance(self, base_store=None, prefix_store=None):
+        """
+        Advance the state to the next iteration and update restart counters.
+
+        Args:
+            base_store: Optional base store instance to update global counters.
+                       If provided, will increment job_restart_counter when needed.
+            prefix_store: Optional prefix store instance to update iteration-specific counters.
+                         If provided, will increment ranks_restart_counter for current iteration.
+        """
         self.iteration += 1
         self.fn_exception = None
+
+        # Update restart counters if stores are provided
+        if prefix_store is not None:
+            # Increment the ranks restart counter for this iteration
+            # Use the prefix store directly - no need to construct the key manually
+            prefix_store.increment_ranks_restart_counter()
+
+            # Check if we should increment the job restart counter
+            # This happens when all active ranks have completed at least one iteration
+            if base_store is not None and prefix_store.should_increment_job_restart_counter(
+                self.active_world_size or self.world_size
+            ):
+                base_store.increment_job_restart_counter()
+                # Update the local state to reflect the new job restart count
+                self.job_restart_count = base_store.get_job_restart_counter()
 
     def freeze(self):
         frozen = FrozenState(**dataclasses.asdict(self))
