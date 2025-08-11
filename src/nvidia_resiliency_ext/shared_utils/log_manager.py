@@ -202,7 +202,6 @@ class LogManager:
 
         # Use configurable temporary directory for pending messages
         self._temp_dir = get_temp_dir(temp_dir)
-        os.makedirs(self._temp_dir, exist_ok=True)
 
         # File rotation settings (in bytes)
         self._max_msg_file_size = get_max_file_size_kb()
@@ -249,6 +248,7 @@ class LogManager:
             logger.removeHandler(handler)
 
         if self.distributed_logging_enabled:
+            os.makedirs(self._temp_dir, exist_ok=True)
             handler = DistributedLogHandler(
                 self.workload_local_rank,
                 self._temp_dir,
