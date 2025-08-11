@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue
+
 from . import TempNamedDir
 from .test_utilities import Utils
 
@@ -37,3 +39,10 @@ def tmp_path_dist_ckpt(tmp_path_factory) -> Path:
 
     else:
         yield tmp_dir
+
+
+@pytest.fixture
+def async_queue():
+    async_queue = AsyncCallsQueue()
+    yield async_queue
+    async_queue.close()
