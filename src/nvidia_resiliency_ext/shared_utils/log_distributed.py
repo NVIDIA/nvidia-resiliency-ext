@@ -22,6 +22,7 @@ import logging
 import threading
 import queue
 import heapq
+import psutil
 from datetime import datetime
 from typing import Dict, List
 
@@ -58,7 +59,16 @@ class DistributedLogHandler(logging.Handler):
             sys.stderr.flush()
 
     def _log_file_namer(self):
-        return f"rank_{os.getpid()}.msg.{int(time.time()*1000)}"
+        try:
+            pname = os.getpid()
+            process = psutil.Process(pname)
+            pname = process.name()
+        except psutil.NoSuchProcess as e:
+            # Log the error but don't fail the entire operation
+            sys.stderr.write(f"Failed to get process name {pname}: {e}\n")
+            sys.stderr.flush()
+
+        return f"rank_{pname}.msg.{int(time.time()*1000)}"
 
     def _cleanup_old_backup_files(self):
         """Clean up old backup files, keeping only the most recent one's."""

@@ -21,13 +21,35 @@ import shutil
 import multiprocessing
 import time
 import random
+import tempfile
 import sys
+from pathlib import Path
 
 sys.path.append(os.getcwd() + "/src/")
 
 from datetime import datetime
 from nvidia_resiliency_ext.shared_utils.log_distributed import LogMessage, NodeLogAggregator
 import nvidia_resiliency_ext.shared_utils.log_manager as LogMgr
+
+
+def create_test_workspace():
+    # Create a temporary directory
+    tmp_dir = Path(tempfile.mkdtemp())
+
+    # Define log and temp directories
+    log_dir = tmp_dir / "logs"
+    temp_dir = tmp_dir / "tmp"
+
+    # Remove directories if they already exist
+    if log_dir.exists():
+        shutil.rmtree(log_dir)
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+
+    # Create the directories
+    log_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir, temp_dir
 
 
 def setup_vars(global_id, local_id, file_size, dbg_on="0"):
@@ -54,8 +76,7 @@ def gen_log_msg(logger, num_msg, log_type="info"):
 def worker_process(id, num_msg, file_size):
     """Function that each process will execute."""
     setup_vars(id, id, file_size)
-    log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-    temp_dir = os.getcwd() + "/tests/shared_utils/tmp/"
+    log_dir, temp_dir = create_test_workspace()
     logger = LogMgr.setup_logger(log_dir, temp_dir, True, False)
     gen_log_msg(logger, num_msg)
 
@@ -130,13 +151,8 @@ class TestLogger(unittest.TestCase):
             )
 
     def check_msg(self, num_msg, file_size_kb, pm_files, is_agg: bool, log_type="info", dbg_on="0"):
-        log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        temp_dir = os.getcwd() + "/tests/shared_utils/tmp/"
+        log_dir, temp_dir = create_test_workspace()
         setup_vars(0, 0, file_size_kb, dbg_on)
-        if os.path.exists(log_dir):
-            shutil.rmtree(log_dir)
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
 
         if is_agg:
             aggregator = NodeLogAggregator(
@@ -180,18 +196,13 @@ class TestLogger(unittest.TestCase):
         self.check_msg(2000, 10, 1, True)
 
     def multiple_processes(self, num_procs, num_msg, file_size_kb, chrono_on=True):
-        log_dir = os.getcwd() + "/tests/shared_utils/logs/"
-        temp_dir = os.getcwd() + "/tests/shared_utils/tmp/"
+        log_dir, temp_dir = create_test_workspace()
         setup_vars(
             global_id=0,
             local_id=0,
             file_size=file_size_kb,
             dbg_on="0",
         )
-        if os.path.exists(log_dir):
-            shutil.rmtree(log_dir)
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
 
         aggregator = NodeLogAggregator(
             log_dir=LogMgr.get_log_dir(log_dir),
