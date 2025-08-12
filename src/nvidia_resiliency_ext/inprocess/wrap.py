@@ -34,7 +34,7 @@ from .abort import Abort, AbortTorchDistributed
 from .attribution import Interruption, InterruptionRecord
 from .completion import Completion
 from .compose import Compose
-from .exception import HealthCheckError, InternalError
+from .exception import HealthCheckError, InternalError, RestartAbort
 from .finalize import Finalize
 from .health_check import HealthCheck
 from .initialize import Initialize
@@ -390,6 +390,14 @@ class CallWrapper:
             self.shutdown()
             raise
 
+    def _handle_restart_abort(self, exc, context=""):
+        """Handle RestartAbort by exiting with code 130."""
+        if isinstance(exc, RestartAbort):
+            log = logging.getLogger(__name__)
+            log.info(f'RestartAbort detected in {context}, exiting with code {exc.exit_code}')
+            sys.exit(exc.exit_code)
+        return exc
+
     def shutdown(self):
         if self.state is not None and self.state.initial_rank in self.base_store.critical_ranks:
             timeout = timedelta.max
@@ -643,9 +651,17 @@ class CallWrapper:
                     wrapper.terminate(state.freeze())
             except Exception as terminate_ex:
                 log.error(log_exc(state, terminate_ex, 'terminate_ex'))
+
+                # Check if terminate_ex is RestartAbort and exit with code 130
+                self._handle_restart_abort(terminate_ex, "terminate function")
+
+                # Re-raise other terminate exceptions
                 raise terminate_ex from exit_ex
 
-            # Re-raise the final exception without preserving the chain
+            # Check if the main exit_ex is RestartAbort and exit with code 130
+            self._handle_restart_abort(exit_ex, "main execution")
+
+            # Re-raise other exceptions without preserving the chain
             raise exit_ex from None
 
         try:
