@@ -195,15 +195,24 @@ class StoreMixin:
         """
         return self.add(self.RANKS_RESTART_COUNTER, delta)
 
-    def should_increment_job_restart_counter(self, active_world_size: int) -> bool:
+    def should_increment_job_restart_counter(
+        self, active_world_size: int, ranks_count: int = None
+    ) -> bool:
         """Check if the job restart counter should be incremented.
 
         This method is designed to be used with PrefixStore, which automatically handles the prefixing.
 
-        Returns True if ranks_restart_counter >= active_world_size, indicating
+        Args:
+            active_world_size: The number of active ranks
+            ranks_count: The ranks restart counter value. If None, will read from store.
+
+        Returns True if ranks_count >= active_world_size, indicating
         that all active ranks have completed at least one iteration.
         """
-        ranks_count = self.get_ranks_restart_counter()
+        # Use provided ranks_count if available, otherwise read from store
+        if ranks_count is None:
+            ranks_count = self.get_ranks_restart_counter()
+
         return ranks_count >= active_world_size
 
     def get_packed(self, key: str, sep: str):

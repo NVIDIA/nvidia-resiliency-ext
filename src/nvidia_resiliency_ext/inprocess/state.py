@@ -124,16 +124,18 @@ class State:
         if prefix_store is not None:
             # Increment the ranks restart counter for this iteration
             # Use the prefix store directly - no need to construct the key manually
-            prefix_store.increment_ranks_restart_counter()
+            new_ranks_count = prefix_store.increment_ranks_restart_counter()
 
             # Check if we should increment the job restart counter
             # This happens when all active ranks have completed at least one iteration
             if base_store is not None and prefix_store.should_increment_job_restart_counter(
-                self.active_world_size or self.world_size
+                self.active_world_size or self.world_size, new_ranks_count
             ):
                 base_store.increment_job_restart_counter()
                 # Update the local state to reflect the new job restart count
                 self.job_restart_count = base_store.get_job_restart_counter()
+        else:
+            pass
 
     def freeze(self):
         frozen = FrozenState(**dataclasses.asdict(self))

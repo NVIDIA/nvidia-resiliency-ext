@@ -896,11 +896,9 @@ class MultiProcessTestCase(unittest.TestCase):
                 )
 
             raise RuntimeError(error)
-        sys.stderr.write(f'first_process.exitcode: {first_process.exitcode}\n')
         # If no process exited uncleanly, we check for timeouts, and then
         # ensure each process exited cleanly.
         for i, p in enumerate(self.processes):
-            sys.stderr.write(f'Process {i} exit code: {p.exitcode}\n')
             if p.exitcode is None:
                 raise RuntimeError(
                     f'Process {i} terminated or timed out after ' f'{elapsed_time} seconds'

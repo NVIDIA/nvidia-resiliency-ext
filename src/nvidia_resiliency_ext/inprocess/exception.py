@@ -15,7 +15,6 @@
 # limitations under the License.
 
 
-
 class RestartError(Exception):
     r'''
     Base :py:exc:`Exception` for exceptions raised by
