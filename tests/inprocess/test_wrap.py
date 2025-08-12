@@ -677,5 +677,5 @@ class TestTCPStore(TestCase):
 
             raise ZeroDivisionError
 
-        with self.assertRaisesRegex(inprocess.exception.RestartAbort, 'iteration=3'):
+        with self.assertRaisesRegex(inprocess.exception.RestartAbort, 'job_restart_count=3'):
             fn()
