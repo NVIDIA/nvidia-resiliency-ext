@@ -187,8 +187,12 @@ class TestException(TestCase):
             counter += 1
             raise RuntimeError
 
-        with self.assertRaises(inprocess.exception.RestartAbort):
+        # The wrapper will catch RestartAbort and call sys.exit(130)
+        with self.assertRaises(SystemExit) as cm:
             fn()
+
+        # Verify the exit code is 130 (RestartAbort)
+        self.assertEqual(cm.exception.code, 130)
         self.assertEqual(counter, max_iterations)
 
     def test_success(self):
@@ -244,8 +248,12 @@ class TestException(TestCase):
         def fn():
             pass
 
-        with self.assertRaises(inprocess.exception.RestartAbort):
+        # The wrapper will catch RestartAbort and call sys.exit(130)
+        with self.assertRaises(SystemExit) as cm:
             fn()
+
+        # Verify the exit code is 130 (RestartAbort)
+        self.assertEqual(cm.exception.code, 130)
 
     def test_faulty_abort(self):
         class Abort(inprocess.abort.Abort):
@@ -261,8 +269,12 @@ class TestException(TestCase):
         def fn():
             raise RuntimeError
 
-        with self.assertRaises(inprocess.exception.RestartAbort):
+        # The wrapper will catch RestartAbort and call sys.exit(130)
+        with self.assertRaises(SystemExit) as cm:
             fn()
+
+        # Verify the exit code is 130 (RestartAbort)
+        self.assertEqual(cm.exception.code, 130)
 
     def test_faulty_finalize(self):
         class Finalize(inprocess.finalize.Finalize):
@@ -397,8 +409,12 @@ class TestException(TestCase):
         def fn():
             raise inprocess.monitor_thread.RankShouldRestart
 
-        with self.assertRaises(inprocess.exception.RestartAbort):
+        # The wrapper will catch RestartAbort and call sys.exit(130)
+        with self.assertRaises(SystemExit) as cm:
             fn()
+
+        # Verify the exit code is 130 (RestartAbort)
+        self.assertEqual(cm.exception.code, 130)
 
     def test_system_exit(self):
         @inprocess.Wrapper(**self.kwargs())
@@ -434,8 +450,12 @@ class TestState(TestCase):
         def fn():
             pass
 
-        with self.assertRaises(inprocess.exception.RestartAbort):
+        # The wrapper will catch RestartAbort and call sys.exit(130)
+        with self.assertRaises(SystemExit) as cm:
             fn()
+
+        # Verify the exit code is 130 (RestartAbort)
+        self.assertEqual(cm.exception.code, 130)
 
     def test_frozen_finalize(self):
         class Finalize(inprocess.finalize.Finalize):
@@ -495,8 +515,12 @@ class TestMultiCall(TestCase):
             raise ZeroDivisionError
 
         def run():
-            with self.assertRaises(inprocess.exception.RestartAbort):
+            # The wrapper will catch RestartAbort and call sys.exit(130)
+            with self.assertRaises(SystemExit) as cm:
                 fn()
+
+            # Verify the exit code is 130 (RestartAbort)
+            self.assertEqual(cm.exception.code, 130)
             self.assertEqual(iteration, max_iterations - 1)
 
         for _ in range(2):
@@ -677,5 +701,10 @@ class TestTCPStore(TestCase):
 
             raise ZeroDivisionError
 
-        with self.assertRaisesRegex(inprocess.exception.RestartAbort, 'job_restart_count=3'):
+        # The wrapper will catch RestartAbort and call sys.exit(130)
+        # We need to catch SystemExit with exit code 130 instead of RestartAbort
+        with self.assertRaises(SystemExit) as cm:
             fn()
+
+        # Verify the exit code is 130 (RestartAbort)
+        self.assertEqual(cm.exception.code, 130)
