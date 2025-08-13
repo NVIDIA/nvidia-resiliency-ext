@@ -5,14 +5,14 @@ This document contains additional diagrams to complement the main design documen
 ## 1. System Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────────────────┐
 │                           Auto-Restart System                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────────┐ │
 │  │   Parent Process│    │  Child Process  │    │   External Services     │ │
-│  │   (Monitor)     │    │  (Training)     │ │
-│  │                 │    │                 │ │
+│  │   (Monitor)     │    │  (Training)     │    │                         | |
+│  │                 │    │                 │    │                         | |
 │  │ ┌─────────────┐ │    │ ┌─────────────┐ │    │ ┌─────────────────────┐ │ │
 │  │ │fork_and_    │ │    │ │InProcess    │ │    │ │   TCPStore Service  │ │ │
 │  │ │monitor()    │ │    │ │Wrapper      │ │    │ │                     │ │ │
@@ -20,19 +20,19 @@ This document contains additional diagrams to complement the main design documen
 │  │ │• Fork child │ │    │ │• Training   │ │    │ │ • Persists across   │ │ │
 │  │ │• Monitor    │ │    │ │• Resilience │ │    │ │   restarts          │ │ │
 │  │ │• Restart    │ │    │ │• Restart    │ │    │ │ • Barrier coord.    │ │ │
-│  │ │  on failure│ │    │ │  logic      │ │    │ │ • State persistence │ │ │
-│  │ └─────────────┘ │    │ └─────────────┘ │    │ └─────────────────────┘ │
+│  │ │  on failure │ │    │ │  logic      │ │    │ │ • State persistence │ │ │
+│  │ └─────────────┘ │    │ └─────────────┘ │    │ └─────────────────────┘ │ |
 │  └─────────────────┘    └─────────────────┘    └─────────────────────────┘ │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │                        State Management                                │ │
-│  │                                                                         │ │
-│  │  • global_iteration_counter (increments by 100)                        │ │
-│  │  • job_restart_counter (tracks total restarts)                         │ │
-│  │  • ranks_restart_counter (per-iteration tracking)                      │ │
-│  │  • State persistence across process boundaries                          │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
+│                                                                            │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │                        State Management                               │ │
+│  │                                                                       │ │
+│  │  • global_iteration_counter (increments by 100)                       │ │
+│  │  • job_restart_counter (tracks total restarts)                        │ │
+│  │  • ranks_restart_counter (per-iteration tracking)                     │ │
+│  │  • State persistence across process boundaries                        │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────-─┘
 ```
 
 ## 2. Process Lifecycle Flow
@@ -63,8 +63,8 @@ This document contains additional diagrams to complement the main design documen
 │   Parent    │ │    Child    │
 │  Process    │ │   Process   │
 └──────┬──────┘ └──────┬──────┘
-       │                │
-       │                ▼
+       │               │
+       │               ▼
        │         ┌─────────────┐
        │         │   Training  │
        │         │   Starts    │
@@ -105,67 +105,75 @@ This document contains additional diagrams to complement the main design documen
        │         ┌─────────────┐
        │         │   Exit      │
        │         │   Code      │
-       │         └──────┬──────┘
-       │                │
-       │                ▼
-       │         ┌─────────────┐
-       │         │Exit Code    │
-       │         │130?         │
-       │         └──────┬──────┘
-       │                │
-       │                ├─Yes──┐
-       │                │      │
-       │                ▼      ▼
-       │         ┌─────────────┐ ┌─────────────┐
-       │         │   Clean     │ │   Parent   │
-       │         │   Exit      │ │  Exits     │
-       │         │   (No       │ │  (No       │
-       │         │   Restart)  │ │  Restart)  │
-       │         └─────────────┘ └─────────────┘
-       │
-       │                ├─No───┐
-       │                │      │
-       │                ▼      ▼
-       │         ┌─────────────┐ ┌─────────────┐
-       │         │   Parent    │ │   Parent   │
-       │         │   Detects   │ │  Waits     │
-       │         │   Failure   │ │  &         │
-       │         └──────┬──────┘ │  Restarts  │
-       │                │        └──────┬─────┘
-       │                ▼               │
-       │         ┌─────────────┐       │
-       │         │   Parent    │       │
-       │         │   Restarts  │◄──────┘
-       │         │   Child     │
        │         └─────────────┘
        │
        ▼
 ┌─────────────┐
 │   Parent    │
-│  Exits     │
+│  Monitors  │
+│   Child     │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│   Parent    │
+│  Checks     │
+│  Exit Code  │
+└──────┬──────┘
+       │
+       ├─Exit 0 or 130─┐
+       │                │
+       |                ▼
+       |        ┌─────────────┐
+       |        │   Parent    │
+       |        │  Exits      │
+       |        │  (No        │
+       |        │  Restart)   │
+       |        └─────────────┘
+       │
+    Other Exit Codes
+       │            
+       ▼            
+┌─────────────┐ 
+│   Parent    │ 
+│  Detects    │ 
+│  Failure    │ 
+└──────┬──────┘ 
+       │        
+       │        
+       ▼        
+┌─────────────┐ 
+│   Parent    │ 
+│  Restarts   │
+│  Child      │
+└─────────────┘
+       │
+       ▼
+┌─────────────┐
+│   New       │
+│   Child     │
+│   Process   │
 └─────────────┘
 ```
 
 ## 3. State Transition Diagram
 
 ```
-┌─────────────────┐
-│   Initial State │
-│                 │
-│ • iteration=0   │
-│ • job_restart=0 │
-│ • ranks_restart=0│
-└─────────┬───────┘
+┌────────────────-─┐
+│   Initial State  │
+│                  │
+│ • iteration=0    │
+│ • job_restart=0  │
+└─────────┬──────-─┘
           │
           ▼
-┌─────────────────┐
-│   Training      │
-│   Running       │
-│                 │
-│ • iteration=0   │
-│ • job_restart=0 │
-│ • ranks_restart=0│
-└─────────┬───────┘
+┌────────────────-─┐
+│   Training       │
+│   Running        │
+│                  │
+│ • iteration=0    │
+│ • job_restart=0  │
+└─────────┬──────-─┘
           │
           ▼
 ┌─────────────────┐
@@ -189,7 +197,6 @@ This document contains additional diagrams to complement the main design documen
 │                 │ │                 │
 │ • iteration=0   │ │ • iteration=100 │
 │ • job_restart=1 │ │ • job_restart=1 │
-│ • ranks_restart=1│ │ • ranks_restart=0│
 └─────────┬───────┘ └─────────┬───────┘
           │                   │
           │                   ▼
@@ -199,54 +206,74 @@ This document contains additional diagrams to complement the main design documen
           │         │                 │
           │         │ • iteration=100 │
           │         │ • job_restart=1 │
-          │         │ • ranks_restart=0│
           │         └─────────┬───────┘
           │                   │
           │                   ▼
-          │         ┌─────────────────┐
-          │         │   Training      │
-          │         │   Continues     │
-          │         │                 │
-          │         │ • iteration=100 │
-          │         │ • job_restart=1 │
-          │         │ • ranks_restart=0│
-          │         └─────────┬───────┘
+┌─────────────────┐ ┌─────────────────┐
+│   Training      │ │   Training      │
+│   Continues     │ │   Continues     │
+│                 │ │                 │
+│ • iteration=1   │ │ • iteration=100 │
+│ • job_restart=1 │ │ • job_restart=1 │
+└─────────┬───────┘ └─────────┬───────┘
           │                   │
-          │                   ▼
-          │         ┌─────────────────┐
-          │         │   Success or    │
-          │         │   Max Iterations│
-          │         │   Reached       │
-          │         └─────────┬───────┘
           │                   │
-          │                   ▼
-          │         ┌─────────────────┐
-          │         │   RestartAbort  │
-          │         │   (Exit 130)    │
-          │         └─────────┬───────┘
+          ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐
+│   InProcess     │ │   InProcess     │
+│   Restart       │ │   Restart       │
+│   Logic         │ │   Logic         │
+└─────────┬───────┘ └─────────┬───────┘
           │                   │
-          │                   ▼
-          │         ┌─────────────────┐
-          │         │   Clean Exit    │
-          │         │   (No Restart)  │
-          │         └─────────────────┘
-          │
-          ▼
-┌─────────────────┐
-│   Training      │
-│   Continues     │
-│                 │
-│ • iteration=0   │
-│ • job_restart=1 │
-│ • ranks_restart=1│
-└─────────┬───────┘
-          │
-          ▼
-┌─────────────────┐
-│   Next          │
-│   Iteration     │
-│   or Success    │
-└─────────────────┘
+          │                   │
+          ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐
+│   Training      │ │   Training      │
+│   Continues     │ │   Continues     │
+│                 │ │                 │
+│ • iteration=2   │ │ • iteration=101 │
+│ • job_restart=2 │ │ • job_restart=2 │
+└─────────┬───────┘ └─────────┬───────┘
+          │                   │
+          │                   │
+          ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐
+│   InProcess     │ │   InProcess     │
+│   Restart       │ │   Restart       │
+│   Logic         │ │   Logic         │
+└─────────┬───────┘ └─────────┬───────┘
+          │                   │
+          │                   │
+          ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐
+│   Training      │ │   Training      │
+│   Continues     │ │   Continues     │
+│                 │ │                 │
+│ • iteration=3   │ │ • iteration=200 │
+│ • job_restart=3 │ │ • job_restart=3 │
+└─────────┬───────┘ └─────────┬───────┘
+          │                   │
+          │                   │
+          ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐
+│   Success or    │ │   Success or    │
+│   Max Iterations│ │   Max Iterations│
+│   Reached       │ │   Reached       │
+└─────────┬───────┘ └─────────┬───────┘
+          │                   │
+          │                   │
+          ▼                   ▼
+┌──────────────-───┐ ┌─────────────-────┐
+│ 0 or RestartAbort│ │ 0 or RestartAbort│
+│   (Exit 130)     │ │   (Exit 130)     │
+└─────────┬──────-─┘ └─────────┬─────-──┘
+          │                    │
+          │                    │
+          ▼                    ▼
+┌─────────────────┐ ┌─────────────────┐
+│   Clean Exit    │ │   Clean Exit    │
+│   (No Restart)  │ │   (No Restart)  │
+└─────────────────┘ └─────────────────┘        
 ```
 
 ## 4. TCPStore Integration Flow
@@ -328,37 +355,40 @@ This document contains additional diagrams to complement the main design documen
 ## 5. Key Space Management
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Key Space Management                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Iteration 0:                                                   │
+┌────────────────────────────────────────────────────────────────-─┐
+│                    Key Space Management                          │
+├─────────────────────────────────────────────────────────────────-┤
+│                                                                  │
+│  Iteration 0:                                                    │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ • global_iteration_counter = 0                             │ │
-│  │ • Keys: iteration_0_*, job_restart_0_*, ranks_restart_0_*  │ │
+│  │ • global_iteration_counter = 0                              │ │
+│  │ • job_restart_counter = 0                                   │ │
+│  │ • Keys: iteration_0_*, etc                                  │ │
 │  │ • Training session 1                                        │ │
 │  └─────────────────────────────────────────────────────────────┘ │
-│                                                                 │
-│  After Cross-Process Restart:                                   │
+│                                                                  │
+│  After Cross-Process Restart:                                    │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ • global_iteration_counter = 100                           │ │
-│  │ • Keys: iteration_100_*, job_restart_100_*, etc.           │ │
+│  │ • global_iteration_counter = 100                            │ │
+│  │ • job_restart_counter = 1                                   │ │
+│  │ • Keys: iteration_100_*, etc.                               │ │
 │  │ • Training session 2                                        │ │
 │  └─────────────────────────────────────────────────────────────┘ │
-│                                                                 │
-│  After Another Cross-Process Restart:                          │
+│                                                                  │
+│  After Another Cross-Process Restart:                            │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ • global_iteration_counter = 200                           │ │
-│  │ • Keys: iteration_200_*, job_restart_200_*, etc.           │ │
+│  │ • global_iteration_counter = 200                            │ │
+│  │ • job_restart_counter = 2                                   │ │
+│  │ • Keys: iteration_200_*, etc.                               │ │
 │  │ • Training session 3                                        │ │
 │  └─────────────────────────────────────────────────────────────┘ │
-│                                                                 │
-│  Benefits:                                                      │
+│                                                                  │
+│  Benefits:                                                       │
 │  • No key conflicts between sessions                           │ │
 │  • Clean separation of state                                   │ │
 │  • Easy debugging and monitoring                               │ │
 │  • Predictable key patterns                                    │ │
-└─────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────-───────────┘
 ```
 
 ## 6. Exit Code Handling
@@ -403,80 +433,5 @@ This document contains additional diagrams to complement the main design documen
 └─────────────────┘ └─────────────────┘
 ```
 
-## 7. Hot Spare Configuration
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Hot Spare Configuration                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Total World Size: 8                                            │
-│  Active World Size: 6                                           │
-│  Hot Spare Count: 2                                             │
-│                                                                 │
-│  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐   │
-│  │   Rank 0        │ │   Rank 1        │ │   Rank 2        │   │
-│  │   (Active)      │ │   (Active)      │ │   (Active)      │   │
-│  └─────────────────┘ └─────────────────┘ └─────────────────┘   │
-│                                                                 │
-│  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐   │
-│  │   Rank 3        │ │   Rank 4        │ │   Rank 5        │   │
-│  │   (Active)      │ │   (Active)      │ │   (Active)      │   │
-│  └─────────────────┘ └─────────────────┘ └─────────────────┘   │
-│                                                                 │
-│  ┌─────────────────┐ ┌─────────────────┐                       │
-│  │   Rank 6        │ │   Rank 7        │                       │
-│  │   (Hot Spare)   │ │   (Hot Spare)   │                       │
-│  └─────────────────┘ └─────────────────┘                       │
-│                                                                 │
-│  Benefits:                                                      │
-│  • Fault tolerance for rank failures                           │
-│  • Reduced restart overhead                                    │
-│  • Better resource utilization                                 │
-│  • Configurable resilience level                               │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## 8. Component Interaction Sequence
-
-```
-┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
-│Training │ │InProcess│ │TCPStore │ │Parent   │ │State    │
-│App      │ │Wrapper  │ │Service  │ │Process  │ │Store    │
-└────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘
-     │           │           │           │           │
-     │───Start──▶│           │           │           │
-     │           │           │           │           │
-     │           │───Init───▶│           │           │
-     │           │           │           │           │
-     │           │◀──Ready───│           │           │
-     │           │           │           │           │
-     │           │───State──▶│           │           │
-     │           │           │           │           │
-     │           │◀──State───│           │           │
-     │           │           │           │           │
-     │           │───Train──▶│           │           │
-     │           │           │           │           │
-     │           │◀──Failure─│           │           │
-     │           │           │           │           │
-     │           │───Restart▶│           │           │
-     │           │           │           │           │
-     │           │───State──▶│           │           │
-     │           │           │           │           │
-     │           │◀──State───│           │           │
-     │           │           │           │           │
-     │           │───Exit───▶│           │           │
-     │           │           │           │           │
-     │           │           │           │───Exit───▶│
-     │           │           │           │           │
-     │           │           │           │◀──Code───│
-     │           │           │           │           │
-     │           │           │           │───Check──▶│
-     │           │           │           │           │
-     │           │           │           │◀──Result─│
-     │           │           │           │           │
-     │           │           │           │───Action─▶│
-     │           │           │           │           │
-```
 
 These diagrams provide a comprehensive visual understanding of the Auto-Restart feature's architecture, flow, and interactions. They complement the main design document by showing the system from different perspectives and highlighting key relationships between components.

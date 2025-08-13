@@ -1,5 +1,51 @@
 # Auto-Restart Feature - Executive Summary
 
+## Background and Rationale
+
+### Current State: Two Separate Restart Solutions
+
+NVRx currently has two distinct restart solutions:
+
+- **InProcess**: Training restart within the same process
+- **InJob**: Training restart across process boundaries (similar to PyTorch Elastic)
+
+### Why Not Integrate InJob with InProcess?
+
+While integrating InJob with InProcess might seem simpler at first glance, this approach has significant drawbacks:
+
+#### Overlapping Features Create Complexity
+InJob and InProcess share several overlapping components:
+1. **Rendezvous** - Process coordination and discovery
+2. **Rank Assignment** - Worker rank management
+3. **Job Monitor** - Health monitoring and failure detection
+4. **Job Abort Workflow** - Termination handling
+5. **TCPStore** - Distributed state management
+
+Managing two overlapping software stacks increases complexity and maintenance overhead without providing optimal training resilience.
+
+#### Integration Challenges
+- **Tight Coupling**: InJob is tightly coupled with features that overlap with InProcess
+- **Architectural Conflicts**: Different design philosophies and state management approaches
+- **Maintenance Burden**: Two codebases to maintain and debug
+
+### Our Chosen Path: Organic Evolution of InProcess
+
+We've chosen to **organically enhance InProcess** rather than integrate with InJob. This approach:
+
+✅ **Maximizes Training Resilience**: Single, unified restart framework  
+✅ **Reduces Complexity**: One codebase to maintain and debug  
+✅ **Enables Gradual Migration**: Existing InProcess users can adopt features incrementally  
+✅ **Provides Clear Roadmap**: Clear path to convergence  
+
+### Convergence Strategy
+
+The auto-restart feature is the **first step** toward a unified restart framework. Our roadmap includes:
+
+1. **✅ Cross-Process Restart** (Current: Auto-Restart)
+2. **🔄 Dynamic World Size Support** (Next: Enhanced InProcess)
+3. **🔄 Advanced Health Checks** (Future: Leverage InJob health check patterns)
+4. **🔄 Unified Framework** (Goal: Single restart solution)
+
 ## What is Auto-Restart?
 
 Auto-Restart is a feature that enhances the existing InProcess resilience framework to support **training restart across process boundaries**. Unlike the original InProcess which only allowed restart within the same process, this enhancement enables seamless restart across different processes.
@@ -9,7 +55,6 @@ Auto-Restart is a feature that enhances the existing InProcess resilience framew
 ✅ **Cross-Process Resilience**: Training survives process-level failures  
 ✅ **Automatic Recovery**: No manual intervention required for restarts  
 ✅ **State Persistence**: Training state maintained across restarts  
-✅ **Hot Spare Support**: Configurable fault tolerance with spare ranks  
 ✅ **Backward Compatible**: Existing InProcess functionality preserved  
 
 ## How It Works
@@ -53,9 +98,11 @@ inprocess.Wrapper(
 )
 ```
 
-### Modified Arguments
-- `--inprocess-max-iterations`: Now total restart limit (in-process + across-process)
-- `--inprocess-active-world-size`: Number of active ranks
+### Existing Arguments Enhanced by Auto-Restart
+- `--inprocess-max-iterations`: Now refers to total restart limit (both in-process and across-process)
+- `--inprocess-active-world-size`: Number of active ranks (enables hot spare functionality)
+
+**Note**: These arguments already existed in InProcess. Auto-restart enhances their functionality to work across process boundaries.
 
 ## State Management
 
@@ -66,9 +113,9 @@ inprocess.Wrapper(
 
 ### Key Space Strategy
 ```
-Iteration 0:   Keys: iteration_0_*, job_restart_0_*
-Iteration 100: Keys: iteration_100_*, job_restart_100_*
-Iteration 200: Keys: iteration_200_*, job_restart_200_*
+Iteration 0:   Keys: iteration_0_*
+Iteration 100: Keys: iteration_100_*
+Iteration 200: Keys: iteration_200_*
 ```
 
 ## Usage Example
@@ -131,6 +178,30 @@ store = torch.distributed.TCPStore(
 2. **Port Conflicts**: TCPStore port conflicts with existing services
 3. **State Corruption**: Incomplete state restoration after restart
 
+## Strategic Advantages
+
+### Why This Approach Over Alternatives?
+
+#### vs. InJob Integration
+- **Avoids Overlapping Stacks**: No duplicate rendezvous, rank assignment, or monitoring code
+- **Reduces Complexity**: Single codebase instead of managing two overlapping frameworks
+- **Better Maintainability**: One team can focus on one restart solution
+
+#### vs. Dual Maintenance
+- **Single Codebase**: Eliminates the need to maintain and debug two separate systems
+- **Unified Testing**: All restart scenarios tested in one framework
+- **Consistent Behavior**: Same restart logic for all failure modes
+
+#### vs. Incomplete Solutions
+- **Clear Roadmap**: Defined path to full convergence with InJob features
+- **Incremental Adoption**: Users can adopt features as they become available
+- **Future-Proof**: Built on extensible architecture for future enhancements
+
+#### vs. Vendor Lock-in
+- **Leverages Investment**: Builds on existing InProcess codebase and user base
+- **Gradual Migration**: No need to rewrite existing training code
+- **Risk Mitigation**: Proven InProcess foundation with incremental improvements
+
 ## Performance Considerations
 
 - **Memory Overhead**: Minimal additional memory for monitoring
@@ -139,10 +210,11 @@ store = torch.distributed.TCPStore(
 
 ## Future Enhancements
 
-- Advanced monitoring and alerting
-- Checkpoint integration with restart mechanism
-- Dynamic restart policy adjustment
-- Metrics collection and analysis
+### Convergence Roadmap
+- **Phase 1**: ✅ Cross-process restart (Current: Auto-Restart)
+- **Phase 2**: 🔄 Dynamic world size support in InProcess
+- **Phase 3**: 🔄 Advanced health checks (leveraging InJob patterns)
+- **Phase 4**: 🎯 Unified restart framework
 
 ## Support and Documentation
 

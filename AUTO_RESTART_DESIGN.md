@@ -18,23 +18,23 @@ The Auto-Restart feature enhances the existing InProcess resilience framework to
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Auto-Restart System                         │
+│                    Auto-Restart System                          │
 ├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────┐ │
-│  │   Parent Process│    │  Child Process  │    │ TCPStore    │ │
-│  │   (Monitor)     │    │  (Training)     │    │ Service     │ │
-│  │                 │    │                 │    │             │ │
-│  │ ┌─────────────┐ │    │ ┌─────────────┐ │    │ ┌─────────┐ │ │
-│  │ │fork_and_    │ │    │ │InProcess    │ │    │ │External │ │ │
-│  │ │monitor()    │ │    │ │Wrapper      │ │    │ │TCPStore │ │ │
-│  │ │             │ │    │ │             │ │    │ │         │ │ │
-│  │ │• Fork child │ │    │ │• Training   │ │    │ │• Hosted │ │ │
-│  │ │• Monitor    │ │    │ │• Resilience │ │    │ │  by     │ │ │
-│  │ │• Restart    │ │    │ │• Restart    │ │    │ │  Rank 0 │ │ │
-│  │ │  on failure│ │    │ │  logic      │ │    │ │• Persists│ │ │
-│  │ └─────────────┘ │    │ └─────────────┘ │    │ │  across │ │ │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌───────────-──┐ │
+│  │   Parent Process│    │  Child Process  │    │ TCPStore     │ │
+│  │   (Monitor)     │    │  (Training)     │    │ Service      │ │
+│  │                 │    │                 │    │              │ │
+│  │ ┌─────────────┐ │    │ ┌─────────────┐ │    │ ┌──────-───┐ │ │
+│  │ │fork_and_    │ │    │ │InProcess    │ │    │ │External  │ │ │
+│  │ │monitor()    │ │    │ │Wrapper      │ │    │ │TCPStore  │ │ │
+│  │ │             │ │    │ │             │ │    │ │          │ │ │
+│  │ │• Fork child │ │    │ │• Training   │ │    │ │• Hosted  │ │ │
+│  │ │• Monitor    │ │    │ │• Resilience │ │    │ │  by      │ │ │
+│  │ │• Restart    │ │    │ │• Restart    │ │    │ │  Rank 0  │ │ │
+│  │ │  on failure │ │    │ │  logic      │ │    │ │• Persists│ │ │
+│  │ └─────────────┘ │    │ └─────────────┘ │    │ │  across  │ │ │
 │  └─────────────────┘    └─────────────────┘    │ │  restarts│ │ │
-│                                                │ └─────────┘ │ │
+│                                                │ └─────────-┘ │ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,7 +92,7 @@ import numpy as np
 
 **Key Features**:
 - Runs independently of training processes
-- Hosted by Rank 0 process
+- Hosted by Rank 0
 - Persists across rank restarts
 - Solves barrier coordination issues
 
@@ -157,7 +157,7 @@ inprocess.Wrapper(
 
 ### 2. Command Line Arguments
 
-**Modified Arguments**:
+**Existing Arguments Enhanced by Auto-Restart**:
 - `--inprocess-max-iterations`: Now refers to total restart limit (both in-process and across-process)
 - `--inprocess-active-world-size`: Number of active ranks (enables hot spare functionality)
 
@@ -277,22 +277,6 @@ if store:
 - Exit code interpretation required
 - Log analysis across multiple processes
 
-## Future Enhancements
-
-### 1. **Advanced Monitoring**
-- Health check integration with external services
-- Metrics collection and alerting
-- Automated failure analysis
-
-### 2. **State Persistence**
-- Checkpoint integration with restart mechanism
-- Training progress preservation
-- Model state synchronization
-
-### 3. **Dynamic Configuration**
-- Runtime restart policy adjustment
-- Adaptive timeout strategies
-- Configurable restart limits
 
 ## Conclusion
 
