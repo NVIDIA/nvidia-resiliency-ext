@@ -302,6 +302,70 @@ class GPUHealthCheck(PynvmlMixin):
 
         return True
 
+    @with_pynvml_lock
+    def _perform_health_check_single_gpu(self, gpu_id: int) -> bool:
+        """
+        Core method to perform GPU health check. Used by both sync and async checks.
+
+        Checks the recovery action needed for each GPU and ensures all GPUs are healthy.
+
+        Returns:
+            bool: True if all GPUs are healthy (no recovery action needed), False otherwise.
+        """
+        try:
+            self.pynvml.nvmlInit()
+            handle = self.pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+
+            if not hasattr(self.pynvml, "NVML_FI_DEV_GET_GPU_RECOVERY_ACTION"):
+                # PyNVML is not available so we assume the GPU is healthy
+                return True
+
+            # Get the GPU recovery action status
+            recovery_action = self.pynvml.nvmlDeviceGetFieldValues(
+                handle, [self.pynvml.NVML_FI_DEV_GET_GPU_RECOVERY_ACTION]
+            )[0].value.uiVal
+
+            # Interpret the recovery action
+            if recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NONE:
+                return True
+            elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_GPU_RESET:
+                self.log.warning(
+                    f"GPU {gpu_id}: Requires a reset to recover. Terminate GPU processes and reset the GPU."
+                )
+                return False
+            elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NODE_REBOOT:
+                self.log.warning(
+                    f"GPU {gpu_id}: Requires a node reboot to recover. Reboot the system."
+                )
+                return False
+            elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_P2P:
+                self.log.warning(
+                    f"GPU {gpu_id}: Requires peer-to-peer traffic to be drained. Terminate related processes."
+                )
+                return False
+            elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_AND_RESET:
+                self.log.warning(
+                    f"GPU {gpu_id}: Operating at reduced capacity. Drain existing work and reset the GPU."
+                )
+                return False
+            else:
+                self.log.warning(f"GPU {gpu_id}: Unknown recovery action status: {recovery_action}")
+                return False
+
+        except self.pynvml.NVMLError as e:
+            self.log.warning(f"NVML Error: {str(e)}")
+            return False
+        except Exception as e:
+            self.log.warning(f"Unexpected Error: {str(e)}")
+            return False
+        finally:
+            try:
+                self.pynvml.nvmlShutdown()
+            except Exception as e:
+                self.log.warning(f"Error during NVML shutdown: {str(e)}")
+
+        return True
+
 
 class NicHealthCheck(PynvmlMixin, PciMixin):
     # Default path template for IB link down counter

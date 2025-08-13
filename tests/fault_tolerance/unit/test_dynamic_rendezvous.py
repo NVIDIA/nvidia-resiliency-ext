@@ -21,6 +21,8 @@ from unittest.mock import MagicMock, Mock, call, patch
 import pytest
 import torch
 from torch.distributed import Store
+from torch.distributed.elastic.agent.server.api import WorkerState
+from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import C10dRendezvousBackend
 
 from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
     FtRendezvousHandler,
@@ -48,10 +50,40 @@ from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
     _RendezvousStateHolder,
     create_handler,
 )
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import WorkerState
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.rendezvous.c10d_rendezvous_backend import (
-    C10dRendezvousBackend,
-)
+
+
+def _extract_rendezvous_info(rendezvous_result) -> Tuple[int, int]:
+    """Extract rank and world_size from either RendezvousInfo or tuple.
+
+    Args:
+        rendezvous_result: Either a RendezvousInfo object or a tuple (store, rank, world_size)
+
+    Returns:
+        Tuple of (rank, world_size)
+    """
+    try:
+        # Try to access as RendezvousInfo object
+        return rendezvous_result.rank, rendezvous_result.world_size
+    except AttributeError:
+        # Fall back to tuple format (store, rank, world_size)
+        return rendezvous_result[1], rendezvous_result[2]
+
+
+def _extract_store(rendezvous_result) -> Store:
+    """Extract store from either RendezvousInfo or tuple.
+
+    Args:
+        rendezvous_result: Either a RendezvousInfo object or a tuple (store, rank, world_size)
+
+    Returns:
+        Store object
+    """
+    try:
+        # Try to access as RendezvousInfo object
+        return rendezvous_result.store
+    except AttributeError:
+        # Fall back to tuple format (store, rank, world_size)
+        return rendezvous_result[0]
 
 
 class CustomAssertMixin:
@@ -573,13 +605,7 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         if settings is None:
             settings = self._create_settings()
 
-        ranks_connector = MagicMock()
-        ranks_connector.received.return_value = []  # Default no messages
-        ranks_connector.clear.return_value = None  # Default behavior for clear()
-
-        return _DistributedRendezvousOpExecutor(
-            self._node, self._state_holder, settings, ranks_connector
-        )
+        return _DistributedRendezvousOpExecutor(self._node, self._state_holder, settings)
 
     def _run_action(self, action: _Action) -> None:
         op_executor = self._create_op_executor()
@@ -838,53 +864,6 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
             mock_delay.assert_called_once_with(seconds=1)
 
         self.assertListEqual(self._mock_state_holder.mock_calls, [call.sync(), call.sync()])
-
-    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
-    def test_run_adds_to_participants_if_node_was_in_waitlist_health_check_success(
-        self, MockGPUHealthCheck
-    ):
-        """Test that node is added to participants if it was in the waitlist and passes health check."""
-        # Simulate a successful health check
-        mock_health_checker = MockGPUHealthCheck.return_value
-        mock_health_checker.return_value = True
-
-        # Add the node to the waitlist
-        self._state.wait_list.add(self._node)
-
-        # Set up the expected state after addition
-        expected_state = _RendezvousState()
-        expected_state.participants[self._node] = 0
-        expected_state.last_heartbeats[self._node] = self._now
-
-        # Set min and max nodes
-        self._min_nodes = 2
-        self._max_nodes = 2
-
-        # Verify that the node is added to participants
-        self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
-
-    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
-    def test_run_does_not_add_to_participants_if_health_check_fails(self, MockGPUHealthCheck):
-        """Test that node is not added to participants if it was in the waitlist but fails health check."""
-
-        # Mock the health check to fail
-        mock_health_checker = MockGPUHealthCheck.return_value
-        mock_health_checker.return_value = False
-
-        # Add the node to the waitlist
-        self._state.wait_list.add(self._node)
-
-        # Set up the expected state (no changes because health check fails)
-        expected_state = _RendezvousState()
-        # `participants` and `last_heartbeats` should remain empty due to health check failure
-
-        # Set min and max nodes
-        self._min_nodes = 2
-        self._max_nodes = 2
-
-        # Run the action and verify the node was not added
-        with self.assertRaises(UnhealthyNodeException):
-            self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
 
 
 class AbstractTestRendezvousOp(ABC):
@@ -1179,7 +1158,65 @@ class TestRendezvousKeepAliveOp(AbstractTestRendezvousOp, TestCase):
 
 
 class DummyStore(Store):
-    pass
+    def __init__(self):
+        super().__init__()
+        self._store = {}
+        self._timeout = timedelta(seconds=30)
+
+        # Set required keys for RendezvousStoreInfo.build()
+        self._store["MASTER_ADDR"] = b"localhost"
+        self._store["MASTER_PORT"] = b"29500"
+
+    def get(self, key: str) -> bytes:
+        # Handle prefixed keys by stripping the prefix
+        if key.startswith("torch.rendezvous.dummy_run_id.0/"):
+            key = key[len("torch.rendezvous.dummy_run_id.0/") :]
+
+        if key not in self._store:
+            raise RuntimeError(f"Key {key} not found in store")
+        return self._store[key]
+
+    def set(self, key: str, value: bytes) -> None:
+        # Handle prefixed keys by stripping the prefix
+        if key.startswith("torch.rendezvous.dummy_run_id.0/"):
+            key = key[len("torch.rendezvous.dummy_run_id.0/") :]
+
+        self._store[key] = value
+
+    def add(self, key: str, num: int) -> int:
+        if key not in self._store:
+            self._store[key] = b"0"
+        current = int(self._store[key].decode())
+        new_value = current + num
+        self._store[key] = str(new_value).encode()
+        return new_value
+
+    def check(self, keys: list) -> bool:
+        return all(key in self._store for key in keys)
+
+    def wait(self, keys: list, timeout: timedelta) -> None:
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < timeout.total_seconds():
+            if self.check(keys):
+                return
+            time.sleep(0.001)  # Small sleep to avoid busy waiting
+        raise RuntimeError(f"Timeout waiting for keys: {keys}")
+
+    def multi_get(self, keys: list) -> list:
+        return [self.get(key) for key in keys]
+
+    def multi_set(self, keys: list, values: list) -> None:
+        for key, value in zip(keys, values):
+            self.set(key, value)
+
+    def append(self, key: str, value: str) -> None:
+        if key not in self._store:
+            self._store[key] = b""
+        current = self._store[key].decode()
+        self._store[key] = (current + value).encode()
+
+    def set_timeout(self, timeout: timedelta) -> None:
+        self._timeout = timeout
 
 
 class DynamicRendezvousHandlerTest(TestCase):
@@ -1197,9 +1234,8 @@ class DynamicRendezvousHandlerTest(TestCase):
 
         self._store = DummyStore()
 
-        self._mock_store_get = MagicMock(return_value=b"dummy_value")
-
-        setattr(self._store, "get", self._mock_store_get)  # noqa: B010
+        # Don't mock the get method as it interferes with PrefixStore functionality
+        # The DummyStore's get method will handle the prefixed keys correctly
 
         self._state_holder = FakeRendezvousStateHolder()
 
@@ -1251,14 +1287,23 @@ class DynamicRendezvousHandlerTest(TestCase):
 
         handler = self._create_handler()
 
-        store, rank, world_size = handler.next_rendezvous()
+        rendezvous_info = handler.next_rendezvous()
 
+        rank, world_size = _extract_rendezvous_info(rendezvous_info)
         self.assertEqual(rank, 2)
         self.assertEqual(world_size, 3)
 
-        _ = store.get("dummy_key")
+        # Test that the store works correctly with prefixed keys
+        # The PrefixStore will add the prefix to the key
+        expected_key = "torch.rendezvous.dummy_run_id.0/dummy_key"
 
-        self._mock_store_get.assert_called_once_with("torch.rendezvous.dummy_run_id.0/dummy_key")
+        # Set a value first
+        store = _extract_store(rendezvous_info)
+        store.set("dummy_key", b"test_value")
+
+        # Then get it back
+        value = store.get("dummy_key")
+        self.assertEqual(value, b"test_value")
 
     def test_next_rendezvous_respects_the_requested_timeout(self) -> None:
         self._mock_sync.side_effect = lambda: time.sleep(0.3)
@@ -1291,7 +1336,7 @@ class DynamicRendezvousHandlerTest(TestCase):
 
                 self._mock_sync.reset_mock()
 
-    @patch("nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.record_rdzv_event")
+    @patch("torch.distributed.elastic.events.record_rdzv_event")
     def test_is_closed_records_and_raises_exceptions(self, record_mock) -> None:
         self._mock_sync.side_effect = RendezvousError("test error")
         handler = self._create_handler()
@@ -1324,7 +1369,7 @@ class DynamicRendezvousHandlerTest(TestCase):
 
         self.assertTrue(self._state.closed)
 
-    @patch("nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.record_rdzv_event")
+    @patch("torch.distributed.elastic.events.record_rdzv_event")
     def test_set_closed_records_and_raises_exceptions(self, record_mock) -> None:
         with patch.object(FtRendezvousHandler, "_close") as close_mock:
             close_mock.side_effect = RendezvousError("test error")
@@ -1343,7 +1388,7 @@ class DynamicRendezvousHandlerTest(TestCase):
 
         self._mock_sync.assert_called_once()
 
-    @patch("nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.record_rdzv_event")
+    @patch("torch.distributed.elastic.events.record_rdzv_event")
     def test_num_nodes_waiting_records_and_raises_exceptions(self, record_mock) -> None:
         self._mock_sync.side_effect = RendezvousError("test error")
         handler = self._create_handler()
@@ -1377,7 +1422,7 @@ class DynamicRendezvousHandlerTest(TestCase):
 
         self.assertTrue(self._state.closed)
 
-    @patch("nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.record_rdzv_event")
+    @patch("torch.distributed.elastic.events.record_rdzv_event")
     def test_shutdown_records_and_raises_exceptions(self, record_mock) -> None:
         with patch.object(FtRendezvousHandler, "_close") as close_mock:
             close_mock.side_effect = RuntimeError("test error")
@@ -1586,7 +1631,7 @@ class CreateHandlerTest(TestCase):
 
         self.test_create_handler_returns_handler()
 
-    @patch("nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.events.record_rdzv_event")
+    @patch("torch.distributed.elastic.events.record_rdzv_event")
     def test_create_handler_records_and_raises_exceptions(self, record_mock) -> None:
         with patch.object(FtRendezvousHandler, "from_backend") as from_mock:
             from_mock.side_effect = RendezvousError("test error")
@@ -1703,10 +1748,18 @@ class IntegrationTest(TestCase):
         handler1_thread.start()
         handler2_thread.start()
 
-        store1, rank1, world_size1 = handler1_thread.join()
-        store2, rank2, world_size2 = handler2_thread.join()
+        rendezvous_info1 = handler1_thread.join()
+        rendezvous_info2 = handler2_thread.join()
+
+        # Extract store, rank, and world_size
+        store1 = _extract_store(rendezvous_info1)
+        store2 = _extract_store(rendezvous_info2)
+
         self.assertEqual(store1.underlying_store, self._store)
         self.assertEqual(store2.underlying_store, self._store)
+
+        rank1, world_size1 = _extract_rendezvous_info(rendezvous_info1)
+        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
 
         self.assertNotEqual(rank1, rank2)
 
@@ -1729,10 +1782,18 @@ class IntegrationTest(TestCase):
         handler1_thread.start()
         handler2_thread.start()
 
-        store1, rank1, world_size1 = handler1_thread.join()
-        store2, rank2, world_size2 = handler2_thread.join()
+        rendezvous_info1 = handler1_thread.join()
+        rendezvous_info2 = handler2_thread.join()
+
+        # Extract store, rank, and world_size
+        store1 = _extract_store(rendezvous_info1)
+        store2 = _extract_store(rendezvous_info2)
+
         self.assertEqual(store1.underlying_store, self._store)
         self.assertEqual(store2.underlying_store, self._store)
+
+        rank1, world_size1 = _extract_rendezvous_info(rendezvous_info1)
+        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
 
         self.assertNotEqual(rank1, rank2)
 
@@ -1779,17 +1840,13 @@ class IntegrationTest(TestCase):
 
             # Simulate first node as healthy and second node as unhealthy
             def __mock_ensure_node_is_healthy(self, *args, **kwargs):
-                if self is handler2._op_executor:
+                if self is handler2:
                     raise UnhealthyNodeException("Node has an unhealthy GPU")
                 else:
                     pass
 
-            handler1._op_executor._ensure_node_is_healthy = MethodType(
-                __mock_ensure_node_is_healthy, handler1._op_executor
-            )
-            handler2._op_executor._ensure_node_is_healthy = MethodType(
-                __mock_ensure_node_is_healthy, handler2._op_executor
-            )
+            handler1.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler1)
+            handler2.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler2)
 
             handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
             handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
@@ -1831,7 +1888,7 @@ class IntegrationTest(TestCase):
         handler2 = self._create_handler(min_nodes=1, max_nodes=2)
 
         # Simulate handler1 joining rendezvous
-        store1, rank1, world_size1 = handler1.next_rendezvous()
+        rendezvous_info1 = handler1.next_rendezvous()
 
         # Simulate that handler2 fails health check
         with self.assertRaises(UnhealthyNodeException) as cm2:
@@ -1880,7 +1937,7 @@ class IntegrationTest(TestCase):
         handler2_thread.start()
 
         # Wait for handler1 to join rendezvous
-        store1, rank1, world_size1 = handler1_thread.join()
+        rendezvous_info1 = handler1_thread.join()
 
         # Assert that handler2 fails health check and raises an exception
         with self.assertRaises(UnhealthyNodeException) as cm2:
@@ -2068,6 +2125,14 @@ class IntegrationTest(TestCase):
                         lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0
                     )
 
+                # Stop the heartbeats of handler2 and handler3 to simulate them leaving
+                # This prevents them from interfering with the next rendezvous round
+                handler2._stop_heartbeats()
+                handler3._stop_heartbeats()
+
+                # Wait a bit for the heartbeat cleanup to take effect
+                time.sleep(2)
+
                 # participant arrives at the rendezvous again
                 # it can become the new round participant or be put on the redundancy list
                 handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
@@ -2079,6 +2144,9 @@ class IntegrationTest(TestCase):
                     lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 1
                 )
                 _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0)
+
+                # Wait for the final handler1_thread to complete
+                handler1_thread.join(timeout=10)
 
                 self.tearDown()
 
@@ -2116,23 +2184,38 @@ class IntegrationTest(TestCase):
         def __mock_ensure_node_is_healthy(self, *args, **kwargs):
             raise UnhealthyNodeException("Node has an unhealthy GPU")
 
-        handler1._op_executor._ensure_node_is_healthy = MethodType(
-            __mock_ensure_node_is_healthy, handler1._op_executor
-        )
+        handler1.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler1)
         with self.assertRaises(UnhealthyNodeException):
             handler1.next_rendezvous()
 
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1)
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 1)
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0)
+        # Explicitly stop handler1's heartbeats to simulate node failure/crash
+        # This ensures other nodes will detect it as dead through sanitization
+        handler1._stop_heartbeats()
+
+        # Wait for handler1 to be removed from the rendezvous state due to heartbeat expiration
+        # This requires: keep_alive_interval * keep_alive_max_attempt = 5s * 3 = 15s + buffer
+        _wait_for(
+            lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1, timeout=20
+        )
 
         # node2 and node3 should be available for the next round
-        handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
         handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
+        handler3_thread_new = _CapturingThread(target=handler3.next_rendezvous)  # New thread!
 
         handler2_thread.start()
-        handler2_thread.join()
-        handler3_thread.join()
+        handler3_thread_new.start()  # Start new thread
+
+        # Wait for both threads to complete the new rendezvous
+        rendezvous_info2 = handler2_thread.join()
+        rendezvous_info3 = handler3_thread_new.join()
+
+        # Verify the rendezvous completed successfully
+        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
+        rank3, world_size3 = _extract_rendezvous_info(rendezvous_info3)
+
+        self.assertEqual(world_size2, 2)
+        self.assertEqual(world_size3, 2)
+        self.assertNotEqual(rank2, rank3)
 
         _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 2)
         _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 0)

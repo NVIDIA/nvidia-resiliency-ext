@@ -16,8 +16,10 @@
 
 import dataclasses
 import enum
-import itertools
 import re
+from collections import defaultdict
+
+from .utils import format_rank_set
 
 
 class Interruption(enum.Enum):
@@ -51,11 +53,15 @@ class InterruptionRecord:
 
 
 def format_interruption_records(records):
-    msg = ', '.join(
-        (
-            f'{interruption} on {ranks=}'
-            for interruption, group in itertools.groupby(records, key=lambda r: r.interruption)
-            for ranks in [set([elem.rank for elem in group])]
-        )
-    )
-    return msg
+    # Group records by interruption type
+    grouped = defaultdict(set)
+    for record in records:
+        grouped[record.interruption].add(record.rank)
+
+    # Format the message with sample ranks and counts for debugging
+    msg_parts = []
+    for interruption, ranks in grouped.items():
+        ranks_str = format_rank_set(ranks)
+        msg_parts.append(f"{interruption} affecting ranks {ranks_str}")
+
+    return ', '.join(msg_parts)
