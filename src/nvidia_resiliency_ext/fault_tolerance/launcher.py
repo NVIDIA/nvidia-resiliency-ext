@@ -92,7 +92,8 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
 # Setup the nvrx logger at module import time
-logger = setup_logger(proc_name="ftlauncher")
+setup_logger(proc_name="ftlauncher")
+logger = logging.getLogger("nvrx")
 
 def _register_ft_rdzv_handler():
 
@@ -467,6 +468,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         for worker_env in envs.values():
             # Start rank monitors if not already started
             # Each rank (re)connects to its rank monitor when it starts
+            # Monitor of the local rank0 on the store hosting node is the restarter logger
             local_rank = int(worker_env['LOCAL_RANK'])
             is_restarter_logger = self._is_store_host and local_rank == 0
             rmon_ipc_socket = worker_env[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR]

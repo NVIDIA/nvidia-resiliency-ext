@@ -120,7 +120,6 @@ def parse_args():
         action='store_true',
         help='extra logging for the nested restarter',
     )
-    parser.add_argument("--temp-dir", help="Directory for temporary files")
 
     return parser.parse_args()
 
