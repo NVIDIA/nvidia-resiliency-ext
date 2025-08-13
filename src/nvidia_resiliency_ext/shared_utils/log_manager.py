@@ -168,6 +168,7 @@ class LogManager:
         log_dir: Optional[str] = None,
         temp_dir: Optional[str] = None,
         do_cleanup: bool = False,
+        proc_name: str = None,
     ):
         """
         Initialize the distributed log manager.
@@ -176,7 +177,7 @@ class LogManager:
             log_dir: Directory for log files. If None, uses NVRX_DIST_LOG_DIR env var
             temp_dir: Directory for temporary files. If None, uses NVRX_TEMP_DIR env var or /tmp
         """
-
+        self._proc_name = proc_name if proc_name is not None else str(os.getpid())
         # Get distributed info once during initialization
         self._workload_rank = int(os.environ.get("RANK", "0")) if os.environ.get("RANK") else None
         self._workload_local_rank = (
@@ -256,6 +257,7 @@ class LogManager:
                 self._max_backup_files,
                 # Perform cleanup if agg service disabled
                 self._do_cleanup,
+                self._proc_name,
             )
 
             # Use dynamic formatter with static hostname and dynamic rank info
@@ -314,7 +316,11 @@ class LogManager:
 
 
 def setup_logger(
-    log_dir=None, temp_dir=None, force_reset=False, do_cleanup=False
+    log_dir=None,
+    temp_dir=None,
+    force_reset=False,
+    do_cleanup=False,
+    proc_name: str = None,
 ) -> logging.Logger:
     """
     Setup the distributed logger.
@@ -370,6 +376,7 @@ def setup_logger(
             log_dir=log_dir,
             temp_dir=temp_dir,
             do_cleanup=do_cleanup,
+            proc_name=proc_name,
         )
 
         # Get the configured logger from the log manager

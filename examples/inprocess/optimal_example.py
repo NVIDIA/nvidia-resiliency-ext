@@ -225,7 +225,7 @@ def main():
     if args.log_level == logging.DEBUG:
         os.environ["NVRX_LOG_DEBUG"] = "1"
 
-    setup_logger()
+    setup_logger(proc_name="wrapper")
     log = logging.getLogger("nvrx")
 
     log.info(f'{args}')

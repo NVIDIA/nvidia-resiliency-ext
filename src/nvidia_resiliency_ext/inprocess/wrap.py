@@ -269,7 +269,7 @@ class CallWrapper:
         self.state = None
 
         try:
-            setup_logger()
+            setup_logger(proc_name="wrapper")
             log = logging.getLogger("nvrx")
 
             enforce_value(not torch.distributed.is_initialized())

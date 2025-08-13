@@ -21,34 +21,20 @@ import shutil
 import multiprocessing
 import time
 import random
-import tempfile
-import sys
-from pathlib import Path
-
-sys.path.append(os.getcwd() + "/src/")
-
 from datetime import datetime
 from nvidia_resiliency_ext.shared_utils.log_distributed import LogMessage, NodeLogAggregator
 import nvidia_resiliency_ext.shared_utils.log_manager as LogMgr
 
 
-def create_test_workspace():
-    # Create a temporary directory
-    tmp_dir = Path(tempfile.mkdtemp())
-
-    # Define log and temp directories
-    log_dir = tmp_dir / "logs"
-    temp_dir = tmp_dir / "tmp"
-
-    # Remove directories if they already exist
-    if log_dir.exists():
-        shutil.rmtree(log_dir)
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-
-    # Create the directories
-    log_dir.mkdir(parents=True, exist_ok=True)
-    temp_dir.mkdir(parents=True, exist_ok=True)
+def create_test_workspace(clean: bool = True):
+    tmp_dir = "/tmp/nvrxtest"
+    log_dir = os.path.join(tmp_dir, "logs")
+    temp_dir = os.path.join(tmp_dir, "tmp")
+    if clean:
+        if os.path.exists(log_dir):
+            shutil.rmtree(log_dir)
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
     return log_dir, temp_dir
 
 
@@ -76,8 +62,8 @@ def gen_log_msg(logger, num_msg, log_type="info"):
 def worker_process(id, num_msg, file_size):
     """Function that each process will execute."""
     setup_vars(id, id, file_size)
-    log_dir, temp_dir = create_test_workspace()
-    logger = LogMgr.setup_logger(log_dir, temp_dir, True, False)
+    log_dir, temp_dir = create_test_workspace(clean=False)
+    logger = LogMgr.setup_logger(log_dir, temp_dir, True, False, "wkrproc")
     gen_log_msg(logger, num_msg)
 
 
@@ -151,7 +137,7 @@ class TestLogger(unittest.TestCase):
             )
 
     def check_msg(self, num_msg, file_size_kb, pm_files, is_agg: bool, log_type="info", dbg_on="0"):
-        log_dir, temp_dir = create_test_workspace()
+        log_dir, temp_dir = create_test_workspace(clean=True)
         setup_vars(0, 0, file_size_kb, dbg_on)
 
         if is_agg:
@@ -163,7 +149,7 @@ class TestLogger(unittest.TestCase):
                 en_chrono_ord=True,
             )
             aggregator.start_aggregator()
-        logger = LogMgr.setup_logger(log_dir, temp_dir, True, not is_agg)
+        logger = LogMgr.setup_logger(log_dir, temp_dir, True, not is_agg, "test")
         gen_log_msg(logger, num_msg, log_type)
 
         time.sleep(1)
@@ -176,6 +162,7 @@ class TestLogger(unittest.TestCase):
 
         if is_agg:
             aggregator.shutdown()
+            log_dir = LogMgr.get_log_dir(log_dir)
             num_files, file_names = self.count_files_in_dir(log_dir)
             self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
             self.check_files(log_dir, file_names, num_msg, 0, 0, "1")
@@ -196,7 +183,7 @@ class TestLogger(unittest.TestCase):
         self.check_msg(2000, 10, 1, True)
 
     def multiple_processes(self, num_procs, num_msg, file_size_kb, chrono_on=True):
-        log_dir, temp_dir = create_test_workspace()
+        log_dir, temp_dir = create_test_workspace(clean=True)
         setup_vars(
             global_id=0,
             local_id=0,
@@ -212,7 +199,6 @@ class TestLogger(unittest.TestCase):
             en_chrono_ord=True,
         )
         aggregator.start_aggregator()
-        logger = LogMgr.setup_logger(log_dir, temp_dir, True, False)
 
         processes = []
         for i in range(num_procs):
@@ -225,8 +211,7 @@ class TestLogger(unittest.TestCase):
         for p in processes:
             p.join()
         aggregator.shutdown()
-        if hasattr(LogMgr.setup_logger, '_log_manager'):
-            lm = getattr(LogMgr.setup_logger, '_log_manager')
+        log_dir = LogMgr.get_log_dir(log_dir)
         num_files, file_names = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
         self.check_files(log_dir, file_names, num_msg * num_procs, -1, -1, chrono_on)

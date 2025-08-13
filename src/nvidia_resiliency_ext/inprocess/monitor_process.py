@@ -141,7 +141,7 @@ class MonitorProcess:
         store_factory: type[StoreMixin],
         store_kwargs: dict[str, Any],
     ):
-        setup_logger(force_reset=True)
+        setup_logger(force_reset=True, proc_name="monproc")
         log = logging.getLogger("nvrx")
 
         daemon_pid = os.getpid()

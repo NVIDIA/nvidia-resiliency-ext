@@ -22,7 +22,6 @@ import logging
 import threading
 import queue
 import heapq
-import psutil
 from datetime import datetime
 from typing import Dict, List
 
@@ -37,6 +36,7 @@ class DistributedLogHandler(logging.Handler):
         max_file_size: int,
         max_backup_files: int,
         do_cleanup: bool,
+        proc_name: str,
     ):
         super().__init__()
         self.fname = None
@@ -46,6 +46,7 @@ class DistributedLogHandler(logging.Handler):
         self.max_file_size = max_file_size
         self.max_backup_files = max_backup_files
         self.do_cleanup = do_cleanup
+        self.proc_name = proc_name
 
     def emit(self, record: logging.LogRecord):
         """Emit a log record."""
@@ -59,16 +60,7 @@ class DistributedLogHandler(logging.Handler):
             sys.stderr.flush()
 
     def _log_file_namer(self):
-        try:
-            pname = os.getpid()
-            process = psutil.Process(pname)
-            pname = process.name()
-        except psutil.NoSuchProcess as e:
-            # Log the error but don't fail the entire operation
-            sys.stderr.write(f"Failed to get process name {pname}: {e}\n")
-            sys.stderr.flush()
-
-        return f"rank_{pname}.msg.{int(time.time()*1000)}"
+        return f"rank_{self.rank_id}_{self.proc_name}.msg.{int(time.time()*1000)}"
 
     def _cleanup_old_backup_files(self):
         """Clean up old backup files, keeping only the most recent one's."""
@@ -76,7 +68,7 @@ class DistributedLogHandler(logging.Handler):
             return
         backup_files = []
         for filename in os.listdir(self.file_path):
-            match = re.match(rf"rank_{self.rank_id}.msg\.(\d+)", filename)
+            match = re.match(rf"rank_{self.rank_id}_{self.proc_name}.msg\.(\d+)", filename)
             if not match:
                 continue
             backup_files.append(filename)
@@ -197,7 +189,6 @@ class NodeLogAggregator:
         self._log_dir = log_dir
         os.makedirs(self._log_dir, exist_ok=True)
         self._log_file = log_file
-
         self.en_chrono_ord = en_chrono_ord
 
         # Track file positions for each rank to avoid re-reading
@@ -293,7 +284,8 @@ class NodeLogAggregator:
             self._log_dict_queue.clear()
 
             sorted_msgs = self._merge_sort_streaming_lists(msg_dict, heap)
-            self._write_messages_to_file(sorted_msgs, output)
+            if len(sorted_msgs) > 0:
+                self._write_messages_to_file(sorted_msgs, output)
             # Sleep briefly to avoid busy waiting
             time.sleep(0.025)
 
@@ -384,15 +376,20 @@ class NodeLogAggregator:
     def _cleanup_old_backup_files(self, msg_file: str):
         """Clean up old backup files, keeping only the most recent one."""
         # Find all backup files for this rank
-        match = re.match(r"rank_(\d+)\.msg\.(\d+)", msg_file)
-        if not match:
+        parts_first = msg_file.split('.', 1)
+        parts_last = msg_file.rsplit('.', 1)
+        if len(parts_first) < 2 or len(parts_last) < 2:
+            sys.stderr.write(f"Skipping '{msg_file}': missing '.' parts")
             return
-        to_del_rank = match.group(1)
-        to_del_ts = match.group(2)
+        to_del_ts = parts_last[-1]
+        if not to_del_ts.isdigit():
+            sys.stderr.write(f"Skipping '{msg_file}': last part is not numeric")
+            return
+        to_del_prefix = parts_first[0]
         if not os.path.exists(self._temp_dir):
             return
         for filename in os.listdir(self._temp_dir):
-            match = re.match(rf"rank_{to_del_rank}.msg\.(\d+)", filename)
+            match = re.match(rf"{to_del_prefix}.msg\.(\d+)", filename)
             if not match:
                 continue
             cur_file_ts = match.group(1)
