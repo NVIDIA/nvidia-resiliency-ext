@@ -41,7 +41,6 @@ from typing import Optional
 
 os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 import torch
-
 import nvidia_resiliency_ext.inprocess as inprocess
 
 raise_timestamp = None
@@ -113,7 +112,6 @@ def parse_args():
         default=logging.INFO,
         help='logging level',
     )
-    parser.add_argument("--temp-dir", help="Directory for temporary files")
 
     return parser.parse_args()
 
@@ -247,11 +245,5 @@ if __name__ == '__main__':
     # example the Wrapper is applied to ``main()``, therefore logging needs to
     # be initialized and configured before the Wrapper is launched.
     args = parse_args()
-
-    # Set environment variables for the service
-    if args.temp_dir is not None:
-        os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
-    if args.log_level == logging.DEBUG:
-        os.environ["NVRX_LOG_DEBUG"] = "1"
 
     main()

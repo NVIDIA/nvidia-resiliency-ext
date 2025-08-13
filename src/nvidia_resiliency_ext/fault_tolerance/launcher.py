@@ -463,25 +463,19 @@ class LocalElasticAgent(SimpleElasticAgent):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
-        """Setup rank monitors for each local rank."""
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
         for worker_env in envs.values():
-            # Monitor of the local rank0 on the store hosting node is the restarter logger
+            # Start rank monitors if not already started
+            # Each rank (re)connects to its rank monitor when it starts
             local_rank = int(worker_env['LOCAL_RANK'])
             is_restarter_logger = self._is_store_host and local_rank == 0
             rmon_ipc_socket = worker_env[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR]
             if local_rank not in self._local_rank_to_rmon:
-                # Pass LOCAL_RANK and RANK environment variables to the rank monitor
-                rank_env = {
-                    'LOCAL_RANK': worker_env['LOCAL_RANK'],
-                    'RANK': worker_env['RANK']
-                }
                 self._local_rank_to_rmon[local_rank] = RankMonitorServer.run_in_subprocess(
                     cfg=self._ft_cfg,
                     ipc_socket_path=rmon_ipc_socket,
                     is_restarter_logger=is_restarter_logger,
                     mp_ctx=fork_mp_ctx,
-                    env=rank_env,
                 )
 
     def shutdown_rank_monitors(self):

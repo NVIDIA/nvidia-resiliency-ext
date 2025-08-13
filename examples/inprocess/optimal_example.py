@@ -44,7 +44,6 @@ os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 import torch
 
 import nvidia_resiliency_ext.inprocess as inprocess
-from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
 raise_timestamp = None
 
@@ -219,16 +218,7 @@ def train(
 def main():
     args = parse_args()
 
-    # Set environment variables for the service
-    if args.temp_dir is not None:
-        os.environ["NVRX_LOG_TEMP_DIR"] = args.temp_dir
-    if args.log_level == logging.DEBUG:
-        os.environ["NVRX_LOG_DEBUG"] = "1"
-
-    setup_logger(proc_name="wrapper")
-    log = logging.getLogger("nvrx")
-
-    log.info(f'{args}')
+    logging.info(f'{args}')
 
     local_rank = int(os.environ['LOCAL_RANK'])
 

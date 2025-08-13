@@ -44,6 +44,7 @@ from .data import (
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
 from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
+from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
 
 class RankMonitorLogger(logging.Logger):
@@ -99,7 +100,6 @@ class RankMonitorLogger(logging.Logger):
 def log_restarter_event(is_restarter_logger, message, *args, **kwargs):
     """
     Log a restart event that should always be visible, but only if restarter logging is enabled.
-
     Args:
         is_restarter_logger: Whether restarter logging is enabled
         message: The message to log
@@ -170,7 +170,7 @@ class RankMonitorServer:
         if self.cfg.enable_nic_monitor:
             self.logger.info("Enable NIC health monitoring.")
             self.nic_health_checker = NicHealthCheck(
-                interval=int(self.cfg.node_health_check_interval),
+                interval=self.cfg.node_health_check_interval,
                 pci_topo_file=self.cfg.pci_topo_file,
                 link_down_path_template=self.cfg.link_down_path_template,
                 on_failure=self._handle_unhealthy_nic,
@@ -269,15 +269,7 @@ class RankMonitorServer:
         # Update NIC health checker on the rank to monitor.
         if self.nic_health_checker is not None:
             self.nic_health_checker.set_nic_device(local_rank=self.rank_info.local_rank)
-
-        # Check that the rank info matches the environment variable
-        env_rank = int(os.environ.get('RANK', '0'))
-        if msg.rank_info.global_rank != env_rank:
-            self.logger.warning(
-                f"Rank mismatch: rank_info.global_rank={msg.rank_info.global_rank}, "
-                f"environment RANK={env_rank}"
-            )
-
+        self.logger.set_connected_rank(msg.rank_info.global_rank)
         await write_obj_to_ipc_stream(OkMsg(cfg=self.cfg), writer)
 
     async def _handle_heartbeat_msg(self, msg, writer):
@@ -331,6 +323,7 @@ class RankMonitorServer:
                 f"Section(s) {open_section_names} were still open. you can use`.end_all_sections` to avoid this warning"
             )
             self.open_sections.clear()
+        self.logger.set_connected_rank(None)
         if self.connection_lock.locked():
             self.connection_lock.release()
 
@@ -548,6 +541,9 @@ class RankMonitorServer:
         logger = setup_logger(force_reset=True, proc_name="rankmonsrv")
 
         try:
+            setup_logger(proc_name="rankmonsvr")
+            logger = logging.getLogger("nvrx")
+
             logger.debug(f"Starting RankMonitorServer... PID={os.getpid()}")
             inst = RankMonitorServer(
                 cfg,
