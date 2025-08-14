@@ -61,8 +61,9 @@ from ..shared_utils.health_check import GPUHealthCheck
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-log = logging.getLogger("nvrx")
+log = logging.getLogger(LogConfig.name)
 
 
 def get_method_name(depth=2):

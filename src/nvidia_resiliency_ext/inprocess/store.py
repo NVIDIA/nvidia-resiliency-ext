@@ -35,6 +35,7 @@ import torch
 from . import exception, utils
 from .attribution import InterruptionRecord
 from .state import Mode
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class BarrierError(exception.RestartError):
@@ -197,7 +198,7 @@ class StoreMixin:
         timeout: datetime.timedelta,
         timeout_chunk: Optional[datetime.timedelta] = None,
     ):
-        log = logging.getLogger("nvrx")
+        log = logging.getLogger(LogConfig.name)
         cn = inspect.currentframe().f_code.co_name
         log.debug(f'{ranks=} enter {group_name=} {cn} {rendezvous_count=}')
 
@@ -244,7 +245,7 @@ class StoreMixin:
         rank: int,
         group_name: str,
     ):
-        log = logging.getLogger("nvrx")
+        log = logging.getLogger(LogConfig.name)
         barrier_name = self.reentrant_barrier.__name__
         store_key = f'{self.BARRIER_PREFIX}:{barrier_name}:{group_name}'
         arrived_key = f'{store_key}:arrived'
@@ -265,7 +266,7 @@ class StoreMixin:
         timeout: datetime.timedelta,
         timeout_chunk: Optional[datetime.timedelta] = None,
     ):
-        log = logging.getLogger("nvrx")
+        log = logging.getLogger(LogConfig.name)
         cn = inspect.currentframe().f_code.co_name
         log.debug(f'{ranks=} enter {group_name=} {cn} {rendezvous_count=}')
 
@@ -340,7 +341,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         multi_tenant: bool = False,
         use_libuv: bool = True,
     ):
-        log = logging.getLogger("nvrx")
+        log = logging.getLogger(LogConfig.name)
 
         if host_name is None:
             host_name = os.environ['MASTER_ADDR']

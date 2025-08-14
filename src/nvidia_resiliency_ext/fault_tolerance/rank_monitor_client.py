@@ -37,9 +37,10 @@ from .data import (
 from .ipc_connector import IpcConnector
 from .timeouts_calc import TimeoutsCalc
 from .utils import read_obj_from_ipc_socket, write_object_to_ipc_socket
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 # Get the nvrx logger
-logger = logging.getLogger("nvrx")
+logger = logging.getLogger(LogConfig.name)
 
 
 class RankMonitorClientError(Exception):

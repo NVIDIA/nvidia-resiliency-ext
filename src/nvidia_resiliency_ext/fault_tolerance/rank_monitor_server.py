@@ -44,7 +44,7 @@ from .data import (
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
 from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
-from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class RankMonitorLogger(logging.Logger):
@@ -107,7 +107,7 @@ def log_restarter_event(is_restarter_logger, message, *args, **kwargs):
     """
     if is_restarter_logger:
         # Get the nvrx logger directly
-        logger = logging.getLogger("nvrx")
+        logger = logging.getLogger(LogConfig.name)
         # Log with [RESTARTER] prefix to indicate it's a restart event
         logger.info(f"[RESTARTER] {message}", *args, **kwargs)
 
@@ -542,7 +542,7 @@ class RankMonitorServer:
 
         try:
             setup_logger(proc_name="rankmonsvr")
-            logger = logging.getLogger("nvrx")
+            logger = logging.getLogger(LogConfig.name)
 
             logger.debug(f"Starting RankMonitorServer... PID={os.getpid()}")
             inst = RankMonitorServer(

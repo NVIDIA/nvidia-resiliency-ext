@@ -57,7 +57,7 @@ Usage:
     
     # In other modules
     import logging
-    logger = logging.getLogger("nvrx")
+    logger = logging.getLogger(LogConfig.name)
     logger.info("Training started")
     logger.debug("Debug information")
     logger.error("Error occurred")
@@ -77,7 +77,7 @@ Forking Support:
     if pid == 0:
         # In child process - logger will work normally
         import logging
-        logger = logging.getLogger("nvrx")
+        logger = logging.getLogger(LogConfig.name)
         logger.info("Child process logging")
     else:
         # Parent continues normally
@@ -114,7 +114,7 @@ from typing import Optional
 
 class LogConfig:
     """Utility class for log configuration."""
-
+    name = "nvrx"
     _file_prefix = "nvrx_log_"
 
     @classmethod
@@ -243,7 +243,7 @@ class LogManager:
     def _setup_logger(self) -> logging.Logger:
         """Setup the logger with appropriate handlers."""
         # Configure the standard "nvrx" logger
-        logger = logging.getLogger("nvrx")
+        logger = logging.getLogger(LogConfig.name)
         logger.setLevel(self.log_level)
 
         # Clear existing handlers
@@ -348,11 +348,11 @@ def setup_logger(
 
         # In other modules
         import logging
-        logger = logging.getLogger("nvrx")
+        logger = logging.getLogger(LogConfig.name)
         logger.info("Some message")
     """
     # Check if the nvrx logger is already configured
-    logger = logging.getLogger("nvrx")
+    logger = logging.getLogger(LogConfig.name)
 
     # If force_reset is True or the logger has no handlers, configure it
     if force_reset or not logger.handlers:
@@ -378,6 +378,6 @@ def setup_logger(
         setup_logger._log_manager = log_manager
     else:
         # Logger is already configured, just return the existing logger
-        logger = logging.getLogger("nvrx")
+        logger = logging.getLogger(LogConfig.name)
 
     return logger

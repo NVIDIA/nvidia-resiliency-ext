@@ -24,6 +24,7 @@ import torch
 
 from . import exception
 from .state import FrozenState
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class HealthCheck(abc.ABC):
@@ -82,7 +83,7 @@ class CudaHealthCheck(HealthCheck):
         self.timeout = timeout
 
     def __call__(self, state: FrozenState) -> FrozenState:
-        log = logging.getLogger("nvrx")
+        log = logging.getLogger(LogConfig.name)
         if torch.cuda.is_available() and torch.cuda.is_initialized():
             if (local_rank := os.getenv('LOCAL_RANK', None)) is not None:
                 device = torch.device(int(local_rank))

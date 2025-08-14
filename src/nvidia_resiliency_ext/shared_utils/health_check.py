@@ -24,9 +24,10 @@ from functools import wraps
 from typing import Callable, Optional, Union
 
 import defusedxml.ElementTree as ET
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 # Get the nvrx logger
-logger = logging.getLogger("nvrx")
+logger = logging.getLogger(LogConfig.name)
 
 # Adds basic thread safety, allowing to run health checks from multiple threads.
 # This is needed for rendezvous unit tests. NOTE: It will work as long as each

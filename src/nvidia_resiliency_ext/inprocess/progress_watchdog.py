@@ -24,6 +24,7 @@ from datetime import timedelta
 from typing import Optional
 
 from . import exception
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 MAX_PENDING = 1024
 
@@ -79,7 +80,7 @@ class ProgressWatchdog(threading.Thread):
         self.paused = threading.Event()
         self.should_stop = threading.Event()
 
-        self.log = logging.getLogger("nvrx")
+        self.log = logging.getLogger(LogConfig.name)
 
     def reset(self):
         self.timestamp = Timestamp(auto=time.monotonic())

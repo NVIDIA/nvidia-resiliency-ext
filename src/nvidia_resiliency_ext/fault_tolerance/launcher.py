@@ -75,7 +75,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
-from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -93,7 +93,7 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 
 # Setup the nvrx logger at module import time
 setup_logger(proc_name="ftlauncher")
-logger = logging.getLogger("nvrx")
+logger = logging.getLogger(LogConfig.name)
 
 def _register_ft_rdzv_handler():
 
@@ -182,7 +182,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             
             # Use the nvrx logger
             import logging
-            logger = logging.getLogger("nvrx")
+            logger = logging.getLogger(LogConfig.name)
             logger.info("Training started")
             
             return "do train"

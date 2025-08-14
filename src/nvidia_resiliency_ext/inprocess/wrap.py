@@ -48,7 +48,7 @@ from .state import Mode, State
 from .store import PrefixStore, StoreMixin, TCPStore
 from .terminate import Terminate
 from .utils import log_exc
-from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
 
 class HealthCheckPassed(Exception):
@@ -56,7 +56,7 @@ class HealthCheckPassed(Exception):
 
 
 def reserve_fn(state, store, progress_watchdog, progress_watchdog_interval):
-    log = logging.getLogger("nvrx")
+    log = logging.getLogger(LogConfig.name)
     rank = state.rank
 
     log.debug(f'{rank=} starting reserve_fn')
@@ -279,7 +279,7 @@ class CallWrapper:
 
         try:
             setup_logger(proc_name="wrapper")
-            log = logging.getLogger("nvrx")
+            log = logging.getLogger(LogConfig.name)
 
             enforce_value(not torch.distributed.is_initialized())
 
@@ -401,7 +401,7 @@ class CallWrapper:
 
     @reraise_if_unraisable(RankShouldRestart)
     def __call__(self, fn, args, kwargs):
-        log = logging.getLogger("nvrx")
+        log = logging.getLogger(LogConfig.name)
 
         store = self.base_store
         base_store = self.base_store

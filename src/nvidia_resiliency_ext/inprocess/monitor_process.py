@@ -32,7 +32,7 @@ from .attribution import Interruption, InterruptionRecord
 from .progress_watchdog import Timestamp
 from .sibling_monitor import SiblingMonitor
 from .store import PrefixStore, StoreMixin
-from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
 
 class Message(enum.Enum):
@@ -50,7 +50,7 @@ def is_process_active(process):
 
 
 def terminate_process(process: psutil.Process, termination_grace_time: datetime.timedelta):
-    log = logging.getLogger("nvrx")
+    log = logging.getLogger(LogConfig.name)
     try:
         log.info(f'SIGCONT {process}')
         process.resume()
@@ -143,7 +143,7 @@ class MonitorProcess:
         store_kwargs: dict[str, Any],
     ):
         setup_logger(force_reset=True, proc_name="monproc")
-        log = logging.getLogger("nvrx")
+        log = logging.getLogger(LogConfig.name)
 
         daemon_pid = os.getpid()
         log.info(f'{target_pid=} {daemon_pid=} {log_level=} {rank=} {world_size=}')
@@ -332,7 +332,7 @@ class MonitorProcess:
         store_factory,
         store_kwargs,
     ):
-        log = logging.getLogger("nvrx")
+        log = logging.getLogger(LogConfig.name)
 
         self.termination_grace_time = termination_grace_time
         self.barrier_timeout = barrier_timeout
