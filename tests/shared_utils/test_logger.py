@@ -23,7 +23,7 @@ import time
 import random
 from datetime import datetime
 from nvidia_resiliency_ext.shared_utils.log_distributed import LogMessage, NodeLogAggregator
-import nvidia_resiliency_ext.shared_utils.log_manager as LogMgr
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
 
 def create_test_workspace(clean: bool = True):
@@ -63,7 +63,7 @@ def worker_process(id, num_msg, file_size):
     """Function that each process will execute."""
     setup_vars(id, id, file_size)
     log_dir, temp_dir = create_test_workspace(clean=False)
-    logger = LogMgr.setup_logger(log_dir, temp_dir, True, False, "wkrproc")
+    logger = setup_logger(temp_dir, True, "wkrproc")
     gen_log_msg(logger, num_msg)
 
 
@@ -142,18 +142,18 @@ class TestLogger(unittest.TestCase):
 
         if is_agg:
             aggregator = NodeLogAggregator(
-                log_dir=LogMgr.get_log_dir(log_dir),
-                temp_dir=LogMgr.get_temp_dir(temp_dir),
-                log_file=LogMgr.get_log_file(),
-                max_file_size_kb=LogMgr.get_max_file_size_kb(file_size_kb),
+                log_dir=log_dir,
+                temp_dir=LogConfig.get_temp_dir(temp_dir),
+                log_file=LogConfig.get_log_file(),
+                max_file_size_kb=LogConfig.get_max_file_size_kb(file_size_kb),
                 en_chrono_ord=True,
             )
             aggregator.start_aggregator()
-        logger = LogMgr.setup_logger(log_dir, temp_dir, True, not is_agg, "test")
+        logger = setup_logger(temp_dir, True, "test")
         gen_log_msg(logger, num_msg, log_type)
 
         time.sleep(1)
-        pm = LogMgr.get_temp_dir(temp_dir)
+        pm = LogConfig.get_temp_dir(temp_dir)
         num_files, file_names = self.count_files_in_dir(pm)
         self.assertEqual(
             num_files, pm_files, f'The number of files should be {pm_files}, instead {num_files}'
@@ -162,7 +162,6 @@ class TestLogger(unittest.TestCase):
 
         if is_agg:
             aggregator.shutdown()
-            log_dir = LogMgr.get_log_dir(log_dir)
             num_files, file_names = self.count_files_in_dir(log_dir)
             self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
             self.check_files(log_dir, file_names, num_msg, 0, 0, "1")
@@ -177,7 +176,7 @@ class TestLogger(unittest.TestCase):
         self.check_msg(2000, 1024, 1, True)
 
     def test_rotation(self):
-        self.check_msg(300, 10, 4, False)
+        self.check_msg(900, 10, 5, False)
 
     def test_rotation_cleanup(self):
         self.check_msg(2000, 10, 1, True)
@@ -192,10 +191,10 @@ class TestLogger(unittest.TestCase):
         )
 
         aggregator = NodeLogAggregator(
-            log_dir=LogMgr.get_log_dir(log_dir),
-            temp_dir=LogMgr.get_temp_dir(temp_dir),
-            log_file=LogMgr.get_log_file(),
-            max_file_size_kb=LogMgr.get_max_file_size_kb(file_size_kb),
+            log_dir=log_dir,
+            temp_dir=LogConfig.get_temp_dir(temp_dir),
+            log_file=LogConfig.get_log_file(),
+            max_file_size_kb=LogConfig.get_max_file_size_kb(file_size_kb),
             en_chrono_ord=True,
         )
         aggregator.start_aggregator()
@@ -211,7 +210,6 @@ class TestLogger(unittest.TestCase):
         for p in processes:
             p.join()
         aggregator.shutdown()
-        log_dir = LogMgr.get_log_dir(log_dir)
         num_files, file_names = self.count_files_in_dir(log_dir)
         self.assertEqual(num_files, 1, f'The number of files should be 1, instead {num_files}')
         self.check_files(log_dir, file_names, num_msg * num_procs, -1, -1, chrono_on)

@@ -41,13 +41,11 @@ Features:
 - Configurable temp directory: Customizable location for pending message files
 
 Environment Variables:
-    NVRX_LOG_DIR: Directory for log files. If set, enables distributed logging with aggregation.
-                   If not set, logs go directly to stderr/stdout.
     NVRX_LOG_DEBUG: Set to "1", "true", "yes", or "on" to enable DEBUG level logging (default: INFO)
     NVRX_LOG_TO_STDOUT: Set to "1" to log to stdout instead of stderr
     NVRX_LOG_TEMP_DIR: Directory for temporary log files (default: /tmp)
     NVRX_LOG_MAX_FILE_SIZE_KB: Maximum size of temporary message files in KB before rotation (default: 10)
-    NVRX_LOG_MAX_BACKUP_FILES: Maximum number of backup files to keep per rank (default: 3)
+    NVRX_LOG_MAX_BACKUP_FILES: Maximum number of backup files to keep per rank (default: 4)
     
 Note: File rotation is designed to be safe for the aggregator service. When files are rotated,
 the aggregator will automatically read from both current and backup files to ensure no messages are lost.
@@ -98,7 +96,6 @@ Separate Aggregator Service:
         --wait-file /path/to/shutdown.signal
     
     # In training processes (step 1 in slurm)
-    export NVRX_LOG_DIR=/path/to/logs
     export NVRX_LOG_TEMP_DIR=/path/to/temp
     export NVRX_LOG_AGGREGATOR=1
     ft_launcher ... your_training_script.py
@@ -115,39 +112,68 @@ from nvidia_resiliency_ext.shared_utils.log_distributed import (
 from typing import Optional
 
 
-def get_file_prefix():
-    return "nvrx_log_"
+class LogConfig:
+    """Utility class for log configuration."""
 
+    _file_prefix = "nvrx_log_"
 
-def get_node_id():
-    # Use hostname as node identifier
-    return socket.gethostname()
+    @classmethod
+    def get_node_id(cls):
+        # Use hostname as node identifier
+        return socket.gethostname()
 
+    @classmethod
+    def get_log_file(cls):
+        return f"{cls._file_prefix}{cls.get_node_id()}.log"
 
-def get_en_chrono_ord(en_chrono_ord=None):
-    return en_chrono_ord if en_chrono_ord is not None else False
+    @classmethod
+    def get_temp_dir(cls, temp_dir=None):
+        # Use configurable temporary directory for pending messages
+        return temp_dir or os.environ.get("NVRX_LOG_TEMP_DIR")
 
+    @classmethod
+    def get_max_file_size_kb(cls, file_size_kb=None) -> int:
+        if file_size_kb is None:
+            file_size_kb = int(os.environ.get("NVRX_LOG_MAX_FILE_SIZE_KB", "10240"))
+        return file_size_kb * 1024  # Convert KB to bytes
 
-def get_log_dir(log_dir=None):
-    log_dir = log_dir or os.environ.get("NVRX_LOG_DIR")
-    return os.path.join(log_dir, os.environ.get("SLURM_JOB_ID", "")) if log_dir else None
+    @classmethod
+    def get_max_backup_files(cls) -> int:
+        return int(
+            os.environ.get("NVRX_LOG_MAX_BACKUP_FILES", "4")
+        )  # Keep default 5 backup files per rank
 
+    @classmethod
+    def get_workload_rank(cls):
+        return int(os.environ.get("RANK", "0")) if os.environ.get("RANK") else None
 
-def get_log_file():
-    return f"{get_file_prefix()}{get_node_id()}.log"
+    @classmethod
+    def get_workload_local_rank(cls):
+        return int(os.environ.get("LOCAL_RANK", "0")) if os.environ.get("LOCAL_RANK") else None
 
+    @classmethod
+    def get_infra_rank(cls):
+        return int(os.environ.get("SLURM_PROCID", "0")) if os.environ.get("SLURM_PROCID") else None
 
-def get_temp_dir(temp_dir=None):
-    # Use configurable temporary directory for pending messages
-    temp_dir = temp_dir or os.environ.get("NVRX_LOG_TEMP_DIR")
-    # Use node_id to ensure all ranks on the same node use the same directory
-    return os.path.join(temp_dir, f"{get_file_prefix()}{get_node_id()}") if temp_dir else None
+    @classmethod
+    def get_infra_local_rank(cls):
+        return (
+            int(os.environ.get("SLURM_LOCALID", "0")) if os.environ.get("SLURM_LOCALID") else None
+        )
 
+    @classmethod
+    def get_log_level(cls):
+        # Use NVRX_LOG_DEBUG environment variable to determine log level
+        debug_enabled = os.environ.get("NVRX_LOG_DEBUG", "").lower() in ("1", "true", "yes", "on")
+        return logging.DEBUG if debug_enabled else logging.INFO
 
-def get_max_file_size_kb(file_size_kb=None):
-    if file_size_kb is None:
-        file_size_kb = int(os.environ.get("NVRX_LOG_MAX_FILE_SIZE_KB", "10240"))
-    return file_size_kb * 1024  # Convert KB to bytes
+    @classmethod
+    def get_process_name(cls, proc_name: Optional[str] = None) -> str:
+        return proc_name if proc_name is not None else str(os.getpid())
+
+    @classmethod
+    def get_log_to_stdop_cfg(cls) -> bool:
+        return os.environ.get("NVRX_LOG_TO_STDOUT", "").lower() in ("1", "true", "yes", "on")
 
 
 class LogManager:
@@ -165,50 +191,26 @@ class LogManager:
 
     def __init__(
         self,
-        log_dir: Optional[str] = None,
         temp_dir: Optional[str] = None,
-        do_cleanup: bool = False,
         proc_name: str = None,
     ):
-        """
-        Initialize the distributed log manager.
-
-        Args:
-            log_dir: Directory for log files. If None, uses NVRX_DIST_LOG_DIR env var
-            temp_dir: Directory for temporary files. If None, uses NVRX_TEMP_DIR env var or /tmp
-        """
-        self._proc_name = proc_name if proc_name is not None else str(os.getpid())
+        self._proc_name = LogConfig.get_process_name(proc_name)
         # Get distributed info once during initialization
-        self._workload_rank = int(os.environ.get("RANK", "0")) if os.environ.get("RANK") else None
-        self._workload_local_rank = (
-            int(os.environ.get("LOCAL_RANK", "0")) if os.environ.get("LOCAL_RANK") else None
-        )
-        self._infra_rank = (
-            int(os.environ.get("SLURM_PROCID", "0")) if os.environ.get("SLURM_PROCID") else None
-        )
-        self._infra_local_rank = (
-            int(os.environ.get("SLURM_LOCALID", "0")) if os.environ.get("SLURM_LOCALID") else None
-        )
+        self._workload_rank = LogConfig.get_workload_rank()
+        self._workload_local_rank = LogConfig.get_workload_local_rank()
+        self._infra_rank = LogConfig.get_infra_rank()
+        self._infra_local_rank = LogConfig.get_infra_local_rank()
 
         # Use NVRX_LOG_DEBUG environment variable to determine log level
-        debug_enabled = os.environ.get("NVRX_LOG_DEBUG", "").lower() in ("1", "true", "yes", "on")
-        self.log_level = logging.DEBUG if debug_enabled else logging.INFO
-
-        # Set log directory
-        self._log_dir = get_log_dir(log_dir)
-        self._log_file = get_log_file()
-
-        # Check if running as aggregator service
-        self._do_cleanup = do_cleanup
+        self.log_level = LogConfig.get_log_level()
 
         # Use configurable temporary directory for pending messages
-        self._temp_dir = get_temp_dir(temp_dir)
+        self._temp_dir = LogConfig.get_temp_dir(temp_dir)
 
         # File rotation settings (in bytes)
-        self._max_msg_file_size = get_max_file_size_kb()
-        self._max_backup_files = int(
-            os.environ.get("NVRX_LOG_MAX_BACKUP_FILES", "3")
-        )  # Keep default 3 backup files per rank
+        self._max_msg_file_size = LogConfig.get_max_file_size_kb()
+        self._max_backup_files = LogConfig.get_max_backup_files()
+        self._log_to_stdout = LogConfig.get_log_to_stdop_cfg()
 
         # Create logger
         self._logger = self._setup_logger()
@@ -255,35 +257,29 @@ class LogManager:
                 self._temp_dir,
                 self._max_msg_file_size,
                 self._max_backup_files,
-                # Perform cleanup if agg service disabled
-                self._do_cleanup,
                 self._proc_name,
             )
-
-            # Use dynamic formatter with static hostname and dynamic rank info
-            formatter = DynamicLogFormatter(
-                self.workload_rank,
-                self.workload_local_rank,
-                self.infra_rank,
-                self.infra_local_rank,
-                fmt=f"%(asctime)s [%(levelname)s] [{get_node_id()}] [workload:%(workload_rank)s(%(workload_local_rank)s) infra:%(infra_rank)s(%(infra_local_rank)s)] %(filename)s:%(lineno)d %(message)s",
-            )
-
         else:
             # Simple logging to stderr or stdout
-            if os.environ.get("NVRX_LOG_TO_STDOUT", "").lower() in ("1", "true", "yes", "on"):
+            if self._log_to_stdout:
                 handler = logging.StreamHandler(sys.stdout)
             else:
                 handler = logging.StreamHandler(sys.stderr)
 
-            # Use dynamic formatter with static hostname and dynamic rank info
-            formatter = DynamicLogFormatter(
-                self.workload_rank,
-                self.workload_local_rank,
-                self.infra_rank,
-                self.infra_local_rank,
-                fmt=f"%(asctime)s [%(levelname)s] [{self.node_id}] [workload:%(workload_rank)s(%(workload_local_rank)s) infra:%(infra_rank)s(%(infra_local_rank)s)] %(filename)s:%(lineno)d %(message)s",
-            )
+        # Use dynamic formatter with static hostname and dynamic rank info
+        formatter = DynamicLogFormatter(
+            self.workload_rank,
+            self.workload_local_rank,
+            self.infra_rank,
+            self.infra_local_rank,
+            fmt=(
+                "%(asctime)s [%(levelname)s] "
+                "[{node}] "
+                "[workload:%(workload_rank)s(%(workload_local_rank)s) "
+                "infra:%(infra_rank)s(%(infra_local_rank)s)] "
+                "%(filename)s:%(lineno)d %(message)s"
+            ).format(node=LogConfig.get_node_id()),
+        )
 
         handler.setLevel(self.log_level)
         handler.setFormatter(formatter)
@@ -316,10 +312,8 @@ class LogManager:
 
 
 def setup_logger(
-    log_dir=None,
     temp_dir=None,
     force_reset=False,
-    do_cleanup=False,
     proc_name: str = None,
 ) -> logging.Logger:
     """
@@ -337,7 +331,6 @@ def setup_logger(
     child processes can log even when they don't inherit the aggregator thread.
 
     Args:
-        log_dir: Optional directory path for log files. If None, uses NVRX_DIST_LOG_DIR env var.
         temp_dir: Optional directory path for temporary files. If None, uses NVRX_TEMP_DIR env var or /tmp.
         force_reset: If True, force reconfiguration even if logger is already configured.
                     Useful for subprocesses that need fresh logger setup.
@@ -373,9 +366,7 @@ def setup_logger(
 
         # Create a LogManager instance to handle the configuration
         log_manager = LogManager(
-            log_dir=log_dir,
             temp_dir=temp_dir,
-            do_cleanup=do_cleanup,
             proc_name=proc_name,
         )
 

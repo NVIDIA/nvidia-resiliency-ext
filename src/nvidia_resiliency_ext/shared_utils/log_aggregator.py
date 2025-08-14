@@ -29,6 +29,7 @@ Usage:
     python -m nvidia_resiliency_ext.shared_utils.log_aggregator \
         --log-dir /path/to/logs \
         --temp-dir /path/to/temp \
+        --en_chronological_ordering \
         --wait-file /path/to/shutdown.signal
 
     # In training processes (step 1 in slurm)
@@ -42,7 +43,7 @@ import argparse
 import os
 import time
 from nvidia_resiliency_ext.shared_utils.log_distributed import NodeLogAggregator
-import nvidia_resiliency_ext.shared_utils.log_manager as LogMgr
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 def main():
@@ -50,7 +51,9 @@ def main():
     parser = argparse.ArgumentParser(description="NVRx Log Aggregator Service")
     parser.add_argument("--log-dir", help="Directory for log files")
     parser.add_argument("--temp-dir", default='/tmp', help="Directory for temporary files)")
-    parser.add_argument("--en_chrono_ord", help="Enable Chronological Ordering")
+    parser.add_argument(
+        "--en_chronological_ordering", action="store_true", help="Enable Chronological Ordering"
+    )
     parser.add_argument(
         "--wait-file",
         required=True,
@@ -65,18 +68,18 @@ def main():
 
     args = parser.parse_args()
 
-    log_dir = LogMgr.get_log_dir(args.log_dir)
-    log_file = LogMgr.get_log_file()
-    temp_dir = LogMgr.get_temp_dir(args.temp_dir)
-    max_file_size_kb = LogMgr.get_max_file_size_kb()
-    en_chrono_ord = LogMgr.get_en_chrono_ord()
+    log_dir = args.log_dir
+    log_file = LogConfig.get_log_file()
+    temp_dir = LogConfig.get_temp_dir(args.temp_dir)
+    max_file_size_kb = LogConfig.get_max_file_size_kb()
+    en_chrono_ord = args.en_chronological_ordering
 
     if log_dir is None:
         raise RuntimeError("Log directory must be set for log aggregator service")
     print(f"Starting NVRx Log Aggregator Service")
     print(f"  Log Path: {os.path.join(log_dir, log_file)}")
     print(f"  Temp directory: {temp_dir}")
-    print(f"  en_chrono_ord: {en_chrono_ord}")
+    print(f"  en_chronological_ordering: {en_chrono_ord}")
 
     aggregator = NodeLogAggregator(
         log_dir=log_dir,

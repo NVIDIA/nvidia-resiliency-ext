@@ -35,7 +35,6 @@ class DistributedLogHandler(logging.Handler):
         file_path: str,
         max_file_size: int,
         max_backup_files: int,
-        do_cleanup: bool,
         proc_name: str,
     ):
         super().__init__()
@@ -45,7 +44,6 @@ class DistributedLogHandler(logging.Handler):
         self.file_path = file_path
         self.max_file_size = max_file_size
         self.max_backup_files = max_backup_files
-        self.do_cleanup = do_cleanup
         self.proc_name = proc_name
 
     def emit(self, record: logging.LogRecord):
@@ -64,8 +62,6 @@ class DistributedLogHandler(logging.Handler):
 
     def _cleanup_old_backup_files(self):
         """Clean up old backup files, keeping only the most recent one's."""
-        if self.do_cleanup == False:
-            return
         backup_files = []
         for filename in os.listdir(self.file_path):
             match = re.match(rf"rank_{self.rank_id}_{self.proc_name}.msg\.(\d+)", filename)
