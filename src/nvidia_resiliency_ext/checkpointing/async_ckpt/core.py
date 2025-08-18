@@ -115,19 +115,18 @@ class AsyncRequest(NamedTuple):
             call_idx: The call_idx of async request that has been finalized
         """
         with debug_time("finalize", logger):
-            try:
-                for finalize_fn in self.finalize_fns:
-                    finalize_fn()  # can throw an exception
-            finally:
-                # Validate that matching call_idx are invoked from all ranks.
-                # This ensures all ranks are correctly participating in CP save invocations
-                if validate_matching_call_idx:
-                    ten = torch.tensor(
-                        [self.call_idx], dtype=torch.int, device=torch.cuda.current_device()
-                    )
-                    torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
-                    assert ten.item() == self.call_idx, "Unmatched async calls. "
-                    "That probably means not all ranks are participating in async finalization"
+            for finalize_fn in self.finalize_fns:
+                finalize_fn()
+
+            # Validate that matching call_idx are invoked from all ranks.
+            # This ensures all ranks are correctly participating in CP save invocations
+            if validate_matching_call_idx:
+                ten = torch.tensor(
+                    [self.call_idx], dtype=torch.int, device=torch.cuda.current_device()
+                )
+                torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
+                assert ten.item() == self.call_idx, "Unmatched async calls. "
+                "That probably means not all ranks are participating in async finalization"
         return self.call_idx
 
 
@@ -622,6 +621,9 @@ class AsyncCallsQueue(metaclass=Singleton):
         Returns:
             List[int]: list of indices (as returned by `schedule_async_request`)
                 of async calls that have been successfully finalized.
+        Raises:
+            CheckpointException: if any rank(s) raised an exception during checkpoint
+                writing, the exceptions are wrapped and raised on all ranks.
         """
         call_idx_finalized = []
         while self.async_calls:

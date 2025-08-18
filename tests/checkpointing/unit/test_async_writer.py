@@ -58,10 +58,7 @@ class TestAsyncSave:
 
         def finalize_fn():
             """Finalizes async checkpointing and synchronizes processes."""
-            try:
-                save_state_dict_async_finalize(*save_state_dict_ret)
-            finally:
-                torch.distributed.barrier()
+            save_state_dict_async_finalize(*save_state_dict_ret)
 
         return AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
 
@@ -164,12 +161,12 @@ class TestAsyncSave:
             self.async_save_checkpoint(
                 ckpt_dir, state_dict, planner, async_queue, open_file=open_file
             )
-            if Utils.rank == 0:
-                with pytest.raises(CheckpointException) as exc_info:
-                    async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            with pytest.raises(CheckpointException) as exc_info:
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            if rank == 0:
                 assert 'Worker failure' in str(exc_info.value)
             else:
-                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                assert 'Worker failure' not in str(exc_info.value)
 
     def test_cached_metadata(self, tmp_path_dist_ckpt, async_queue):
         Utils.initialize_distributed()
