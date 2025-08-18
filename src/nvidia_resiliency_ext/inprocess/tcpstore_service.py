@@ -5,6 +5,10 @@ External TCPStore Service
 This service runs TCPStore independently of training processes to solve
 the barrier problem across process restarts. The service persists across
 rank restarts and provides a stable store for distributed training.
+
+IMPORTANT: This service can be started on all ranks, but only Rank 0 will
+actually host the TCPStore. Other ranks will exit gracefully without hosting
+the service.
 """
 
 import argparse
@@ -24,6 +28,9 @@ class TCPStoreService:
 
     This service provides a persistent TCPStore that survives rank restarts,
     solving the barrier problem where ranks get stuck waiting on old stores.
+
+    NOTE: Only Rank 0 will host the TCPStore. Other ranks can start this
+    service but will exit gracefully without hosting the service.
     """
 
     def __init__(
@@ -127,7 +134,9 @@ class TCPStoreService:
 
 def main():
     """Main entry point for the external TCPStore service."""
-    parser = argparse.ArgumentParser(description="External TCPStore Service")
+    parser = argparse.ArgumentParser(
+        description="External TCPStore Service - Can be started on all ranks, but only Rank 0 hosts the service"
+    )
     parser.add_argument(
         '--host', default='0.0.0.0', help='Host to bind the TCPStore server to (default: 0.0.0.0)'
     )
@@ -183,6 +192,7 @@ def main():
         sys.exit(0)
 
     # Only Rank 0 creates the actual TCPStore server
+    logger.info(f"Rank {rank}: Hosting TCPStore service (Rank 0)")
 
     # Get environment variables for debugging
     hostname = socket.gethostname()
@@ -201,6 +211,16 @@ def main():
     # Set default port to MASTER_PORT + port_offset if not specified
     if args.port is None:
         args.port = int(master_port) + args.port_offset
+
+    # Check if hostname matches MASTER_ADDR and log warning if not
+    if hostname != master_addr:
+        logger.warning("Hostname mismatch on Rank 0!")
+        logger.warning(f"  Current hostname: {hostname}")
+        logger.warning(f"  MASTER_ADDR: {master_addr}")
+        logger.warning("This may cause connection issues if other ranks cannot reach this host")
+        logger.warning("Ensure other ranks can connect to the host specified by MASTER_ADDR")
+    else:
+        logger.info(f"✓ Hostname validation passed: {hostname} matches MASTER_ADDR")
 
     logger.info("==== Creating TCPStore server ====")
     logger.info(

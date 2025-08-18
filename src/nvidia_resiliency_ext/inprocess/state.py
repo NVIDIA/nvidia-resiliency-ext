@@ -129,7 +129,7 @@ class State:
             # Check if we should increment the job restart counter
             # This happens when all active ranks have completed at least one iteration
             if base_store is not None and prefix_store.should_increment_job_restart_counter(
-                self.active_world_size or self.world_size, new_ranks_count
+                self.world_size or self.active_world_size, new_ranks_count
             ):
                 base_store.increment_job_restart_counter()
                 # Update the local state to reflect the new job restart count

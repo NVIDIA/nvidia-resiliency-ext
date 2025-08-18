@@ -328,56 +328,6 @@ class StoreMixin:
         )
         return terminated_ranks
 
-    def _calculate_intelligent_timeout(
-        self,
-        store_key: str,
-        hot_spare_count: Optional[int],
-        base_timeout: Optional[datetime.timedelta],
-        timeout: datetime.timedelta,
-        last_arrived_count: int,
-        group_name: str,
-    ) -> tuple[datetime.timedelta, int]:
-        """
-        Calculate intelligent timeout based on hot spare configuration and current arrived ranks.
-
-        Args:
-            store_key: Key to check for current arrived count
-            hot_spare_count: Number of hot spare ranks
-            base_timeout: Base timeout for intelligent calculation
-            timeout: Fallback timeout (typically timedelta.max)
-            last_arrived_count: Cached arrived count from last check
-            group_name: Name of the barrier group for logging
-
-        Returns:
-            Tuple of (intelligent_timeout, current_arrived_count)
-        """
-        log = logging.getLogger(__name__)
-
-        if hot_spare_count is not None and base_timeout is not None:
-            try:
-                current_arrived_count = int(self.get(store_key))
-            except (torch.distributed.DistStoreError, ValueError):
-                # Fall back to original timeout if we can't get current count
-                intelligent_timeout = timeout
-                current_arrived_count = last_arrived_count  # Use cached value
-                log.debug(
-                    f'{group_name=} fallback timeout: {intelligent_timeout} (could not get current arrived count)'
-                )
-            else:
-                # Successfully got the count, calculate intelligent timeout
-                intelligent_timeout = (
-                    base_timeout if current_arrived_count > hot_spare_count else timeout
-                )
-                log.debug(
-                    f'{group_name=} intelligent timeout: {intelligent_timeout} (active ranks: {current_arrived_count}, hot spares: {hot_spare_count})'
-                )
-        else:
-            # Fall back to original timeout logic
-            intelligent_timeout = timeout
-            current_arrived_count = last_arrived_count
-
-        return intelligent_timeout, current_arrived_count
-
     def barrier(
         self,
         ranks: Iterable[int],
@@ -385,24 +335,14 @@ class StoreMixin:
         rendezvous_count: int,
         timeout: datetime.timedelta,
         timeout_chunk: Optional[datetime.timedelta] = None,
-        hot_spare_count: Optional[int] = None,
-        base_timeout: Optional[datetime.timedelta] = None,
+        max_iterations: Optional[int] = None,
     ):
         """
-        Distributed barrier with intelligent timeout based on hot spare configuration.
+        Distributed barrier with chunked timeout support.
 
-        When hot_spare_count and base_timeout are provided, the barrier uses intelligent
-        timeout calculation that dynamically adjusts inside the waiting loop:
-        - Checks the current number of arrived ranks on each iteration
-        - If current_arrived_ranks > hot_spare_count: use base_timeout (shorter timeout)
-        - Otherwise: use timeout (typically timedelta.max to wait indefinitely)
-
-        This allows faster recovery when enough active ranks have arrived, while still
-        waiting indefinitely for the remaining active ranks until the maximum timeout.
-        The 60-second chunk timeout naturally limits the frequency of store operations.
-
-        Note: When timeout is timedelta.max and timeout_chunk is not provided, a default
-        chunk timeout of 60 seconds is used to balance responsiveness with store load.
+        The barrier waits for all ranks to arrive. When timeout is timedelta.max and
+        timeout_chunk is not provided, a default chunk timeout of 60 seconds is used
+        to balance responsiveness with store load.
 
         Args:
             ranks: Ranks participating in the barrier
@@ -410,8 +350,7 @@ class StoreMixin:
             rendezvous_count: Total number of ranks expected
             timeout: Maximum timeout for the barrier (typically timedelta.max for initial barrier)
             timeout_chunk: Chunk timeout for polling (defaults to 60s when timeout is timedelta.max)
-            hot_spare_count: Number of hot spare ranks (optional)
-            base_timeout: Base timeout for intelligent calculation (typically wrapper.barrier_timeout)
+            max_iterations: Maximum job restart iterations allowed (optional)
         """
         log = logging.getLogger(__name__)
         cn = inspect.currentframe().f_code.co_name
@@ -447,31 +386,34 @@ class StoreMixin:
 
         if timeout and timeout_chunk:
             start = time.monotonic()
-            last_arrived_count = 0  # Cache for optimization
 
             while True:
-                # Calculate intelligent timeout if hot spare information is provided
-                intelligent_timeout, last_arrived_count = self._calculate_intelligent_timeout(
-                    store_key,
-                    hot_spare_count,
-                    base_timeout,
-                    timeout,
-                    last_arrived_count,
-                    group_name,
-                )
-
-                # Use the intelligent timeout for this iteration
-                current_timeout_chunk = min(timeout_chunk, intelligent_timeout)
-
                 try:
-                    self.wait([last_worker_arrived_key], current_timeout_chunk)
+                    self.wait([last_worker_arrived_key], timeout_chunk)
                     break
                 except torch.distributed.DistStoreError as ex:
-                    if datetime.timedelta(seconds=(time.monotonic() - start)) > intelligent_timeout:
+                    # Check if job restart count limit is exceeded
+                    if max_iterations is not None:
+                        # log.debug(f'{ranks=} {group_name=} checking job_restart_count against max_iterations={max_iterations}')
+                        try:
+                            job_restart_count = self.get_job_restart_counter()
+                            if job_restart_count >= max_iterations:
+                                msg = f'Barrier abort: job_restart_count={job_restart_count} >= max_iterations={max_iterations}'
+                                log.warning(f'{ranks=} {group_name=} {msg}')
+                                raise exception.RestartAbort(msg)
+                        except (torch.distributed.DistStoreError, ValueError):
+                            # If we can't get the job restart count, continue with normal timeout logic
+                            pass
+
+                    if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
                         raise BarrierTimeout(
-                            f'{ranks=} {rendezvous_count=} {group_name=} ' f'{intelligent_timeout=}'
+                            f'{ranks=} {rendezvous_count=} {group_name=} ' f'{timeout=}'
                         ) from ex
                     time.sleep(sys.getswitchinterval())
+                except torch.distributed.DistNetworkError as ex:
+                    if "failed to recv, got 0 bytes" in str(ex):
+                        # TCPStore is down, exit the job
+                        raise exception.RestartAbort(f'{ranks=} {group_name=} {timeout=}')
 
         log.debug(f'{ranks=} exits {group_name=} {cn} {rendezvous_count=}')
 
@@ -539,7 +481,7 @@ class StoreMixin:
                 except torch.distributed.DistStoreError as ex:
                     if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
                         raise BarrierTimeout(
-                            f'{ranks=} {rendezvous_count=} {group_name=} ' f'{timeout=}'
+                            f'{ranks=} {rendezvous_count=} {group_name=} {timeout=}'
                         ) from ex
                     time.sleep(sys.getswitchinterval())
 
@@ -551,19 +493,17 @@ class StoreMixin:
         rendezvous_count: int,
         timeout: datetime.timedelta,
         timeout_chunk: Optional[datetime.timedelta] = None,
-        hot_spare_count: Optional[int] = None,
-        base_timeout: Optional[datetime.timedelta] = None,
+        max_iterations: Optional[int] = None,
     ):
         """
-        Initial barrier with intelligent timeout based on hot spare count.
+        Initial barrier with chunked timeout support.
 
         Args:
             ranks: Ranks participating in the barrier
             rendezvous_count: Total number of ranks expected
             timeout: Maximum timeout for the barrier
             timeout_chunk: Chunk timeout for polling
-            hot_spare_count: Number of hot spare ranks (optional)
-            base_timeout: Base timeout for intelligent calculation (optional)
+            max_iterations: Maximum job restart iterations allowed (optional)
         """
         return self.barrier(
             ranks=ranks,
@@ -571,8 +511,7 @@ class StoreMixin:
             rendezvous_count=rendezvous_count,
             timeout=timeout,
             timeout_chunk=timeout_chunk,
-            hot_spare_count=hot_spare_count,
-            base_timeout=base_timeout,
+            max_iterations=max_iterations,
         )
 
     # Keep the original partial method for backward compatibility
