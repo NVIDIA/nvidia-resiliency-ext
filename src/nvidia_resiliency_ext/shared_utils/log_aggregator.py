@@ -18,25 +18,33 @@
 NVRx Log Aggregator Service
 
 This module provides a standalone log aggregator service that can run independently
-of training processes. It's designed to be used in SLURM environments where the
-aggregator runs in step 0 and training processes run in step 1.
+of training processes. The service monitors a shared temporary directory for log messages
+from training processes and aggregates them into per-node log files.
 
-The service monitors a shared temporary directory for log messages from training
-processes and aggregates them into per-node log files.
+Example sbatch Usage:
+    export NVRX_LOG_TEMP_DIR=/tmp/nvrx
+    NVRX_REPO=/../nvidia-resiliency-ext:/nvrx_repo
 
-Usage:
-    # Start the aggregator service (step 0 in slurm)
-    python -m nvidia_resiliency_ext.shared_utils.log_aggregator \
-        --log-dir /path/to/logs \
-        --temp-dir /path/to/temp \
-        --en_chronological_ordering \
-        --wait-file /path/to/shutdown.signal
-
-    # In training processes (step 1 in slurm)
-    export NVRX_LOG_DIR=/path/to/logs
-    export NVRX_LOG_TEMP_DIR=/path/to/temp
-    export NVRX_LOG_AGGREGATOR=1
-    ft_launcher ... your_training_script.py
+    # all node setup, if installing from source
+    srun \
+        bash -c '
+            echo "export NVRX_LOG_TEMP_DIR=$NVRX_LOG_TEMP_DIR" >> /tmp/.myenv_${SLURM_JOB_ID}.sh
+            cd /nvrx_repo && pip install -e .
+        '
+    # main workload with aggregator
+    srun \
+        bash -c '
+          source /tmp/.myenv_${SLURM_JOB_ID}.sh
+          if [[ $SLURM_LOCALID -eq 0 ]]; then
+            cd /nvrx_repo && PYTHONPATH=./src:$PYTHONPATH \
+                python src/nvidia_resiliency_ext/shared_utils/log_aggregator.py \
+                    --wait-file ./stop \
+                    --log-dir /logs/slurm/${SLURM_JOB_ID} \
+                    --temp-dir $NVRX_LOG_TEMP_DIR &
+          fi
+          $LAUNCHER_CMD $LAUNCHER_ARGS $WORKLOAD_CMD $WORKLOAD_ARGS
+          touch /nvrx_repo/stop
+        '
 """
 
 import argparse
