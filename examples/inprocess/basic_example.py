@@ -41,6 +41,7 @@ from typing import Optional
 
 os.environ['TORCH_CPP_LOG_LEVEL'] = 'error'
 import torch
+
 import nvidia_resiliency_ext.inprocess as inprocess
 
 raise_timestamp = None
@@ -245,5 +246,8 @@ if __name__ == '__main__':
     # example the Wrapper is applied to ``main()``, therefore logging needs to
     # be initialized and configured before the Wrapper is launched.
     args = parse_args()
-
+    logging.basicConfig(
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        level=args.log_level,
+    )
     main()

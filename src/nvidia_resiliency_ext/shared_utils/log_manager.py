@@ -248,6 +248,22 @@ class LogManager:
                 self._max_backup_files,
                 self._dist_log_prefix,
             )
+            # Use dynamic formatter with static hostname and dynamic rank info
+            formatter = DynamicLogFormatter(
+                self.workload_rank,
+                self.workload_local_rank,
+                self.infra_rank,
+                self.infra_local_rank,
+                fmt=(
+                    "%(asctime)s [%(levelname)s] "
+                    "[{node}] "
+                    "[workload:%(workload_rank)s(%(workload_local_rank)s) "
+                    "infra:%(infra_rank)s(%(infra_local_rank)s)] "
+                    "%(filename)s:%(lineno)d %(message)s"
+                ).format(node=LogConfig.get_node_id()),
+            )
+            handler.setFormatter(formatter)
+            logger.propagate = False
         else:
             # Simple logging to stderr or stdout
             if self._log_to_stdout:
@@ -255,25 +271,8 @@ class LogManager:
             else:
                 handler = logging.StreamHandler(sys.stderr)
 
-        # Use dynamic formatter with static hostname and dynamic rank info
-        formatter = DynamicLogFormatter(
-            self.workload_rank,
-            self.workload_local_rank,
-            self.infra_rank,
-            self.infra_local_rank,
-            fmt=(
-                "%(asctime)s [%(levelname)s] "
-                "[{node}] "
-                "[workload:%(workload_rank)s(%(workload_local_rank)s) "
-                "infra:%(infra_rank)s(%(infra_local_rank)s)] "
-                "%(filename)s:%(lineno)d %(message)s"
-            ).format(node=LogConfig.get_node_id()),
-        )
-
         handler.setLevel(self.log_level)
-        handler.setFormatter(formatter)
         logger.addHandler(handler)
-        logger.propagate = False
 
         return logger
 
@@ -290,14 +289,6 @@ class LogManager:
         - logger.critical(message)
         """
         return self._logger
-
-    def __enter__(self):
-        """Context manager entry."""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        self.shutdown()
 
 
 def setup_logger(

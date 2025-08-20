@@ -216,7 +216,10 @@ def train(
 
 def main():
     args = parse_args()
-
+    logging.basicConfig(
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        level=args.log_level,
+    )
     logging.info(f'{args}')
 
     local_rank = int(os.environ['LOCAL_RANK'])
