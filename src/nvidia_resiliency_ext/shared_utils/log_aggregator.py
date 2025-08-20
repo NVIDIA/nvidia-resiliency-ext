@@ -22,13 +22,13 @@ of training processes. The service monitors a shared temporary directory for log
 from training processes and aggregates them into per-node log files.
 
 Example sbatch Usage:
-    export NVRX_LOG_TEMP_DIR=/tmp/nvrx
+    export NVRX_DIST_LOG_DIR=/tmp/nvrx
     NVRX_REPO=/../nvidia-resiliency-ext:/nvrx_repo
 
     # all node setup, if installing from source
     srun \
         bash -c '
-            echo "export NVRX_LOG_TEMP_DIR=$NVRX_LOG_TEMP_DIR" >> /tmp/.myenv_${SLURM_JOB_ID}.sh
+            echo "export NVRX_DIST_LOG_DIR=$NVRX_DIST_LOG_DIR" >> /tmp/.myenv_${SLURM_JOB_ID}.sh
             cd /nvrx_repo && pip install -e .
         '
     # main workload with aggregator
@@ -39,8 +39,7 @@ Example sbatch Usage:
             cd /nvrx_repo && PYTHONPATH=./src:$PYTHONPATH \
                 python src/nvidia_resiliency_ext/shared_utils/log_aggregator.py \
                     --wait-file ./stop \
-                    --log-dir /logs/slurm/${SLURM_JOB_ID} \
-                    --temp-dir $NVRX_LOG_TEMP_DIR &
+                    --log-dir /logs/slurm/${SLURM_JOB_ID} &
           fi
           $LAUNCHER_CMD $LAUNCHER_ARGS $WORKLOAD_CMD $WORKLOAD_ARGS
           touch /nvrx_repo/stop
@@ -58,9 +57,8 @@ def main():
     """Main function for running the log aggregator as a separate service."""
     parser = argparse.ArgumentParser(description="NVRx Log Aggregator Service")
     parser.add_argument("--log-dir", help="Directory for log files")
-    parser.add_argument("--temp-dir", default='/tmp', help="Directory for temporary files)")
     parser.add_argument(
-        "--en_chronological_ordering", action="store_true", help="Enable Chronological Ordering"
+        "--en-chronological-ordering", action="store_true", help="Enable Chronological Ordering"
     )
     parser.add_argument(
         "--wait-file",
@@ -78,22 +76,22 @@ def main():
 
     log_dir = args.log_dir
     log_file = LogConfig.get_log_file()
-    temp_dir = LogConfig.get_temp_dir(args.temp_dir)
-    max_file_size_kb = LogConfig.get_max_file_size_kb()
+    dist_log_dir = LogConfig.get_dist_log_dir()
+    max_file_size = LogConfig.get_max_file_size()
     en_chrono_ord = args.en_chronological_ordering
 
     if log_dir is None:
         raise RuntimeError("Log directory must be set for log aggregator service")
     print(f"Starting NVRx Log Aggregator Service")
     print(f"  Log Path: {os.path.join(log_dir, log_file)}")
-    print(f"  Temp directory: {temp_dir}")
+    print(f"  Temp directory: {dist_log_dir}")
     print(f"  en_chronological_ordering: {en_chrono_ord}")
 
     aggregator = NodeLogAggregator(
         log_dir=log_dir,
-        temp_dir=temp_dir,
+        temp_dir=dist_log_dir,
         log_file=log_file,
-        max_file_size_kb=max_file_size_kb,
+        max_file_size=max_file_size,
         en_chrono_ord=en_chrono_ord,
     )
     aggregator.start_aggregator()

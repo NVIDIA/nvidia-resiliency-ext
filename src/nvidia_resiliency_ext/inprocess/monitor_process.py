@@ -142,7 +142,7 @@ class MonitorProcess:
         store_factory: type[StoreMixin],
         store_kwargs: dict[str, Any],
     ):
-        setup_logger(force_reset=True, proc_name="monproc")
+        setup_logger(force_reset=True, dist_file_prefix="monproc")
         log = logging.getLogger(LogConfig.name)
 
         daemon_pid = os.getpid()

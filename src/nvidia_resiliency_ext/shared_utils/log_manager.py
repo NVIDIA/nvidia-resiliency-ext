@@ -23,7 +23,7 @@ of GPUs. The design automatically adapts based on environment configuration.
 
 Key Design Principles:
 - Environment-driven behavior: NVRX_DIST_LOG_DIR controls distributed vs regular logging
-- Per-node aggregation: When distributed logging is enabled, local rank 0 aggregates logs
+- Per-node aggregation: When distributed logging is enabled, a separate aggregator service does log aggregation
 - Dynamic rank detection: Automatically reads rank info from environment variables
 - Scalable: Works with 3K+ GPUs without overwhelming logging infrastructure
 - Fork-safe: All ranks use file-based messaging to ensure child processes can log
@@ -43,9 +43,9 @@ Features:
 Environment Variables:
     NVRX_LOG_DEBUG: Set to "1", "true", "yes", or "on" to enable DEBUG level logging (default: INFO)
     NVRX_LOG_TO_STDOUT: Set to "1" to log to stdout instead of stderr
-    NVRX_LOG_TEMP_DIR: Directory for temporary log files (default: /tmp)
+    NVRX_DIST_LOG_DIR: Directory for temporary log files
     NVRX_LOG_MAX_FILE_SIZE_KB: Maximum size of temporary message files in KB before rotation (default: 10)
-    NVRX_LOG_MAX_BACKUP_FILES: Maximum number of backup files to keep per rank (default: 4)
+    NVRX_LOG_MAX_LOG_FILES: Maximum number of log files to keep per rank (default: 4)
     
 Note: File rotation is designed to be safe for the aggregator service. When files are rotated,
 the aggregator will automatically read from both current and backup files to ensure no messages are lost.
@@ -86,19 +86,7 @@ Forking Support:
     All ranks use file-based message passing, ensuring child processes can log
     even when they don't inherit the aggregator thread from the parent.
 
-Separate Aggregator Service:
-    The aggregator can run as a separate service for reliable log collection:
-    
-    # Start aggregator service (step 0 in slurm)
-    python -m nvidia_resiliency_ext.shared_utils.log_aggregator \
-        --log-dir /path/to/logs \
-        --temp-dir /path/to/temp \
-        --wait-file /path/to/shutdown.signal
-    
-    # In training processes (step 1 in slurm)
-    export NVRX_LOG_TEMP_DIR=/path/to/temp
-    export NVRX_LOG_AGGREGATOR=1
-    ft_launcher ... your_training_script.py
+Separate Aggregator Service, see log_aggregator.py for details.
 """
 
 import logging
@@ -114,8 +102,9 @@ from typing import Optional
 
 class LogConfig:
     """Utility class for log configuration."""
+
     name = "nvrx"
-    _file_prefix = "nvrx_log_"
+    _aggr_file_prefix = "nvrx_log_"
 
     @classmethod
     def get_node_id(cls):
@@ -124,24 +113,24 @@ class LogConfig:
 
     @classmethod
     def get_log_file(cls):
-        return f"{cls._file_prefix}{cls.get_node_id()}.log"
+        return f"{cls._aggr_file_prefix}{cls.get_node_id()}.log"
 
     @classmethod
-    def get_temp_dir(cls, temp_dir=None):
+    def get_dist_log_dir(cls, dist_log_dir=None):
         # Use configurable temporary directory for pending messages
-        return temp_dir or os.environ.get("NVRX_LOG_TEMP_DIR")
+        return dist_log_dir or os.environ.get("NVRX_DIST_LOG_DIR")
 
     @classmethod
-    def get_max_file_size_kb(cls, file_size_kb=None) -> int:
+    def get_max_file_size(cls, file_size_kb=None) -> int:
         if file_size_kb is None:
             file_size_kb = int(os.environ.get("NVRX_LOG_MAX_FILE_SIZE_KB", "10240"))
         return file_size_kb * 1024  # Convert KB to bytes
 
     @classmethod
-    def get_max_backup_files(cls) -> int:
+    def get_max_log_files(cls) -> int:
         return int(
-            os.environ.get("NVRX_LOG_MAX_BACKUP_FILES", "4")
-        )  # Keep default 5 backup files per rank
+            os.environ.get("NVRX_LOG_MAX_LOG_FILES", "4")
+        )  # Keep default 4 backup files per rank
 
     @classmethod
     def get_workload_rank(cls):
@@ -172,7 +161,7 @@ class LogConfig:
         return proc_name if proc_name is not None else str(os.getpid())
 
     @classmethod
-    def get_log_to_stdop_cfg(cls) -> bool:
+    def get_log_to_stdout_cfg(cls) -> bool:
         return os.environ.get("NVRX_LOG_TO_STDOUT", "").lower() in ("1", "true", "yes", "on")
 
 
@@ -191,10 +180,10 @@ class LogManager:
 
     def __init__(
         self,
-        temp_dir: Optional[str] = None,
-        proc_name: str = None,
+        dist_log_dir: Optional[str] = None,
+        dist_log_prefix: str = None,
     ):
-        self._proc_name = LogConfig.get_process_name(proc_name)
+        self._dist_log_prefix = LogConfig.get_process_name(dist_log_prefix)
         # Get distributed info once during initialization
         self._workload_rank = LogConfig.get_workload_rank()
         self._workload_local_rank = LogConfig.get_workload_local_rank()
@@ -205,12 +194,12 @@ class LogManager:
         self.log_level = LogConfig.get_log_level()
 
         # Use configurable temporary directory for pending messages
-        self._temp_dir = LogConfig.get_temp_dir(temp_dir)
+        self._dist_log_dir = LogConfig.get_dist_log_dir(dist_log_dir)
 
         # File rotation settings (in bytes)
-        self._max_msg_file_size = LogConfig.get_max_file_size_kb()
-        self._max_backup_files = LogConfig.get_max_backup_files()
-        self._log_to_stdout = LogConfig.get_log_to_stdop_cfg()
+        self._max_msg_file_size = LogConfig.get_max_file_size()
+        self._max_backup_files = LogConfig.get_max_log_files()
+        self._log_to_stdout = LogConfig.get_log_to_stdout_cfg()
 
         # Create logger
         self._logger = self._setup_logger()
@@ -218,7 +207,7 @@ class LogManager:
     @property
     def distributed_logging_enabled(self) -> bool:
         """Check if distributed logging is enabled."""
-        return self._temp_dir is not None
+        return self._dist_log_dir is not None
 
     @property
     def workload_rank(self) -> Optional[int]:
@@ -251,13 +240,13 @@ class LogManager:
             logger.removeHandler(handler)
 
         if self.distributed_logging_enabled:
-            os.makedirs(self._temp_dir, exist_ok=True)
+            os.makedirs(self._dist_log_dir, exist_ok=True)
             handler = DistributedLogHandler(
                 self.workload_local_rank,
-                self._temp_dir,
+                self._dist_log_dir,
                 self._max_msg_file_size,
                 self._max_backup_files,
-                self._proc_name,
+                self._dist_log_prefix,
             )
         else:
             # Simple logging to stderr or stdout
@@ -312,9 +301,9 @@ class LogManager:
 
 
 def setup_logger(
-    temp_dir=None,
+    dist_log_dir=None,
     force_reset=False,
-    proc_name: str = None,
+    dist_file_prefix: str = None,
 ) -> logging.Logger:
     """
     Setup the distributed logger.
@@ -331,7 +320,7 @@ def setup_logger(
     child processes can log even when they don't inherit the aggregator thread.
 
     Args:
-        temp_dir: Optional directory path for temporary files. If None, uses NVRX_TEMP_DIR env var or /tmp.
+        dist_log_dir: Optional directory path for temporary files. If None, uses NVRX_DIST_LOG_DIR env var.
         force_reset: If True, force reconfiguration even if logger is already configured.
                     Useful for subprocesses that need fresh logger setup.
 
@@ -366,8 +355,8 @@ def setup_logger(
 
         # Create a LogManager instance to handle the configuration
         log_manager = LogManager(
-            temp_dir=temp_dir,
-            proc_name=proc_name,
+            dist_log_dir=dist_log_dir,
+            dist_log_prefix=dist_file_prefix,
         )
 
         # Get the configured logger from the log manager

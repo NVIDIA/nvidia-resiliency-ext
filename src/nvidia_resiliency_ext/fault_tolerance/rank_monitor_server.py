@@ -538,10 +538,10 @@ class RankMonitorServer:
         # Use force_reset=True to ensure fresh logger setup with correct rank info
         from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
-        logger = setup_logger(force_reset=True, proc_name="rankmonsrv")
+        logger = setup_logger(force_reset=True, dist_file_prefix="rankmonsrv")
 
         try:
-            setup_logger(proc_name="rankmonsvr")
+            setup_logger(dist_file_prefix="rankmonsvr")
             logger = logging.getLogger(LogConfig.name)
 
             logger.debug(f"Starting RankMonitorServer... PID={os.getpid()}")

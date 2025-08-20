@@ -61,7 +61,7 @@ class DistributedLogHandler(logging.Handler):
         return f"rank_{self.rank_id}_{self.proc_name}.msg.{int(time.time()*1000)}"
 
     def _cleanup_old_backup_files(self):
-        """Clean up old backup files, keeping only the most recent one's."""
+        """Clean up old log files, keeping only the most recent one's."""
         backup_files = []
         for filename in os.listdir(self.file_path):
             match = re.match(rf"rank_{self.rank_id}_{self.proc_name}.msg\.(\d+)", filename)
@@ -170,12 +170,12 @@ class LogMessage:
 class NodeLogAggregator:
 
     def __init__(
-        self, log_dir: str, temp_dir: str, log_file: str, max_file_size_kb: int, en_chrono_ord: bool
+        self, log_dir: str, temp_dir: str, log_file: str, max_file_size: int, en_chrono_ord: bool
     ):
         self._log_dict_queue = {}
         self._aggregator_thread = None
         self._stop_event = threading.Event()
-        self._max_msg_file_size = max_file_size_kb
+        self._max_msg_file_size = max_file_size
 
         # Use node_id to ensure all ranks on the same node use the same directory
         self._temp_dir = temp_dir

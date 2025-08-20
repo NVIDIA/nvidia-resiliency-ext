@@ -92,7 +92,7 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
 # Setup the nvrx logger at module import time
-setup_logger(proc_name="ftlauncher")
+setup_logger(dist_file_prefix="ftlauncher")
 logger = logging.getLogger(LogConfig.name)
 
 def _register_ft_rdzv_handler():
