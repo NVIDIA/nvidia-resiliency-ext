@@ -100,18 +100,3 @@ API, which can be used to control the workload restarting logic implemented in t
    Please note that only the ft_launcher behavior is affected by this call. 
    The fault tolerance package is job scheduler-agnostic, 
    i.e., it does not control underlying SLURM job allocations.
-
-Deprecated arguments
---------------------
-
-The following arguments are deprecated and will be removed in a future version:
-
-* ``--ft-param-*`` arguments (replaced by ``--ft-*``)
-* ``--fault-tol-cfg-path`` (replaced by ``--ft-cfg-path``)
-* ``--ignore-missing-fault-tol-cfg`` (deprecated completely)
-* ``--restart-policy`` (replaced by ``--ft-restart-policy``)
-* ``--restart_policy`` (replaced by ``--ft-restart-policy``)
-* ``--ft_param_link_down_path_template`` (replaced by ``--ft-link-down-path-template``)
-* ``--ft_param_enable_nic_monitor`` (replaced by ``--ft-enable-nic-monitor``)
-* ``--ft_param_pci_topo_file`` (replaced by ``--ft-pci-topo-file``)
-
