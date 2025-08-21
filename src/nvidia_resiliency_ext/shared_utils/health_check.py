@@ -713,7 +713,7 @@ class NVLHealthCheck(PynvmlMixin):
                     # Link might not exist or be accessible, which is normal
                     # Only log if it's not a "not supported" error
                     if "not supported" not in str(e).lower():
-                        self.log.debug(
+                        self.log.warning(
                             f"GPU {device_index}: NVL link {link_id} not accessible: {e}"
                         )
                     continue
