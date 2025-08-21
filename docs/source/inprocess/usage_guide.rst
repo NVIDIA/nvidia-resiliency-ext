@@ -180,7 +180,6 @@ purposes only and may omit certain implementation details.
   distributed_store = store_factory(**store_kwargs)
   initial_barrier()
   rank_assignment()
-  rank_filter()  # deprecated
 
   while True:
       initialize()
@@ -197,7 +196,6 @@ purposes only and may omit certain implementation details.
           health_check()
           iteration_barrier()
           rank_assignment()
-          rank_filter()  # deprecated
       else:
           break
 
