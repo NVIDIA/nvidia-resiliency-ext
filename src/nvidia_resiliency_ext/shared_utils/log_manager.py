@@ -303,6 +303,9 @@ def setup_logger(
     handlers for distributed logging. It's safe to call multiple times - if the
     logger is already configured, it won't be reconfigured unless force_reset=True.
 
+    The expectation is that this function is called once at the start of the program,
+    and then the logger is used throughout the program i.e. its a singleton.
+
     The logger automatically adapts to distributed or regular mode based on
     whether NVRX_DIST_LOG_DIR is set. If set, enables distributed logging
     with aggregation. If not set, logs go directly to stderr/stdout.

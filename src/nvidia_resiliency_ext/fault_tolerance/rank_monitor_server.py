@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 import traceback
-from typing import Dict, Mapping, Optional
+from typing import Mapping, Optional
 
 import torch
 import torch.multiprocessing as mp
@@ -44,7 +44,6 @@ from .data import (
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
 from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class RankMonitorLogger(logging.Logger):
@@ -97,21 +96,6 @@ class RankMonitorLogger(logging.Logger):
         return self.restarter_logger
 
 
-def log_restarter_event(is_restarter_logger, message, *args, **kwargs):
-    """
-    Log a restart event that should always be visible, but only if restarter logging is enabled.
-    Args:
-        is_restarter_logger: Whether restarter logging is enabled
-        message: The message to log
-        *args, **kwargs: Additional arguments for logging
-    """
-    if is_restarter_logger:
-        # Get the nvrx logger directly
-        logger = logging.getLogger(LogConfig.name)
-        # Log with [RESTARTER] prefix to indicate it's a restart event
-        logger.info(f"[RESTARTER] {message}", *args, **kwargs)
-
-
 class RankMonitorServer:
     """
     RankMonitorServer, running in a separate process, is responsible for monitoring the ranks.
@@ -130,7 +114,7 @@ class RankMonitorServer:
         ipc_socket_path: str,
         rank_monitor_ready_event,
         is_restarter_logger: bool,
-        logger: logging.Logger,
+        logger: RankMonitorLogger,
     ):
         """
         Initializes the RankMonitorServer object.
@@ -140,7 +124,7 @@ class RankMonitorServer:
             ipc_socket_path (str): Path of the IPC socket connecting this monitor with its rank
             rank_monitor_ready_event (mp.Event): The event indicating that the rank monitor is ready.
             is_restarter_logger (bool): True if this monitor writes state transition logs
-            logger (logging.Logger): The logger object for logging.
+            logger (Logger.Logger): The logger object for logging.
 
         """
         self.cfg = cfg
@@ -155,8 +139,7 @@ class RankMonitorServer:
         self.connection_lock = asyncio.Lock()
         self.rank_monitor_ready_event = rank_monitor_ready_event
         self.logger = logger
-        self.is_restarter_logger = is_restarter_logger
-        self.state_machine = RankMonitorStateMachine(is_restarter_logger=is_restarter_logger)
+        self.state_machine = RankMonitorStateMachine(logger)
         self._periodic_restart_task = None
         self.health_checker = GPUHealthCheck(
             interval=self.cfg.node_health_check_interval, on_failure=self._handle_unhealthy_node
@@ -527,22 +510,9 @@ class RankMonitorServer:
         ipc_socket_path: str,
         rank_monitor_ready_event,
         is_restarter_logger: bool,
-        env: Optional[Dict[str, str]] = None,
     ) -> None:
-        # Set environment variables if provided
-        if env is not None:
-            for key, value in env.items():
-                os.environ[key] = value
-
-        # Set up the nvrx logger for subprocess
-        # Use force_reset=True to ensure fresh logger setup with correct rank info
-        from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
-
-        logger = setup_logger(force_reset=True, dist_file_prefix="rankmonsrv")
-
         try:
-            setup_logger(dist_file_prefix="rankmonsvr")
-            logger = logging.getLogger(LogConfig.name)
+            logger = RankMonitorLogger(level=cfg.log_level, is_restarter_logger=is_restarter_logger)
 
             logger.debug(f"Starting RankMonitorServer... PID={os.getpid()}")
             inst = RankMonitorServer(
@@ -563,11 +533,7 @@ class RankMonitorServer:
 
     @staticmethod
     def run_in_subprocess(
-        cfg,
-        ipc_socket_path: str,
-        is_restarter_logger: bool = False,
-        mp_ctx=torch.multiprocessing,
-        env=None,
+        cfg, ipc_socket_path: str, is_restarter_logger: bool = False, mp_ctx=torch.multiprocessing
     ):
         rank_monitor_ready_event = mp_ctx.Event()
 
@@ -576,7 +542,6 @@ class RankMonitorServer:
             "ipc_socket_path": ipc_socket_path,
             "rank_monitor_ready_event": rank_monitor_ready_event,
             "is_restarter_logger": is_restarter_logger,
-            "env": env,
         }
 
         rank_monitor_process = mp_ctx.Process(
