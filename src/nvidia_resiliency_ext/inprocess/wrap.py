@@ -19,6 +19,7 @@ import datetime
 import functools
 import gc
 import logging
+import os
 import pathlib
 import sys
 import threading
@@ -36,7 +37,7 @@ from .completion import Completion
 from .compose import Compose
 from .exception import HealthCheckError, InternalError
 from .finalize import Finalize
-from .health_check import HealthCheck
+from .health_check import ChainedGPUHealthCheck, ChainedNVLHealthCheck, HealthCheck
 from .initialize import Initialize
 from .monitor_process import MonitorProcess
 from .monitor_thread import MonitorThread, RankShouldRestart, reraise_if_unraisable
@@ -95,7 +96,10 @@ class Wrapper:
         initialize: Rank-local initialize.
         abort: Asynchronously aborts execution.
         finalize: Rank-local finalize.
-        health_check: Rank-local health check.
+        health_check: Rank-local health check executed before restart. This health check is
+            automatically enhanced with GPU and NVL health validation to ensure comprehensive
+            system health before restart.
+
         rank_assignment: Reassigns ranks, computes the new world size and
             specifies which ranks are calling the wrapped function.
         rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped
@@ -118,6 +122,9 @@ class Wrapper:
             signals issued by the hard timeout mechanism.
         monitor_process_logfile: Absolute filepath for the monitor process
             logfile. It may contain "{rank}" placeholder, to be filled with
+            initial integer rank id.
+        monitor_process_pidfile: Absolute filepath for the monitor process
+            pidfile. It may contain "{rank}" placeholder, to be filled with
             initial integer rank id.
         enabled: Enables the wrapper.
 
@@ -153,6 +160,7 @@ class Wrapper:
         last_call_wait: datetime.timedelta = timedelta(seconds=1),
         termination_grace_time: datetime.timedelta = timedelta(seconds=5),
         monitor_process_logfile: Optional[str] = None,
+        monitor_process_pidfile: Optional[str] = None,
         enabled: bool = True,
         completion: Optional[Completion] = None,
         terminate: Optional[Terminate] = None,
@@ -163,6 +171,7 @@ class Wrapper:
         enforce_type('abort', (Abort, type(None)))
         enforce_type('finalize', (Finalize, type(None)))
         enforce_type('health_check', (HealthCheck, type(None)))
+
         enforce_type('rank_assignment', RankAssignment)
         enforce_type('rank_filter', (RankFilter, type(None)))
         enforce_type('monitor_thread_interval', datetime.timedelta)
@@ -177,6 +186,7 @@ class Wrapper:
         enforce_type('last_call_wait', datetime.timedelta)
         enforce_type('termination_grace_time', datetime.timedelta)
         enforce_type('monitor_process_logfile', (str, type(None)))
+        enforce_type('monitor_process_pidfile', (str, type(None)))
         enforce_type('enabled', bool)
         enforce_type('completion', (Completion, type(None)))
         enforce_type('terminate', (Terminate, type(None)))
@@ -192,6 +202,9 @@ class Wrapper:
 
         if monitor_process_logfile is not None:
             enforce_value(pathlib.Path(monitor_process_logfile).is_absolute())
+
+        if monitor_process_pidfile is not None:
+            enforce_value(pathlib.Path(monitor_process_pidfile).is_absolute())
 
         enforce_value(torch.distributed.is_available())
 
@@ -213,6 +226,10 @@ class Wrapper:
         self.abort = abort
         self.finalize = finalize
         self.health_check = health_check
+
+        # Construct internal restart_health_check by chaining user's health_check with GPU and NVL checks
+        self._construct_restart_health_check()
+
         self.rank_assignment = rank_assignment
         self.rank_filter = rank_filter
         self.monitor_thread_interval = monitor_thread_interval
@@ -227,6 +244,7 @@ class Wrapper:
         self.last_call_wait = last_call_wait
         self.termination_grace_time = termination_grace_time
         self.monitor_process_logfile = monitor_process_logfile
+        self.monitor_process_pidfile = monitor_process_pidfile
         self.enabled = enabled
         self.completion = completion
         self.terminate = terminate
@@ -241,6 +259,35 @@ class Wrapper:
                 return call_wrapper(fn, args, kwargs)
 
         return wrapped
+
+    def _construct_restart_health_check(self):
+        """Construct internal restart_health_check by chaining user's health_check with GPU and NVL checks."""
+        # Start with user's health_check components if provided
+        health_checks = []
+        if self.health_check is not None:
+            if hasattr(self.health_check, 'instances'):
+                # If it's a Compose object, extract its instances
+                health_checks.extend(self.health_check.instances)
+            else:
+                # If it's a single health check, add it directly
+                health_checks.append(self.health_check)
+
+        # Add GPU and NVL health checks if LOCAL_RANK is available
+        if 'LOCAL_RANK' in os.environ:
+            try:
+                local_rank = int(os.environ['LOCAL_RANK'])
+                gpu_check = ChainedGPUHealthCheck(device_index=local_rank)
+                nvl_check = ChainedNVLHealthCheck(device_index=local_rank)
+                health_checks.extend([gpu_check, nvl_check])
+            except (ValueError, TypeError):
+                # If LOCAL_RANK is not a valid integer, skip GPU/NVL checks
+                pass
+
+        # Compose all health checks (or set to None if no health checks)
+        if health_checks:
+            self.restart_health_check = Compose(*health_checks)
+        else:
+            self.restart_health_check = None
 
 
 class CallWrapper:
@@ -286,6 +333,7 @@ class CallWrapper:
                 heartbeat_interval=wrapper.heartbeat_interval,
                 heartbeat_timeout=wrapper.heartbeat_timeout,
                 log_filename=wrapper.monitor_process_logfile,
+                pid_filename=wrapper.monitor_process_pidfile,
                 store_factory=wrapper.store_factory,
                 store_kwargs=wrapper.store_kwargs,
             )
@@ -513,8 +561,8 @@ class CallWrapper:
                             raise finalize_ex from term_ex
 
                         try:
-                            if wrapper.health_check is not None:
-                                wrapper.health_check(state.freeze())
+                            if wrapper.restart_health_check is not None:
+                                wrapper.restart_health_check(state.freeze())
                         except Exception as health_ex:
                             log.error(log_exc(state, health_ex, 'health_ex'))
                             try:
@@ -575,7 +623,8 @@ class CallWrapper:
                 log.error(log_exc(state, terminate_ex, 'terminate_ex'))
                 raise terminate_ex from exit_ex
 
-            raise exit_ex
+            # Re-raise the final exception without preserving the chain
+            raise exit_ex from None
 
         try:
             if wrapper.completion is not None:
