@@ -146,16 +146,22 @@ class PciMixin:
 
 
 class GPUHealthCheck(PynvmlMixin):
-    def __init__(self, interval: int = 60, on_failure: Optional[Callable] = None):
+    def __init__(
+        self,
+        device_index: Optional[int] = None,
+        interval: int = 60,
+        on_failure: Optional[Callable] = None,
+    ):
         """
         Initializes the GPUHealthCheck class.
 
         Args:
+            device_index (Optional[int]): GPU device index to check. If None, checks all GPUs.
             interval (int): Interval in seconds between asynchronous health checks.
             on_failure (Optional[Callable]): Callback function to handle health check failures.
         """
-        self.log = logging.getLogger(__name__)
-
+        super().__init__()
+        self.device_index = device_index
         self.interval = interval
         self.on_failure = on_failure
         self.pynvml_available = self.check_pynvml_availability()
@@ -241,52 +247,27 @@ class GPUHealthCheck(PynvmlMixin):
         """
         Core method to perform GPU health check. Used by both sync and async checks.
 
-        Checks the recovery action needed for each GPU and ensures all GPUs are healthy.
+        Checks the recovery action needed for the specified GPU device(s).
 
         Returns:
-            bool: True if all GPUs are healthy (no recovery action needed), False otherwise.
+            bool: True if all specified GPUs are healthy (no recovery action needed), False otherwise.
         """
         try:
             self.pynvml.nvmlInit()
-            device_count = self.pynvml.nvmlDeviceGetCount()
 
-            for i in range(device_count):
-                handle = self.pynvml.nvmlDeviceGetHandleByIndex(i)
+            # Determine which devices to check
+            devices_to_check = (
+                [self.device_index]
+                if self.device_index is not None
+                else range(self.pynvml.nvmlDeviceGetCount())
+            )
 
-                if not hasattr(self.pynvml, "NVML_FI_DEV_GET_GPU_RECOVERY_ACTION"):
-                    continue
+            # Check all specified devices
+            for device_id in devices_to_check:
+                if not self._check_gpu_health(device_id):
+                    return False
 
-                # Get the GPU recovery action status
-                recovery_action = self.pynvml.nvmlDeviceGetFieldValues(
-                    handle, [self.pynvml.NVML_FI_DEV_GET_GPU_RECOVERY_ACTION]
-                )[0].value.uiVal
-
-                # Interpret the recovery action
-                if recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NONE:
-                    continue  # No issues with this GPU
-                elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_GPU_RESET:
-                    self.log.warning(
-                        f"GPU {i}: Requires a reset to recover. Terminate GPU processes and reset the GPU."
-                    )
-                    return False
-                elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NODE_REBOOT:
-                    self.log.warning(
-                        f"GPU {i}: Requires a node reboot to recover. Reboot the system."
-                    )
-                    return False
-                elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_P2P:
-                    self.log.warning(
-                        f"GPU {i}: Requires peer-to-peer traffic to be drained. Terminate related processes."
-                    )
-                    return False
-                elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_AND_RESET:
-                    self.log.warning(
-                        f"GPU {i}: Operating at reduced capacity. Drain existing work and reset the GPU."
-                    )
-                    return False
-                else:
-                    self.log.warning(f"GPU {i}: Unknown recovery action status: {recovery_action}")
-                    return False
+            return True
 
         except self.pynvml.NVMLError as e:
             self.log.warning(f"NVML Error: {str(e)}")
@@ -300,21 +281,18 @@ class GPUHealthCheck(PynvmlMixin):
             except Exception as e:
                 self.log.warning(f"Error during NVML shutdown: {str(e)}")
 
-        return True
-
-    @with_pynvml_lock
-    def _perform_health_check_single_gpu(self, gpu_id: int) -> bool:
+    def _check_gpu_health(self, device_id: int) -> bool:
         """
-        Core method to perform GPU health check. Used by both sync and async checks.
+        Check health for a specific GPU device.
 
-        Checks the recovery action needed for each GPU and ensures all GPUs are healthy.
+        Args:
+            device_id (int): GPU device index to check.
 
         Returns:
-            bool: True if all GPUs are healthy (no recovery action needed), False otherwise.
+            bool: True if GPU is healthy, False otherwise.
         """
         try:
-            self.pynvml.nvmlInit()
-            handle = self.pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
+            handle = self.pynvml.nvmlDeviceGetHandleByIndex(device_id)
 
             if not hasattr(self.pynvml, "NVML_FI_DEV_GET_GPU_RECOVERY_ACTION"):
                 # PyNVML is not available so we assume the GPU is healthy
@@ -330,26 +308,28 @@ class GPUHealthCheck(PynvmlMixin):
                 return True
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_GPU_RESET:
                 self.log.warning(
-                    f"GPU {gpu_id}: Requires a reset to recover. Terminate GPU processes and reset the GPU."
+                    f"GPU {device_id}: Requires a reset to recover. Terminate GPU processes and reset the GPU."
                 )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NODE_REBOOT:
                 self.log.warning(
-                    f"GPU {gpu_id}: Requires a node reboot to recover. Reboot the system."
+                    f"GPU {device_id}: Requires a node reboot to recover. Reboot the system."
                 )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_P2P:
                 self.log.warning(
-                    f"GPU {gpu_id}: Requires peer-to-peer traffic to be drained. Terminate related processes."
+                    f"GPU {device_id}: Requires peer-to-peer traffic to be drained. Terminate related processes."
                 )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_AND_RESET:
                 self.log.warning(
-                    f"GPU {gpu_id}: Operating at reduced capacity. Drain existing work and reset the GPU."
+                    f"GPU {device_id}: Operating at reduced capacity. Drain existing work and reset the GPU."
                 )
                 return False
             else:
-                self.log.warning(f"GPU {gpu_id}: Unknown recovery action status: {recovery_action}")
+                self.log.warning(
+                    f"GPU {device_id}: Unknown recovery action status: {recovery_action}"
+                )
                 return False
 
         except self.pynvml.NVMLError as e:
@@ -358,13 +338,6 @@ class GPUHealthCheck(PynvmlMixin):
         except Exception as e:
             self.log.warning(f"Unexpected Error: {str(e)}")
             return False
-        finally:
-            try:
-                self.pynvml.nvmlShutdown()
-            except Exception as e:
-                self.log.warning(f"Error during NVML shutdown: {str(e)}")
-
-        return True
 
 
 class NicHealthCheck(PynvmlMixin, PciMixin):
@@ -621,3 +594,135 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
             )
 
         return True
+
+
+class NVLHealthCheck(PynvmlMixin):
+    def __init__(
+        self,
+        device_index: Optional[int] = None,
+        interval: int = 60,
+        on_failure: Optional[Callable] = None,
+    ):
+        """
+        Initializes the NVLHealthCheck class.
+
+        Args:
+            device_index (Optional[int]): GPU device index to check. If None, checks all GPUs.
+            interval (int): Interval in seconds between asynchronous health checks.
+            on_failure (Optional[Callable]): Callback function to handle health check failures.
+        """
+        super().__init__()
+        self.device_index = device_index
+        self.interval = interval
+        self.on_failure = on_failure
+        self.pynvml_available = self.check_pynvml_availability()
+
+    async def async_check(self) -> None:
+        """
+        Asynchronous NVL health check that runs periodically.
+
+        Periodically checks NVL health and handles any failures if they occur.
+        """
+        while True:
+            await asyncio.sleep(self.interval)
+            result = await self._check_health()
+            if not result and self.on_failure:
+                await self.on_failure()
+
+    async def _check_health(self) -> bool:
+        """
+        Performs the asynchronous NVL health check.
+
+        Returns:
+            bool: True if NVL links are healthy, False if any link has an issue.
+        """
+        return self._perform_health_check()
+
+    def __call__(self) -> Union[Optional[Exception], bool]:
+        """
+        Synchronous NVL health check callable.
+
+        Returns:
+            bool: Returns True if NVL links are healthy.
+        """
+        result = self._perform_health_check()
+        return result
+
+    @with_pynvml_lock
+    def _perform_health_check(self) -> bool:
+        """
+        Core method to perform NVL health check. Used by both sync and async checks.
+
+        Checks the state of all NVL links for the specified GPU device(s).
+
+        Returns:
+            bool: True if all NVL links are healthy, False otherwise.
+        """
+        if not self.pynvml_available:
+            return True
+
+        try:
+            self.pynvml.nvmlInit()
+
+            # Determine which devices to check
+            devices_to_check = (
+                [self.device_index]
+                if self.device_index is not None
+                else range(self.pynvml.nvmlDeviceGetCount())
+            )
+
+            # Check all specified devices
+            all_healthy = True
+            for device_id in devices_to_check:
+                if not self._check_nvl_links_for_device(device_id):
+                    all_healthy = False
+
+            return all_healthy
+
+        finally:
+            try:
+                self.pynvml.nvmlShutdown()
+            except Exception as e:
+                self.log.warning(f"Error during NVML shutdown: {str(e)}")
+
+    def _check_nvl_links_for_device(self, device_index: int) -> bool:
+        """
+        Check NVL links for a specific GPU device.
+
+        Args:
+            device_index (int): GPU device index to check.
+
+        Returns:
+            bool: True if all NVL links are healthy, False otherwise.
+        """
+        try:
+            handle = self.pynvml.nvmlDeviceGetHandleByIndex(device_index)
+
+            # Check all NVL links for this device
+            for link_id in range(self.pynvml.NVML_NVLINK_MAX_LINKS):
+                try:
+                    link_state = self.pynvml.nvmlDeviceGetNvLinkState(handle, link_id)
+
+                    if link_state == self.pynvml.NVML_FEATURE_DISABLED:
+                        self.log.warning(
+                            f"GPU {device_index}: NVL link {link_id} is in DISABLED state"
+                        )
+                        return False
+
+                except self.pynvml.NVMLError as e:
+                    # Link might not exist or be accessible, which is normal
+                    # Only log if it's not a "not supported" error
+                    if "not supported" not in str(e).lower():
+                        self.log.warning(
+                            f"GPU {device_index}: NVL link {link_id} not accessible: {e}"
+                        )
+                    continue
+
+            return True
+
+        except self.pynvml.NVMLError as e:
+            self.log.warning(f"NVML Error checking GPU {device_index}: {str(e)}")
+            return False
+        except Exception as e:
+            self.log.warning(f"Unexpected Error checking GPU {device_index}: {str(e)}")
+            return False

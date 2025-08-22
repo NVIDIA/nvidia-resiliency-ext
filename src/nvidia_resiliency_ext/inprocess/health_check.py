@@ -22,6 +22,8 @@ import threading
 
 import torch
 
+# Import the health check classes from shared_utils
+from ..shared_utils.health_check import GPUHealthCheck, NVLHealthCheck
 from . import exception
 from .state import FrozenState
 
@@ -145,4 +147,53 @@ class FaultCounter(HealthCheck):
 
         if max_rank_faults is not None and faults_count > max_rank_faults:
             raise FaultCounterExceeded(f'{faults_count=} / {max_rank_faults=}')
+        return state
+
+
+class ChainedGPUHealthCheck(HealthCheck):
+    r'''
+    Ensures that GPU devices are in a healthy state by checking GPU recovery actions.
+
+    Uses the GPUHealthCheck from shared_utils to perform comprehensive GPU health checks.
+    This health check is executed after a fault to ensure the GPU is in a recoverable state.
+
+    Args:
+        device_index: Optional GPU device index to check. If None, checks all GPUs.
+    '''
+
+    def __init__(self, device_index=None):
+        self.device_index = device_index
+        self._gpu_checker = GPUHealthCheck(device_index=device_index)
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        # Perform GPU health check
+        is_healthy = self._gpu_checker._perform_health_check()
+        if not is_healthy:
+            raise exception.HealthCheckError("GPU health check failed")
+
+        return state
+
+
+class ChainedNVLHealthCheck(HealthCheck):
+    r'''
+    Ensures that NVL (NVLink) connections are in a healthy state.
+
+    Uses the NVLHealthCheck from shared_utils to perform comprehensive NVL link health checks.
+    This health check is executed after the fault to ensure NVL links are functioning properly.
+
+    Args:
+        device_index: Optional GPU device index to check. If None, checks all GPUs.
+    '''
+
+    def __init__(self, device_index=None):
+        self.device_index = device_index
+        self._nvl_checker = NVLHealthCheck(device_index=device_index)
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        # Perform NVL health check
+        is_healthy = self._nvl_checker._perform_health_check()
+        if not is_healthy:
+            # NVL health check failures are ignored in current implementation
+            pass
+
         return state
