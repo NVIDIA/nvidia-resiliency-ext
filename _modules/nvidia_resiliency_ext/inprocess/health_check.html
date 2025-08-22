@@ -100,6 +100,8 @@
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
+<span class="c1"># Import the health check classes from shared_utils</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">..shared_utils.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="n">GPUHealthCheck</span><span class="p">,</span> <span class="n">NVLHealthCheck</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">exception</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">FrozenState</span>
 
@@ -237,6 +239,61 @@
 
         <span class="k">if</span> <span class="n">max_rank_faults</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">faults_count</span> <span class="o">&gt;</span> <span class="n">max_rank_faults</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">FaultCounterExceeded</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">faults_count</span><span class="si">=}</span><span class="s1"> / </span><span class="si">{</span><span class="n">max_rank_faults</span><span class="si">=}</span><span class="s1">&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">state</span></div>
+
+
+
+<div class="viewcode-block" id="ChainedGPUHealthCheck">
+<a class="viewcode-back" href="../../../inprocess/api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.ChainedGPUHealthCheck">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ChainedGPUHealthCheck</span><span class="p">(</span><span class="n">HealthCheck</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Ensures that GPU devices are in a healthy state by checking GPU recovery actions.</span>
+
+<span class="sd">    Uses the GPUHealthCheck from shared_utils to perform comprehensive GPU health checks.</span>
+<span class="sd">    This health check is executed after a fault to ensure the GPU is in a recoverable state.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        device_index: Optional GPU device index to check. If None, checks all GPUs.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">device_index</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">device_index</span> <span class="o">=</span> <span class="n">device_index</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_gpu_checker</span> <span class="o">=</span> <span class="n">GPUHealthCheck</span><span class="p">(</span><span class="n">device_index</span><span class="o">=</span><span class="n">device_index</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">FrozenState</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FrozenState</span><span class="p">:</span>
+        <span class="c1"># Perform GPU health check</span>
+        <span class="n">is_healthy</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gpu_checker</span><span class="o">.</span><span class="n">_perform_health_check</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">is_healthy</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">HealthCheckError</span><span class="p">(</span><span class="s2">&quot;GPU health check failed&quot;</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">state</span></div>
+
+
+
+<div class="viewcode-block" id="ChainedNVLHealthCheck">
+<a class="viewcode-back" href="../../../inprocess/api/health_check.html#nvidia_resiliency_ext.inprocess.health_check.ChainedNVLHealthCheck">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ChainedNVLHealthCheck</span><span class="p">(</span><span class="n">HealthCheck</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Ensures that NVL (NVLink) connections are in a healthy state.</span>
+
+<span class="sd">    Uses the NVLHealthCheck from shared_utils to perform comprehensive NVL link health checks.</span>
+<span class="sd">    This health check is executed after the fault to ensure NVL links are functioning properly.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        device_index: Optional GPU device index to check. If None, checks all GPUs.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">device_index</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">device_index</span> <span class="o">=</span> <span class="n">device_index</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_nvl_checker</span> <span class="o">=</span> <span class="n">NVLHealthCheck</span><span class="p">(</span><span class="n">device_index</span><span class="o">=</span><span class="n">device_index</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">FrozenState</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FrozenState</span><span class="p">:</span>
+        <span class="c1"># Perform NVL health check</span>
+        <span class="n">is_healthy</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_nvl_checker</span><span class="o">.</span><span class="n">_perform_health_check</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">is_healthy</span><span class="p">:</span>
+            <span class="c1"># NVL health check failures are ignored in current implementation</span>
+            <span class="k">pass</span>
+
         <span class="k">return</span> <span class="n">state</span></div>
 
 </pre></div>

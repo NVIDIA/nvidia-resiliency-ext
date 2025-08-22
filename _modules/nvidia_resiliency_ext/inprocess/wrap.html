@@ -97,6 +97,7 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
@@ -114,7 +115,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">.compose</span><span class="w"> </span><span class="kn">import</span> <span class="n">Compose</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheckError</span><span class="p">,</span> <span class="n">InternalError</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.finalize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Finalize</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheck</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChainedGPUHealthCheck</span><span class="p">,</span> <span class="n">ChainedNVLHealthCheck</span><span class="p">,</span> <span class="n">HealthCheck</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.initialize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Initialize</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_process</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorProcess</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorThread</span><span class="p">,</span> <span class="n">RankShouldRestart</span><span class="p">,</span> <span class="n">reraise_if_unraisable</span>
@@ -175,7 +176,10 @@
 <span class="sd">        initialize: Rank-local initialize.</span>
 <span class="sd">        abort: Asynchronously aborts execution.</span>
 <span class="sd">        finalize: Rank-local finalize.</span>
-<span class="sd">        health_check: Rank-local health check.</span>
+<span class="sd">        health_check: Rank-local health check executed before restart. This health check is</span>
+<span class="sd">            automatically enhanced with GPU and NVL health validation to ensure comprehensive</span>
+<span class="sd">            system health before restart.</span>
+
 <span class="sd">        rank_assignment: Reassigns ranks, computes the new world size and</span>
 <span class="sd">            specifies which ranks are calling the wrapped function.</span>
 <span class="sd">        rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped</span>
@@ -247,6 +251,7 @@
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;abort&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Abort</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;finalize&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">Finalize</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;health_check&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">HealthCheck</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
+
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;rank_assignment&#39;</span><span class="p">,</span> <span class="n">RankAssignment</span><span class="p">)</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;rank_filter&#39;</span><span class="p">,</span> <span class="p">(</span><span class="n">RankFilter</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="kc">None</span><span class="p">)))</span>
         <span class="n">enforce_type</span><span class="p">(</span><span class="s1">&#39;monitor_thread_interval&#39;</span><span class="p">,</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">)</span>
@@ -301,6 +306,10 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">abort</span> <span class="o">=</span> <span class="n">abort</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">finalize</span> <span class="o">=</span> <span class="n">finalize</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">health_check</span> <span class="o">=</span> <span class="n">health_check</span>
+
+        <span class="c1"># Construct internal restart_health_check by chaining user&#39;s health_check with GPU and NVL checks</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_construct_restart_health_check</span><span class="p">()</span>
+
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_assignment</span> <span class="o">=</span> <span class="n">rank_assignment</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_filter</span> <span class="o">=</span> <span class="n">rank_filter</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">monitor_thread_interval</span> <span class="o">=</span> <span class="n">monitor_thread_interval</span>
@@ -329,7 +338,36 @@
             <span class="k">with</span> <span class="n">CallWrapper</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="k">as</span> <span class="n">call_wrapper</span><span class="p">:</span>
                 <span class="k">return</span> <span class="n">call_wrapper</span><span class="p">(</span><span class="n">fn</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span>
 
-        <span class="k">return</span> <span class="n">wrapped</span></div>
+        <span class="k">return</span> <span class="n">wrapped</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_construct_restart_health_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Construct internal restart_health_check by chaining user&#39;s health_check with GPU and NVL checks.&quot;&quot;&quot;</span>
+        <span class="c1"># Start with user&#39;s health_check components if provided</span>
+        <span class="n">health_checks</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">health_check</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">health_check</span><span class="p">,</span> <span class="s1">&#39;instances&#39;</span><span class="p">):</span>
+                <span class="c1"># If it&#39;s a Compose object, extract its instances</span>
+                <span class="n">health_checks</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">health_check</span><span class="o">.</span><span class="n">instances</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="c1"># If it&#39;s a single health check, add it directly</span>
+                <span class="n">health_checks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">health_check</span><span class="p">)</span>
+
+        <span class="c1"># Add GPU and NVL health checks if LOCAL_RANK is available</span>
+        <span class="k">if</span> <span class="s1">&#39;LOCAL_RANK&#39;</span> <span class="ow">in</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">local_rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;LOCAL_RANK&#39;</span><span class="p">])</span>
+                <span class="n">gpu_check</span> <span class="o">=</span> <span class="n">ChainedGPUHealthCheck</span><span class="p">(</span><span class="n">device_index</span><span class="o">=</span><span class="n">local_rank</span><span class="p">)</span>
+                <span class="n">nvl_check</span> <span class="o">=</span> <span class="n">ChainedNVLHealthCheck</span><span class="p">(</span><span class="n">device_index</span><span class="o">=</span><span class="n">local_rank</span><span class="p">)</span>
+                <span class="n">health_checks</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="n">gpu_check</span><span class="p">,</span> <span class="n">nvl_check</span><span class="p">])</span>
+            <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
+                <span class="c1"># If LOCAL_RANK is not a valid integer, skip GPU/NVL checks</span>
+                <span class="k">pass</span>
+
+        <span class="c1"># Compose all health checks (or set to None if no health checks)</span>
+        <span class="k">if</span> <span class="n">health_checks</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">restart_health_check</span> <span class="o">=</span> <span class="n">Compose</span><span class="p">(</span><span class="o">*</span><span class="n">health_checks</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">restart_health_check</span> <span class="o">=</span> <span class="kc">None</span></div>
 
 
 
@@ -612,8 +650,8 @@
                             <span class="k">raise</span> <span class="n">finalize_ex</span> <span class="kn">from</span><span class="w"> </span><span class="nn">term_ex</span>
 
                         <span class="k">try</span><span class="p">:</span>
-                            <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                                <span class="n">wrapper</span><span class="o">.</span><span class="n">health_check</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
+                            <span class="k">if</span> <span class="n">wrapper</span><span class="o">.</span><span class="n">restart_health_check</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                                <span class="n">wrapper</span><span class="o">.</span><span class="n">restart_health_check</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">freeze</span><span class="p">())</span>
                         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">health_ex</span><span class="p">:</span>
                             <span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">log_exc</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">health_ex</span><span class="p">,</span> <span class="s1">&#39;health_ex&#39;</span><span class="p">))</span>
                             <span class="k">try</span><span class="p">:</span>
