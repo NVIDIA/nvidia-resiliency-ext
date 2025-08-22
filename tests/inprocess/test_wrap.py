@@ -351,7 +351,7 @@ class TestException(TestCase):
 
     @common.silence_deprecation_warnings()
     def test_faulty_rank_filter(self):
-        class RankFilter(inprocess.rank_filter.RankFilter):
+        class RankFilter(inprocess.rank_assignment.RankFilter):
             def __call__(self, state):
                 raise ZeroDivisionError
 
@@ -368,7 +368,7 @@ class TestException(TestCase):
 
     @common.silence_deprecation_warnings()
     def test_faulty_second_rank_filter(self):
-        class RankFilter(inprocess.rank_filter.RankFilter):
+        class RankFilter(inprocess.rank_assignment.RankFilter):
             def __init__(self):
                 self.should_raise = False
 
