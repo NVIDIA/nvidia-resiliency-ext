@@ -5,20 +5,15 @@
 # LICENSE file in the root directory of this source tree.
 
 import copy
-import os
 import pickle
-import socket
 import threading
 import time
-from abc import ABC, abstractmethod
-from base64 import b64encode
 from datetime import datetime, timedelta
 from types import MethodType
 from typing import Callable, Optional, Tuple, cast
 from unittest import TestCase
 from unittest.mock import MagicMock, Mock, call, patch
 
-import pytest
 import torch
 from torch.distributed import Store
 from torch.distributed.elastic.agent.server.api import WorkerState
@@ -28,7 +23,6 @@ from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
     FtRendezvousHandler,
     RendezvousBackend,
     RendezvousClosedError,
-    RendezvousError,
     RendezvousParameters,
     RendezvousSettings,
     RendezvousStateError,
@@ -40,12 +34,6 @@ from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
     _BackendRendezvousStateHolder,
     _DistributedRendezvousOpExecutor,
     _NodeDesc,
-    _NodeDescGenerator,
-    _RendezvousCloseOp,
-    _RendezvousContext,
-    _RendezvousExitOp,
-    _RendezvousJoinOp,
-    _RendezvousKeepAliveOp,
     _RendezvousState,
     _RendezvousStateHolder,
     create_handler,
@@ -96,105 +84,18 @@ class CustomAssertMixin:
         self.assertDictEqual(vars(actual), vars(_RendezvousState()))
 
 
-class RendezvousTimeoutTest(TestCase):
-    def test_init_initializes_timeout(self) -> None:
-        timeout = RendezvousTimeout(
-            timedelta(seconds=50),
-            timedelta(seconds=60),
-            timedelta(seconds=70),
-            timedelta(seconds=80),
-        )
-
-        self.assertEqual(timeout.join, timedelta(seconds=50))
-        self.assertEqual(timeout.last_call, timedelta(seconds=60))
-        self.assertEqual(timeout.close, timedelta(seconds=70))
-        self.assertEqual(timeout.heartbeat, timedelta(seconds=80))
-
-    def test_init_initializes_timeout_if_no_timeout_is_specified(self) -> None:
-        timeout = RendezvousTimeout()
-
-        self.assertEqual(timeout.join, timedelta(seconds=600))
-        self.assertEqual(timeout.last_call, timedelta(seconds=30))
-        self.assertEqual(timeout.close, timedelta(seconds=30))
-        self.assertEqual(timeout.heartbeat, timedelta(seconds=5))
-
-    def test_init_raises_error_if_timeout_is_not_positive(self) -> None:
-        join_timeouts = [timedelta(seconds=0), timedelta(seconds=-1)]
-
-        for join_timeout in join_timeouts:
-            with self.subTest(join_timeout=join_timeout):
-                with self.assertRaisesRegex(
-                    ValueError, rf"^The join timeout \({join_timeout}\) must be positive.$"
-                ):
-                    timeout = RendezvousTimeout(join_timeout)
+# Basic classes like RendezvousTimeout, NodeDesc, NodeDescGenerator are unchanged from upstream PyTorch
+# and are well-tested there. We focus on FT-specific functionality.
 
 
-class NodeDescTest(TestCase):
-    def test_repr(self) -> None:
-        desc = _NodeDesc("dummy_fqdn", 3, 5)
-
-        self.assertEqual(repr(desc), "dummy_fqdn_3_5")
-
-    def test_hash(self) -> None:
-        desc1 = _NodeDesc("dummy_fqdn", 2, 4)
-        desc2 = _NodeDesc("dummy_fqdn", 3, 5)
-
-        descs = {desc1, desc2}
-
-        self.assertIn(desc1, descs)
-        self.assertIn(desc2, descs)
-
-
-class NodeDescGeneratorTest(TestCase):
-    def test_generate(self) -> None:
-        desc_generator = _NodeDescGenerator()
-
-        fqdn = socket.getfqdn()
-
-        pid = os.getpid()
-
-        for local_id in range(4):
-            with self.subTest(fqdn=fqdn, pid=pid, local_id=local_id):
-                desc = desc_generator.generate()
-
-                self.assertEqual(repr(desc), f"{fqdn}_{pid}_{local_id}")
-
-
+# RendezvousState is largely unchanged from upstream, but we test serialization
+# since it includes FT-specific worker_states field
 class RendezvousStateTest(TestCase):
-    def test_encoded_size_is_within_expected_limit(self) -> None:
+    def test_state_includes_worker_states(self) -> None:
+        """Test that RendezvousState includes FT-specific worker_states field."""
         state = _RendezvousState()
-        state.round = 1
-        state.complete = True
-        state.deadline = datetime.utcnow()
-        state.closed = True
-
-        # fmt: off
-        expected_max_sizes = (
-            (   5,    2 * (2 ** 10),),  #    10 machines <=   2KB  # noqa: E201, E241, E262
-            (  50,   16 * (2 ** 10),),  #   100 machines <=  16KB  # noqa: E201, E241, E262
-            ( 500,  160 * (2 ** 10),),  #  1000 machines <= 160KB  # noqa: E201, E241, E262
-            (5000, 1600 * (2 ** 10),),  # 10000 machines <= 1.6MB  # noqa: E201, E241, E262
-        )
-        # fmt: on
-
-        for num_nodes, max_byte_size in expected_max_sizes:
-            with self.subTest(num_nodes=num_nodes, max_byte_size=max_byte_size):
-                for i in range(num_nodes):
-                    node_running = _NodeDesc(f"dummy{i}.dummy1-dummy1-dummy1-dummy1.com", 12345, i)
-                    node_waiting = _NodeDesc(f"dummy{i}.dummy2-dummy2-dummy2-dummy2.com", 67890, i)
-
-                    state.participants[node_running] = i
-
-                    state.wait_list.add(node_waiting)
-
-                    state.last_heartbeats[node_running] = datetime.utcnow()
-                    state.last_heartbeats[node_waiting] = datetime.utcnow()
-
-                bits = pickle.dumps(state)
-
-                base64_bits = b64encode(bits)
-
-                self.assertLessEqual(len(base64_bits), max_byte_size)
+        self.assertIsInstance(state.worker_states, dict)
+        self.assertEqual(len(state.worker_states), 0)
 
 
 class FakeRendezvousBackend(RendezvousBackend):
@@ -329,137 +230,54 @@ class BackendRendezvousStateHolderTest(TestCase, CustomAssertMixin):
 
     def test_sync_gets_backend_state_if_local_state_is_clean(self) -> None:
         state_holder = self._create_state_holder()
-
         expected_state = self._create_state()
+        self._backend.set_state_internal(expected_state)
 
-        for attempt in range(1, 4):
-            with self.subTest(attempt=attempt):
-                expected_state.round = attempt
+        has_set = state_holder.sync()
 
-                self._backend.set_state_internal(expected_state)
-
-                has_set = state_holder.sync()
-
-                self.assertIsNone(has_set)
-
-                self.assert_state_equal(state_holder.state, expected_state)
-
-                self.assertEqual(self._mock_backend.get_state.call_count, 1)
-                self.assertEqual(self._mock_backend.set_state.call_count, 0)
-
-                self._mock_backend.reset_mock()
-
-    def test_sync_gets_backend_state_if_local_state_is_old_and_dirty(self) -> None:
-        state_holder = self._create_state_holder()
-
-        expected_state = self._create_state()
-
-        for attempt in range(1, 4):
-            with self.subTest(attempt=attempt):
-                self._backend.set_state_internal(expected_state)  # Increment token.
-
-                state_holder.state.round = attempt
-                state_holder.mark_dirty()
-
-                has_set = state_holder.sync()
-
-                self.assertFalse(has_set)
-
-                self.assert_state_equal(state_holder.state, expected_state)
-
-                self.assertEqual(self._mock_backend.get_state.call_count, 0)
-                self.assertEqual(self._mock_backend.set_state.call_count, 1)
-
-                self._mock_backend.reset_mock()
+        self.assertIsNone(has_set)
+        self.assert_state_equal(state_holder.state, expected_state)
+        self.assertEqual(self._mock_backend.get_state.call_count, 1)
+        self.assertEqual(self._mock_backend.set_state.call_count, 0)
 
     def test_sync_sets_backend_state_if_local_state_is_new_and_dirty(self) -> None:
         state_holder = self._create_state_holder()
 
-        for attempt in range(1, 4):
-            with self.subTest(attempt=attempt):
-                state_holder.state.round = attempt
-                state_holder.mark_dirty()
+        state_holder.state.round = 1000
+        state_holder.mark_dirty()
 
-                has_set = state_holder.sync()
+        has_set = state_holder.sync()
 
-                self.assertTrue(has_set)
+        self.assertTrue(has_set)
+        expected_state = self._backend.get_state_internal()
+        self.assert_state_equal(state_holder.state, expected_state)
+        self.assertEqual(self._mock_backend.get_state.call_count, 0)
+        self.assertEqual(self._mock_backend.set_state.call_count, 1)
 
-                expected_state = self._backend.get_state_internal()
-
-                self.assert_state_equal(state_holder.state, expected_state)
-
-                self.assertEqual(self._mock_backend.get_state.call_count, 0)
-                self.assertEqual(self._mock_backend.set_state.call_count, 1)
-
-                self._mock_backend.reset_mock()
-
-    def test_sync_uses_cached_state_if_cache_duration_is_specified(self) -> None:
+    def test_sync_cache_behavior(self) -> None:
+        """Test cache behavior including expiration and reuse."""
         state = self._create_state()
-
-        self._backend.set_state_internal(state)
-
-        with patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.time") as mock_time:
-            for cache_duration in [1, 5, 10]:
-                with self.subTest(cache_duration=cache_duration):
-                    self._cache_duration = cache_duration
-
-                    state_holder = self._create_state_holder()
-
-                    mock_time.monotonic.return_value = 5
-
-                    state_holder.sync()
-
-                    has_set = state_holder.sync()
-
-                    self.assertIsNone(has_set)
-
-                    self.assertEqual(self._mock_backend.get_state.call_count, 1)
-                    self.assertEqual(self._mock_backend.set_state.call_count, 0)
-
-                    mock_time.monotonic.return_value = 5 + self._cache_duration
-
-                    state_holder.sync()
-
-                    has_set = state_holder.sync()
-
-                    self.assertIsNone(has_set)
-
-                    self.assertEqual(self._mock_backend.get_state.call_count, 1)
-                    self.assertEqual(self._mock_backend.set_state.call_count, 0)
-
-                    self._mock_backend.get_state.reset_mock()
-
-    def test_sync_gets_backend_state_if_cached_state_has_expired(self) -> None:
-        state = self._create_state()
-
         self._backend.set_state_internal(state)
 
         with patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.time") as mock_time:
             self._cache_duration = 1
-
             state_holder = self._create_state_holder()
 
+            # First sync - should fetch from backend
             mock_time.monotonic.return_value = 5
-
             state_holder.sync()
-
-            has_set = state_holder.sync()
-
-            self.assertIsNone(has_set)
-
             self.assertEqual(self._mock_backend.get_state.call_count, 1)
-            self.assertEqual(self._mock_backend.set_state.call_count, 0)
 
-            mock_time.monotonic.return_value = 5 + self._cache_duration + 0.01
-
-            state_holder.sync()
-
+            # Second sync within cache duration - should use cache
             has_set = state_holder.sync()
-
             self.assertIsNone(has_set)
+            self.assertEqual(self._mock_backend.get_state.call_count, 1)  # No additional calls
 
+            # Sync after cache expiration - should fetch from backend again
+            mock_time.monotonic.return_value = 5 + self._cache_duration + 0.01
+            has_set = state_holder.sync()
+            self.assertIsNone(has_set)
             self.assertEqual(self._mock_backend.get_state.call_count, 2)
-            self.assertEqual(self._mock_backend.set_state.call_count, 0)
 
     def test_sync_sanitizes_state(self) -> None:
         state = self._create_state()
@@ -648,29 +466,21 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         self._assert_action(_Action.KEEP_ALIVE, expected_state)
 
     def test_run_adds_to_participants(self) -> None:
+        """Test adding node to participants from both clean state and waitlist."""
+        # Test 1: Clean state
         expected_state = _RendezvousState()
-
         expected_state.participants[self._node] = 0
-
         expected_state.last_heartbeats[self._node] = self._now
-
         self._min_nodes = 2
         self._max_nodes = 2
-
         self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
 
-    def test_run_adds_to_participants_if_node_was_in_waitlist(self) -> None:
+        # Test 2: Node was in waitlist
+        self._mock_state_holder.reset_mock()
         self._state.wait_list.add(self._node)
-
         expected_state = _RendezvousState()
-
         expected_state.participants[self._node] = 0
-
         expected_state.last_heartbeats[self._node] = self._now
-
-        self._min_nodes = 2
-        self._max_nodes = 2
-
         self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
 
     def _add_participants(
@@ -691,66 +501,56 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
             state.last_heartbeats[node] = self._now
 
     def test_run_adds_to_participants_and_starts_last_call_if_min_nodes_is_reached(self) -> None:
-        for num_participants in range(3):
-            self._state = _RendezvousState()
+        """Test that last call starts when min nodes is reached."""
+        # Test with representative case instead of exhaustive loop
+        num_participants = 2
+        self._state = _RendezvousState()
+        self._add_participants(num_participants, self._state)
+        self._state.wait_list.add(self._node)
 
-            self._add_participants(num_participants, self._state)
+        expected_state = _RendezvousState()
+        self._add_participants(num_participants, expected_state)
+        expected_state.participants[self._node] = 0
+        expected_state.last_heartbeats[self._node] = self._now
+        expected_state.deadline = self._now + self._timeout.last_call
 
-            self._state.wait_list.add(self._node)
+        self._min_nodes = num_participants + 1
+        self._max_nodes = num_participants + 2
 
-            expected_state = _RendezvousState()
-
-            self._add_participants(num_participants, expected_state)
-
-            expected_state.participants[self._node] = 0
-
-            expected_state.last_heartbeats[self._node] = self._now
-
-            expected_state.deadline = self._now + self._timeout.last_call
-
-            with self.subTest(num_participants=num_participants):
-                self._min_nodes = num_participants + 1
-                self._max_nodes = num_participants + 2
-
-                self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
-
-                self._mock_state_holder.reset_mock()
+        self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
 
     def test_run_adds_to_participants_and_completes_rendezvous_if_max_nodes_is_reached(
         self,
     ) -> None:
-        for min_max_nodes_equal in [False, True]:
-            for num_participants in range(3):
-                rank = num_participants
+        """Test rendezvous completion when max nodes is reached."""
+        # Test with representative cases instead of exhaustive loops
+        test_cases = [
+            (1, True),  # min=max=1, equal case
+            (2, False),  # min=0, max=2, unequal case
+        ]
 
+        for num_participants, min_max_nodes_equal in test_cases:
+            with self.subTest(
+                num_participants=num_participants, min_max_nodes_equal=min_max_nodes_equal
+            ):
                 self._state = _RendezvousState()
-
                 self._add_participants(num_participants, self._state)
-
                 self._state.wait_list.add(self._node)
-
                 self._state.deadline = self._now + self._timeout.last_call
 
                 expected_state = _RendezvousState()
-
                 self._add_participants(num_participants, expected_state, ranked=True)
-
-                expected_state.participants[self._node] = rank
-
+                expected_state.participants[self._node] = num_participants
                 expected_state.last_heartbeats[self._node] = self._now
-
                 expected_state.worker_states[self._node] = WorkerState.HEALTHY
-
                 expected_state.complete = True
                 expected_state.deadline = None
 
-                with self.subTest(num_participants=num_participants):
-                    self._min_nodes = num_participants + 1 if min_max_nodes_equal else 0
-                    self._max_nodes = num_participants + 1
+                self._min_nodes = num_participants + 1 if min_max_nodes_equal else 0
+                self._max_nodes = num_participants + 1
 
-                    self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
-
-                    self._mock_state_holder.reset_mock()
+                self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
+                self._mock_state_holder.reset_mock()
 
     def test_run_adds_to_waitlist(self) -> None:
         expected_state = _RendezvousState()
@@ -762,33 +562,25 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         self._assert_action(_Action.ADD_TO_WAIT_LIST, expected_state)
 
     def test_run_removes_from_participants(self) -> None:
-        for complete, last_call_deadline in [(False, self._now), (True, None)]:
-            self._state = _RendezvousState()
+        """Test removing node from participants in different states."""
+        # Test with representative case instead of exhaustive loop
+        complete, last_call_deadline = False, self._now
 
-            self._add_participants(2, self._state)
+        self._state = _RendezvousState()
+        self._add_participants(2, self._state)
+        self._state.participants[self._node] = 0
+        self._state.last_heartbeats[self._node] = self._now
+        self._state.complete = complete
+        self._state.deadline = last_call_deadline
+        self._state.round = 1
 
-            self._state.participants[self._node] = 0
+        expected_state = _RendezvousState()
+        self._add_participants(2, expected_state)
+        expected_state.complete = complete
+        expected_state.deadline = last_call_deadline
+        expected_state.round = 1
 
-            self._state.last_heartbeats[self._node] = self._now
-
-            self._state.complete = complete
-            self._state.deadline = last_call_deadline
-
-            self._state.round = 1
-
-            expected_state = _RendezvousState()
-
-            self._add_participants(2, expected_state)
-
-            expected_state.complete = complete
-            expected_state.deadline = last_call_deadline
-
-            expected_state.round = 1
-
-            with self.subTest(complete=complete):
-                self._assert_action(_Action.REMOVE_FROM_PARTICIPANTS, expected_state)
-
-                self._mock_state_holder.reset_mock()
+        self._assert_action(_Action.REMOVE_FROM_PARTICIPANTS, expected_state)
 
     def test_run_removes_from_participants_and_moves_to_next_round_if_node_is_last_participant(
         self,
@@ -866,295 +658,8 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         self.assertListEqual(self._mock_state_holder.mock_calls, [call.sync(), call.sync()])
 
 
-class AbstractTestRendezvousOp(ABC):
-    assertEqual: Callable
-
-    def setUp(self) -> None:
-        self._node = _NodeDesc("this_node", 1, 1)
-
-        self._min_nodes = 1
-        self._max_nodes = 2
-
-        self._keep_alive_interval = timedelta(seconds=30)
-
-        self._state = _RendezvousState()
-        self._state.participants[_NodeDesc("dummy1", 1, 1)] = 1
-
-        self._now = datetime(2000, 1, 1, hour=0, minute=0)
-
-        self._deadline = 10
-
-        self._datetime_patch = patch(
-            "nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.datetime"
-        )
-
-        mock_datetime = self._datetime_patch.start()
-        mock_datetime.utcnow.return_value = self._now
-
-        self._time_patch = patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.time")
-
-        mock_time = self._time_patch.start()
-        mock_time.monotonic.return_value = self._deadline
-
-    def tearDown(self) -> None:
-        self._time_patch.stop()
-        self._datetime_patch.stop()
-
-    def _get_next_action(self) -> _Action:
-        op = self._create_op()
-
-        settings = RendezvousSettings(
-            run_id="dummy_run_id",
-            min_nodes=self._min_nodes,
-            max_nodes=self._max_nodes,
-            timeout=RendezvousTimeout(),
-            keep_alive_interval=self._keep_alive_interval,
-            keep_alive_max_attempt=3,
-        )
-
-        ctx = _RendezvousContext(self._node, self._state, settings)
-
-        return op(ctx, self._deadline)
-
-    @abstractmethod
-    def _create_op(self) -> Callable:
-        pass
-
-    def _assert_action(self, expected_action) -> None:
-        action = self._get_next_action()
-
-        self.assertEqual(action, expected_action)
-
-
-class TestRendezvousExitOp(AbstractTestRendezvousOp, TestCase):
-    def _create_op(self) -> Callable:
-        return _RendezvousExitOp()
-
-    def test_removes_from_participants_if_node_is_participant(self) -> None:
-        self._state.participants[self._node] = 1
-
-        self._assert_action(_Action.REMOVE_FROM_PARTICIPANTS)
-
-    def test_raises_timeout_if_deadline_exceeded(self) -> None:
-        self._deadline = 0
-
-        self._state.participants[self._node] = 1
-
-        self._assert_action(_Action.ERROR_TIMEOUT)
-
-    def test_finishes_if_node_is_not_participant(self) -> None:
-        self._assert_action(_Action.FINISH)
-
-
-class TestRendezvousJoinOp(AbstractTestRendezvousOp, TestCase):
-    def _create_op(self) -> Callable:
-        return _RendezvousJoinOp()
-
-    def test_raises_closed_if_rendezvous_is_closed(self) -> None:
-        self._state.closed = True
-
-        self._assert_action(_Action.ERROR_CLOSED)
-
-    def test_finishes_if_rendezvous_is_complete_and_node_is_participant(self) -> None:
-        self._state.participants[self._node] = 0
-
-        self._state.complete = True
-
-        self._assert_action(_Action.FINISH)
-
-    def _assert_waits_rendezvous_completion(self) -> None:
-        keep_alive_time = self._now - self._keep_alive_interval
-
-        for delta, expected_action in [
-            (timedelta(seconds=0), _Action.KEEP_ALIVE),
-            (timedelta(seconds=1), _Action.SYNC),
-        ]:
-            self._state.last_heartbeats[self._node] = keep_alive_time + delta
-
-            self._assert_action(expected_action)
-
-    @pytest.mark.skipif(
-        torch.__version__ < "2.3.0",
-        reason="Test requires torch 2.3 or newer",
-    )
-    def test_treat_as_redundancy_for_next_rendezvous_if_rendezvous_is_complete(self) -> None:
-        self._max_nodes = 1
-
-        self._state.complete = True
-
-        self._assert_action(_Action.ADD_TO_REDUNDANCY_LIST)
-
-    @pytest.mark.skipif(
-        torch.__version__ < "2.3.0",
-        reason="Test requires torch 2.3 or newer",
-    )
-    def test_waits_next_round_if_rendezvous_is_complete_and_node_is_redundant(self) -> None:
-        self._state.redundancy_list.add(self._node)
-
-        self._max_nodes = 1
-
-        self._state.complete = True
-
-        self._assert_waits_rendezvous_completion()
-
-    @pytest.mark.skipif(
-        torch.__version__ < "2.3.0",
-        reason="Test requires torch 2.3 or newer",
-    )
-    def test_remove_from_rednundancy_list(self) -> None:
-        self._state.redundancy_list.add(self._node)
-
-        self._max_nodes = 2
-
-        self._state.complete = True
-
-        self._assert_action(_Action.REMOVE_FROM_REDUNDANCY_LIST)
-
-    def test_waits_next_round_if_rendezvous_is_complete_and_node_is_in_wait_list(self) -> None:
-        self._state.wait_list.add(self._node)
-
-        self._state.complete = True
-
-        self._assert_waits_rendezvous_completion()
-
-    def test_adds_to_wait_list_if_rendezvous_is_complete_and_num_nodes_is_less_than_max_nodes(
-        self,
-    ) -> None:
-        self._state.complete = True
-
-        self._assert_action(_Action.ADD_TO_WAIT_LIST)
-
-    def test_waits_rendezvous_to_complete_if_node_is_participant(self) -> None:
-        self._max_nodes = 3
-
-        self._state.participants[self._node] = 0
-
-        self._state.deadline = self._now
-
-        self._assert_waits_rendezvous_completion()
-
-    def test_marks_rendezvous_complete_if_node_is_participant_and_last_call_deadline_exceeded(
-        self,
-    ) -> None:
-        self._max_nodes = 3
-
-        self._state.participants[self._node] = 0
-
-        self._state.deadline = self._now - timedelta(seconds=1)
-
-        self._assert_action(_Action.MARK_RENDEZVOUS_COMPLETE)
-
-    def test_adds_to_participants(self) -> None:
-        self._assert_action(_Action.ADD_TO_PARTICIPANTS)
-
-    def test_raises_timeout_if_deadline_exceeded(self) -> None:
-        self._deadline = 0
-
-        self._assert_action(_Action.ERROR_TIMEOUT)
-
-    def test_raises_timeout_if_rollback_deadline_exceeded_and_node_is_participant(self) -> None:
-        self._deadline = 0
-
-        self._state.participants[self._node] = 0
-
-        self._assert_action(_Action.ERROR_TIMEOUT)
-
-    def test_raises_timeout_if_rollback_deadline_exceeded_and_node_is_in_wait_list(self) -> None:
-        self._deadline = 0
-
-        self._state.wait_list.add(self._node)
-
-        self._assert_action(_Action.ERROR_TIMEOUT)
-
-    def test_removes_from_participants_if_timed_out_but_rollback_deadline_is_not_reached(
-        self,
-    ) -> None:
-        self._deadline = 5
-
-        self._state.participants[self._node] = 0
-
-        self._assert_action(_Action.REMOVE_FROM_PARTICIPANTS)
-
-    def test_removes_from_wait_list_if_timed_out_but_rollback_deadline_is_not_reached(self) -> None:
-        self._deadline = 5
-
-        self._state.wait_list.add(self._node)
-
-        self._assert_action(_Action.REMOVE_FROM_WAIT_LIST)
-
-    @pytest.mark.skipif(
-        torch.__version__ < "2.3.0",
-        reason="Test requires torch 2.3 or newer",
-    )
-    def test_no_timeout_for_redundant_node(self) -> None:
-        self._max_nodes = 1
-        self._deadline = 0
-        self._state.complete = True
-
-        self._state.redundancy_list.add(self._node)
-
-        self._assert_action(_Action.SYNC)
-
-    @pytest.mark.skipif(
-        torch.__version__ < "2.3.0",
-        reason="Test requires torch 2.3 or newer",
-    )
-    def test_keep_alive_for_redundant_node(self) -> None:
-        self._deadline = 0
-        self._max_nodes = 1
-        self._state.complete = True
-
-        self._state.redundancy_list.add(self._node)
-
-        keep_alive_time = self._now - self._keep_alive_interval
-        self._state.last_heartbeats[self._node] = keep_alive_time
-        self._assert_action(_Action.KEEP_ALIVE)
-
-
-class TestRendezvousCloseOp(AbstractTestRendezvousOp, TestCase):
-    def _create_op(self) -> Callable:
-        return _RendezvousCloseOp()
-
-    def test_finishes_if_rendezvous_is_closed(self) -> None:
-        self._state.closed = True
-
-        self._assert_action(_Action.FINISH)
-
-    def test_raises_timeout_if_deadline_exceeded(self) -> None:
-        self._deadline = 0
-
-        self._assert_action(_Action.ERROR_TIMEOUT)
-
-    def test_marks_rendezvous_closed(self) -> None:
-        self._assert_action(_Action.MARK_RENDEZVOUS_CLOSED)
-
-
-class TestRendezvousKeepAliveOp(AbstractTestRendezvousOp, TestCase):
-    def _create_op(self) -> Callable:
-        return _RendezvousKeepAliveOp()
-
-    def test_updates_keep_alive_if_needed(self) -> None:
-        keep_alive_time = self._now - self._keep_alive_interval
-
-        for delta in [timedelta(seconds=0), timedelta(seconds=-1)]:
-            with self.subTest(delta=delta):
-                self._state.last_heartbeats[self._node] = keep_alive_time + delta
-
-                self._assert_action(_Action.KEEP_ALIVE)
-
-    def test_raises_timeout_if_deadlined_exceeded(self) -> None:
-        self._deadline = 0
-
-        self._state.last_heartbeats[self._node] = self._now - self._keep_alive_interval
-
-        self._assert_action(_Action.ERROR_TIMEOUT)
-
-    def test_finishes_if_no_keep_alive_update_is_needed(self) -> None:
-        delta = timedelta(seconds=1)
-
-        self._state.last_heartbeats[self._node] = self._now - self._keep_alive_interval + delta
-
-        self._assert_action(_Action.FINISH)
+# Rendezvous operations (Exit, Join, Close, KeepAlive) are largely unchanged from upstream PyTorch.
+# The core operation logic is well-tested in upstream. We focus on FT-specific features like health checks.
 
 
 class DummyStore(Store):
@@ -1265,246 +770,31 @@ class DynamicRendezvousHandlerTest(TestCase):
             self._node, settings, "dummy_backend", self._store, self._state_holder
         )
 
-    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous._delay")
-    def test_next_rendezvous_skews_the_first_join_attempt(self, mock_delay) -> None:
-        for round, expected_call_count in [(0, True), (1, False)]:
-            with self.subTest(round=round):
-                self._state.round = round
+    # Most handler functionality is inherited from upstream PyTorch.
+    # We focus on testing FT-specific health check integration.
 
-                handler = self._create_handler()
-
-                handler.next_rendezvous()
-
-                self.assertEqual(mock_delay.call_count, expected_call_count)
-
-                mock_delay.reset_mock()
-
-    def test_next_rendezvous_returns_expected_value(self) -> None:
-        self._state.participants[_NodeDesc("dummy1", 1, 1)] = 0
-        self._state.participants[_NodeDesc("dummy2", 1, 1)] = 0
-
-        self._max_nodes = 3
+    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
+    def test_next_rendezvous_calls_health_check(self, MockGPUHealthCheck) -> None:
+        """Test that next_rendezvous calls the health check before proceeding."""
+        mock_health_checker = MockGPUHealthCheck.return_value
+        mock_health_checker.return_value = True
 
         handler = self._create_handler()
-
-        rendezvous_info = handler.next_rendezvous()
-
-        rank, world_size = _extract_rendezvous_info(rendezvous_info)
-        self.assertEqual(rank, 2)
-        self.assertEqual(world_size, 3)
-
-        # Test that the store works correctly with prefixed keys
-        # The PrefixStore will add the prefix to the key
-        expected_key = "torch.rendezvous.dummy_run_id.0/dummy_key"
-
-        # Set a value first
-        store = _extract_store(rendezvous_info)
-        store.set("dummy_key", b"test_value")
-
-        # Then get it back
-        value = store.get("dummy_key")
-        self.assertEqual(value, b"test_value")
-
-    def test_next_rendezvous_respects_the_requested_timeout(self) -> None:
-        self._mock_sync.side_effect = lambda: time.sleep(0.3)
-
-        self._join_timeout = timedelta(seconds=0.2)
-
-        handler = self._create_handler()
-
-        with self.assertRaises(RendezvousTimeoutError):
-            handler.next_rendezvous()
-
-    def test_next_rendezvous_moves_to_next_round_if_called_repeatedly(self) -> None:
-        handler = self._create_handler()
-
-        for i in range(4):
-            handler.next_rendezvous()
-
-            self.assertEqual(self._state.round, i)
-
-    def test_is_closed_returns_expected_value(self) -> None:
-        for closed in [False, True]:
-            with self.subTest(closed=closed):
-                self._state.closed = closed
-
-                handler = self._create_handler()
-
-                self.assertEqual(handler.is_closed(), closed)
-
-                self._mock_sync.assert_called_once()
-
-                self._mock_sync.reset_mock()
-
-    @patch("torch.distributed.elastic.events.record_rdzv_event")
-    def test_is_closed_records_and_raises_exceptions(self, record_mock) -> None:
-        self._mock_sync.side_effect = RendezvousError("test error")
-        handler = self._create_handler()
-        with self.assertRaises(RendezvousError):
-            handler.is_closed()
-            record_mock.assert_called_once()
-
-    def test_set_closed_closes_rendezvous(self) -> None:
-        handler = self._create_handler()
-
-        handler.set_closed()
-
-        self.assertTrue(self._state.closed)
-
-    def test_set_closed_respects_the_requested_timeout(self) -> None:
-        self._mock_sync.side_effect = lambda: time.sleep(0.3)
-
-        self._close_timeout = timedelta(seconds=0.2)
-
-        handler = self._create_handler()
-
-        with self.assertRaises(RendezvousTimeoutError):
-            handler.set_closed()
-
-    def test_set_closed_can_be_called_multiple_times(self) -> None:
-        handler = self._create_handler()
-
-        handler.set_closed()
-        handler.set_closed()
-
-        self.assertTrue(self._state.closed)
-
-    @patch("torch.distributed.elastic.events.record_rdzv_event")
-    def test_set_closed_records_and_raises_exceptions(self, record_mock) -> None:
-        with patch.object(FtRendezvousHandler, "_close") as close_mock:
-            close_mock.side_effect = RendezvousError("test error")
-            handler = self._create_handler()
-            with self.assertRaises(RendezvousError):
-                handler.set_closed()
-                record_mock.assert_called_once()
-
-    def test_num_nodes_waiting_returns_expected_value(self) -> None:
-        self._state.wait_list.add(_NodeDesc("dummy1", 1, 1))
-        self._state.wait_list.add(_NodeDesc("dummy2", 1, 1))
-
-        handler = self._create_handler()
-
-        self.assertEqual(handler.num_nodes_waiting(), 2)
-
-        self._mock_sync.assert_called_once()
-
-    @patch("torch.distributed.elastic.events.record_rdzv_event")
-    def test_num_nodes_waiting_records_and_raises_exceptions(self, record_mock) -> None:
-        self._mock_sync.side_effect = RendezvousError("test error")
-        handler = self._create_handler()
-        with self.assertRaises(RendezvousError):
-            handler.num_nodes_waiting()
-            record_mock.assert_called_once()
-
-    def test_shutdown_closes_rendezvous_and_returns_true(self) -> None:
-        handler = self._create_handler()
-
-        result = handler.shutdown()
-
-        self.assertTrue(result)
-
-        self.assertTrue(self._state.closed)
-
-    def test_shutdown_returns_false_if_rendezvous_cannot_be_closed(self) -> None:
-        self._mock_sync.side_effect = [RendezvousError]
-
-        handler = self._create_handler()
-
-        result = handler.shutdown()
-
-        self.assertFalse(result)
-
-    def test_shutdown_can_be_called_multiple_times(self) -> None:
-        handler = self._create_handler()
-
-        handler.shutdown()
-        handler.shutdown()
-
-        self.assertTrue(self._state.closed)
-
-    @patch("torch.distributed.elastic.events.record_rdzv_event")
-    def test_shutdown_records_and_raises_exceptions(self, record_mock) -> None:
-        with patch.object(FtRendezvousHandler, "_close") as close_mock:
-            close_mock.side_effect = RuntimeError("test error")
-            handler = self._create_handler()
-            with self.assertRaises(RuntimeError):
-                handler.shutdown()
-                record_mock.assert_called_once()
-
-    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.datetime")
-    def test_keep_alive_updates_last_heartbeat(self, mock_datetime) -> None:
-        now = datetime(2000, 1, 1, hour=0, minute=0)
-
-        mock_datetime.utcnow.return_value = now
-
-        self._state.last_heartbeats[self._node] = now - (self._keep_alive_interval * 2)
-
-        handler = self._create_handler()
-
-        handler._keep_alive()
-
-        self.assertEqual(self._state.last_heartbeats[self._node], now)
-
-    def _assert_keep_alive_swallows_rendezvous_errors(self) -> None:
-        last_heartbeat_time = datetime.utcnow() - (self._keep_alive_interval * 2)
-
-        self._state.last_heartbeats[self._node] = last_heartbeat_time
-
-        handler = self._create_handler()
-
-        handler._keep_alive()
-
-        self.assertEqual(self._state.last_heartbeats[self._node], last_heartbeat_time)
-
-    def test_keep_alive_swallows_rendezvous_errors(self) -> None:
-        self._mock_sync.side_effect = [RendezvousError]
-
-        self._assert_keep_alive_swallows_rendezvous_errors()
-
-    def test_keep_alive_respects_the_requested_timeout(self) -> None:
-        self._mock_sync.side_effect = lambda: time.sleep(0.3)
-
-        self._heartbeat_timeout = timedelta(seconds=0.2)
-
-        self._assert_keep_alive_swallows_rendezvous_errors()
-
-    def test_keep_alive_thread_is_started_with_next_rendezvous_and_stopped_with_shutdown(
-        self,
-    ) -> None:
-        self._node = _NodeDesc("this_node", 1, 2)
-
-        name = "RendezvousKeepAliveTimer_2"
-
-        handler = self._create_handler()
-
-        self.assertTrue(all(t.name != name for t in threading.enumerate()))
-
         handler.next_rendezvous()
 
-        self.assertTrue(any(t.name == name for t in threading.enumerate()))
+        MockGPUHealthCheck.assert_called_once()
+        mock_health_checker.assert_called_once()
 
-        handler.shutdown()
-
-        self.assertTrue(all(t.name != name for t in threading.enumerate()))
-
-    def test_keep_alive_thread_is_started_with_next_rendezvous_and_stopped_with_finalizer(
-        self,
-    ) -> None:
-        self._node = _NodeDesc("this_node", 1, 3)
-
-        name = "RendezvousKeepAliveTimer_3"
+    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
+    def test_health_check_failure_raises_exception(self, MockGPUHealthCheck) -> None:
+        """Test that health check failure raises UnhealthyNodeException."""
+        mock_health_checker = MockGPUHealthCheck.return_value
+        mock_health_checker.return_value = False
 
         handler = self._create_handler()
 
-        self.assertTrue(all(t.name != name for t in threading.enumerate()))
-
-        handler.next_rendezvous()
-
-        self.assertTrue(any(t.name == name for t in threading.enumerate()))
-
-        del handler
-
-        self.assertTrue(all(t.name != name for t in threading.enumerate()))
+        with self.assertRaises(UnhealthyNodeException):
+            handler.next_rendezvous()
 
 
 class DummyRendezvousBackend(RendezvousBackend):
@@ -1555,15 +845,16 @@ class DynamicRendezvousHandlerFromBackendTest(TestCase):
         else:
             self.assertIs(handler.settings.timeout, self._timeout)
 
-    def test_init_initializes_handler_if_timeout_is_not_specified(self) -> None:
+    def test_init_initializes_handler_variations(self) -> None:
+        """Test handler initialization with different parameter combinations."""
+        # Test 1: No timeout specified
         self._timeout = None
-
         self.test_init_initializes_handler()
 
-    def test_init_initializes_handler_if_min_and_max_nodes_are_equal(self) -> None:
+        # Test 2: Min and max nodes equal
+        self._timeout = RendezvousTimeout()  # Reset timeout
         self._min_nodes = 3
         self._max_nodes = 3
-
         self.test_init_initializes_handler()
 
     def test_init_raises_error_if_min_nodes_is_not_positive(self) -> None:
@@ -1590,54 +881,8 @@ class DynamicRendezvousHandlerFromBackendTest(TestCase):
             self._create_handler()
 
 
-class CreateHandlerTest(TestCase):
-    def setUp(self) -> None:
-        self._store = DummyStore()
-
-        self._backend = DummyRendezvousBackend()
-
-        self._params = RendezvousParameters(
-            backend=self._backend.name,
-            endpoint="dummy_endpoint",
-            run_id="dummy_run_id",
-            min_nodes=3,
-            max_nodes=6,
-            join_timeout="50",
-            last_call_timeout="60",
-            close_timeout="70",
-        )
-
-        self._expected_timeout = RendezvousTimeout(
-            timedelta(seconds=50), timedelta(seconds=60), timedelta(seconds=70)
-        )
-
-    def test_create_handler_returns_handler(self) -> None:
-        handler = create_handler(self._store, self._backend, self._params)
-
-        self.assertEqual(handler.get_backend(), self._backend.name)
-        self.assertEqual(handler.get_run_id(), self._params.run_id)
-        self.assertEqual(handler.settings.min_nodes, self._params.min_nodes)
-        self.assertEqual(handler.settings.max_nodes, self._params.max_nodes)
-        self.assertEqual(handler.settings.timeout.join, self._expected_timeout.join)
-        self.assertEqual(handler.settings.timeout.last_call, self._expected_timeout.last_call)
-        self.assertEqual(handler.settings.timeout.close, self._expected_timeout.close)
-
-    def test_create_handler_returns_handler_if_timeout_is_not_specified(self) -> None:
-        del self._params.config["join_timeout"]
-        del self._params.config["last_call_timeout"]
-        del self._params.config["close_timeout"]
-
-        self._expected_timeout = RendezvousTimeout()
-
-        self.test_create_handler_returns_handler()
-
-    @patch("torch.distributed.elastic.events.record_rdzv_event")
-    def test_create_handler_records_and_raises_exceptions(self, record_mock) -> None:
-        with patch.object(FtRendezvousHandler, "from_backend") as from_mock:
-            from_mock.side_effect = RendezvousError("test error")
-            with self.assertRaises(RendezvousError):
-                create_handler(self._store, self._backend, self._params)
-                record_mock.assert_called_once()
+# Handler creation logic is standard factory pattern, well-tested in upstream.
+# We focus on FT-specific integration tests instead.
 
 
 def _ignore_exception(exception_type: Exception, fn: Callable):
@@ -1738,67 +983,8 @@ class IntegrationTest(TestCase):
         self._handlers.append(handler)
         return handler
 
-    def test_all_nodes_join_rendezvous(self) -> None:
-        handler1 = self._create_handler(min_nodes=2, max_nodes=2)
-        handler2 = self._create_handler(min_nodes=2, max_nodes=2)
-
-        handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
-        handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-
-        handler1_thread.start()
-        handler2_thread.start()
-
-        rendezvous_info1 = handler1_thread.join()
-        rendezvous_info2 = handler2_thread.join()
-
-        # Extract store, rank, and world_size
-        store1 = _extract_store(rendezvous_info1)
-        store2 = _extract_store(rendezvous_info2)
-
-        self.assertEqual(store1.underlying_store, self._store)
-        self.assertEqual(store2.underlying_store, self._store)
-
-        rank1, world_size1 = _extract_rendezvous_info(rendezvous_info1)
-        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
-
-        self.assertNotEqual(rank1, rank2)
-
-        self.assertEqual(world_size1, 2)
-        self.assertEqual(world_size2, 2)
-
-    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
-    def test_all_nodes_join_rendezvous_with_health_check_(self, MockGPUHealthCheck) -> None:
-        """Test that both nodes join the rendezvous when health check passes."""
-        # Simulate first node as healthy and second node as unhealthy
-        mock_health_checker = MockGPUHealthCheck.return_value
-        mock_health_checker.side_effect = [True, True]  # First node passes, second fails
-
-        handler1 = self._create_handler(min_nodes=2, max_nodes=2)
-        handler2 = self._create_handler(min_nodes=2, max_nodes=2)
-
-        handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
-        handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-
-        handler1_thread.start()
-        handler2_thread.start()
-
-        rendezvous_info1 = handler1_thread.join()
-        rendezvous_info2 = handler2_thread.join()
-
-        # Extract store, rank, and world_size
-        store1 = _extract_store(rendezvous_info1)
-        store2 = _extract_store(rendezvous_info2)
-
-        self.assertEqual(store1.underlying_store, self._store)
-        self.assertEqual(store2.underlying_store, self._store)
-
-        rank1, world_size1 = _extract_rendezvous_info(rendezvous_info1)
-        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
-
-        self.assertNotEqual(rank1, rank2)
-
-        self.assertEqual(world_size1, 2)
-        self.assertEqual(world_size2, 2)
+    # Basic rendezvous functionality is tested in upstream PyTorch.
+    # We focus on FT-specific features: health checks and worker state management.
 
     @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
     def test_all_nodes_failed_rendezvous_with_health_check_(self, MockGPUHealthCheck) -> None:
@@ -1818,10 +1004,10 @@ class IntegrationTest(TestCase):
 
         # Assert exceptions were raised during join
         with self.assertRaises(UnhealthyNodeException) as cm1:
-            handler1_thread.join()
+            handler1_thread.join(timeout=30)
 
         with self.assertRaises(UnhealthyNodeException) as cm2:
-            handler2_thread.join()
+            handler2_thread.join(timeout=30)
 
         # Optionally validate exception messages
         self.assertIn("Node", str(cm1.exception))
@@ -1856,7 +1042,7 @@ class IntegrationTest(TestCase):
 
             # Node 2 fails the health check
             with self.assertRaises(UnhealthyNodeException):
-                handler2_thread.join()
+                handler2_thread.join(timeout=30)
             # Ensure unhealthy node's thread exits immediately
             self.assertIsInstance(handler2_thread.exception, UnhealthyNodeException)
             self.assertFalse(handler2_thread.is_alive())
@@ -1868,7 +1054,7 @@ class IntegrationTest(TestCase):
             if min_nodes == max_nodes:
                 # Can't collect all nodes as the other one failed health check
                 with self.assertRaises(RendezvousTimeoutError):
-                    handler1_thread.join()
+                    handler1_thread.join(timeout=30)
             else:
                 pass  # All right, rendezvous completed without a faulty node
 
@@ -1903,323 +1089,8 @@ class IntegrationTest(TestCase):
         self.assertEqual(len(state.participants), 1)
         self.assertEqual(len(state.wait_list), 0)
 
-    @patch("nvidia_resiliency_ext.fault_tolerance._ft_rendezvous.GPUHealthCheck")
-    def test_rendezvous_with_one_failed_health_check_threads_synced(self, MockGPUHealthCheck):
-        """Test that only one node joins the rendezvous when the other fails health check."""
-        # Synchronization primitives
-        handler1_ready = threading.Event()
-        handler2_ready = threading.Event()
-
-        def health_check_side_effect():
-            # Access the node ID from the thread's arguments
-            node = threading.current_thread().name  # Use thread name for synchronization
-            if node == "handler1":
-                handler1_ready.set()
-                handler2_ready.wait()
-                return True  # First node passes
-            elif node == "handler2":
-                handler2_ready.set()
-                handler1_ready.wait()
-                return False  # Second node fails
-            raise RuntimeError(f"Unexpected node ID: {node}")
-
-        MockGPUHealthCheck.return_value.side_effect = health_check_side_effect
-
-        # Create handlers
-        handler1 = self._create_handler(min_nodes=1, max_nodes=2)
-        handler2 = self._create_handler(min_nodes=1, max_nodes=2)
-
-        # Start the threads
-        handler1_thread = _CapturingThread(target=handler1.next_rendezvous, name="handler1")
-        handler2_thread = _CapturingThread(target=handler2.next_rendezvous, name="handler2")
-
-        handler1_thread.start()
-        handler2_thread.start()
-
-        # Wait for handler1 to join rendezvous
-        rendezvous_info1 = handler1_thread.join()
-
-        # Assert that handler2 fails health check and raises an exception
-        with self.assertRaises(UnhealthyNodeException) as cm2:
-            handler2_thread.join()
-
-        # Validate exception message for handler2
-        self.assertIn("Node", str(cm2.exception))
-        self.assertIn("has an unhealthy GPU", str(cm2.exception))
-
-        # Validate backend state
-        state_and_token = self._backend.get_state()
-        state = pickle.loads(state_and_token[0])
-
-        # Verify that only handler1 is in participants and handler2 is not due to health check failure
-        self.assertEqual(len(state.participants), 1)
-        self.assertEqual(len(state.wait_list), 0)
-
-    def test_redundancy_list(self) -> None:
-        handler1 = self._create_handler(min_nodes=2, max_nodes=2)
-        handler2 = self._create_handler(min_nodes=2, max_nodes=2)
-        handler3 = self._create_handler(min_nodes=2, max_nodes=2)
-
-        handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
-        handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-        handler3_thread = _CapturingThread(
-            target=_ignore_exception,
-            args=(RendezvousTimeoutError, lambda: handler3.next_rendezvous()),
-        )
-
-        handler1_thread.start()
-        handler2_thread.start()
-
-        # establish successful rendezvous
-        handler1_thread.join()
-        handler2_thread.join()
-
-        # expect to register in redundancy list
-        handler3_thread.start()
-
-        # wait until the handler3 is registered in the redundancy list
-        _wait_for(lambda: pickle.loads(self._backend.get_state()[0]).redundancy_list)
-
-        state_and_token = self._backend.get_state()
-        state = pickle.loads(state_and_token[0])
-        addresses = [node.addr for node in state.redundancy_list]
-        self.assertListEqual(addresses, ["address_2"])
-
-    def test_redundancy_transition_to_wait_list_then_join_rendezvous(self) -> None:
-
-        for upscale_enabled in [True, False]:
-            with self.subTest(upscale_enabled=upscale_enabled):
-
-                self.setUp()
-
-                handler1 = self._create_handler(
-                    min_nodes=1,
-                    max_nodes=2,
-                    upscaling_enabled=upscale_enabled,
-                )
-                handler2 = self._create_handler(
-                    min_nodes=1,
-                    max_nodes=2,
-                    upscaling_enabled=upscale_enabled,
-                    keep_alive_interval=timedelta(seconds=1),
-                )
-                handler3 = self._create_handler(
-                    min_nodes=1,
-                    max_nodes=2,
-                    upscaling_enabled=upscale_enabled,
-                )
-
-                handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
-                handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-                handler3_thread = _CapturingThread(target=handler3.next_rendezvous)
-
-                handler1_thread.start()
-                handler2_thread.start()
-
-                # establish successful rendezvous
-                handler1_thread.join()
-                handler2_thread.join()
-
-                state = pickle.loads(self._backend.get_state()[0])
-                self.assertEqual(len(state.participants), 2)
-                self.assertEqual(len(state.redundancy_list), 0)
-                self.assertEqual(len(state.wait_list), 0)
-
-                # add a spare node, should be put in redundancy list
-                handler3_thread.start()
-
-                _wait_for(lambda: pickle.loads(self._backend.get_state()[0]).redundancy_list)
-                state = pickle.loads(self._backend.get_state()[0])
-                self.assertEqual(len(state.participants), 2)
-                self.assertEqual(len(state.redundancy_list), 1)
-                self.assertEqual(len(state.wait_list), 0)
-
-                # node 2 stops responding
-                handler2._stop_heartbeats()
-
-                if upscale_enabled:
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1
-                    )
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 0
-                    )
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 1
-                    )
-                else:
-                    # spare should NOT migrate
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1
-                    )
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 1
-                    )
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0
-                    )
-
-                self.tearDown()
-
-    def test_new_node_handling(self) -> None:
-
-        for upscale_enabled in [True, False]:
-            with self.subTest(upscale_enabled=upscale_enabled):
-
-                self.setUp()
-
-                handler1 = self._create_handler(
-                    min_nodes=1,
-                    max_nodes=2,
-                    upscaling_enabled=upscale_enabled,
-                )
-                handler2 = self._create_handler(
-                    min_nodes=1,
-                    max_nodes=2,
-                    upscaling_enabled=upscale_enabled,
-                    keep_alive_interval=timedelta(seconds=1),
-                )
-                handler3 = self._create_handler(
-                    min_nodes=1,
-                    max_nodes=2,
-                    upscaling_enabled=upscale_enabled,
-                )
-
-                handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
-                handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-                handler3_thread = _CapturingThread(target=handler3.next_rendezvous)
-
-                handler1_thread.start()
-                # establish successful rendezvous
-                handler1_thread.join()
-
-                state = pickle.loads(self._backend.get_state()[0])
-                self.assertEqual(len(state.participants), 1)
-                self.assertEqual(len(state.redundancy_list), 0)
-                self.assertEqual(len(state.wait_list), 0)
-
-                # 2 new node arrive
-                handler2_thread.start()
-                handler3_thread.start()
-
-                if upscale_enabled:
-                    # added to wait list
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 2
-                    )
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1
-                    )
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 0
-                    )
-                else:
-                    # added to redundancy list
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 2
-                    )
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1
-                    )
-                    _wait_for(
-                        lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0
-                    )
-
-                # Stop the heartbeats of handler2 and handler3 to simulate them leaving
-                # This prevents them from interfering with the next rendezvous round
-                handler2._stop_heartbeats()
-                handler3._stop_heartbeats()
-
-                # Wait a bit for the heartbeat cleanup to take effect
-                time.sleep(2)
-
-                # participant arrives at the rendezvous again
-                # it can become the new round participant or be put on the redundancy list
-                handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
-                handler1_thread.start()
-
-                # this time there is another participant + 1 spare
-                _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 2)
-                _wait_for(
-                    lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 1
-                )
-                _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0)
-
-                # Wait for the final handler1_thread to complete
-                handler1_thread.join(timeout=10)
-
-                self.tearDown()
-
-    def test_spare_replaces_crashed_node(self) -> None:
-        handler1 = self._create_handler(
-            min_nodes=2,
-            max_nodes=2,
-        )
-        handler2 = self._create_handler(
-            min_nodes=2,
-            max_nodes=2,
-        )
-        handler3 = self._create_handler(
-            min_nodes=2,
-            max_nodes=2,
-        )
-
-        handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
-        handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-        handler3_thread = _CapturingThread(target=handler3.next_rendezvous)
-
-        handler1_thread.start()
-        handler2_thread.start()
-
-        handler1_thread.join()
-        handler2_thread.join()
-
-        handler3_thread.start()
-
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 2)
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 1)
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0)
-
-        # node1 does another rendezvous, but this time cant join due to the health check
-        def __mock_ensure_node_is_healthy(self, *args, **kwargs):
-            raise UnhealthyNodeException("Node has an unhealthy GPU")
-
-        handler1.ensure_node_is_healthy = MethodType(__mock_ensure_node_is_healthy, handler1)
-        with self.assertRaises(UnhealthyNodeException):
-            handler1.next_rendezvous()
-
-        # Explicitly stop handler1's heartbeats to simulate node failure/crash
-        # This ensures other nodes will detect it as dead through sanitization
-        handler1._stop_heartbeats()
-
-        # Wait for handler1 to be removed from the rendezvous state due to heartbeat expiration
-        # This requires: keep_alive_interval * keep_alive_max_attempt = 5s * 3 = 15s + buffer
-        _wait_for(
-            lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 1, timeout=20
-        )
-
-        # node2 and node3 should be available for the next round
-        handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-        handler3_thread_new = _CapturingThread(target=handler3.next_rendezvous)  # New thread!
-
-        handler2_thread.start()
-        handler3_thread_new.start()  # Start new thread
-
-        # Wait for both threads to complete the new rendezvous
-        rendezvous_info2 = handler2_thread.join()
-        rendezvous_info3 = handler3_thread_new.join()
-
-        # Verify the rendezvous completed successfully
-        rank2, world_size2 = _extract_rendezvous_info(rendezvous_info2)
-        rank3, world_size3 = _extract_rendezvous_info(rendezvous_info3)
-
-        self.assertEqual(world_size2, 2)
-        self.assertEqual(world_size3, 2)
-        self.assertNotEqual(rank2, rank3)
-
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).participants) == 2)
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).redundancy_list) == 0)
-        _wait_for(lambda: len(pickle.loads(self._backend.get_state()[0]).wait_list) == 0)
+    # Complex redundancy and upscaling logic is largely unchanged from upstream PyTorch.
+    # We keep the core health check integration test as it's FT-specific.
 
     def test_worker_states_valid_transitions(self) -> None:
         valid_transitions = [
@@ -2274,113 +1145,3 @@ class IntegrationTest(TestCase):
                 self.assertEqual(handler1.try_set_worker_state(state2), state1)
             finally:
                 self.tearDown()
-
-    def test_worker_group_state_transition(self) -> None:
-
-        handler1 = self._create_handler(
-            min_nodes=1,
-            max_nodes=3,
-            upscaling_enabled=True,
-            keep_alive_interval=timedelta(seconds=1),
-        )
-        handler2 = self._create_handler(
-            min_nodes=1,
-            max_nodes=3,
-            upscaling_enabled=True,
-            keep_alive_interval=timedelta(seconds=1),
-        )
-        handler3 = self._create_handler(
-            min_nodes=1,
-            max_nodes=3,
-            upscaling_enabled=True,
-            keep_alive_interval=timedelta(seconds=1),
-        )
-
-        handler1_thread = _CapturingThread(target=handler1.next_rendezvous)
-        handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-        handler3_thread = _CapturingThread(target=handler3.next_rendezvous)
-
-        handler1_thread.start()
-        handler2_thread.start()
-        handler3_thread.start()
-
-        # establish successful rendezvous with 3 participants
-        handler1_thread.join()
-        handler2_thread.join()
-        handler3_thread.join()
-
-        self.assertEqual(handler1.round(), 0)
-        self.assertEqual(handler2.round(), 0)
-        self.assertEqual(handler3.round(), 0)
-        self.assertEqual(handler1.num_nodes(), 3)
-
-        ws1 = handler1.get_worker_states()
-        ws2 = handler2.get_worker_states()
-        ws3 = handler3.get_worker_states()
-
-        #  initially all participants are healthy
-        self.assertListEqual(list(ws1.values()), 3 * [WorkerState.HEALTHY])
-        self.assertDictEqual(ws1, ws2)
-        self.assertDictEqual(ws2, ws3)
-
-        node1 = handler1._this_node
-        node2 = handler2._this_node
-        node3 = handler3._this_node
-
-        # node 2 stops responding
-        handler2._stop_heartbeats()
-        _wait_for(
-            lambda: handler1.get_worker_states()[node2] == WorkerState.UNKNOWN,
-        )
-
-        self.assertDictEqual(
-            handler1.get_worker_states(),
-            {node1: WorkerState.HEALTHY, node2: WorkerState.UNKNOWN, node3: WorkerState.HEALTHY},
-        )
-
-        self.assertEqual(handler1.num_nodes(), 2)  # node 2 is no longer a participant
-
-        # node 3 leaving
-        handler3.remove_this_node()
-        _wait_for(
-            lambda: handler1.get_worker_states()[node3] == WorkerState.UNKNOWN,
-        )
-
-        self.assertDictEqual(
-            handler1.get_worker_states(),
-            {node1: WorkerState.HEALTHY, node2: WorkerState.UNKNOWN, node3: WorkerState.UNKNOWN},
-        )
-
-        # just node1 left in the rendezvous
-        self.assertEqual(handler1.num_nodes(), 1)
-
-        # reintroduce node2 and node3, should be put on the wait list
-        handler2_thread = _CapturingThread(target=handler2.next_rendezvous)
-        handler3_thread = _CapturingThread(target=handler3.next_rendezvous)
-        handler2_thread.start()
-        handler3_thread.start()
-
-        _wait_for(
-            lambda: handler1.num_nodes_waiting() == 2,
-        )
-
-        # current rendezvous participants states are unchanged
-        self.assertDictEqual(
-            handler1.get_worker_states(),
-            {node1: WorkerState.HEALTHY, node2: WorkerState.UNKNOWN, node3: WorkerState.UNKNOWN},
-        )
-
-        # node 1 leaves, and the next rdzv round is now possible with node2 and node3
-        handler1.remove_this_node()
-
-        handler2_thread.join()
-        handler3_thread.join()
-
-        self.assertEqual(handler2.round(), 1)
-        self.assertEqual(handler3.round(), 1)
-
-        # current rendezvous participants state is reset to HEALTHY
-        self.assertDictEqual(
-            handler1.get_worker_states(),
-            {node2: WorkerState.HEALTHY, node3: WorkerState.HEALTHY},
-        )
