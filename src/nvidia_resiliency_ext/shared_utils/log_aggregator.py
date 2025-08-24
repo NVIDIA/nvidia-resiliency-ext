@@ -82,9 +82,12 @@ def main():
 
     if log_dir is None:
         raise RuntimeError("Log directory must be set for log aggregator service")
+    if dist_log_dir is None:
+        raise RuntimeError("Distributed Log directory must be set for log aggregator service")
+
     print(f"Starting NVRx Log Aggregator Service")
     print(f"  Log Path: {os.path.join(log_dir, log_file)}")
-    print(f"  Temp directory: {dist_log_dir}")
+    print(f"  Distributed Log directory: {dist_log_dir}")
     print(f"  en_chronological_ordering: {en_chrono_ord}")
 
     aggregator = NodeLogAggregator(
