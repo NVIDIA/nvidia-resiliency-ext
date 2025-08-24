@@ -114,8 +114,8 @@ class TorchFRTraceCollector(TraceCollector):
         health_check_results = {}
 
         with capture_logs() as stderr_gpu:
-            gpu_health_check = GPUHealthCheck()
-            gpu_health = gpu_health_check._perform_health_check_single_gpu(local_rank)
+            gpu_health_check = GPUHealthCheck(device_index=local_rank)
+            gpu_health = gpu_health_check._perform_health_check()
         with capture_logs() as stderr_nic:
             nic_health_check = NicHealthCheck()
             nic_health_check.set_nic_device(local_rank)

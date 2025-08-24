@@ -19,6 +19,7 @@ import datetime
 import functools
 import gc
 import logging
+import os
 import pathlib
 import sys
 import threading
@@ -36,7 +37,7 @@ from .completion import Completion
 from .compose import Compose
 from .exception import HealthCheckError, InternalError
 from .finalize import Finalize
-from .health_check import HealthCheck
+from .health_check import ChainedGPUHealthCheck, ChainedNVLHealthCheck, HealthCheck
 from .initialize import Initialize
 from .monitor_process import MonitorProcess
 from .monitor_thread import MonitorThread, RankShouldRestart, reraise_if_unraisable
@@ -96,7 +97,10 @@ class Wrapper:
         initialize: Rank-local initialize.
         abort: Asynchronously aborts execution.
         finalize: Rank-local finalize.
-        health_check: Rank-local health check.
+        health_check: Rank-local health check executed before restart. This health check is
+            automatically enhanced with GPU and NVL health validation to ensure comprehensive
+            system health before restart.
+
         rank_assignment: Reassigns ranks, computes the new world size and
             specifies which ranks are calling the wrapped function.
         rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped
@@ -168,6 +172,7 @@ class Wrapper:
         enforce_type('abort', (Abort, type(None)))
         enforce_type('finalize', (Finalize, type(None)))
         enforce_type('health_check', (HealthCheck, type(None)))
+
         enforce_type('rank_assignment', RankAssignment)
         enforce_type('rank_filter', (RankFilter, type(None)))
         enforce_type('monitor_thread_interval', datetime.timedelta)
@@ -222,6 +227,10 @@ class Wrapper:
         self.abort = abort
         self.finalize = finalize
         self.health_check = health_check
+
+        # Construct internal restart_health_check by chaining user's health_check with GPU and NVL checks
+        self._construct_restart_health_check()
+
         self.rank_assignment = rank_assignment
         self.rank_filter = rank_filter
         self.monitor_thread_interval = monitor_thread_interval
@@ -251,6 +260,35 @@ class Wrapper:
                 return call_wrapper(fn, args, kwargs)
 
         return wrapped
+
+    def _construct_restart_health_check(self):
+        """Construct internal restart_health_check by chaining user's health_check with GPU and NVL checks."""
+        # Start with user's health_check components if provided
+        health_checks = []
+        if self.health_check is not None:
+            if hasattr(self.health_check, 'instances'):
+                # If it's a Compose object, extract its instances
+                health_checks.extend(self.health_check.instances)
+            else:
+                # If it's a single health check, add it directly
+                health_checks.append(self.health_check)
+
+        # Add GPU and NVL health checks if LOCAL_RANK is available
+        if 'LOCAL_RANK' in os.environ:
+            try:
+                local_rank = int(os.environ['LOCAL_RANK'])
+                gpu_check = ChainedGPUHealthCheck(device_index=local_rank)
+                nvl_check = ChainedNVLHealthCheck(device_index=local_rank)
+                health_checks.extend([gpu_check, nvl_check])
+            except (ValueError, TypeError):
+                # If LOCAL_RANK is not a valid integer, skip GPU/NVL checks
+                pass
+
+        # Compose all health checks (or set to None if no health checks)
+        if health_checks:
+            self.restart_health_check = Compose(*health_checks)
+        else:
+            self.restart_health_check = None
 
 
 class CallWrapper:
@@ -522,8 +560,8 @@ class CallWrapper:
                             raise finalize_ex from term_ex
 
                         try:
-                            if wrapper.health_check is not None:
-                                wrapper.health_check(state.freeze())
+                            if wrapper.restart_health_check is not None:
+                                wrapper.restart_health_check(state.freeze())
                         except Exception as health_ex:
                             log.error(log_exc(state, health_ex, 'health_ex'))
                             try:
