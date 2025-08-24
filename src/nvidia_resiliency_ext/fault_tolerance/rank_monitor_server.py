@@ -96,22 +96,21 @@ class RankMonitorLogger(logging.Logger):
         self.restarter_logger.propagate = False
         return self.restarter_logger
 
+    def log_restarter_event(self, message, *args, **kwargs):
+        """
+        Log a restart event that should always be visible, but only if restarter logging is enabled.
+        Args:
+            is_restarter_logger: Whether restarter logging is enabled
+            message: The message to log
+            *args, **kwargs: Additional arguments for logging
+        """
+        if self.is_restarter_logger:
+            self.log_for_restarter(message, *args, **kwargs)
 
-def log_restarter_event(logger, message, *args, **kwargs):
-    """
-    Log a restart event that should always be visible, but only if restarter logging is enabled.
-    Args:
-        is_restarter_logger: Whether restarter logging is enabled
-        message: The message to log
-        *args, **kwargs: Additional arguments for logging
-    """
-    if logger.is_restarter_logger:
-        logger.log_for_restarter(message, *args, **kwargs)
-
-    # Get the nvrx logger directly
-    logger = logging.getLogger(LogConfig.name)
-    # Log with [RESTARTER] prefix to indicate it's a restart event
-    logger.info(f"[RESTARTER] {message}", *args, **kwargs)
+        # Get the nvrx logger directly
+        nvlogger = logging.getLogger(LogConfig.name)
+        # Log with [RESTARTER] prefix to indicate it's a restart event
+        nvlogger.info(f"[RESTARTER] {message}", *args, **kwargs)
 
 
 class RankMonitorServer:
