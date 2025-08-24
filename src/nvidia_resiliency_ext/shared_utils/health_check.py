@@ -24,6 +24,7 @@ from functools import wraps
 from typing import Callable, Optional, Union
 
 import defusedxml.ElementTree as ET
+
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 # Get the nvrx logger

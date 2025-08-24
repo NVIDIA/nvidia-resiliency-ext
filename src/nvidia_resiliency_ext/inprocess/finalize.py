@@ -23,9 +23,10 @@ from typing import Any, Callable, Optional
 
 import torch
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from . import exception
 from .state import FrozenState
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class Finalize(abc.ABC):

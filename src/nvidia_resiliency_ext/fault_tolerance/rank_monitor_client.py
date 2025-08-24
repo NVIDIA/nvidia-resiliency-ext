@@ -19,6 +19,8 @@ import os
 import socket
 from typing import Any, Collection, Mapping, Optional
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from .data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -37,7 +39,6 @@ from .data import (
 from .ipc_connector import IpcConnector
 from .timeouts_calc import TimeoutsCalc
 from .utils import read_obj_from_ipc_socket, write_object_to_ipc_socket
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 # Get the nvrx logger
 logger = logging.getLogger(LogConfig.name)

@@ -14,14 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import time
-import sys
-import re
-import logging
-import threading
-import queue
 import heapq
+import logging
+import os
+import queue
+import re
+import sys
+import threading
+import time
 from datetime import datetime
 from typing import Dict, List
 

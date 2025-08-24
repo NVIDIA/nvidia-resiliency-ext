@@ -93,11 +93,12 @@ import logging
 import os
 import socket
 import sys
+from typing import Optional
+
 from nvidia_resiliency_ext.shared_utils.log_distributed import (
     DistributedLogHandler,
     DynamicLogFormatter,
 )
-from typing import Optional
 
 
 class LogConfig:

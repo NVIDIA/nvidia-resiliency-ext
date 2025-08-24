@@ -23,8 +23,9 @@ import time
 from datetime import timedelta
 from typing import Optional
 
-from . import exception
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+from . import exception
 
 MAX_PENDING = 1024
 

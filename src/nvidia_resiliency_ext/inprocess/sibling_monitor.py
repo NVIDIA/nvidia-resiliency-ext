@@ -19,9 +19,10 @@ import threading
 import time
 from datetime import timedelta
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from . import exception, utils
 from .attribution import Interruption, InterruptionRecord
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class Heartbeat(threading.Thread):

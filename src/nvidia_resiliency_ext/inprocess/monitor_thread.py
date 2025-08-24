@@ -25,9 +25,10 @@ from datetime import timedelta
 
 import torch
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from . import attribution, exception
 from .utils import log_exc
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class RankShouldRestart(BaseException):

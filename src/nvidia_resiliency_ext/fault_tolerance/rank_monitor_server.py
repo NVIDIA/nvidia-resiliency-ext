@@ -30,6 +30,8 @@ from typing import Dict, Mapping, Optional
 import torch
 import torch.multiprocessing as mp
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from ..shared_utils.health_check import GPUHealthCheck, NicHealthCheck
 from .config import FaultToleranceConfig
 from .data import (
@@ -44,7 +46,6 @@ from .data import (
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
 from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class RankMonitorLogger(logging.Logger):

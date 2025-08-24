@@ -27,12 +27,13 @@ from typing import Any, Optional
 
 import psutil
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+
 from . import utils
 from .attribution import Interruption, InterruptionRecord
 from .progress_watchdog import Timestamp
 from .sibling_monitor import SiblingMonitor
 from .store import PrefixStore, StoreMixin
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
 
 class Message(enum.Enum):

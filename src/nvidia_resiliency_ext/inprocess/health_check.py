@@ -22,11 +22,12 @@ import threading
 
 import torch
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 # Import the health check classes from shared_utils
 from ..shared_utils.health_check import GPUHealthCheck, NVLHealthCheck
 from . import exception
 from .state import FrozenState
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 class HealthCheck(abc.ABC):

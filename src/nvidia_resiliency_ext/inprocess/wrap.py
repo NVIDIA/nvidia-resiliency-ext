@@ -30,6 +30,8 @@ from typing import Any, Optional
 
 import torch
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+
 from . import param_utils, utils
 from .abort import Abort, AbortTorchDistributed
 from .attribution import Interruption, InterruptionRecord
@@ -49,7 +51,6 @@ from .state import Mode, State
 from .store import PrefixStore, StoreMixin, TCPStore
 from .terminate import Terminate
 from .utils import log_exc
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
 
 class HealthCheckPassed(Exception):
