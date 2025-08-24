@@ -79,7 +79,7 @@ class DistributedLogHandler(logging.Handler):
 
     def _write_message(self, message: str):
         with self.flock:
-            if self.fname == None:
+            if self.fname is None:
                 os.makedirs(self.file_path, exist_ok=True)
                 self.fname = os.path.join(self.file_path, self._log_file_namer())
             # Check if file needs rotation
@@ -201,7 +201,7 @@ class NodeLogAggregator:
         if self._aggregator_thread is not None:
             return
         self._aggregator_thread = threading.Thread(
-            target=self._aggregator_loop, daemon=True, name=f"LogAggregator"
+            target=self._aggregator_loop, daemon=True, name="LogAggregator"
         )
         self._aggregator_thread.start()
 

@@ -32,7 +32,7 @@ import torch
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
-from . import param_utils, utils
+from . import param_utils
 from .abort import Abort, AbortTorchDistributed
 from .attribution import Interruption, InterruptionRecord
 from .completion import Completion
