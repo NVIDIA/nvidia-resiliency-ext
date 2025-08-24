@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from enum import Enum, auto
+from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import log_restarter_event
 
 
 class InvalidStateTransitionException(Exception):
@@ -94,7 +95,7 @@ class RankMonitorStateMachine:
             self.state = new_state
         else:
             error_message = f"Invalid transition attempted from {self.state} to {new_state}"
-            self.logger.log_for_restarter(error_message)
+            log_restarter_event(self.logger, error_message)
             raise InvalidStateTransitionException(error_message)
 
     def can_transition_to(self, new_state):
@@ -130,20 +131,23 @@ class RankMonitorStateMachine:
 
     def _log_state_transition(self, new_state):
         if new_state == RankMonitorState.INITIALIZE:
-            self.logger.log_for_restarter("[NestedRestarter] name=[InJob] state=initialize")
+            log_restarter_event(self.logger, "[NestedRestarter] name=[InJob] state=initialize")
         elif new_state == RankMonitorState.HANDLING_START:
-            self.logger.log_for_restarter(
-                "[NestedRestarter] name=[InJob] state=handling stage=starting"
+            log_restarter_event(
+                self.logger,
+                "[NestedRestarter] name=[InJob] state=handling stage=starting",
             )
         elif new_state == RankMonitorState.HANDLING_PROCESSING:
-            self.logger.log_for_restarter(
-                "[NestedRestarter] name=[InJob] state=handling stage=processing"
+            log_restarter_event(
+                self.logger,
+                "[NestedRestarter] name=[InJob] state=handling stage=processing",
             )
         elif new_state == RankMonitorState.HANDLING_COMPLETED:
-            self.logger.log_for_restarter(
-                "[NestedRestarter] name=[InJob] state=handling stage=completed"
+            log_restarter_event(
+                self.logger,
+                "[NestedRestarter] name=[InJob] state=handling stage=completed",
             )
         elif new_state == RankMonitorState.FINALIZED:
-            self.logger.log_for_restarter("[NestedRestarter] name=[InJob] state=finalized")
+            log_restarter_event(self.logger, "[NestedRestarter] name=[InJob] state=finalized")
         elif new_state == RankMonitorState.ABORTED:
-            self.logger.log_for_restarter("[NestedRestarter] name=[InJob] state=aborted")
+            log_restarter_event(self.logger, "[NestedRestarter] name=[InJob] state=aborted")
