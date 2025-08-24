@@ -94,7 +94,7 @@ class RankMonitorStateMachine:
             self.state = new_state
         else:
             error_message = f"Invalid transition attempted from {self.state} to {new_state}"
-            self.logger.log_for_restarter(error_message)
+            self.logger.log_restarter_event(error_message)
             raise InvalidStateTransitionException(error_message)
 
     def can_transition_to(self, new_state):
@@ -130,20 +130,20 @@ class RankMonitorStateMachine:
 
     def _log_state_transition(self, new_state):
         if new_state == RankMonitorState.INITIALIZE:
-            self.logger.log_for_restarter("[NestedRestarter] name=[InJob] state=initialize")
+            self.logger.log_restarter_event("[NestedRestarter] name=[InJob] state=initialize")
         elif new_state == RankMonitorState.HANDLING_START:
-            self.logger.log_for_restarter(
-                "[NestedRestarter] name=[InJob] state=handling stage=starting"
+            self.logger.log_restarter_event(
+                "[NestedRestarter] name=[InJob] state=handling stage=starting",
             )
         elif new_state == RankMonitorState.HANDLING_PROCESSING:
-            self.logger.log_for_restarter(
-                "[NestedRestarter] name=[InJob] state=handling stage=processing"
+            self.logger.log_restarter_event(
+                "[NestedRestarter] name=[InJob] state=handling stage=processing",
             )
         elif new_state == RankMonitorState.HANDLING_COMPLETED:
-            self.logger.log_for_restarter(
-                "[NestedRestarter] name=[InJob] state=handling stage=completed"
+            self.logger.log_restarter_event(
+                "[NestedRestarter] name=[InJob] state=handling stage=completed",
             )
         elif new_state == RankMonitorState.FINALIZED:
-            self.logger.log_for_restarter("[NestedRestarter] name=[InJob] state=finalized")
+            self.logger.log_restarter_event("[NestedRestarter] name=[InJob] state=finalized")
         elif new_state == RankMonitorState.ABORTED:
-            self.logger.log_for_restarter("[NestedRestarter] name=[InJob] state=aborted")
+            self.logger.log_restarter_event("[NestedRestarter] name=[InJob] state=aborted")

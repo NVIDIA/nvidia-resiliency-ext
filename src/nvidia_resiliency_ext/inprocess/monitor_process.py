@@ -27,7 +27,8 @@ from typing import Any, Optional
 
 import psutil
 
-from . import utils
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+
 from .attribution import Interruption, InterruptionRecord
 from .progress_watchdog import Timestamp
 from .sibling_monitor import SiblingMonitor
@@ -49,7 +50,7 @@ def is_process_active(process):
 
 
 def terminate_process(process: psutil.Process, termination_grace_time: datetime.timedelta):
-    log = logging.getLogger(__name__)
+    log = logging.getLogger(LogConfig.name)
     try:
         log.info(f'SIGCONT {process}')
         process.resume()
@@ -141,32 +142,8 @@ class MonitorProcess:
         store_factory: type[StoreMixin],
         store_kwargs: dict[str, Any],
     ):
-        if log_filename is not None:
-            log_filename = log_filename.format(rank=rank)
-        else:
-            log_filename = os.devnull
-
-        parent_module_name = MonitorProcess.__module__.split('.')[-2]
-        parent_logger = logging.getLogger(parent_module_name)
-        parent_logger.propagate = True
-
-        try:
-            nearest_file_handler = utils.find_nearest_handler(
-                logging.getLogger(__name__),
-                logging.FileHandler,
-            )
-            log_format = nearest_file_handler.formatter._fmt
-        except Exception:
-            log_format = '%(asctime)s | %(levelname)-5s | %(name)s | %(message)s'
-
-        logging.basicConfig(
-            filename=log_filename,
-            filemode='w',
-            level=log_level,
-            format=log_format,
-            force=True,
-        )
-        log = logging.getLogger(__name__)
+        setup_logger(force_reset=True, dist_file_prefix="monproc")
+        log = logging.getLogger(LogConfig.name)
 
         daemon_pid = os.getpid()
         log.info(f'{target_pid=} {daemon_pid=} {log_level=} {rank=} {world_size=}')
@@ -355,7 +332,7 @@ class MonitorProcess:
         store_factory,
         store_kwargs,
     ):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         self.termination_grace_time = termination_grace_time
         self.barrier_timeout = barrier_timeout

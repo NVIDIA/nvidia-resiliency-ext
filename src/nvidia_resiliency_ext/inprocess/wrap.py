@@ -30,7 +30,9 @@ from typing import Any, Optional
 
 import torch
 
-from . import param_utils, utils
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+
+from . import param_utils
 from .abort import Abort, AbortTorchDistributed
 from .attribution import Interruption, InterruptionRecord
 from .completion import Completion
@@ -56,7 +58,7 @@ class HealthCheckPassed(Exception):
 
 
 def reserve_fn(state, store, progress_watchdog, progress_watchdog_interval):
-    log = logging.getLogger(__name__)
+    log = logging.getLogger(LogConfig.name)
     rank = state.rank
 
     log.debug(f'{rank=} starting reserve_fn')
@@ -315,8 +317,8 @@ class CallWrapper:
         self.state = None
 
         try:
-            utils.Logging.initialize()
-            log = logging.getLogger(__name__)
+            setup_logger(dist_file_prefix="wrapper")
+            log = logging.getLogger(LogConfig.name)
 
             enforce_value(not torch.distributed.is_initialized())
 
@@ -386,8 +388,6 @@ class CallWrapper:
         if self.monitor_process is not None:
             self.monitor_process.shutdown()
 
-        utils.Logging.deinitialize()
-
     def __enter__(self):
         return self
 
@@ -440,7 +440,7 @@ class CallWrapper:
 
     @reraise_if_unraisable(RankShouldRestart)
     def __call__(self, fn, args, kwargs):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         store = self.base_store
         base_store = self.base_store

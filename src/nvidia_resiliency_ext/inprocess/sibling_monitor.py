@@ -19,6 +19,8 @@ import threading
 import time
 from datetime import timedelta
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from . import exception, utils
 from .attribution import Interruption, InterruptionRecord
 
@@ -35,7 +37,7 @@ class Heartbeat(threading.Thread):
         super().__init__(name=f'{type(self).__name__}-{rank}', daemon=True)
 
     def run(self):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         rank = self.rank
 
         while not self.should_stop.wait(self.interval.total_seconds()):
@@ -43,7 +45,7 @@ class Heartbeat(threading.Thread):
             self.store.send_heartbeat(rank)
 
     def shutdown(self, timeout=None):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         if timeout is None:
             timeout = self.timeout.total_seconds()
@@ -94,7 +96,7 @@ class SiblingMonitor(threading.Thread):
         heartbeat.join()
 
     def shutdown(self, timeout=None):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         if timeout is None:
             timeout = self.timeout.total_seconds()
@@ -108,7 +110,7 @@ class SiblingMonitor(threading.Thread):
             raise exception.InternalError
 
     def check_heartbeats(self):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         sibling_heartbeat = self.store.get_heartbeat(self.sibling_rank)
         sibling_delta = timedelta(seconds=(time.time() - sibling_heartbeat))

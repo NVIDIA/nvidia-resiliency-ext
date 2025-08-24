@@ -23,6 +23,8 @@ from typing import Any, Callable, Optional
 
 import torch
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from . import exception
 from .state import FrozenState
 
@@ -113,7 +115,7 @@ class ThreadedFinalize(Finalize):
         def wrapped_fn():
             # Set CUDA device in the thread
             if device_id is not None:
-                log = logging.getLogger(__name__)
+                log = logging.getLogger(LogConfig.name)
                 log.debug(f'Setting CUDA device to {device_id} in ThreadedFinalize')
                 torch.cuda.set_device(device_id)
 

@@ -57,12 +57,14 @@ except ImportError:
     RendezvousStoreInfo = None
 from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from ..shared_utils.health_check import GPUHealthCheck
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
 
-log = logging.getLogger(__name__)
+log = logging.getLogger(LogConfig.name)
 
 
 def get_method_name(depth=2):
