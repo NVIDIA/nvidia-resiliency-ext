@@ -24,7 +24,6 @@ import pathlib
 import sys
 import threading
 import time
-import warnings
 from datetime import timedelta
 from typing import Any, Optional
 
@@ -44,7 +43,6 @@ from .monitor_thread import MonitorThread, RankShouldRestart, reraise_if_unraisa
 from .param_utils import enforce_subclass, enforce_type, enforce_value
 from .progress_watchdog import ProgressWatchdog
 from .rank_assignment import ActivateAllRanks, RankAssignment, RankAssignmentCtx, ShiftRanks
-from .rank_filter import RankFilter
 from .state import Mode, State
 from .store import PrefixStore, StoreMixin, TCPStore
 from .terminate import Terminate
@@ -102,8 +100,6 @@ class Wrapper:
 
         rank_assignment: Reassigns ranks, computes the new world size and
             specifies which ranks are calling the wrapped function.
-        rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped
-            function.
         monitor_thread_interval: Monitoring interval for the monitor thread.
         monitor_process_interval: Monitoring interval for the monitor process.
         heartbeat_interval: Monitoring interval for detecting unresponsive
@@ -147,7 +143,6 @@ class Wrapper:
             ActivateAllRanks(),
             ShiftRanks(),
         ),
-        rank_filter: Optional[RankFilter] = None,
         monitor_thread_interval: datetime.timedelta = timedelta(seconds=1),
         monitor_process_interval: datetime.timedelta = timedelta(seconds=1),
         heartbeat_interval: datetime.timedelta = timedelta(seconds=1),
@@ -173,7 +168,6 @@ class Wrapper:
         enforce_type('health_check', (HealthCheck, type(None)))
 
         enforce_type('rank_assignment', RankAssignment)
-        enforce_type('rank_filter', (RankFilter, type(None)))
         enforce_type('monitor_thread_interval', datetime.timedelta)
         enforce_type('monitor_process_interval', datetime.timedelta)
         enforce_type('heartbeat_interval', datetime.timedelta)
@@ -208,15 +202,6 @@ class Wrapper:
 
         enforce_value(torch.distributed.is_available())
 
-        if rank_filter is not None:
-            warnings.warn(
-                'The "rank_filter" argument is deprecated and will be removed '
-                'in the next release. The functionality is merged into '
-                '"rank_assignment".',
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         if store_kwargs is None:
             store_kwargs = {}
 
@@ -231,7 +216,6 @@ class Wrapper:
         self._construct_restart_health_check()
 
         self.rank_assignment = rank_assignment
-        self.rank_filter = rank_filter
         self.monitor_thread_interval = monitor_thread_interval
         self.monitor_process_interval = monitor_process_interval
         self.heartbeat_interval = heartbeat_interval
@@ -453,8 +437,6 @@ class CallWrapper:
         reassigned_ctx = wrapper.rank_assignment(rank_assignment_ctx)
         self.state = state = reassigned_ctx.state
 
-        if wrapper.rank_filter is not None:
-            state = wrapper.rank_filter(state)
         state.set_distributed_vars()
 
         monitor_process.start()
@@ -592,8 +574,6 @@ class CallWrapper:
                     reassigned_ctx = wrapper.rank_assignment(rank_assignment_ctx)
                     self.state = state = reassigned_ctx.state
 
-                    if wrapper.rank_filter is not None:
-                        state = wrapper.rank_filter(state)
                     state.set_distributed_vars()
                 else:
                     break
