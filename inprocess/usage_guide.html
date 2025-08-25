@@ -292,7 +292,6 @@ purposes only and may omit certain implementation details.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">distributed_store</span> <span class="o">=</span> <span class="n">store_factory</span><span class="p">(</span><span class="o">**</span><span class="n">store_kwargs</span><span class="p">)</span>
 <span class="n">initial_barrier</span><span class="p">()</span>
 <span class="n">rank_assignment</span><span class="p">()</span>
-<span class="n">rank_filter</span><span class="p">()</span>  <span class="c1"># deprecated</span>
 
 <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
     <span class="n">initialize</span><span class="p">()</span>
@@ -309,7 +308,6 @@ purposes only and may omit certain implementation details.</p>
         <span class="n">health_check</span><span class="p">()</span>
         <span class="n">iteration_barrier</span><span class="p">()</span>
         <span class="n">rank_assignment</span><span class="p">()</span>
-        <span class="n">rank_filter</span><span class="p">()</span>  <span class="c1"># deprecated</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="k">break</span>
 
