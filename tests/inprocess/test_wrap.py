@@ -349,47 +349,6 @@ class TestException(TestCase):
         with self.assertRaises(ZeroDivisionError):
             fn()
 
-    @common.silence_deprecation_warnings()
-    def test_faulty_rank_filter(self):
-        class RankFilter(inprocess.rank_assignment.RankFilter):
-            def __call__(self, state):
-                raise ZeroDivisionError
-
-        @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(max_iterations=2),
-            rank_filter=RankFilter(),
-            **self.kwargs(),
-        )
-        def fn():
-            raise RuntimeError
-
-        with self.assertRaises(ZeroDivisionError):
-            fn()
-
-    @common.silence_deprecation_warnings()
-    def test_faulty_second_rank_filter(self):
-        class RankFilter(inprocess.rank_assignment.RankFilter):
-            def __init__(self):
-                self.should_raise = False
-
-            def __call__(self, state):
-                if self.should_raise:
-                    raise ZeroDivisionError
-                else:
-                    self.should_raise = True
-                    return state
-
-        @inprocess.Wrapper(
-            initialize=inprocess.initialize.RetryController(max_iterations=2),
-            rank_filter=RankFilter(),
-            **self.kwargs(),
-        )
-        def fn():
-            raise RuntimeError
-
-        with self.assertRaises(ZeroDivisionError):
-            fn()
-
     def test_explicit_restart(self):
         @inprocess.Wrapper(
             initialize=inprocess.initialize.RetryController(max_iterations=2),
