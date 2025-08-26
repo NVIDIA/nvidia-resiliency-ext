@@ -522,6 +522,52 @@ the <code class="xref py py-meth docutils literal notranslate"><span class="pre"
 <p>Timeout event is triggered if either of the active progress monitoring methods
 didn’t record a heartbeat in the specified time interval.</p>
 </section>
+<section id="disabling-hang-protection">
+<h4>Disabling hang protection<a class="headerlink" href="#disabling-hang-protection" title="Link to this heading"></a></h4>
+<p>In some cases, certain operations within the wrapped function may legitimately
+take longer than the configured <code class="docutils literal notranslate"><span class="pre">soft_timeout</span></code> or <code class="docutils literal notranslate"><span class="pre">hard_timeout</span></code> intervals.
+For such operations, the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> provides a
+<code class="xref py py-meth docutils literal notranslate"><span class="pre">inprocess.CallWrapper.disable_hang_protection()</span></code> context manager that
+temporarily disables timeout-based hang detection.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The <code class="xref py py-meth docutils literal notranslate"><span class="pre">inprocess.CallWrapper.disable_hang_protection()</span></code> context manager
+disables critical safety mechanisms designed to protect against hangs and
+deadlocks. Use with extreme caution and only for operations you are confident
+will complete.</p>
+</div>
+<p>The context manager is typically used for operations such as:</p>
+<ul class="simple">
+<li><p>Large data loading operations that may take unpredictable amounts of time</p></li>
+<li><p>Complex initialization routines</p></li>
+<li><p>Other legitimate long-running operations that should not be interrupted</p></li>
+</ul>
+<p>When the context manager exits (either normally or due to an exception), hang
+protection is automatically re-enabled.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">my_training_function</span><span class="p">(</span><span class="n">call_wrapper</span><span class="p">:</span> <span class="n">CallWrapper</span><span class="p">):</span>
+    <span class="c1"># Normal operations are subject to hang protection</span>
+    <span class="n">train_step</span><span class="p">()</span>
+
+    <span class="c1"># Disable hang protection for long-running data loading</span>
+    <span class="k">with</span> <span class="n">call_wrapper</span><span class="o">.</span><span class="n">disable_hang_protection</span><span class="p">():</span>
+        <span class="n">load_large_dataset</span><span class="p">()</span>  <span class="c1"># This won&#39;t trigger timeout restarts</span>
+
+    <span class="c1"># Hang protection is automatically re-enabled</span>
+    <span class="n">train_step</span><span class="p">()</span>  <span class="c1"># This will trigger hang detection if it hangs</span>
+</pre></div>
+</div>
+<p><strong>Important considerations:</strong></p>
+<ul class="simple">
+<li><p><strong>Exception handling</strong>: The context manager only disables timeout-based
+restarts. Exceptions raised within the disabled region will still trigger
+restarts as expected.</p></li>
+<li><p><strong>Scope minimization</strong>: Use the context manager for the smallest possible
+scope. Avoid wrapping entire training loops or large code sections.</p></li>
+<li><p><strong>Testing</strong>: Thoroughly test operations within the disabled context to ensure
+they complete reliably, as the normal hang detection safety net is temporarily
+removed.</p></li>
+</ul>
+</section>
 </section>
 <section id="finalize">
 <h3>Finalize<a class="headerlink" href="#finalize" title="Link to this heading"></a></h3>

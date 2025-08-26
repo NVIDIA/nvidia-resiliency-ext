@@ -511,6 +511,67 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">atomic_lock</span><span class="o">.</span><span class="n">release</span><span class="p">()</span></div>
 
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">_disable_hang_protection</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">        Disables hang protection (soft and hard timeouts) in the monitor process.</span>
+
+<span class="sd">        This method is exposed to allow hang protection to be disabled over long sections</span>
+<span class="sd">        of code and across multiple functions.  When using this method directly, the partner</span>
+<span class="sd">        `_enable_hang_protection` method must be called to re-enable hang protection.</span>
+
+<span class="sd">        Using this method directly is not recommended.  Instead, use the context manager</span>
+<span class="sd">        `disable_hang_protection` to disable hang protection for a specific section of code.</span>
+<span class="sd">        &#39;&#39;&#39;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">disable_timeouts</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_enable_hang_protection</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">        Partner method to `_disable_hang_protection`.</span>
+<span class="sd">        &#39;&#39;&#39;</span>
+
+        <span class="c1"># Reset the progress watchdog timestamp before re-enabling timeouts</span>
+        <span class="c1"># to prevent immediate timeout due to stale timestamp</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">enable_timeouts</span><span class="p">()</span>
+
+<div class="viewcode-block" id="CallWrapper.disable_hang_protection">
+<a class="viewcode-back" href="../../../inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.CallWrapper.disable_hang_protection">[docs]</a>
+    <span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">disable_hang_protection</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">        A context manager that temporarily disables hang protection (soft and hard timeouts) in the monitor process.</span>
+
+<span class="sd">        WARNING: This disables critical safety mechanisms that protect against hangs and deadlocks.</span>
+<span class="sd">        Use with extreme caution and only for operations you know will complete.</span>
+
+<span class="sd">        This is useful for operations that may take a long time to complete and should not</span>
+<span class="sd">        be interrupted by hang detection mechanisms, such as some aspects of data loading.</span>
+
+<span class="sd">        The hang protection is automatically re-enabled when exiting the context, even if an</span>
+<span class="sd">        exception occurs within the context.</span>
+
+<span class="sd">        Example:</span>
+<span class="sd">            def my_training_function(call_wrapper: CallWrapper):</span>
+<span class="sd">                # Normal operations subject to hang protection</span>
+<span class="sd">                train_step()</span>
+
+<span class="sd">                # Disable hang protection for long-running checkpoint operation</span>
+<span class="sd">                with call_wrapper.disable_hang_protection():</span>
+<span class="sd">                    load_data()  # This won&#39;t trigger hang detection</span>
+
+<span class="sd">                train_step()   # This will trigger hang detection</span>
+
+<span class="sd">                # Hang protection is automatically re-enabled</span>
+<span class="sd">                train_step()</span>
+<span class="sd">        &#39;&#39;&#39;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_disable_hang_protection</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">yield</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_enable_hang_protection</span><span class="p">()</span></div>
+
+
     <span class="nd">@reraise_if_unraisable</span><span class="p">(</span><span class="n">RankShouldRestart</span><span class="p">)</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
         <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>

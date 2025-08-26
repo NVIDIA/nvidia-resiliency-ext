@@ -136,6 +136,32 @@ main thread won’t enter into <code class="xref py py-meth docutils literal not
 code block if termination procedure is already in progress.</p>
 </dd></dl>
 
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.CallWrapper.disable_hang_protection">
+<span class="sig-name descname"><span class="pre">disable_hang_protection</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/wrap.html#CallWrapper.disable_hang_protection"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.CallWrapper.disable_hang_protection" title="Link to this definition"></a></dt>
+<dd><p>A context manager that temporarily disables hang protection (soft and hard timeouts) in the monitor process.</p>
+<p>WARNING: This disables critical safety mechanisms that protect against hangs and deadlocks.
+Use with extreme caution and only for operations you know will complete.</p>
+<p>This is useful for operations that may take a long time to complete and should not
+be interrupted by hang detection mechanisms, such as some aspects of data loading.</p>
+<p>The hang protection is automatically re-enabled when exiting the context, even if an
+exception occurs within the context.</p>
+<p class="rubric">Example</p>
+<dl>
+<dt>def my_training_function(call_wrapper: CallWrapper):</dt><dd><p># Normal operations subject to hang protection
+train_step()</p>
+<p># Disable hang protection for long-running checkpoint operation
+with call_wrapper.disable_hang_protection():</p>
+<blockquote>
+<div><p>load_data()  # This won’t trigger hang detection</p>
+</div></blockquote>
+<p>train_step()   # This will trigger hang detection</p>
+<p># Hang protection is automatically re-enabled
+train_step()</p>
+</dd>
+</dl>
+</dd></dl>
+
 <dl class="py property">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.CallWrapper.iteration">
 <em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">iteration</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.CallWrapper.iteration" title="Link to this definition"></a></dt>
