@@ -152,7 +152,7 @@ class TestAsyncSave:
         state_dict = model.state_dict()
         planner = DefaultSavePlanner()
 
-        if rank == 2:
+        if rank == 1:
             open_file = mock_open
         else:
             open_file = open
