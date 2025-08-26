@@ -285,7 +285,7 @@ class MonitorProcess:
                         interruption = Interruption.HARD_TIMEOUT
                         store.record_interrupted([InterruptionRecord(rank, interruption)])
                         store.record_terminated_ranks([rank])
-                        terminate_process(target_process, termination_grace_time)
+                        terminate_process(target_process, termination_grace_time, log)
 
                 if not is_process_active(target_process):
                     log.info('target process is terminated')
