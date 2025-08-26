@@ -24,7 +24,6 @@ import pathlib
 import sys
 import threading
 import time
-import warnings
 from datetime import timedelta
 from typing import Any, Optional
 
@@ -46,7 +45,6 @@ from .monitor_thread import MonitorThread, RankShouldRestart, reraise_if_unraisa
 from .param_utils import enforce_subclass, enforce_type, enforce_value
 from .progress_watchdog import ProgressWatchdog
 from .rank_assignment import ActivateAllRanks, RankAssignment, RankAssignmentCtx, ShiftRanks
-from .rank_filter import RankFilter
 from .state import Mode, State
 from .store import PrefixStore, StoreMixin, TCPStore
 from .terminate import Terminate
@@ -104,8 +102,6 @@ class Wrapper:
 
         rank_assignment: Reassigns ranks, computes the new world size and
             specifies which ranks are calling the wrapped function.
-        rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped
-            function.
         monitor_thread_interval: Monitoring interval for the monitor thread.
         monitor_process_interval: Monitoring interval for the monitor process.
         heartbeat_interval: Monitoring interval for detecting unresponsive
@@ -149,7 +145,6 @@ class Wrapper:
             ActivateAllRanks(),
             ShiftRanks(),
         ),
-        rank_filter: Optional[RankFilter] = None,
         monitor_thread_interval: datetime.timedelta = timedelta(seconds=1),
         monitor_process_interval: datetime.timedelta = timedelta(seconds=1),
         heartbeat_interval: datetime.timedelta = timedelta(seconds=1),
@@ -175,7 +170,6 @@ class Wrapper:
         enforce_type('health_check', (HealthCheck, type(None)))
 
         enforce_type('rank_assignment', RankAssignment)
-        enforce_type('rank_filter', (RankFilter, type(None)))
         enforce_type('monitor_thread_interval', datetime.timedelta)
         enforce_type('monitor_process_interval', datetime.timedelta)
         enforce_type('heartbeat_interval', datetime.timedelta)
@@ -210,15 +204,6 @@ class Wrapper:
 
         enforce_value(torch.distributed.is_available())
 
-        if rank_filter is not None:
-            warnings.warn(
-                'The "rank_filter" argument is deprecated and will be removed '
-                'in the next release. The functionality is merged into '
-                '"rank_assignment".',
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         if store_kwargs is None:
             store_kwargs = {}
 
@@ -233,7 +218,6 @@ class Wrapper:
         self._construct_restart_health_check()
 
         self.rank_assignment = rank_assignment
-        self.rank_filter = rank_filter
         self.monitor_thread_interval = monitor_thread_interval
         self.monitor_process_interval = monitor_process_interval
         self.heartbeat_interval = heartbeat_interval
@@ -438,6 +422,64 @@ class CallWrapper:
         finally:
             self.atomic_lock.release()
 
+    def _disable_hang_protection(self):
+        '''
+        Disables hang protection (soft and hard timeouts) in the monitor process.
+
+        This method is exposed to allow hang protection to be disabled over long sections
+        of code and across multiple functions.  When using this method directly, the partner
+        `_enable_hang_protection` method must be called to re-enable hang protection.
+
+        Using this method directly is not recommended.  Instead, use the context manager
+        `disable_hang_protection` to disable hang protection for a specific section of code.
+        '''
+
+        self.monitor_process.disable_timeouts()
+
+    def _enable_hang_protection(self):
+        '''
+        Partner method to `_disable_hang_protection`.
+        '''
+
+        # Reset the progress watchdog timestamp before re-enabling timeouts
+        # to prevent immediate timeout due to stale timestamp
+        self.progress_watchdog.reset()
+        self.monitor_process.enable_timeouts()
+
+    @contextlib.contextmanager
+    def disable_hang_protection(self):
+        r'''
+        A context manager that temporarily disables hang protection (soft and hard timeouts) in the monitor process.
+
+        WARNING: This disables critical safety mechanisms that protect against hangs and deadlocks.
+        Use with extreme caution and only for operations you know will complete.
+
+        This is useful for operations that may take a long time to complete and should not
+        be interrupted by hang detection mechanisms, such as some aspects of data loading.
+
+        The hang protection is automatically re-enabled when exiting the context, even if an
+        exception occurs within the context.
+
+        Example:
+            def my_training_function(call_wrapper: CallWrapper):
+                # Normal operations subject to hang protection
+                train_step()
+
+                # Disable hang protection for long-running checkpoint operation
+                with call_wrapper.disable_hang_protection():
+                    load_data()  # This won't trigger hang detection
+
+                train_step()   # This will trigger hang detection
+
+                # Hang protection is automatically re-enabled
+                train_step()
+        '''
+        self._disable_hang_protection()
+        try:
+            yield
+        finally:
+            self._enable_hang_protection()
+
     @reraise_if_unraisable(RankShouldRestart)
     def __call__(self, fn, args, kwargs):
         log = logging.getLogger(LogConfig.name)
@@ -453,8 +495,6 @@ class CallWrapper:
         reassigned_ctx = wrapper.rank_assignment(rank_assignment_ctx)
         self.state = state = reassigned_ctx.state
 
-        if wrapper.rank_filter is not None:
-            state = wrapper.rank_filter(state)
         state.set_distributed_vars()
 
         monitor_process.start()
@@ -592,8 +632,6 @@ class CallWrapper:
                     reassigned_ctx = wrapper.rank_assignment(rank_assignment_ctx)
                     self.state = state = reassigned_ctx.state
 
-                    if wrapper.rank_filter is not None:
-                        state = wrapper.rank_filter(state)
                     state.set_distributed_vars()
                 else:
                     break

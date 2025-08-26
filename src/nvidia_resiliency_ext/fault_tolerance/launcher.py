@@ -27,7 +27,6 @@ import sys
 import tempfile
 import time
 import uuid
-import warnings
 from argparse import REMAINDER, ArgumentParser
 from dataclasses import dataclass, field
 from string import Template
@@ -1084,34 +1083,6 @@ def launch_agent(
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
 
 
-def check_for_deprecated_args():
-    deprecated_args = [
-        "--fault-tol-cfg-path",
-        "--ignore-missing-fault-tol-cfg",
-        "--ft-param-workload_check_interval",
-        "--ft-param-initial_rank_heartbeat_timeout",
-        "--ft-param-rank_heartbeat_timeout",
-        "--ft-param-node_health_check_interval",
-        "--ft-param-safety_factor",
-        "--ft-param-rank_termination_signal",
-        "--ft-param-log_level",
-        "--ft-param-rank_out_of_section_timeout",
-        "--ft-param-rank_section_timeouts",
-        "--ft-param-restart_check_interval",
-        "--restart-policy",
-        "--restart_policy",
-        "--ft-param-enable-nic-monitor",
-        "--ft_param_enable_nic_monitor",
-        "--ft-param-pci-topo-file",
-        "--ft_param_pci_topo_file",
-        "--ft-param-link-down-path-template",
-        "--ft_param_link_down_path_template",
-    ]
-
-    for arg in deprecated_args:
-        if arg in sys.argv:
-            warnings.warn(f"Argument {arg} is deprecated and will be removed in NVRx v0.5")
-
 # Source
 # https://github.com/pytorch/pytorch/blob/release/2.3/torch/distributed/run.py
 
@@ -1722,12 +1693,9 @@ def get_args_parser() -> ArgumentParser:
     # Fault tolerance related items
     #
 
-    check_for_deprecated_args()
-
     parser.add_argument(
         "--ft-cfg-path",
         "--ft-cfg_path",
-        "--fault-tol-cfg-path",  # Deprecated, to be removed in v0.5
         default=None,
         type=str,
         action=env,
@@ -1739,7 +1707,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-workload-check-interval",
         "--ft-workload_check_interval",
-        "--ft-param-workload_check_interval",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
         dest="ft_workload_check_interval",
@@ -1749,7 +1716,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-initial-rank-heartbeat-timeout",
         "--ft-initial_rank_heartbeat_timeout",
-        "--ft-param-initial_rank_heartbeat_timeout",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
         dest="ft_initial_rank_heartbeat_timeout",
@@ -1759,7 +1725,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-rank-heartbeat-timeout",
         "--ft-rank_heartbeat_timeout",
-        "--ft-param-rank_heartbeat_timeout",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
         dest="ft_rank_heartbeat_timeout",
@@ -1769,7 +1734,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-node-health-check-interval",
         "--ft-node_health_check_interval",
-        "--ft-param-node_health_check_interval",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
         dest="ft_node_health_check_interval",
@@ -1779,7 +1743,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-safety-factor",
         "--ft-safety_factor",
-        "--ft-param-safety_factor",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
         dest="ft_safety_factor",
@@ -1789,7 +1752,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-rank-termination-signal",
         "--ft-rank_termination_signal",
-        "--ft-param-rank_termination_signal",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
         dest="ft_rank_termination_signal",
@@ -1799,7 +1761,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-log-level",
         "--ft-log_level",
-        "--ft-param-log_level",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
         dest="ft_log_level",
@@ -1809,7 +1770,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-rank-out-of-section-timeout",
         "--ft-rank_out_of_section_timeout",
-        "--ft-param-rank_out_of_section_timeout",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
         dest="ft_rank_out_of_section_timeout",
@@ -1819,7 +1779,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-rank-section-timeouts",
         "--ft-rank_section_timeouts",
-        "--ft-param-rank_section_timeouts",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
         dest="ft_rank_section_timeouts",
@@ -1830,7 +1789,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-restart-check-interval",
         "--ft-restart_check_interval",
-        "--ft-param-restart_check_interval",  # Deprecated, to be removed in v0.5
         type=float,
         default=None,
         dest="ft_restart_check_interval",
@@ -1840,8 +1798,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-restart-policy",
         "--ft-restart_policy",
-        "--restart-policy",  # Deprecated, to be removed in v0.5
-        "--restart_policy",  # Deprecated, to be removed in v0.5
         type=str,
         choices=['any-failed', 'min-healthy'],
         default='any-failed',
@@ -1854,8 +1810,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-enable-nic-monitor",
         "--ft-enable_nic_monitor",
-        "--ft-param-enable-nic-monitor",  # Deprecated, to be removed in v0.5
-        "--ft_param_enable_nic_monitor",  # Deprecated, to be removed in v0.5
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
         default=True,
         dest="ft_enable_nic_monitor",
@@ -1865,8 +1819,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-pci-topo-file",
         "--ft-pci_topo_file",
-        "--ft-param-pci-topo-file",  # Deprecated, to be removed in v0.5
-        "--ft_param_pci_topo_file",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
         dest="ft_pci_topo_file",
@@ -1876,8 +1828,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-link-down-path-template",
         "--ft-link_down_path_template",
-        "--ft-param-link-down-path-template",  # Deprecated, to be removed in v0.5
-        "--ft_param_link_down_path_template",  # Deprecated, to be removed in v0.5
         type=str,
         default=None,
         dest="ft_link_down_path_template",
@@ -1886,7 +1836,6 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ignore-missing-fault-tol-cfg",  # Deprecated, to be removed in v0.5
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
