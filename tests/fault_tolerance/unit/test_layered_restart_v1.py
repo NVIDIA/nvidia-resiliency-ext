@@ -7,6 +7,7 @@ from nvidia_resiliency_ext.fault_tolerance import (
     RankMonitorStateMachine,
 )
 
+
 class TestRankMonitorStateMachine(unittest.TestCase):
     def setUp(self):
         # Initialize the mock logger and RankMonitorStateMachine
