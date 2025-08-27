@@ -666,16 +666,15 @@ class TestRestartHealthCheck(TestCase):
         self.assertIsInstance(wrapper.restart_health_check, inprocess.compose.Compose)
 
         # The instances attribute now contains the health checks directly
-        self.assertEqual(len(wrapper.restart_health_check.instances), 2)
-
-        # Should have 2 health checks: GPU and NVL health checks
+        # Should have 3 health checks: GPU, NVL, and NIC health checks
         # Note: GPU health checks may be disabled due to driver version requirements
-        self.assertGreaterEqual(len(wrapper.restart_health_check.instances), 1)
+        self.assertGreaterEqual(len(wrapper.restart_health_check.instances), 2)
 
         # Check that we have the expected health check types
         health_check_types = [type(check) for check in wrapper.restart_health_check.instances]
         self.assertIn(inprocess.health_check.ChainedGPUHealthCheck, health_check_types)
         self.assertIn(inprocess.health_check.ChainedNVLHealthCheck, health_check_types)
+        self.assertIn(inprocess.health_check.ChainedNicHealthCheck, health_check_types)
 
     def test_construct_restart_health_check_no_local_rank(self):
         """Test _construct_restart_health_check when LOCAL_RANK is not available."""
@@ -724,13 +723,25 @@ class TestRestartHealthCheck(TestCase):
                     self._execution_order.append('nvl')
                 return state
 
-        # Mock the GPU and NVL health checks
+        class MockNicHealthCheck(inprocess.health_check.HealthCheck):
+            def __init__(self, device_index):
+                self.device_index = device_index
+
+            def __call__(self, state):
+                if hasattr(self, '_execution_order'):
+                    self._execution_order.append('nic')
+                return state
+
+        # Mock the GPU, NVL, and NIC health checks
         with (
             unittest.mock.patch(
                 'nvidia_resiliency_ext.inprocess.wrap.ChainedGPUHealthCheck', MockGPUHealthCheck
             ),
             unittest.mock.patch(
                 'nvidia_resiliency_ext.inprocess.wrap.ChainedNVLHealthCheck', MockNVLHealthCheck
+            ),
+            unittest.mock.patch(
+                'nvidia_resiliency_ext.inprocess.wrap.ChainedNicHealthCheck', MockNicHealthCheck
             ),
         ):
 
@@ -746,9 +757,9 @@ class TestRestartHealthCheck(TestCase):
             else:
                 components = wrapper.restart_health_check.instances
 
-            # We should have: user + gpu + nvl = 3 components
+            # We should have: user + gpu + nvl + nic = 4 components
             self.assertEqual(
-                len(components), 3, f"Expected 3 health check components, got {len(components)}"
+                len(components), 4, f"Expected 4 health check components, got {len(components)}"
             )
 
             # Set up execution order tracking on the mock instances
@@ -761,8 +772,8 @@ class TestRestartHealthCheck(TestCase):
             # Execute the composed health check
             result = wrapper.restart_health_check(mock_state)
 
-            # Verify execution order: should be nvl -> gpu -> user (Compose executes in reverse order)
-            expected_order = ['nvl', 'gpu', 'user']
+            # Verify execution order: should be nic -> nvl -> gpu -> user (Compose executes in reverse order)
+            expected_order = ['nic', 'nvl', 'gpu', 'user']
             self.assertEqual(
                 execution_order,
                 expected_order,
@@ -807,13 +818,25 @@ class TestRestartHealthCheck(TestCase):
                     self._execution_order.append('nvl')
                 return state
 
-        # Mock the GPU and NVL health checks
+        class MockNicHealthCheck(inprocess.health_check.HealthCheck):
+            def __init__(self, device_index):
+                self.device_index = device_index
+
+            def __call__(self, state):
+                if hasattr(self, '_execution_order'):
+                    self._execution_order.append('nic')
+                return state
+
+        # Mock the GPU, NVL, and NIC health checks
         with (
             unittest.mock.patch(
                 'nvidia_resiliency_ext.inprocess.wrap.ChainedGPUHealthCheck', MockGPUHealthCheck
             ),
             unittest.mock.patch(
                 'nvidia_resiliency_ext.inprocess.wrap.ChainedNVLHealthCheck', MockNVLHealthCheck
+            ),
+            unittest.mock.patch(
+                'nvidia_resiliency_ext.inprocess.wrap.ChainedNicHealthCheck', MockNicHealthCheck
             ),
         ):
 
@@ -830,9 +853,9 @@ class TestRestartHealthCheck(TestCase):
             else:
                 components = wrapper.restart_health_check.instances
 
-            # We should have: user checks (2) + gpu + nvl = 4 components
+            # We should have: user checks (2) + gpu + nvl + nic = 5 components
             self.assertEqual(
-                len(components), 4, f"Expected 4 health check components, got {len(components)}"
+                len(components), 5, f"Expected 5 health check components, got {len(components)}"
             )
 
             # Set up execution order tracking on the mock instances
@@ -845,9 +868,9 @@ class TestRestartHealthCheck(TestCase):
             # Execute the composed health check
             result = wrapper.restart_health_check(mock_state)
 
-            # Verify execution order: should be nvl -> gpu -> user2 -> user1 (Compose executes in reverse order)
+            # Verify execution order: should be nic -> nvl -> gpu -> user2 -> user1 (Compose executes in reverse order)
             # The user checks are flattened from the Compose, so they execute in sequence
-            expected_order = ['nvl', 'gpu', 'user2', 'user1']
+            expected_order = ['nic', 'nvl', 'gpu', 'user2', 'user1']
             self.assertEqual(
                 execution_order,
                 expected_order,
@@ -887,13 +910,25 @@ class TestRestartHealthCheck(TestCase):
                     self._execution_order.append('nvl')
                 return state
 
-        # Mock the GPU and NVL health checks
+        class MockNicHealthCheck(inprocess.health_check.HealthCheck):
+            def __init__(self, device_index):
+                self.device_index = device_index
+
+            def __call__(self, state):
+                if hasattr(self, '_execution_order'):
+                    self._execution_order.append('nic')
+                return state
+
+        # Mock the GPU, NVL, and NIC health checks
         with (
             unittest.mock.patch(
                 'nvidia_resiliency_ext.inprocess.wrap.ChainedGPUHealthCheck', MockGPUHealthCheck
             ),
             unittest.mock.patch(
                 'nvidia_resiliency_ext.inprocess.wrap.ChainedNVLHealthCheck', MockNVLHealthCheck
+            ),
+            unittest.mock.patch(
+                'nvidia_resiliency_ext.inprocess.wrap.ChainedNicHealthCheck', MockNicHealthCheck
             ),
         ):
 
@@ -909,9 +944,9 @@ class TestRestartHealthCheck(TestCase):
             else:
                 components = wrapper.restart_health_check.instances
 
-            # We should have: user + gpu + nvl = 3 components
+            # We should have: user + gpu + nvl + nic = 4 components
             self.assertEqual(
-                len(components), 3, f"Expected 3 health check components, got {len(components)}"
+                len(components), 4, f"Expected 4 health check components, got {len(components)}"
             )
 
             # Set up execution order tracking on the mock instances
@@ -924,8 +959,8 @@ class TestRestartHealthCheck(TestCase):
             # Execute the composed health check
             result = wrapper.restart_health_check(mock_state)
 
-            # Verify execution order: should be nvl -> gpu -> user (Compose executes in reverse order)
-            expected_order = ['nvl', 'gpu', 'user']
+            # Verify execution order: should be nic -> nvl -> gpu -> user (Compose executes in reverse order)
+            expected_order = ['nic', 'nvl', 'gpu', 'user']
             self.assertEqual(
                 execution_order,
                 expected_order,
@@ -1011,6 +1046,44 @@ class TestRestartHealthCheck(TestCase):
             # Just verify it's a callable object
             self.assertTrue(callable(nvl_check))
 
+    def test_restart_health_check_nic_failure(self):
+        """Test that NIC health checks are properly constructed and can be executed."""
+        wrapper = inprocess.Wrapper(**self.kwargs())
+
+        # Skip this test if no restart_health_check (no LOCAL_RANK)
+        if wrapper.restart_health_check is None:
+            self.skipTest("No restart_health_check available (LOCAL_RANK not set)")
+
+        # Get the health checks list
+        health_checks_list = wrapper.restart_health_check.instances
+
+        # Find NIC health check
+        nic_check = None
+        for check in health_checks_list:
+            # Check if it's a NIC health check by type name or device_index attribute
+            if (
+                isinstance(check, inprocess.health_check.ChainedNicHealthCheck)
+                or hasattr(check, 'device_index')
+                and 'Nic' in type(check).__name__
+            ):
+                nic_check = check
+                break
+
+        self.assertIsNotNone(nic_check, "NIC health check not found")
+
+        # Create a mock state
+        mock_state = unittest.mock.Mock()
+
+        # Test that the NIC health check can be called
+        try:
+            result = nic_check(mock_state)
+            # If it succeeds, verify it returns the state
+            self.assertEqual(result, mock_state)
+        except Exception as e:
+            # If it fails, that's also acceptable behavior
+            # Just verify it's a callable object
+            self.assertTrue(callable(nic_check))
+
     def test_restart_health_check_user_failure(self):
         """Test that restart_health_check properly handles user health check failures."""
 
@@ -1047,9 +1120,10 @@ class TestRestartHealthCheck(TestCase):
         # Get the health checks list
         health_checks_list = wrapper.restart_health_check.instances
 
-        # Find GPU and NVL health checks
+        # Find GPU, NVL, and NIC health checks
         gpu_check = None
         nvl_check = None
+        nic_check = None
         for check in health_checks_list:
             # Check if it's a GPU health check by type name or device_index attribute
             if (
@@ -1065,14 +1139,23 @@ class TestRestartHealthCheck(TestCase):
                 and 'NVL' in type(check).__name__
             ):
                 nvl_check = check
+            # Check if it's a NIC health check by type name or device_index attribute
+            elif (
+                isinstance(check, inprocess.health_check.ChainedNicHealthCheck)
+                or hasattr(check, 'device_index')
+                and 'Nic' in type(check).__name__
+            ):
+                nic_check = check
 
-        # Verify that we found both checks
+        # Verify that we found all three checks
         self.assertIsNotNone(gpu_check, "GPU health check not found")
         self.assertIsNotNone(nvl_check, "NVL health check not found")
+        self.assertIsNotNone(nic_check, "NIC health check not found")
 
         # Verify device_index is properly set
         self.assertEqual(gpu_check.device_index, 0)  # LOCAL_RANK=0
         self.assertEqual(nvl_check.device_index, 0)  # LOCAL_RANK=0
+        self.assertEqual(nic_check.device_index, 0)  # LOCAL_RANK=0
 
     def test_restart_health_check_integration_with_wrapper(self):
         """Test that restart_health_check integrates properly with the wrapper execution flow."""
