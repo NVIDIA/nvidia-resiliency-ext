@@ -101,6 +101,8 @@
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">LogConfig</span>
+
 <span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">exception</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">FrozenState</span>
 
@@ -199,7 +201,7 @@
         <span class="k">def</span><span class="w"> </span><span class="nf">wrapped_fn</span><span class="p">():</span>
             <span class="c1"># Set CUDA device in the thread</span>
             <span class="k">if</span> <span class="n">device_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+                <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
                 <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;Setting CUDA device to </span><span class="si">{</span><span class="n">device_id</span><span class="si">}</span><span class="s1"> in ThreadedFinalize&#39;</span><span class="p">)</span>
                 <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">device_id</span><span class="p">)</span>
 

@@ -107,7 +107,9 @@
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">param_utils</span><span class="p">,</span> <span class="n">utils</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">LogConfig</span><span class="p">,</span> <span class="n">setup_logger</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">param_utils</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.abort</span><span class="w"> </span><span class="kn">import</span> <span class="n">Abort</span><span class="p">,</span> <span class="n">AbortTorchDistributed</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.attribution</span><span class="w"> </span><span class="kn">import</span> <span class="n">Interruption</span><span class="p">,</span> <span class="n">InterruptionRecord</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.completion</span><span class="w"> </span><span class="kn">import</span> <span class="n">Completion</span>
@@ -132,7 +134,7 @@
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">reserve_fn</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">store</span><span class="p">,</span> <span class="n">progress_watchdog</span><span class="p">,</span> <span class="n">progress_watchdog_interval</span><span class="p">):</span>
-    <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+    <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
     <span class="n">rank</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">rank</span>
 
     <span class="n">log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">rank</span><span class="si">=}</span><span class="s1"> starting reserve_fn&#39;</span><span class="p">)</span>
@@ -382,8 +384,8 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="kc">None</span>
 
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">utils</span><span class="o">.</span><span class="n">Logging</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
-            <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+            <span class="n">setup_logger</span><span class="p">(</span><span class="n">dist_file_prefix</span><span class="o">=</span><span class="s2">&quot;wrapper&quot;</span><span class="p">)</span>
+            <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 
             <span class="n">enforce_value</span><span class="p">(</span><span class="ow">not</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">())</span>
 
@@ -452,8 +454,6 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">progress_watchdog</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">monitor_process</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
-
-        <span class="n">utils</span><span class="o">.</span><span class="n">Logging</span><span class="o">.</span><span class="n">deinitialize</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__enter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">return</span> <span class="bp">self</span>
@@ -574,7 +574,7 @@
 
     <span class="nd">@reraise_if_unraisable</span><span class="p">(</span><span class="n">RankShouldRestart</span><span class="p">)</span>
     <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fn</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
-        <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 
         <span class="n">store</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span>
         <span class="n">base_store</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_store</span>

@@ -103,10 +103,12 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">traceback</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.multiprocessing</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mp</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">LogConfig</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">..shared_utils.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="n">GPUHealthCheck</span><span class="p">,</span> <span class="n">NicHealthCheck</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.config</span><span class="w"> </span><span class="kn">import</span> <span class="n">FaultToleranceConfig</span>
@@ -173,7 +175,26 @@
         <span class="n">stdout_handler</span><span class="o">.</span><span class="n">setFormatter</span><span class="p">(</span><span class="n">formatter</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">restarter_logger</span><span class="o">.</span><span class="n">addHandler</span><span class="p">(</span><span class="n">stdout_handler</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">restarter_logger</span><span class="o">.</span><span class="n">propagate</span> <span class="o">=</span> <span class="kc">False</span>
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">restarter_logger</span></div>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">restarter_logger</span>
+
+<div class="viewcode-block" id="RankMonitorLogger.log_restarter_event">
+<a class="viewcode-back" href="../../../fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorLogger.log_restarter_event">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">log_restarter_event</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">message</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Log a restart event that should always be visible, but only if restarter logging is enabled.</span>
+<span class="sd">        Args:</span>
+<span class="sd">            is_restarter_logger: Whether restarter logging is enabled</span>
+<span class="sd">            message: The message to log</span>
+<span class="sd">            *args, **kwargs: Additional arguments for logging</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_restarter_logger</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">log_for_restarter</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+
+        <span class="c1"># Get the nvrx logger directly</span>
+        <span class="n">nvlogger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="c1"># Log with [RESTARTER] prefix to indicate it&#39;s a restart event</span>
+        <span class="n">nvlogger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[RESTARTER] </span><span class="si">{</span><span class="n">message</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
+</div>
 
 
 
@@ -196,7 +217,6 @@
         <span class="n">cfg</span><span class="p">:</span> <span class="n">FaultToleranceConfig</span><span class="p">,</span>
         <span class="n">ipc_socket_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
         <span class="n">rank_monitor_ready_event</span><span class="p">,</span>
-        <span class="n">is_restarter_logger</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
         <span class="n">logger</span><span class="p">:</span> <span class="n">RankMonitorLogger</span><span class="p">,</span>
     <span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
@@ -207,7 +227,7 @@
 <span class="sd">            ipc_socket_path (str): Path of the IPC socket connecting this monitor with its rank</span>
 <span class="sd">            rank_monitor_ready_event (mp.Event): The event indicating that the rank monitor is ready.</span>
 <span class="sd">            is_restarter_logger (bool): True if this monitor writes state transition logs</span>
-<span class="sd">            logger (Logger.Logger): The logger object for logging.</span>
+<span class="sd">            logger (logging.Logger): The logger object for logging.</span>
 
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span> <span class="o">=</span> <span class="n">cfg</span>
@@ -593,17 +613,31 @@
         <span class="n">ipc_socket_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
         <span class="n">rank_monitor_ready_event</span><span class="p">,</span>
         <span class="n">is_restarter_logger</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="n">env</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># Set environment variables if provided</span>
+        <span class="k">if</span> <span class="n">env</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">env</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+
+        <span class="c1"># Set up the nvrx logger for subprocess</span>
+        <span class="c1"># Use force_reset=True to ensure fresh logger setup with correct rank info</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">setup_logger</span>
+
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">logger</span> <span class="o">=</span> <span class="n">RankMonitorLogger</span><span class="p">(</span><span class="n">level</span><span class="o">=</span><span class="n">cfg</span><span class="o">.</span><span class="n">log_level</span><span class="p">,</span> <span class="n">is_restarter_logger</span><span class="o">=</span><span class="n">is_restarter_logger</span><span class="p">)</span>
+            <span class="n">setup_logger</span><span class="p">(</span><span class="n">force_reset</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">dist_file_prefix</span><span class="o">=</span><span class="s2">&quot;rankmonsvr&quot;</span><span class="p">)</span>
+            <span class="n">rmlogger</span> <span class="o">=</span> <span class="n">RankMonitorLogger</span><span class="p">(</span>
+                <span class="n">level</span><span class="o">=</span><span class="n">cfg</span><span class="o">.</span><span class="n">log_level</span><span class="p">,</span> <span class="n">is_restarter_logger</span><span class="o">=</span><span class="n">is_restarter_logger</span>
+            <span class="p">)</span>
+
+            <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Starting RankMonitorServer... PID=</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
             <span class="n">inst</span> <span class="o">=</span> <span class="n">RankMonitorServer</span><span class="p">(</span>
                 <span class="n">cfg</span><span class="p">,</span>
                 <span class="n">ipc_socket_path</span><span class="p">,</span>
                 <span class="n">rank_monitor_ready_event</span><span class="p">,</span>
-                <span class="n">is_restarter_logger</span><span class="p">,</span>
-                <span class="n">logger</span><span class="p">,</span>
+                <span class="n">rmlogger</span><span class="p">,</span>
             <span class="p">)</span>
             <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">inst</span><span class="o">.</span><span class="n">_rank_monitor_loop</span><span class="p">())</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Leaving RankMonitorServer process&quot;</span><span class="p">)</span>
@@ -616,7 +650,11 @@
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">run_in_subprocess</span><span class="p">(</span>
-        <span class="n">cfg</span><span class="p">,</span> <span class="n">ipc_socket_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">is_restarter_logger</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">mp_ctx</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">multiprocessing</span>
+        <span class="n">cfg</span><span class="p">,</span>
+        <span class="n">ipc_socket_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">is_restarter_logger</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+        <span class="n">mp_ctx</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">multiprocessing</span><span class="p">,</span>
+        <span class="n">env</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="n">rank_monitor_ready_event</span> <span class="o">=</span> <span class="n">mp_ctx</span><span class="o">.</span><span class="n">Event</span><span class="p">()</span>
 
@@ -625,6 +663,7 @@
             <span class="s2">&quot;ipc_socket_path&quot;</span><span class="p">:</span> <span class="n">ipc_socket_path</span><span class="p">,</span>
             <span class="s2">&quot;rank_monitor_ready_event&quot;</span><span class="p">:</span> <span class="n">rank_monitor_ready_event</span><span class="p">,</span>
             <span class="s2">&quot;is_restarter_logger&quot;</span><span class="p">:</span> <span class="n">is_restarter_logger</span><span class="p">,</span>
+            <span class="s2">&quot;env&quot;</span><span class="p">:</span> <span class="n">env</span><span class="p">,</span>
         <span class="p">}</span>
 
         <span class="n">rank_monitor_process</span> <span class="o">=</span> <span class="n">mp_ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span>
