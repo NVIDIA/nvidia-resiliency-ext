@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import uuid
+import warnings
 from argparse import REMAINDER, ArgumentParser
 from dataclasses import dataclass, field
 from string import Template
@@ -74,19 +75,25 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
-logging.basicConfig(
-    level=os.getenv('FT_LAUNCHER_LOGLEVEL', 'INFO'),
-    format=f"[%(asctime)s] [%(levelname)s] [ft_launcher{os.getpid()}@{socket.gethostname()}] %(message)s",
-)
-
-logger = logging.getLogger(__name__)
+# Deprecation warning for FT_LAUNCHER_LOGLEVEL
+if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
+    warnings.warn(
+        "FT_LAUNCHER_LOGLEVEL environment variable is deprecated. "
+        "Use NVRX_LOG_DEBUG=1 for debug logging instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
 
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
+# Setup the nvrx logger at module import time
+setup_logger(dist_file_prefix="ftlauncher")
+logger = logging.getLogger(LogConfig.name)
 
 def _register_ft_rdzv_handler():
 
@@ -131,6 +138,10 @@ class LocalElasticAgent(SimpleElasticAgent):
     python multiprocessing compatible. To pass multiprocessing data structures
     to the workers you may create the data structure in the same multiprocessing
     context as the specified ``start_method`` and pass it as a function argument.
+    
+    Note: If your training script uses the nvrx logger, make sure to call
+    ``setup_logger()`` at the beginning of your training function to ensure
+    the logger is properly set up in each subprocess.
 
     The ``exit_barrier_timeout`` specifies the amount of time (in seconds) to wait
     for other agents to finish. This acts as a safety net to handle cases where
@@ -165,6 +176,15 @@ class LocalElasticAgent(SimpleElasticAgent):
     ::
 
         def trainer(args) -> str:
+            # Ensure nvrx logger is set up in this subprocess
+            from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+            setup_logger()
+            
+            # Use the nvrx logger
+            import logging
+            logger = logging.getLogger(LogConfig.name)
+            logger.info("Training started")
+            
             return "do train"
 
         def main():
