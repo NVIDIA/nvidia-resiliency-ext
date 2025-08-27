@@ -513,7 +513,11 @@ class TestLogging(TestCase):
             return
 
         stream = io.StringIO()
-        logging.basicConfig(level=logging.DEBUG, stream=stream, force=True)
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.DEBUG)
+        logger = logging.getLogger("nvrx")
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
 
         fn()
         self.assertGreater(len(stream.getvalue()), 0)
@@ -524,12 +528,20 @@ class TestLogging(TestCase):
             return
 
         first_stream = io.StringIO()
-        logging.basicConfig(level=logging.INFO, stream=first_stream)
+        handler1 = logging.StreamHandler(first_stream)
+        handler1.setLevel(logging.DEBUG)
+        logger = logging.getLogger("nvrx")
+        logger.addHandler(handler1)
+        logger.setLevel(logging.DEBUG)
         fn()
         first = first_stream.getvalue()
+        logger.removeHandler(handler1)
 
         second_stream = io.StringIO()
-        logging.basicConfig(level=logging.INFO, stream=second_stream, force=True)
+        handler2 = logging.StreamHandler(second_stream)
+        handler2.setLevel(logging.DEBUG)
+        logger.addHandler(handler2)
+        logger.setLevel(logging.DEBUG)
         fn()
         first_again = first_stream.getvalue()
         second = second_stream.getvalue()
