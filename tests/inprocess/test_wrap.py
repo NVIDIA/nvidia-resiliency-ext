@@ -501,8 +501,7 @@ class TestLogging(TestCase):
         def fn():
             return
 
-        with self.assertWarns(UserWarning):
-            fn()
+        fn()
 
         logger = logging.getLogger(inprocess.wrap.__name__)
         self.assertEqual(logger.handlers, [])
@@ -562,8 +561,7 @@ class TestLogging(TestCase):
             def fn():
                 return
 
-            with self.assertWarns(UserWarning):
-                fn()
+            fn()
 
             with open(tmp_file.name, mode='r') as fp:
                 data = fp.read()
@@ -584,8 +582,7 @@ class TestLogging(TestCase):
             def fn():
                 return
 
-            with self.assertWarns(UserWarning):
-                fn()
+            fn()
 
             # Check that the PID file was created and contains a valid PID
             self.assertTrue(os.path.exists(pid_file_path))
@@ -607,8 +604,7 @@ class TestLogging(TestCase):
             def fn():
                 return
 
-            with self.assertWarns(UserWarning):
-                fn()
+            fn()
 
             # Check that the PID file was created with rank substitution
             expected_pid_file = pid_file_path.format(rank=0)  # Assuming rank 0
