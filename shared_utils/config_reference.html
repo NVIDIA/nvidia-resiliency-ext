@@ -1,0 +1,505 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuration Reference &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API Reference" href="api.html" />
+    <link rel="prev" title="NVRx Logger Guide" href="logger_guide.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Shared Utilities</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html">NVRx Logger Guide</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Configuration Reference</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#environment-variables">Environment Variables</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#python-api-parameters">Python API Parameters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#logmanager-constructor-parameters">LogManager Constructor Parameters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#configuration-examples">Configuration Examples</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#basic-configuration">Basic Configuration</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#advanced-configuration">Advanced Configuration</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#python-configuration">Python Configuration</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#slurm-integration">SLURM Integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#docker-integration">Docker Integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#kubernetes-integration">Kubernetes Integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#configuration-precedence">Configuration Precedence</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#best-practices">Best Practices</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#filesystem-selection">Filesystem Selection</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#troubleshooting">Troubleshooting</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#quick-api-reference">Quick API Reference</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Shared Utilities</a></li>
+      <li class="breadcrumb-item active">Configuration Reference</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/shared_utils/config_reference.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="configuration-reference">
+<h1>Configuration Reference<a class="headerlink" href="#configuration-reference" title="Link to this heading"></a></h1>
+<p>This is a comprehensive reference for all NVRx Logger configuration options, examples, and usage guides.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>For detailed API documentation, class methods, and function signatures, see <a class="reference internal" href="api.html"><span class="doc">API Reference</span></a>.</p>
+</div>
+<section id="environment-variables">
+<h2>Environment Variables<a class="headerlink" href="#environment-variables" title="Link to this heading"></a></h2>
+<table class="docutils align-default" id="id1">
+<caption><span class="caption-text">Complete Environment Variables Reference</span><a class="headerlink" href="#id1" title="Link to this table"></a></caption>
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 15.0%" />
+<col style="width: 20.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Variable</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NVRX_NODE_LOCAL_TMPDIR</span></code></p></td>
+<td><p>string</p></td>
+<td><p>None</p></td>
+<td><p>Directory for temporary log files. When set, enables node local temporary logging mode.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NVRX_LOG_DEBUG</span></code></p></td>
+<td><p>string</p></td>
+<td><p>INFO</p></td>
+<td><p>Set to “1”, “true”, “yes”, or “on” to enable DEBUG level logging.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NVRX_LOG_TO_STDOUT</span></code></p></td>
+<td><p>string</p></td>
+<td><p>stderr</p></td>
+<td><p>Set to “1” to log to stdout instead of stderr.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NVRX_LOG_MAX_FILE_SIZE_KB</span></code></p></td>
+<td><p>integer</p></td>
+<td><p>10240 KB (10 MB)</p></td>
+<td><p>Maximum size of temporary message files in KB before rotation.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NVRX_LOG_MAX_LOG_FILES</span></code></p></td>
+<td><p>integer</p></td>
+<td><p>4</p></td>
+<td><p>Maximum number of log files to keep per rank.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="python-api-parameters">
+<h2>Python API Parameters<a class="headerlink" href="#python-api-parameters" title="Link to this heading"></a></h2>
+<table class="docutils align-default" id="id2">
+<caption><span class="caption-text">setup_logger Function Parameters</span><a class="headerlink" href="#id2" title="Link to this table"></a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 15.0%" />
+<col style="width: 20.0%" />
+<col style="width: 35.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">node_local_tmp_dir</span></code></p></td>
+<td><p>string</p></td>
+<td><p>None</p></td>
+<td><p>Custom temporary directory path. Overrides NVRX_NODE_LOCAL_TMPDIR.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">force_reset</span></code></p></td>
+<td><p>boolean</p></td>
+<td><p>False</p></td>
+<td><p>Force reconfiguration even if logger is already configured.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">node_local_tmp_prefix</span></code></p></td>
+<td><p>string</p></td>
+<td><p>None</p></td>
+<td><p>Custom prefix for log files in distributed mode.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="logmanager-constructor-parameters">
+<h2>LogManager Constructor Parameters<a class="headerlink" href="#logmanager-constructor-parameters" title="Link to this heading"></a></h2>
+<table class="docutils align-default" id="id3">
+<caption><span class="caption-text">LogManager Class Parameters</span><a class="headerlink" href="#id3" title="Link to this table"></a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 15.0%" />
+<col style="width: 20.0%" />
+<col style="width: 35.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">node_local_tmp_dir</span></code></p></td>
+<td><p>string</p></td>
+<td><p>None</p></td>
+<td><p>Directory path for temporary log files.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">node_local_tmp_prefix</span></code></p></td>
+<td><p>string</p></td>
+<td><p>None</p></td>
+<td><p>Prefix for log files in distributed mode.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="configuration-examples">
+<h2>Configuration Examples<a class="headerlink" href="#configuration-examples" title="Link to this heading"></a></h2>
+<section id="basic-configuration">
+<h3>Basic Configuration<a class="headerlink" href="#basic-configuration" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Enable node local temporary logging</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_NODE_LOCAL_TMPDIR</span><span class="o">=</span>/tmp/nvrx_logs
+
+<span class="c1"># Enable debug logging</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_LOG_DEBUG</span><span class="o">=</span><span class="m">1</span>
+</pre></div>
+</div>
+</section>
+<section id="advanced-configuration">
+<h3>Advanced Configuration<a class="headerlink" href="#advanced-configuration" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Complete configuration</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_NODE_LOCAL_TMPDIR</span><span class="o">=</span>/tmp/nvrx_logs
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_LOG_DEBUG</span><span class="o">=</span><span class="m">1</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_LOG_TO_STDOUT</span><span class="o">=</span><span class="m">1</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_LOG_MAX_FILE_SIZE_KB</span><span class="o">=</span><span class="m">10240</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_LOG_MAX_LOG_FILES</span><span class="o">=</span><span class="m">10</span>
+</pre></div>
+</div>
+</section>
+<section id="python-configuration">
+<h3>Python Configuration<a class="headerlink" href="#python-configuration" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">setup_logger</span>
+
+<span class="c1"># Custom configuration</span>
+<span class="n">logger</span> <span class="o">=</span> <span class="n">setup_logger</span><span class="p">(</span>
+    <span class="n">node_local_tmp_dir</span><span class="o">=</span><span class="s2">&quot;/custom/logs&quot;</span><span class="p">,</span>
+    <span class="n">node_local_tmp_prefix</span><span class="o">=</span><span class="s2">&quot;mytraining&quot;</span><span class="p">,</span>
+    <span class="n">force_reset</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="slurm-integration">
+<h2>SLURM Integration<a class="headerlink" href="#slurm-integration" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/bin/bash</span>
+<span class="c1">#SBATCH --job-name=nvrx_training</span>
+<span class="c1">#SBATCH --nodes=4</span>
+<span class="c1">#SBATCH --ntasks-per-node=8</span>
+
+<span class="c1"># NVRx Logger Configuration</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_NODE_LOCAL_TMPDIR</span><span class="o">=</span>/tmp/nvrx_logs_<span class="si">${</span><span class="nv">SLURM_JOB_ID</span><span class="si">}</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_LOG_DEBUG</span><span class="o">=</span><span class="m">1</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_LOG_MAX_FILE_SIZE_KB</span><span class="o">=</span><span class="m">10240</span>
+
+<span class="c1"># Launch training</span>
+srun<span class="w"> </span>python<span class="w"> </span>training_script.py
+</pre></div>
+</div>
+</section>
+<section id="docker-integration">
+<h2>Docker Integration<a class="headerlink" href="#docker-integration" title="Link to this heading"></a></h2>
+<div class="highlight-dockerfile notranslate"><div class="highlight"><pre><span></span><span class="c"># Dockerfile</span>
+<span class="k">FROM</span><span class="w"> </span><span class="s">nvcr.io/nvidia/pytorch:24.01-py3</span>
+
+<span class="c"># Install NVRx</span>
+<span class="k">RUN</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>nvidia-resiliency-ext
+
+<span class="c"># Set default logging configuration</span>
+<span class="k">ENV</span><span class="w"> </span><span class="nv">NVRX_NODE_LOCAL_TMPDIR</span><span class="o">=</span>/tmp/nvrx_logs
+<span class="k">ENV</span><span class="w"> </span><span class="nv">NVRX_LOG_DEBUG</span><span class="o">=</span><span class="m">1</span>
+<span class="k">ENV</span><span class="w"> </span><span class="nv">NVRX_LOG_MAX_FILE_SIZE_KB</span><span class="o">=</span><span class="m">10240</span>
+</pre></div>
+</div>
+</section>
+<section id="kubernetes-integration">
+<h2>Kubernetes Integration<a class="headerlink" href="#kubernetes-integration" title="Link to this heading"></a></h2>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># kubernetes-deployment.yaml</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">apps/v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Deployment</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvrx-training</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">template</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">spec</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">containers</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">training</span>
+<span class="w">        </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvrx-training:latest</span>
+<span class="w">        </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NVRX_NODE_LOCAL_TMPDIR</span>
+<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/tmp/nvrx_logs&quot;</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NVRX_LOG_DEBUG</span>
+<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1&quot;</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NVRX_LOG_MAX_FILE_SIZE_KB</span>
+<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;10240&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="configuration-precedence">
+<h2>Configuration Precedence<a class="headerlink" href="#configuration-precedence" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Python API parameters</strong> (highest priority)</p></li>
+<li><p><strong>Environment variables</strong></p></li>
+<li><p><strong>Default values</strong> (lowest priority)</p></li>
+</ol>
+<p>Example:
+- If you set <cite>NVRX_NODE_LOCAL_TMPDIR=/tmp/env_logs</cite> in environment
+- And call <cite>setup_logger(node_local_tmp_dir=”/tmp/api_logs”)</cite>
+- The API parameter <cite>/tmp/api_logs</cite> will be used</p>
+</section>
+<section id="best-practices">
+<h2>Best Practices<a class="headerlink" href="#best-practices" title="Link to this heading"></a></h2>
+<p>✅ <strong>Do:</strong>
+- Set <cite>NVRX_NODE_LOCAL_TMPDIR</cite> for node local temporary logging
+- Use job-specific directories (e.g., <cite>/tmp/nvrx_logs_${SLURM_JOB_ID}</cite>)
+- Enable debug logging during development
+- Use appropriate file size limits for your workload</p>
+<p>❌ <strong>Don’t:</strong>
+- Use system-critical directories (e.g., <cite>/var/log</cite>)
+- Use network filesystems (e.g., NFS) that cannot handle high write throughput from multiple nodes
+- Set extremely large file size limits
+- Keep too many log files (can fill disk)
+- Mix different logging configurations in the same job</p>
+</section>
+<section id="filesystem-selection">
+<h2>Filesystem Selection<a class="headerlink" href="#filesystem-selection" title="Link to this heading"></a></h2>
+<p><strong>Critical Consideration</strong>: The temporary directory for distributed logging experiences high write throughput from all ranks on each node. Choose your filesystem carefully:</p>
+<p><strong>Recommended Filesystems:</strong>
+- <strong>Local node storage</strong>: <cite>/tmp</cite>, <cite>/scratch</cite>, local SSDs
+- <strong>Local NVMe storage</strong>: Fastest option for high-throughput logging</p>
+<p><strong>Avoid These Filesystems:</strong>
+- <strong>NFS</strong>: Cannot handle concurrent writes from multiple processes efficiently
+- <strong>Lustre (LFS)</strong>: Network filesystem that may have performance limitations for high-frequency small writes</p>
+<p><strong>Performance Impact:</strong>
+- Poor filesystem choice can significantly slow down your training
+- Logging overhead should be minimal (&lt; 1% of training time)
+- Test filesystem performance before production deployment</p>
+</section>
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading"></a></h2>
+<p><strong>Common Issues:</strong></p>
+<table class="docutils align-default" id="id4">
+<caption><span class="caption-text">Troubleshooting Guide</span><a class="headerlink" href="#id4" title="Link to this table"></a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Issue</p></th>
+<th class="head"><p>Solution</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Logs not appearing</p></td>
+<td><p>Check <cite>NVRX_NODE_LOCAL_TMPDIR</cite> is set and writable</p></td>
+</tr>
+<tr class="row-odd"><td><p>Permission denied</p></td>
+<td><p>Ensure directory has proper write permissions</p></td>
+</tr>
+<tr class="row-even"><td><p>Disk space issues</p></td>
+<td><p>Reduce <cite>NVRX_LOG_MAX_FILE_SIZE_KB</cite> or <cite>NVRX_LOG_MAX_LOG_FILES</cite></p></td>
+</tr>
+<tr class="row-odd"><td><p>Missing rank info</p></td>
+<td><p>Verify RANK and LOCAL_RANK environment variables are set</p></td>
+</tr>
+<tr class="row-even"><td><p>Performance issues</p></td>
+<td><p>Monitor temporary directory size and adjust limits</p></td>
+</tr>
+<tr class="row-odd"><td><p>Slow logging performance</p></td>
+<td><p>Check filesystem type (avoid NFS, Lustre, or network storage, use local storage)</p></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Debug Mode:</strong>
+Enable debug logging to see detailed configuration information:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_LOG_DEBUG</span><span class="o">=</span><span class="m">1</span>
+python<span class="w"> </span>your_script.py
+</pre></div>
+</div>
+<p>This will show:
+- Current configuration values
+- Directory creation status
+- Rank detection results
+- Log handler setup details</p>
+</section>
+<section id="quick-api-reference">
+<h2>Quick API Reference<a class="headerlink" href="#quick-api-reference" title="Link to this heading"></a></h2>
+<p>For developers who need quick access to the most commonly used API methods:</p>
+<table class="docutils align-default" id="id5">
+<caption><span class="caption-text">Common LogConfig Methods</span><a class="headerlink" href="#id5" title="Link to this table"></a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Method</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">get_node_local_tmp_dir()</span></code></p></td>
+<td><p>Returns the configured temporary directory path or None if not set</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_log_level()</span></code></p></td>
+<td><p>Returns the configured log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">get_max_file_size()</span></code></p></td>
+<td><p>Returns the maximum file size in bytes for log rotation</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_max_log_files()</span></code></p></td>
+<td><p>Returns the maximum number of log files to keep</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">get_workload_rank()</span></code></p></td>
+<td><p>Returns the workload rank from RANK environment variable</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_workload_local_rank()</span></code></p></td>
+<td><p>Returns the workload local rank from LOCAL_RANK environment variable</p></td>
+</tr>
+</tbody>
+</table>
+<table class="docutils align-default" id="id6">
+<caption><span class="caption-text">Common LogManager Properties</span><a class="headerlink" href="#id6" title="Link to this table"></a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Property</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">node_local_tmp_logging_enabled</span></code></p></td>
+<td><p>Boolean indicating whether node local temporary logging is enabled</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">workload_rank</span></code></p></td>
+<td><p>Integer representing the workload rank</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">workload_local_rank</span></code></p></td>
+<td><p>Integer representing the workload local rank</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">logger</span></code></p></td>
+<td><p>The configured Python logging.Logger instance</p></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>For complete API documentation including all methods, properties, and detailed signatures, see <a class="reference internal" href="api.html"><span class="doc">API Reference</span></a>.</p>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="logger_guide.html" class="btn btn-neutral float-left" title="NVRx Logger Guide" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="api.html" class="btn btn-neutral float-right" title="API Reference" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

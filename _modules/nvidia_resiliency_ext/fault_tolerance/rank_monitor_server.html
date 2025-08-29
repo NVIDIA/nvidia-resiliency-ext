@@ -49,6 +49,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../shared_utils/index.html">Shared Utilities</a></li>
 </ul>
 
         </div>
@@ -625,7 +626,7 @@
         <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">setup_logger</span>
 
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">setup_logger</span><span class="p">(</span><span class="n">force_reset</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">dist_file_prefix</span><span class="o">=</span><span class="s2">&quot;rankmonsvr&quot;</span><span class="p">)</span>
+            <span class="n">setup_logger</span><span class="p">(</span><span class="n">force_reset</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">node_local_tmp_prefix</span><span class="o">=</span><span class="s2">&quot;rankmonsvr&quot;</span><span class="p">)</span>
             <span class="n">rmlogger</span> <span class="o">=</span> <span class="n">RankMonitorLogger</span><span class="p">(</span>
                 <span class="n">level</span><span class="o">=</span><span class="n">cfg</span><span class="o">.</span><span class="n">log_level</span><span class="p">,</span> <span class="n">is_restarter_logger</span><span class="o">=</span><span class="n">is_restarter_logger</span>
             <span class="p">)</span>

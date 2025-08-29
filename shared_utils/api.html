@@ -1,0 +1,755 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Reference &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="prev" title="Configuration Reference" href="config_reference.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Shared Utilities</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html">NVRx Logger Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html">Configuration Reference</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">API Reference</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#log-manager">Log Manager</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig"><code class="docutils literal notranslate"><span class="pre">LogConfig</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager"><code class="docutils literal notranslate"><span class="pre">LogManager</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.shared_utils.log_manager.setup_logger"><code class="docutils literal notranslate"><span class="pre">setup_logger()</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#module-nvidia_resiliency_ext.shared_utils.log_aggregator">Log Aggregator</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.shared_utils.log_aggregator.main"><code class="docutils literal notranslate"><span class="pre">main()</span></code></a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#log-configuration">Log Configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#core-classes">Core Classes</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#logmanager">LogManager</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#logconfig">LogConfig</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nodelogaggregator">NodeLogAggregator</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#core-functions">Core Functions</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#setup-logger">setup_logger</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#quick-reference">Quick Reference</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Shared Utilities</a></li>
+      <li class="breadcrumb-item active">API Reference</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/shared_utils/api.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="api-reference">
+<h1>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading"></a></h1>
+<p>This section provides detailed API documentation for the NVRx Shared Utilities, focusing on the logging system.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>For configuration options, environment variables, examples, and usage guides, see <a class="reference internal" href="config_reference.html"><span class="doc">Configuration Reference</span></a>.</p>
+</div>
+<section id="log-manager">
+<h2>Log Manager<a class="headerlink" href="#log-manager" title="Link to this heading"></a></h2>
+<p id="module-nvidia_resiliency_ext.shared_utils.log_manager">NVRx Logger for Large-Scale LLM Training</p>
+<p>This module provides a simple and efficient log manager that supports both
+regular logging and distributed logging for large-scale training with thousands
+of GPUs. The design automatically adapts based on environment configuration.</p>
+<p>Key Design Principles:
+- Environment-driven behavior: NVRX_NODE_LOCAL_TMPDIR controls distributed vs regular logging
+- Per-node aggregation: When distributed logging is enabled, a separate aggregator service does log aggregation
+- Dynamic rank detection: Automatically reads rank info from environment variables
+- Scalable: Works with 3K+ GPUs without overwhelming logging infrastructure
+- Fork-safe: All ranks use file-based messaging to ensure child processes can log
+- Subprocess-safe: Supports force_reset=True for fresh logger setup in subprocesses
+- Service-based aggregation: Aggregator can run as a separate service for reliable log collection</p>
+<p>Features:
+- Dual mode operation: Regular logging (stderr/stdout) or distributed logging (file aggregation)
+- Per-node log files: When distributed logging is enabled (e.g., node_hostname.log)
+- Automatic rank and node identification in log messages
+- Thread-safe logging with proper synchronization
+- Environment variable configuration for easy deployment
+- Fork-safe design with file-based message passing for all ranks
+- Separate aggregator service: Can run independently of training processes
+- Configurable temp directory: Customizable location for pending message files</p>
+<dl class="simple">
+<dt>Environment Variables:</dt><dd><p>NVRX_LOG_DEBUG: Set to “1”, “true”, “yes”, or “on” to enable DEBUG level logging (default: INFO)
+NVRX_LOG_TO_STDOUT: Set to “1” to log to stdout instead of stderr
+NVRX_NODE_LOCAL_TMPDIR: Directory for temporary log files
+NVRX_LOG_MAX_FILE_SIZE_KB: Maximum size of temporary message files in KB before rotation (default: 10240 KB = 10 MB)
+NVRX_LOG_MAX_LOG_FILES: Maximum number of log files to keep per rank (default: 4)</p>
+</dd>
+</dl>
+<p>Note: File rotation is designed to be safe for the aggregator service. When files are rotated,
+the aggregator will automatically read from both current and backup files to ensure no messages are lost.</p>
+<dl>
+<dt>Usage:</dt><dd><p># In main script (launcher.py)
+from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+logger = setup_logger()  # Call once at startup</p>
+<p># In other modules
+import logging
+logger = logging.getLogger(LogConfig.name)
+logger.info(“Training started”)
+logger.debug(“Debug information”)
+logger.error(“Error occurred”)
+logger.warning(“Warning message”)
+logger.critical(“Critical error”)</p>
+</dd>
+<dt>Forking Support:</dt><dd><p>The logger is designed to work safely with process forking. When using fork():</p>
+<p># In parent process
+from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+logger = setup_logger()  # Setup before forking
+logger.info(“Parent process logging”)</p>
+<p># Fork child process
+pid = os.fork()
+if pid == 0:</p>
+<blockquote>
+<div><p># In child process - logger will work normally
+import logging
+logger = logging.getLogger(LogConfig.name)
+logger.info(“Child process logging”)</p>
+</div></blockquote>
+<dl class="simple">
+<dt>else:</dt><dd><p># Parent continues normally
+logger.info(“Parent continues”)</p>
+</dd>
+</dl>
+<p>All ranks use file-based message passing, ensuring child processes can log
+even when they don’t inherit the aggregator thread from the parent.</p>
+</dd>
+</dl>
+<p>Separate Aggregator Service, see log_aggregator.py for details.</p>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.shared_utils.log_manager.</span></span><span class="sig-name descname"><span class="pre">LogConfig</span></span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Utility class for log configuration.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_infra_local_rank">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_infra_local_rank</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_infra_local_rank"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_infra_local_rank" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_infra_rank">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_infra_rank</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_infra_rank"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_infra_rank" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_file">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_log_file</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_log_file"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_file" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_level">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_log_level</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_log_level"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_level" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_to_stdout_cfg">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_log_to_stdout_cfg</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_log_to_stdout_cfg"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_to_stdout_cfg" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_max_file_size">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_max_file_size</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">file_size_kb</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_max_file_size"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_max_file_size" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_max_log_files">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_max_log_files</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_max_log_files"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_max_log_files" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_node_id">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_node_id</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_node_id"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_node_id" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_node_local_tmp_dir">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_node_local_tmp_dir</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">node_local_tmp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_node_local_tmp_dir"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_node_local_tmp_dir" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_process_name">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_process_name</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">proc_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_process_name"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_process_name" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>proc_name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_workload_local_rank">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_workload_local_rank</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_workload_local_rank"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_workload_local_rank" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_workload_rank">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_workload_rank</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_workload_rank"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_workload_rank" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.name">
+<span class="sig-name descname"><span class="pre">name</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'nvrx'</span></em><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.name" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogManager">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.shared_utils.log_manager.</span></span><span class="sig-name descname"><span class="pre">LogManager</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">node_local_tmp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_local_tmp_prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogManager"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Log manager for large-scale LLM training.</p>
+<p>Supports both regular logging and node local temporary logging. When node local temporary logging
+is enabled (NVRX_NODE_LOCAL_TMPDIR is set), each node logs independently to avoid
+overwhelming centralized logging systems. Local rank 0 acts as the node aggregator,
+collecting logs from all ranks on the same node and writing them to a per-node log file.</p>
+<p>Fork-safe: Child processes automatically disable aggregation to avoid conflicts.
+Service-based: Aggregator can run as a separate service for reliable log collection.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>node_local_tmp_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>node_local_tmp_prefix</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="py property">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogManager.infra_local_rank">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">infra_local_rank</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.infra_local_rank" title="Link to this definition"></a></dt>
+<dd><p>Get the infrastructure local rank (from SLURM_LOCALID env var).</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogManager.infra_rank">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">infra_rank</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.infra_rank" title="Link to this definition"></a></dt>
+<dd><p>Get the infrastructure rank (from SLURM_PROCID env var).</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogManager.logger">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">logger</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.Logger" title="(in Python v3.13)"><span class="pre">Logger</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.logger" title="Link to this definition"></a></dt>
+<dd><p>Get the distributed logger instance.</p>
+<p>This property provides direct access to the underlying logger,
+allowing users to use all standard logging methods:
+- logger.debug(message)
+- logger.info(message)
+- logger.warning(message)
+- logger.error(message)
+- logger.critical(message)</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogManager.node_local_tmp_logging_enabled">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">node_local_tmp_logging_enabled</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><span class="pre">bool</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.node_local_tmp_logging_enabled" title="Link to this definition"></a></dt>
+<dd><p>Check if node local temporary logging is enabled.</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogManager.workload_local_rank">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">workload_local_rank</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.workload_local_rank" title="Link to this definition"></a></dt>
+<dd><p>Get the workload local rank (from LOCAL_RANK env var).</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogManager.workload_rank">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">workload_rank</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.workload_rank" title="Link to this definition"></a></dt>
+<dd><p>Get the workload rank (from RANK env var).</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.setup_logger">
+<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.shared_utils.log_manager.</span></span><span class="sig-name descname"><span class="pre">setup_logger</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">node_local_tmp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_reset</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_local_tmp_prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#setup_logger"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.setup_logger" title="Link to this definition"></a></dt>
+<dd><p>Setup the distributed logger.</p>
+<p>This function configures the standard Python logger “nvrx” with appropriate
+handlers for distributed logging. It’s safe to call multiple times - if the
+logger is already configured, it won’t be reconfigured unless force_reset=True.</p>
+<p>The expectation is that this function is called once at the start of the program,
+and then the logger is used throughout the program i.e. its a singleton.</p>
+<p>The logger automatically adapts to distributed or regular mode based on
+whether NVRX_NODE_LOCAL_TMPDIR is set. If set, enables distributed logging
+with aggregation. If not set, logs go directly to stderr/stdout.</p>
+<p>The logger is fork-safe: all ranks use file-based message passing to ensure
+child processes can log even when they don’t inherit the aggregator thread.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>node_local_tmp_dir</strong> – Optional directory path for temporary files. If None, uses NVRX_NODE_LOCAL_TMPDIR env var.</p></li>
+<li><p><strong>force_reset</strong> – If True, force reconfiguration even if logger is already configured.
+Useful for subprocesses that need fresh logger setup.</p></li>
+<li><p><strong>node_local_tmp_prefix</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Configured logger instance</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.Logger" title="(in Python v3.13)">logging.Logger</a></p>
+</dd>
+</dl>
+<p class="rubric">Example</p>
+<p># In main script (launcher.py) or training subprocess
+from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+logger = setup_logger()</p>
+<p># In subprocesses that need fresh logger setup
+logger = setup_logger(force_reset=True)</p>
+<p># In other modules
+import logging
+logger = logging.getLogger(LogConfig.name)
+logger.info(“Some message”)</p>
+</dd></dl>
+
+</section>
+<section id="module-nvidia_resiliency_ext.shared_utils.log_aggregator">
+<span id="log-aggregator"></span><h2>Log Aggregator<a class="headerlink" href="#module-nvidia_resiliency_ext.shared_utils.log_aggregator" title="Link to this heading"></a></h2>
+<p>NVRx Log Aggregator Service</p>
+<p>NVRx Log Aggregator Service
+This module provides a standalone log aggregator service that can run independently
+of training processes. The service monitors a node-local temporary directory, accessible
+to all training processes on the same node, and aggregates their log messages into
+per-node log files stored on a shared filesystem (e.g., Lustre or NFS).</p>
+<dl>
+<dt>Example sbatch Usage:</dt><dd><p>export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
+NVRX_REPO=/../nvidia-resiliency-ext:/nvrx_repo</p>
+<p># all node setup, if installing from source
+srun         bash -c ‘</p>
+<blockquote>
+<div><blockquote>
+<div><p>echo “export NVRX_NODE_LOCAL_TMPDIR=$NVRX_NODE_LOCAL_TMPDIR” &gt;&gt; /tmp/.myenv_${SLURM_JOB_ID}.sh
+cd /nvrx_repo &amp;&amp; pip install -e .</p>
+</div></blockquote>
+<p>‘</p>
+</div></blockquote>
+<p># main workload with aggregator
+srun         bash -c ‘</p>
+<blockquote>
+<div><blockquote>
+<div><p>source /tmp/.myenv_${SLURM_JOB_ID}.sh
+if [[ $SLURM_LOCALID -eq 0 ]]; then</p>
+<blockquote>
+<div><p>cd /nvrx_repo &amp;&amp; PYTHONPATH=./src:$PYTHONPATH                 python src/nvidia_resiliency_ext/shared_utils/log_aggregator.py                     –wait-file ./stop                     –log-dir /logs/slurm/${SLURM_JOB_ID} &amp;</p>
+</div></blockquote>
+<p>fi
+$LAUNCHER_CMD $LAUNCHER_ARGS $WORKLOAD_CMD $WORKLOAD_ARGS
+touch /nvrx_repo/stop</p>
+</div></blockquote>
+<p>‘</p>
+</div></blockquote>
+</dd>
+</dl>
+<dl class="py function">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_aggregator.main">
+<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.shared_utils.log_aggregator.</span></span><span class="sig-name descname"><span class="pre">main</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_aggregator.html#main"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_aggregator.main" title="Link to this definition"></a></dt>
+<dd><p>Main function for running the log aggregator as a separate service.</p>
+</dd></dl>
+
+</section>
+<section id="log-configuration">
+<h2>Log Configuration<a class="headerlink" href="#log-configuration" title="Link to this heading"></a></h2>
+</section>
+<section id="core-classes">
+<h2>Core Classes<a class="headerlink" href="#core-classes" title="Link to this heading"></a></h2>
+<section id="logmanager">
+<h3>LogManager<a class="headerlink" href="#logmanager" title="Link to this heading"></a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="id0">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.shared_utils.log_manager.</span></span><span class="sig-name descname"><span class="pre">LogManager</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">node_local_tmp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_local_tmp_prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogManager"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id0" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Log manager for large-scale LLM training.</p>
+<p>Supports both regular logging and node local temporary logging. When node local temporary logging
+is enabled (NVRX_NODE_LOCAL_TMPDIR is set), each node logs independently to avoid
+overwhelming centralized logging systems. Local rank 0 acts as the node aggregator,
+collecting logs from all ranks on the same node and writing them to a per-node log file.</p>
+<p>Fork-safe: Child processes automatically disable aggregation to avoid conflicts.
+Service-based: Aggregator can run as a separate service for reliable log collection.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>node_local_tmp_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>node_local_tmp_prefix</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_manager.LogManager.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">node_local_tmp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_local_tmp_prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogManager.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.__init__" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>node_local_tmp_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>node_local_tmp_prefix</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="id1">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">infra_local_rank</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><a class="headerlink" href="#id1" title="Link to this definition"></a></dt>
+<dd><p>Get the infrastructure local rank (from SLURM_LOCALID env var).</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="id2">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">infra_rank</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><a class="headerlink" href="#id2" title="Link to this definition"></a></dt>
+<dd><p>Get the infrastructure rank (from SLURM_PROCID env var).</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="id3">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">logger</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.Logger" title="(in Python v3.13)"><span class="pre">Logger</span></a></em><a class="headerlink" href="#id3" title="Link to this definition"></a></dt>
+<dd><p>Get the distributed logger instance.</p>
+<p>This property provides direct access to the underlying logger,
+allowing users to use all standard logging methods:
+- logger.debug(message)
+- logger.info(message)
+- logger.warning(message)
+- logger.error(message)
+- logger.critical(message)</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="id4">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">node_local_tmp_logging_enabled</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><span class="pre">bool</span></a></em><a class="headerlink" href="#id4" title="Link to this definition"></a></dt>
+<dd><p>Check if node local temporary logging is enabled.</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="id5">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">workload_local_rank</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><a class="headerlink" href="#id5" title="Link to this definition"></a></dt>
+<dd><p>Get the workload local rank (from LOCAL_RANK env var).</p>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="id6">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">workload_rank</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><span class="pre">None</span></a></em><a class="headerlink" href="#id6" title="Link to this definition"></a></dt>
+<dd><p>Get the workload rank (from RANK env var).</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="logconfig">
+<h3>LogConfig<a class="headerlink" href="#logconfig" title="Link to this heading"></a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="id7">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.shared_utils.log_manager.</span></span><span class="sig-name descname"><span class="pre">LogConfig</span></span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id7" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Utility class for log configuration.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="id8">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_infra_local_rank</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_infra_local_rank"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id8" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id9">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_infra_rank</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_infra_rank"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id9" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id10">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_log_file</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_log_file"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id10" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id11">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_log_level</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_log_level"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id11" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id12">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_log_to_stdout_cfg</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_log_to_stdout_cfg"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id12" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id13">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_max_file_size</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">file_size_kb</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_max_file_size"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id13" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id14">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_max_log_files</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_max_log_files"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id14" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id15">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_node_id</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_node_id"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id15" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id16">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_node_local_tmp_dir</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">node_local_tmp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_node_local_tmp_dir"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id16" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id17">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_process_name</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">proc_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_process_name"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id17" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>proc_name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id18">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_workload_local_rank</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_workload_local_rank"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id18" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="id19">
+<em class="property"><span class="pre">classmethod</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">get_workload_rank</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#LogConfig.get_workload_rank"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id19" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="id20">
+<span class="sig-name descname"><span class="pre">name</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'nvrx'</span></em><a class="headerlink" href="#id20" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="nodelogaggregator">
+<h3>NodeLogAggregator<a class="headerlink" href="#nodelogaggregator" title="Link to this heading"></a></h3>
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.shared_utils.log_aggregator.</span></span><span class="sig-name descname"><span class="pre">NodeLogAggregator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">log_dir</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">temp_dir</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_file_size</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">en_chrono_ord</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_node_local_tmp.html#NodeLogAggregator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>log_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>temp_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>log_file</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>max_file_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>en_chrono_ord</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>)</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">log_dir</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">temp_dir</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_file_size</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">en_chrono_ord</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_node_local_tmp.html#NodeLogAggregator.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.__init__" title="Link to this definition"></a></dt>
+<dd><dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>log_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>temp_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>log_file</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>max_file_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
+<li><p><strong>en_chrono_ord</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>)</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.shutdown">
+<span class="sig-name descname"><span class="pre">shutdown</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_node_local_tmp.html#NodeLogAggregator.shutdown"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.shutdown" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.start_aggregator">
+<span class="sig-name descname"><span class="pre">start_aggregator</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_node_local_tmp.html#NodeLogAggregator.start_aggregator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.start_aggregator" title="Link to this definition"></a></dt>
+<dd><p>Start the log aggregator thread.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+<section id="core-functions">
+<h2>Core Functions<a class="headerlink" href="#core-functions" title="Link to this heading"></a></h2>
+<section id="setup-logger">
+<h3>setup_logger<a class="headerlink" href="#setup-logger" title="Link to this heading"></a></h3>
+<dl class="py function">
+<dt class="sig sig-object py" id="id21">
+<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.shared_utils.log_manager.</span></span><span class="sig-name descname"><span class="pre">setup_logger</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">node_local_tmp_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_reset</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_local_tmp_prefix</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/nvidia_resiliency_ext/shared_utils/log_manager.html#setup_logger"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#id21" title="Link to this definition"></a></dt>
+<dd><p>Setup the distributed logger.</p>
+<p>This function configures the standard Python logger “nvrx” with appropriate
+handlers for distributed logging. It’s safe to call multiple times - if the
+logger is already configured, it won’t be reconfigured unless force_reset=True.</p>
+<p>The expectation is that this function is called once at the start of the program,
+and then the logger is used throughout the program i.e. its a singleton.</p>
+<p>The logger automatically adapts to distributed or regular mode based on
+whether NVRX_NODE_LOCAL_TMPDIR is set. If set, enables distributed logging
+with aggregation. If not set, logs go directly to stderr/stdout.</p>
+<p>The logger is fork-safe: all ranks use file-based message passing to ensure
+child processes can log even when they don’t inherit the aggregator thread.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>node_local_tmp_dir</strong> – Optional directory path for temporary files. If None, uses NVRX_NODE_LOCAL_TMPDIR env var.</p></li>
+<li><p><strong>force_reset</strong> – If True, force reconfiguration even if logger is already configured.
+Useful for subprocesses that need fresh logger setup.</p></li>
+<li><p><strong>node_local_tmp_prefix</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Configured logger instance</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.Logger" title="(in Python v3.13)">logging.Logger</a></p>
+</dd>
+</dl>
+<p class="rubric">Example</p>
+<p># In main script (launcher.py) or training subprocess
+from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+logger = setup_logger()</p>
+<p># In subprocesses that need fresh logger setup
+logger = setup_logger(force_reset=True)</p>
+<p># In other modules
+import logging
+logger = logging.getLogger(LogConfig.name)
+logger.info(“Some message”)</p>
+</dd></dl>
+
+</section>
+</section>
+<section id="quick-reference">
+<h2>Quick Reference<a class="headerlink" href="#quick-reference" title="Link to this heading"></a></h2>
+<p>For quick access to configuration options and environment variables, see the <a class="reference internal" href="config_reference.html"><span class="doc">Configuration Reference</span></a> page which contains:</p>
+<ul class="simple">
+<li><p>Complete environment variables reference</p></li>
+<li><p>Configuration examples and integration guides</p></li>
+<li><p>Best practices and troubleshooting</p></li>
+<li><p>Performance considerations and filesystem selection</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="config_reference.html" class="btn btn-neutral float-left" title="Configuration Reference" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

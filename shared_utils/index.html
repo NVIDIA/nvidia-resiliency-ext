@@ -1,0 +1,171 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shared Utilities &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="NVRx Logger Guide" href="logger_guide.html" />
+    <link rel="prev" title="Basic usage example" href="../straggler_det/examples/basic_example.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Shared Utilities</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html">NVRx Logger Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html">Configuration Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Shared Utilities</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/shared_utils/index.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="shared-utilities">
+<h1>Shared Utilities<a class="headerlink" href="#shared-utilities" title="Link to this heading"></a></h1>
+<p>The Shared Utilities package provides essential infrastructure components for NVRx, including:</p>
+<ul class="simple">
+<li><p><strong>NVRx Logger</strong>: A distributed logging system designed for multi-node, multi-rank training workloads</p></li>
+<li><p><strong>Log Aggregation</strong>: Automatic collection and aggregation of logs from distributed processes</p></li>
+<li><p><strong>Environment-driven Configuration</strong>: Flexible logging configuration through environment variables</p></li>
+</ul>
+<p>The Shared Utilities are included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.shared_utils</span></code> package.</p>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="logger_guide.html">NVRx Logger Guide</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#key-features">Key Features</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#architecture">Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#configuration">Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#basic-usage">Basic Usage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#node-local-temporary-logging-setup">Node Local Temporary Logging Setup</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#advanced-configuration">Advanced Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#example-output-format">Example Output Format</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#integration-with-other-nvrx-components">Integration with Other NVRx Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#best-practices">Best Practices</a></li>
+<li class="toctree-l2"><a class="reference internal" href="logger_guide.html#troubleshooting">Troubleshooting</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="config_reference.html">Configuration Reference</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#environment-variables">Environment Variables</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#python-api-parameters">Python API Parameters</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#logmanager-constructor-parameters">LogManager Constructor Parameters</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#configuration-examples">Configuration Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#slurm-integration">SLURM Integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#docker-integration">Docker Integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#kubernetes-integration">Kubernetes Integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#configuration-precedence">Configuration Precedence</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#best-practices">Best Practices</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#filesystem-selection">Filesystem Selection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#troubleshooting">Troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html#quick-api-reference">Quick API Reference</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="api.html#log-manager">Log Manager</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#module-nvidia_resiliency_ext.shared_utils.log_aggregator">Log Aggregator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#log-configuration">Log Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#core-classes">Core Classes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#core-functions">Core Functions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html#quick-reference">Quick Reference</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../straggler_det/examples/basic_example.html" class="btn btn-neutral float-left" title="Basic usage example" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="logger_guide.html" class="btn btn-neutral float-right" title="NVRx Logger Guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

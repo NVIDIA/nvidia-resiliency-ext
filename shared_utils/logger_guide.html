@@ -1,0 +1,250 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NVRx Logger Guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Configuration Reference" href="config_reference.html" />
+    <link rel="prev" title="Shared Utilities" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Shared Utilities</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">NVRx Logger Guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#key-features">Key Features</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#architecture">Architecture</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#configuration">Configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#basic-usage">Basic Usage</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#node-local-temporary-logging-setup">Node Local Temporary Logging Setup</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#advanced-configuration">Advanced Configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#example-output-format">Example Output Format</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#integration-with-other-nvrx-components">Integration with Other NVRx Components</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#best-practices">Best Practices</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#troubleshooting">Troubleshooting</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="config_reference.html">Configuration Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Shared Utilities</a></li>
+      <li class="breadcrumb-item active">NVRx Logger Guide</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/shared_utils/logger_guide.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="nvrx-logger-guide">
+<h1>NVRx Logger Guide<a class="headerlink" href="#nvrx-logger-guide" title="Link to this heading"></a></h1>
+<p>The NVRx Logger is a sophisticated logging system designed specifically for multi-node, multi-rank training workloads. It provides intelligent log aggregation, rank-aware formatting, and automatic adaptation between two logging modes:</p>
+<p><strong>Regular Mode</strong>: Logs go directly to stderr/stdout (standard Python logging)
+<strong>Node Local Temporary Mode</strong>: Each rank writes logs to temporary files on local node storage, then local rank 0 aggregates and writes them to a per-node log file</p>
+<p><strong>What “Distributed Logging” Actually Means:</strong>
+The term “distributed logging” in this context refers to the fact that logs are collected from multiple ranks/processes across multiple nodes, but the actual storage and aggregation happens locally on each node. This is different from traditional distributed logging systems that send all logs to a central location over the network. The NVRx approach keeps logging local to each node for better performance and reliability.</p>
+<section id="key-features">
+<h2>Key Features<a class="headerlink" href="#key-features" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>Node Local Temporary Logging</strong>: When enabled, each rank writes logs to temporary files on local node storage, avoiding network filesystem bottlenecks</p></li>
+<li><p><strong>Automatic Log Aggregation</strong>: Local rank 0 acts as the node aggregator, collecting logs from all ranks on the same node and writing them to a single per-node log file</p></li>
+<li><p><strong>Environment-driven Behavior</strong>: Automatically adapts between regular logging (stderr/stdout) and node local temporary logging based on configuration</p></li>
+<li><p><strong>Fork-safe Design</strong>: All ranks use file-based message passing to ensure child processes can log even when they don’t inherit the aggregator thread</p></li>
+<li><p><strong>Dynamic Rank Detection</strong>: Automatically reads rank information from environment variables (RANK, LOCAL_RANK, SLURM_PROCID, SLURM_LOCALID)</p></li>
+</ul>
+</section>
+<section id="architecture">
+<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading"></a></h2>
+<p>The logger operates in two modes:</p>
+<dl class="simple">
+<dt><strong>Regular Mode</strong> (default)</dt><dd><p>Logs go directly to stderr/stdout. This is the standard Python logging behavior.</p>
+</dd>
+<dt><strong>Node Local Temporary Mode</strong> (when <code class="docutils literal notranslate"><span class="pre">NVRX_NODE_LOCAL_TMPDIR</span></code> is set)</dt><dd><p>Each rank writes logs to temporary files on local node storage (e.g., <cite>/tmp</cite>, <cite>/scratch</cite>, local SSDs). Local rank 0 aggregates these logs and writes them to a single per-node log file. This approach avoids network filesystem bottlenecks and provides better performance for high-throughput logging scenarios.</p>
+</dd>
+</dl>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
+<p>The logger is configured through environment variables. See <a class="reference internal" href="config_reference.html"><span class="doc">Configuration Reference</span></a> for complete configuration details.</p>
+<p>Key configuration variable:
+- <code class="docutils literal notranslate"><span class="pre">NVRX_NODE_LOCAL_TMPDIR</span></code>: Set to enable node local temporary logging with aggregation</p>
+<p>For advanced configuration options, environment variables, and troubleshooting, refer to the <a class="reference internal" href="config_reference.html"><span class="doc">Configuration Reference</span></a>.</p>
+</section>
+<section id="basic-usage">
+<h2>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading"></a></h2>
+<p>Setup the logger at the start of your program:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">setup_logger</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+
+<span class="c1"># Setup logging</span>
+<span class="n">logger</span> <span class="o">=</span> <span class="n">setup_logger</span><span class="p">()</span>
+
+<span class="c1"># Get the configured logger</span>
+<span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">&quot;nvrx&quot;</span><span class="p">)</span>
+
+<span class="c1"># Use throughout your code</span>
+<span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Training started&quot;</span><span class="p">)</span>
+<span class="n">log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;GPU memory usage high&quot;</span><span class="p">)</span>
+<span class="n">log</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="s2">&quot;Rank 0 failed&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="node-local-temporary-logging-setup">
+<h2>Node Local Temporary Logging Setup<a class="headerlink" href="#node-local-temporary-logging-setup" title="Link to this heading"></a></h2>
+<p>For workloads that need node-local temporary logging, set the environment variable:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_NODE_LOCAL_TMPDIR</span><span class="o">=</span>/tmp/nvrx_logs
+</pre></div>
+</div>
+<p>Or in your SLURM script:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/bin/bash</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_NODE_LOCAL_TMPDIR</span><span class="o">=</span>/tmp/nvrx_logs
+
+srun<span class="w"> </span>python<span class="w"> </span>your_training_script.py
+</pre></div>
+</div>
+<p><strong>⚠️ Critical Filesystem Warning</strong>: The temporary directory experiences high write throughput from all ranks on each node. Use local node storage (e.g., <cite>/tmp</cite>, <cite>/scratch</cite>, local SSDs) and avoid network filesystems like NFS, Lustre (LFS), or any storage accessed over network.</p>
+<p>The logger automatically handles:
+- Temporary log file creation for each rank
+- Log aggregation from all ranks on each node
+- Per-node log file writing
+- Log rotation and cleanup</p>
+</section>
+<section id="advanced-configuration">
+<h2>Advanced Configuration<a class="headerlink" href="#advanced-configuration" title="Link to this heading"></a></h2>
+<p>Force logger reconfiguration for subprocesses:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">logger</span> <span class="o">=</span> <span class="n">setup_logger</span><span class="p">(</span><span class="n">force_reset</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Log formatting automatically includes:
+- Timestamp, log level, node ID
+- Workload and infrastructure rank information
+- Source file and line number</p>
+</section>
+<section id="example-output-format">
+<h2>Example Output Format<a class="headerlink" href="#example-output-format" title="Link to this heading"></a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>2024-01-15 10:30:45,123 [INFO] [node001] [workload:0(0) infra:0(0)] training.py:45 Training started
+2024-01-15 10:30:46,456 [WARNING] [node001] [workload:0(0) infra:0(0)] training.py:67 GPU memory usage high
+2024-01-15 10:30:47,789 [ERROR] [node001] [workload:0(0) infra:0(0)] training.py:89 Rank 0 failed
+</pre></div>
+</div>
+</section>
+<section id="integration-with-other-nvrx-components">
+<h2>Integration with Other NVRx Components<a class="headerlink" href="#integration-with-other-nvrx-components" title="Link to this heading"></a></h2>
+<p>The logger automatically integrates with these NVRx components:
+- <strong>Fault Tolerance</strong>: Automatic logging of restart events and health checks
+- <strong>In-Process Restart</strong>: Logging of restart boundaries and process state
+- <strong>Health Check</strong>: Logging of system health monitoring events</p>
+<p><strong>Note</strong>: Checkpointing and Straggler Detection components use their own logging mechanisms and do not integrate with the NVRx logger.</p>
+</section>
+<section id="best-practices">
+<h2>Best Practices<a class="headerlink" href="#best-practices" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Setup Once</strong>: Call <code class="docutils literal notranslate"><span class="pre">setup_logger()</span></code> once at the start of your main program</p></li>
+<li><p><strong>Use Standard Logger</strong>: Access via <code class="docutils literal notranslate"><span class="pre">logging.getLogger(&quot;nvrx&quot;)</span></code> in other modules</p></li>
+<li><p><strong>Environment Configuration</strong>: Use environment variables rather than hardcoding</p></li>
+<li><p><strong>Subprocess Handling</strong>: Use <code class="docutils literal notranslate"><span class="pre">force_reset=True</span></code> for subprocesses</p></li>
+<li><p><strong>Filesystem Selection</strong>: Use local node storage, avoid network filesystems (NFS, Lustre)</p></li>
+</ol>
+</section>
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading"></a></h2>
+<p><strong>Common Issues:</strong>
+- <strong>Logs not appearing</strong>: Check <code class="docutils literal notranslate"><span class="pre">NVRX_NODE_LOCAL_TMPDIR</span></code> is set and directory is writable
+- <strong>Missing rank info</strong>: Ensure RANK/LOCAL_RANK environment variables are set
+- <strong>Performance issues</strong>: Monitor directory size, adjust file limits, verify filesystem choice (avoid NFS/Lustre)</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="index.html" class="btn btn-neutral float-left" title="Shared Utilities" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="config_reference.html" class="btn btn-neutral float-right" title="Configuration Reference" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

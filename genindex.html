@@ -49,6 +49,7 @@
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="shared_utils/index.html">Shared Utilities</a></li>
 </ul>
 
         </div>
@@ -120,7 +121,13 @@
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="straggler_det/usage_guide.html#nvidia_resiliency_ext.ptl_resiliency.StragglerDetectionCallback.__init__">__init__() (nvidia_resiliency_ext.ptl_resiliency.StragglerDetectionCallback method)</a>
+
+      <ul>
+        <li><a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.__init__">(nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator method)</a>
 </li>
+        <li><a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.__init__">(nvidia_resiliency_ext.shared_utils.log_manager.LogManager method)</a>
+</li>
+      </ul></li>
   </ul></td>
 </tr></table>
 
@@ -291,6 +298,20 @@
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.get_cache_metadata">get_cache_metadata() (nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache method)</a>
 </li>
+      <li><a href="shared_utils/api.html#id8">get_infra_local_rank() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_infra_local_rank">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id9">get_infra_rank() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_infra_rank">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id10">get_log_file() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_file">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id11">get_log_level() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_level">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id12">get_log_to_stdout_cfg() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_log_to_stdout_cfg">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id13">get_max_file_size() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_max_file_size">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id14">get_max_log_files() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_max_log_files">[1]</a>
+</li>
       <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.get_metadata_caching_status">get_metadata_caching_status() (in module nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver)</a>
 
       <ul>
@@ -299,11 +320,21 @@
       </ul></li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="shared_utils/api.html#id15">get_node_id() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_node_id">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id16">get_node_local_tmp_dir() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_node_local_tmp_dir">[1]</a>
+</li>
       <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.get_num_unfinalized_calls">get_num_unfinalized_calls() (nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue method)</a>
 </li>
       <li><a href="checkpointing/local/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback.HierarchicalCheckpointIO.get_partial_wrapper_constructor">get_partial_wrapper_constructor() (nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback.HierarchicalCheckpointIO class method)</a>
 </li>
+      <li><a href="shared_utils/api.html#id17">get_process_name() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_process_name">[1]</a>
+</li>
       <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.get_save_function_and_args">get_save_function_and_args() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync method)</a>
+</li>
+      <li><a href="shared_utils/api.html#id18">get_workload_local_rank() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_workload_local_rank">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id19">get_workload_rank() (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig class method)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_workload_rank">[1]</a>
 </li>
   </ul></td>
 </tr></table>
@@ -325,6 +356,10 @@
 <h2 id="I">I</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="shared_utils/api.html#id1">infra_local_rank (nvidia_resiliency_ext.shared_utils.log_manager.LogManager property)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.infra_local_rank">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id2">infra_rank (nvidia_resiliency_ext.shared_utils.log_manager.LogManager property)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.infra_rank">[1]</a>
+</li>
       <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.init_checkpoint_metadata_cache">init_checkpoint_metadata_cache() (in module nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver)</a>
 </li>
       <li><a href="checkpointing/local/api/base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict.init_tensors">init_tensors() (nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict method)</a>
@@ -381,12 +416,12 @@
 </li>
       <li><a href="checkpointing/local/api/base_ckpt_manager.html#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager.BaseCheckpointManager.load">load() (nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager.BaseCheckpointManager method)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="checkpointing/local/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback.HierarchicalCheckpointIO.load_checkpoint">load_checkpoint() (nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback.HierarchicalCheckpointIO method)</a>
 </li>
       <li><a href="fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.load_state_dict">load_state_dict() (nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient method)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="checkpointing/local/api/local_ckpt_manager.html#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager.LocalCheckpointManager.local_ckpt_dir">local_ckpt_dir (nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager.LocalCheckpointManager property)</a>
 </li>
       <li><a href="checkpointing/local/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback.LocalCheckpointCallback">LocalCheckpointCallback (class in nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback)</a>
@@ -395,12 +430,20 @@
 </li>
       <li><a href="fault_tolerance/api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorLogger.log_restarter_event">log_restarter_event() (nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorLogger method)</a>
 </li>
+      <li><a href="shared_utils/api.html#id7">LogConfig (class in nvidia_resiliency_ext.shared_utils.log_manager)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id3">logger (nvidia_resiliency_ext.shared_utils.log_manager.LogManager property)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.logger">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id0">LogManager (class in nvidia_resiliency_ext.shared_utils.log_manager)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager">[1]</a>
+</li>
   </ul></td>
 </tr></table>
 
 <h2 id="M">M</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.main">main() (in module nvidia_resiliency_ext.shared_utils.log_aggregator)</a>
+</li>
       <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls">maybe_finalize_async_calls() (nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue method)</a>
 </li>
       <li>
@@ -451,6 +494,10 @@
 </li>
         <li><a href="straggler_det/api/callback.html#module-nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback">nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback</a>
 </li>
+        <li><a href="shared_utils/api.html#module-nvidia_resiliency_ext.shared_utils.log_aggregator">nvidia_resiliency_ext.shared_utils.log_aggregator</a>
+</li>
+        <li><a href="shared_utils/api.html#module-nvidia_resiliency_ext.shared_utils.log_manager">nvidia_resiliency_ext.shared_utils.log_manager</a>
+</li>
       </ul></li>
   </ul></td>
 </tr></table>
@@ -458,6 +505,12 @@
 <h2 id="N">N</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="shared_utils/api.html#id20">name (nvidia_resiliency_ext.shared_utils.log_manager.LogConfig attribute)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.name">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#id4">node_local_tmp_logging_enabled (nvidia_resiliency_ext.shared_utils.log_manager.LogManager property)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.node_local_tmp_logging_enabled">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator">NodeLogAggregator (class in nvidia_resiliency_ext.shared_utils.log_aggregator)</a>
+</li>
       <li><a href="checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError">NoReplicasAvailableError</a>
 </li>
       <li>
@@ -614,6 +667,20 @@
 
       <ul>
         <li><a href="straggler_det/api/callback.html#module-nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback">module</a>
+</li>
+      </ul></li>
+      <li>
+    nvidia_resiliency_ext.shared_utils.log_aggregator
+
+      <ul>
+        <li><a href="shared_utils/api.html#module-nvidia_resiliency_ext.shared_utils.log_aggregator">module</a>
+</li>
+      </ul></li>
+      <li>
+    nvidia_resiliency_ext.shared_utils.log_manager
+
+      <ul>
+        <li><a href="shared_utils/api.html#module-nvidia_resiliency_ext.shared_utils.log_manager">module</a>
 </li>
       </ul></li>
   </ul></td>
@@ -782,10 +849,10 @@
 </li>
       <li><a href="fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_heartbeat">send_heartbeat() (nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient method)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request">send_workload_control_request() (nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient method)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.set_cache_metadata">set_cache_metadata() (nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache method)</a>
 </li>
       <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.set_cached_global_metadata">set_cached_global_metadata() (nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache method)</a>
@@ -796,7 +863,13 @@
         <li><a href="straggler_det/api/callback.html#nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback.setup">(nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback method)</a>
 </li>
       </ul></li>
+      <li><a href="shared_utils/api.html#id21">setup_logger() (in module nvidia_resiliency_ext.shared_utils.log_manager)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.setup_logger">[1]</a>
+</li>
+      <li><a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.shutdown">shutdown() (nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator method)</a>
+</li>
       <li><a href="fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.shutdown_workload_monitoring">shutdown_workload_monitoring() (nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient method)</a>
+</li>
+      <li><a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.start_aggregator">start_aggregator() (nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator method)</a>
 </li>
       <li><a href="fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.start_section">start_section() (nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient method)</a>
 </li>
@@ -862,12 +935,16 @@
 <h2 id="W">W</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper">Wrapper (class in nvidia_resiliency_ext.inprocess)</a>
+      <li><a href="shared_utils/api.html#id5">workload_local_rank (nvidia_resiliency_ext.shared_utils.log_manager.LogManager property)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.workload_local_rank">[1]</a>
 </li>
-      <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_data">write_data() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync method)</a>
+      <li><a href="shared_utils/api.html#id6">workload_rank (nvidia_resiliency_ext.shared_utils.log_manager.LogManager property)</a>, <a href="shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.workload_rank">[1]</a>
+</li>
+      <li><a href="inprocess/api/wrap.html#nvidia_resiliency_ext.inprocess.Wrapper">Wrapper (class in nvidia_resiliency_ext.inprocess)</a>
 </li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_data">write_data() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync method)</a>
+</li>
       <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data">write_preloaded_data() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync static method)</a>
 </li>
       <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multiproc">write_preloaded_data_multiproc() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync static method)</a>

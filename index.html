@@ -51,6 +51,7 @@
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="shared_utils/index.html">Shared Utilities</a></li>
 </ul>
 
         </div>
@@ -90,6 +91,7 @@
 <li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/async/index.rst">Async checkpointing</a></p></li>
 <li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/local/index.rst">Local checkpointing</a></p></li>
 <li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/straggler_det/index.rst">Straggler (slower ranks) detection</a></p></li>
+<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/shared_utils/index.rst">Shared utilities and distributed logging</a></p></li>
 </ul>
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
@@ -214,6 +216,46 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="straggler_det/examples.html">Examples</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="straggler_det/examples/basic_example.html">Basic usage example</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="shared_utils/index.html">Shared Utilities</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="shared_utils/logger_guide.html">NVRx Logger Guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#key-features">Key Features</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#architecture">Architecture</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#configuration">Configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#basic-usage">Basic Usage</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#node-local-temporary-logging-setup">Node Local Temporary Logging Setup</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#advanced-configuration">Advanced Configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#example-output-format">Example Output Format</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#integration-with-other-nvrx-components">Integration with Other NVRx Components</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#best-practices">Best Practices</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/logger_guide.html#troubleshooting">Troubleshooting</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="shared_utils/config_reference.html">Configuration Reference</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#environment-variables">Environment Variables</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#python-api-parameters">Python API Parameters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#logmanager-constructor-parameters">LogManager Constructor Parameters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#configuration-examples">Configuration Examples</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#slurm-integration">SLURM Integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#docker-integration">Docker Integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#kubernetes-integration">Kubernetes Integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#configuration-precedence">Configuration Precedence</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#best-practices">Best Practices</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#filesystem-selection">Filesystem Selection</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#troubleshooting">Troubleshooting</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/config_reference.html#quick-api-reference">Quick API Reference</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="shared_utils/api.html">API Reference</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/api.html#log-manager">Log Manager</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/api.html#module-nvidia_resiliency_ext.shared_utils.log_aggregator">Log Aggregator</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/api.html#log-configuration">Log Configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/api.html#core-classes">Core Classes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/api.html#core-functions">Core Functions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shared_utils/api.html#quick-reference">Quick Reference</a></li>
 </ul>
 </li>
 </ul>
