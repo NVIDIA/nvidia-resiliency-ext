@@ -354,7 +354,9 @@ class TestNVLHealthCheck(unittest.TestCase):
         checker = NVLHealthCheck()
         checker.pynvml = self.mock_pynvml
 
-        with patch.object(checker.log, 'warning') as mock_warning:
+        with patch(
+            'nvidia_resiliency_ext.shared_utils.health_check.logger.warning'
+        ) as mock_warning:
             result = checker._check_nvl_links_for_device(0)
             self.assertFalse(result)
             mock_warning.assert_called_once_with("GPU 0: NVL link 1 is in DISABLED state")
@@ -387,13 +389,15 @@ class TestNVLHealthCheck(unittest.TestCase):
         checker = NVLHealthCheck()
         checker.pynvml = self.mock_pynvml
 
-        with patch.object(checker.log, 'debug') as mock_debug:
+        with patch(
+            'nvidia_resiliency_ext.shared_utils.health_check.logger.warning'
+        ) as mock_warning:
             result = checker._check_nvl_links_for_device(0)
             # The method should return True because it handled the error gracefully
             # and continued checking other links
             self.assertTrue(result)
-            # Should log a debug message for the NVML error
-            mock_debug.assert_called_once_with("GPU 0: NVL link 0 not accessible: NVML Error")
+            # Should log a warning message for the NVML error
+            mock_warning.assert_called_once_with("GPU 0: NVL link 0 not accessible: NVML Error")
 
     def test_check_nvl_links_for_device_with_not_supported_error(self):
         """Test checking NVL links when NVML returns 'not supported' error."""
@@ -406,10 +410,12 @@ class TestNVLHealthCheck(unittest.TestCase):
         checker = NVLHealthCheck()
         checker.pynvml = self.mock_pynvml
 
-        with patch.object(checker.log, 'debug') as mock_debug:
+        with patch(
+            'nvidia_resiliency_ext.shared_utils.health_check.logger.warning'
+        ) as mock_warning:
             result = checker._check_nvl_links_for_device(0)
-            # Should not log debug message for "not supported" errors
-            mock_debug.assert_not_called()
+            # Should not log warning message for "not supported" errors
+            mock_warning.assert_not_called()
 
     def test_perform_health_check_single_device(self):
         """Test health check for a single specific device."""
@@ -472,7 +478,9 @@ class TestNVLHealthCheck(unittest.TestCase):
         checker.pynvml = self.mock_pynvml
 
         with patch.object(checker, '_check_nvl_links_for_device', return_value=True):
-            with patch.object(checker.log, 'warning') as mock_warning:
+            with patch(
+                'nvidia_resiliency_ext.shared_utils.health_check.logger.warning'
+            ) as mock_warning:
                 result = checker._perform_health_check()
                 self.assertTrue(result)  # Health check should still succeed
                 mock_warning.assert_called_once_with(

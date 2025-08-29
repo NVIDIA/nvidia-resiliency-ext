@@ -539,7 +539,7 @@ class RankMonitorServer:
         from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
         try:
-            setup_logger(force_reset=True, dist_file_prefix="rankmonsvr")
+            setup_logger(force_reset=True, node_local_tmp_prefix="rankmonsvr")
             rmlogger = RankMonitorLogger(
                 level=cfg.log_level, is_restarter_logger=is_restarter_logger
             )

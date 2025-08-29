@@ -146,8 +146,8 @@ class MonitorProcess:
         store_factory: type[StoreMixin],
         store_kwargs: dict[str, Any],
     ):
-        if LogConfig.get_dist_log_dir() is not None:
-            setup_logger(force_reset=True, dist_file_prefix="monproc")
+        if LogConfig.get_node_local_tmp_dir() is not None:
+            setup_logger(force_reset=True, node_local_tmp_prefix="monproc")
             log = logging.getLogger(LogConfig.name)
         else:
             if log_filename is not None:
