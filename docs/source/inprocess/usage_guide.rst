@@ -61,7 +61,8 @@ Requirements for the wrapped function
   default values (for example, --monitor-interval=5).
 
     - Any objects whose lifetime crosses the restart boundary *must* be process-group independent _or_
-      they are responsible for re-aligning themselves to the new process groups within the wrapped function.
+      the workload must re-align the object, inside the wrapped function, to the new process groups
+      created after the In-process restart.
 
 - It is heavily recommended for the wrapped function to load the state affected
   by distributed collectives from a checkpoint on every restart (e.g. load
