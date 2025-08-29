@@ -71,6 +71,7 @@
 <li class="toctree-l4"><a class="reference internal" href="#progress-timeout">Progress timeout</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#finalize">Finalize</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#health-check">Health check</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#automatic-health-checks">Automatic Health Checks</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#monitoring-capabilities">Monitoring capabilities</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#logging">Logging</a></li>
 </ul>
@@ -603,6 +604,24 @@ executing the wrapped function. An unhealthy state is reported to
 then reraised by the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>, and should cause termination of the
 main Python interpreter process on the local rank.</p>
 <p>Multiple health checks could be composed with <code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.Compose</span></code>.</p>
+</section>
+<section id="automatic-health-checks">
+<h3>Automatic Health Checks<a class="headerlink" href="#automatic-health-checks" title="Link to this heading"></a></h3>
+<p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> automatically includes comprehensive health monitoring when the <code class="docutils literal notranslate"><span class="pre">LOCAL_RANK</span></code>
+environment variable is available. These health checks are executed in sequence during restart to ensure
+the system is in a healthy state before attempting to restart the workload.</p>
+<p><strong>GPU Health Check</strong>: Validates GPU device health and recovery actions using <code class="xref py py-class docutils literal notranslate"><span class="pre">ChainedGPUHealthCheck</span></code>.</p>
+<p><strong>NVL Health Check</strong>: Monitors NVLink connectivity and link health using <code class="xref py py-class docutils literal notranslate"><span class="pre">ChainedNVLHealthCheck</span></code>.</p>
+<p><strong>NIC Health Check</strong>: Monitors network interface card connectivity and link down events using <code class="xref py py-class docutils literal notranslate"><span class="pre">ChainedNicHealthCheck</span></code>.
+This is particularly important for distributed workloads where network connectivity is critical.</p>
+<p>The automatic health checks are configured with the same <code class="docutils literal notranslate"><span class="pre">device_index</span></code> as the current GPU rank (from <code class="docutils literal notranslate"><span class="pre">LOCAL_RANK</span></code>),
+ensuring that each GPU monitors its associated network interfaces. No additional configuration is required
+for basic health monitoring - the wrapper automatically handles health check composition and execution.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The NIC health check automatically establishes baseline link down counter values during initialization,
+ensuring accurate delta detection from the first health check execution.</p>
+</div>
 </section>
 <section id="monitoring-capabilities">
 <h3>Monitoring capabilities<a class="headerlink" href="#monitoring-capabilities" title="Link to this heading"></a></h3>

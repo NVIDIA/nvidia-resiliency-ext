@@ -117,7 +117,12 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">.compose</span><span class="w"> </span><span class="kn">import</span> <span class="n">Compose</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.exception</span><span class="w"> </span><span class="kn">import</span> <span class="n">HealthCheckError</span><span class="p">,</span> <span class="n">InternalError</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.finalize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Finalize</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChainedGPUHealthCheck</span><span class="p">,</span> <span class="n">ChainedNVLHealthCheck</span><span class="p">,</span> <span class="n">HealthCheck</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.health_check</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">ChainedGPUHealthCheck</span><span class="p">,</span>
+    <span class="n">ChainedNicHealthCheck</span><span class="p">,</span>
+    <span class="n">ChainedNVLHealthCheck</span><span class="p">,</span>
+    <span class="n">HealthCheck</span><span class="p">,</span>
+<span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.initialize</span><span class="w"> </span><span class="kn">import</span> <span class="n">Initialize</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_process</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorProcess</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.monitor_thread</span><span class="w"> </span><span class="kn">import</span> <span class="n">MonitorThread</span><span class="p">,</span> <span class="n">RankShouldRestart</span><span class="p">,</span> <span class="n">reraise_if_unraisable</span>
@@ -339,15 +344,16 @@
                 <span class="c1"># If it&#39;s a single health check, add it directly</span>
                 <span class="n">health_checks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">health_check</span><span class="p">)</span>
 
-        <span class="c1"># Add GPU and NVL health checks if LOCAL_RANK is available</span>
+        <span class="c1"># Add GPU, NVL, and NIC health checks if LOCAL_RANK is available</span>
         <span class="k">if</span> <span class="s1">&#39;LOCAL_RANK&#39;</span> <span class="ow">in</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">:</span>
             <span class="k">try</span><span class="p">:</span>
                 <span class="n">local_rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;LOCAL_RANK&#39;</span><span class="p">])</span>
                 <span class="n">gpu_check</span> <span class="o">=</span> <span class="n">ChainedGPUHealthCheck</span><span class="p">(</span><span class="n">device_index</span><span class="o">=</span><span class="n">local_rank</span><span class="p">)</span>
                 <span class="n">nvl_check</span> <span class="o">=</span> <span class="n">ChainedNVLHealthCheck</span><span class="p">(</span><span class="n">device_index</span><span class="o">=</span><span class="n">local_rank</span><span class="p">)</span>
-                <span class="n">health_checks</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="n">gpu_check</span><span class="p">,</span> <span class="n">nvl_check</span><span class="p">])</span>
+                <span class="n">nic_check</span> <span class="o">=</span> <span class="n">ChainedNicHealthCheck</span><span class="p">(</span><span class="n">device_index</span><span class="o">=</span><span class="n">local_rank</span><span class="p">)</span>
+                <span class="n">health_checks</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="n">gpu_check</span><span class="p">,</span> <span class="n">nvl_check</span><span class="p">,</span> <span class="n">nic_check</span><span class="p">])</span>
             <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
-                <span class="c1"># If LOCAL_RANK is not a valid integer, skip GPU/NVL checks</span>
+                <span class="c1"># If LOCAL_RANK is not a valid integer, skip GPU/NVL/NIC checks</span>
                 <span class="k">pass</span>
 
         <span class="c1"># Compose all health checks (or set to None if no health checks)</span>
