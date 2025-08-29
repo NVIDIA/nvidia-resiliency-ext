@@ -38,7 +38,12 @@ from .completion import Completion
 from .compose import Compose
 from .exception import HealthCheckError, InternalError
 from .finalize import Finalize
-from .health_check import ChainedGPUHealthCheck, ChainedNVLHealthCheck, HealthCheck
+from .health_check import (
+    ChainedGPUHealthCheck,
+    ChainedNicHealthCheck,
+    ChainedNVLHealthCheck,
+    HealthCheck,
+)
 from .initialize import Initialize
 from .monitor_process import MonitorProcess
 from .monitor_thread import MonitorThread, RankShouldRestart, reraise_if_unraisable
@@ -258,15 +263,16 @@ class Wrapper:
                 # If it's a single health check, add it directly
                 health_checks.append(self.health_check)
 
-        # Add GPU and NVL health checks if LOCAL_RANK is available
+        # Add GPU, NVL, and NIC health checks if LOCAL_RANK is available
         if 'LOCAL_RANK' in os.environ:
             try:
                 local_rank = int(os.environ['LOCAL_RANK'])
                 gpu_check = ChainedGPUHealthCheck(device_index=local_rank)
                 nvl_check = ChainedNVLHealthCheck(device_index=local_rank)
-                health_checks.extend([gpu_check, nvl_check])
+                nic_check = ChainedNicHealthCheck(device_index=local_rank)
+                health_checks.extend([gpu_check, nvl_check, nic_check])
             except (ValueError, TypeError):
-                # If LOCAL_RANK is not a valid integer, skip GPU/NVL checks
+                # If LOCAL_RANK is not a valid integer, skip GPU/NVL/NIC checks
                 pass
 
         # Compose all health checks (or set to None if no health checks)
