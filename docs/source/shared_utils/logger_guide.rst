@@ -26,24 +26,12 @@ The logger operates in two modes:
 Configuration
 ------------
 
-The logger is configured through environment variables:
+The logger is configured through environment variables. See :doc:`config_reference` for complete configuration details.
 
-.. list-table:: Environment Variables
-   :widths: 30 70
-   :header-rows: 1
+Key configuration variable:
+- ``NVRX_NODE_LOCAL_TMPDIR``: Set to enable distributed logging with aggregation
 
-   * - Variable
-     - Description
-   * - ``NVRX_NODE_LOCAL_TMPDIR``
-     - Directory for temporary log files. When set, enables distributed logging with aggregation.
-   * - ``NVRX_LOG_DEBUG``
-     - Set to "1", "true", "yes", or "on" to enable DEBUG level logging (default: INFO)
-   * - ``NVRX_LOG_TO_STDOUT``
-     - Set to "1" to log to stdout instead of stderr
-   * - ``NVRX_LOG_MAX_FILE_SIZE_KB``
-     - Maximum size of temporary message files in KB before rotation (default: 10)
-   * - ``NVRX_LOG_MAX_LOG_FILES``
-     - Maximum number of log files to keep per rank (default: 4)
+For advanced configuration options, environment variables, and troubleshooting, refer to the :doc:`config_reference`.
 
 Basic Usage
 ----------
@@ -53,29 +41,18 @@ Setup the logger at the start of your program:
 .. code-block:: python
 
     from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
-    
-    # Basic setup
-    logger = setup_logger()
-    
-    # With custom temporary directory
-    logger = setup_logger(node_local_tmp_dir="/tmp/my_logs")
-    
-    # With custom prefix for distributed logging
-    logger = setup_logger(node_local_tmp_prefix="mytraining")
-
-Use the logger throughout your code:
-
-.. code-block:: python
-
     import logging
     
-    # Get the configured logger
-    logger = logging.getLogger("nvrx")
+    # Setup logging
+    logger = setup_logger()
     
-    # Log messages
-    logger.info("Training started")
-    logger.warning("GPU memory usage high")
-    logger.error("Rank 0 failed")
+    # Get the configured logger
+    log = logging.getLogger("nvrx")
+    
+    # Use throughout your code
+    log.info("Training started")
+    log.warning("GPU memory usage high")
+    log.error("Rank 0 failed")
 
 Distributed Logging Setup
 ------------------------
@@ -95,28 +72,26 @@ Or in your SLURM script:
     
     srun python your_training_script.py
 
-The logger will automatically:
-1. Create temporary log files for each rank
-2. Aggregate logs from all ranks on each node
-3. Write aggregated logs to a per-node log file
-4. Handle log rotation and cleanup
+**⚠️ Critical Filesystem Warning**: The temporary directory experiences high write throughput from all ranks on each node. Use local node storage (e.g., `/tmp`, `/scratch`, local SSDs) and avoid network filesystems like NFS, Lustre (LFS), or any storage accessed over network.
+
+The logger automatically handles:
+- Temporary log file creation for each rank
+- Log aggregation from all ranks on each node
+- Per-node log file writing
+- Log rotation and cleanup
 
 Advanced Configuration
 ---------------------
 
-Force logger reconfiguration (useful for subprocesses):
+Force logger reconfiguration for subprocesses:
 
 .. code-block:: python
 
-    # Force fresh logger setup
     logger = setup_logger(force_reset=True)
 
-Custom log formatting is automatically applied, including:
-- Timestamp
-- Log level
-- Node ID
-- Workload rank and local rank
-- Infrastructure rank and local rank
+Log formatting automatically includes:
+- Timestamp, log level, node ID
+- Workload and infrastructure rank information
 - Source file and line number
 
 Example Output Format
@@ -131,34 +106,26 @@ Example Output Format
 Integration with Other NVRx Components
 ------------------------------------
 
-The logger is automatically used by other NVRx components:
-
+The logger automatically integrates with these NVRx components:
 - **Fault Tolerance**: Automatic logging of restart events and health checks
 - **In-Process Restart**: Logging of restart boundaries and process state
-- **Checkpointing**: Logging of checkpoint operations and progress
-- **Straggler Detection**: Logging of performance metrics and detection events
+- **Health Check**: Logging of system health monitoring events
+
+**Note**: Checkpointing and Straggler Detection components use their own logging mechanisms and do not integrate with the NVRx logger.
 
 Best Practices
 -------------
 
 1. **Setup Once**: Call ``setup_logger()`` once at the start of your main program
-2. **Use Standard Logger**: Access the logger via ``logging.getLogger("nvrx")`` in other modules
-3. **Environment Configuration**: Use environment variables for configuration rather than hardcoding
-4. **Subprocess Handling**: Use ``force_reset=True`` when setting up logging in subprocesses
-5. **Directory Permissions**: Ensure the temporary directory has proper write permissions for all ranks
+2. **Use Standard Logger**: Access via ``logging.getLogger("nvrx")`` in other modules
+3. **Environment Configuration**: Use environment variables rather than hardcoding
+4. **Subprocess Handling**: Use ``force_reset=True`` for subprocesses
+5. **Filesystem Selection**: Use local node storage, avoid network filesystems (NFS, Lustre)
 
 Troubleshooting
 --------------
 
-**Logs not appearing in distributed mode:**
-- Check that ``NVRX_NODE_LOCAL_TMPDIR`` is set
-- Verify directory permissions
-- Check that local rank 0 is running the aggregator
-
-**Missing rank information:**
-- Ensure environment variables (RANK, LOCAL_RANK) are set
-- Check that the logger is configured before rank information is needed
-
-**Performance issues:**
-- Monitor temporary directory size
-- Adjust ``NVRX_LOG_MAX_FILE_SIZE_KB`` and ``NVRX_LOG_MAX_LOG_FILES`` as needed
+**Common Issues:**
+- **Logs not appearing**: Check ``NVRX_NODE_LOCAL_TMPDIR`` is set and directory is writable
+- **Missing rank info**: Ensure RANK/LOCAL_RANK environment variables are set
+- **Performance issues**: Monitor directory size, adjust file limits, verify filesystem choice (avoid NFS/Lustre)

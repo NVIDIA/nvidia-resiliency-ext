@@ -197,9 +197,28 @@ Best Practices
 
 ❌ **Don't:**
 - Use system-critical directories (e.g., `/var/log`)
+- Use network filesystems (e.g., NFS) that cannot handle high write throughput from multiple nodes
 - Set extremely large file size limits
 - Keep too many log files (can fill disk)
 - Mix different logging configurations in the same job
+
+Filesystem Selection
+-------------------
+
+**Critical Consideration**: The temporary directory for distributed logging experiences high write throughput from all ranks on each node. Choose your filesystem carefully:
+
+**Recommended Filesystems:**
+- **Local node storage**: `/tmp`, `/scratch`, local SSDs
+- **Local NVMe storage**: Fastest option for high-throughput logging
+
+**Avoid These Filesystems:**
+- **NFS**: Cannot handle concurrent writes from multiple processes efficiently
+- **Lustre (LFS)**: Network filesystem that may have performance limitations for high-frequency small writes
+
+**Performance Impact:**
+- Poor filesystem choice can significantly slow down your training
+- Logging overhead should be minimal (< 1% of training time)
+- Test filesystem performance before production deployment
 
 Troubleshooting
 ---------------
@@ -222,6 +241,8 @@ Troubleshooting
      - Verify RANK and LOCAL_RANK environment variables are set
    * - Performance issues
      - Monitor temporary directory size and adjust limits
+   * - Slow logging performance
+     - Check filesystem type (avoid NFS, Lustre, or network storage, use local storage)
 
 **Debug Mode:**
 Enable debug logging to see detailed configuration information:
