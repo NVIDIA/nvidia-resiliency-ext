@@ -68,8 +68,6 @@ class AbortTorchDistributed(Abort):
     thread for each distributed group that has been created.
     '''
 
-    _logging_printed: bool = False
-
     def __init__(self, torch_fr_trace_path: str = None):
         r'''
         This class is used to abort PyTorch distributed collectives, and destroy all PyTorch
@@ -138,14 +136,13 @@ class AbortTorchDistributed(Abort):
                 except ValueError:
                     env_value_int = 0
 
-                if env_value_int <= 0 and not AbortTorchDistributed._logging_printed:
+                if env_value_int <= 0:
                     if rank == 0:
                         log = logging.getLogger(__name__)
                         log.info(
                             f"Environment variable {env_var} is set to {env_value}"
                             f", FR trace collection is disabled"
                         )
-                    AbortTorchDistributed._logging_printed = True
                     return False
             return True
 
