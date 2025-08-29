@@ -301,7 +301,7 @@ class CallWrapper:
         self.state = None
 
         try:
-            setup_logger(dist_file_prefix="wrapper")
+            setup_logger(node_local_tmp_prefix="wrapper")
             log = logging.getLogger(LogConfig.name)
 
             enforce_value(not torch.distributed.is_initialized())
