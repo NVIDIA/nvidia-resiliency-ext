@@ -22,7 +22,7 @@ regular logging and distributed logging for large-scale training with thousands
 of GPUs. The design automatically adapts based on environment configuration.
 
 Key Design Principles:
-- Environment-driven behavior: NVRX_DIST_LOG_DIR controls distributed vs regular logging
+- Environment-driven behavior: NVRX_NODE_LOCAL_TMPDIR controls distributed vs regular logging
 - Per-node aggregation: When distributed logging is enabled, a separate aggregator service does log aggregation
 - Dynamic rank detection: Automatically reads rank info from environment variables
 - Scalable: Works with 3K+ GPUs without overwhelming logging infrastructure
@@ -43,7 +43,7 @@ Features:
 Environment Variables:
     NVRX_LOG_DEBUG: Set to "1", "true", "yes", or "on" to enable DEBUG level logging (default: INFO)
     NVRX_LOG_TO_STDOUT: Set to "1" to log to stdout instead of stderr
-    NVRX_DIST_LOG_DIR: Directory for temporary log files
+    NVRX_NODE_LOCAL_TMPDIR: Directory for temporary log files
     NVRX_LOG_MAX_FILE_SIZE_KB: Maximum size of temporary message files in KB before rotation (default: 10)
     NVRX_LOG_MAX_LOG_FILES: Maximum number of log files to keep per rank (default: 4)
     
@@ -117,9 +117,9 @@ class LogConfig:
         return f"{cls._aggr_file_prefix}{cls.get_node_id()}.log"
 
     @classmethod
-    def get_dist_log_dir(cls, dist_log_dir=None):
+    def get_node_local_tmp_dir(cls, node_local_tmp_dir=None):
         # Use configurable temporary directory for pending messages
-        return dist_log_dir or os.environ.get("NVRX_DIST_LOG_DIR")
+        return node_local_tmp_dir or os.environ.get("NVRX_NODE_LOCAL_TMPDIR")
 
     @classmethod
     def get_max_file_size(cls, file_size_kb=None) -> int:
@@ -171,7 +171,7 @@ class LogManager:
     Log manager for large-scale LLM training.
 
     Supports both regular logging and distributed logging. When distributed logging
-    is enabled (NVRX_DIST_LOG_DIR is set), each node logs independently to avoid
+    is enabled (NVRX_NODE_LOCAL_TMPDIR is set), each node logs independently to avoid
     overwhelming centralized logging systems. Local rank 0 acts as the node aggregator,
     collecting logs from all ranks on the same node and writing them to a per-node log file.
 
@@ -181,10 +181,10 @@ class LogManager:
 
     def __init__(
         self,
-        dist_log_dir: Optional[str] = None,
-        dist_log_prefix: str = None,
+        node_local_tmp_dir: Optional[str] = None,
+        node_local_tmp_prefix: str = None,
     ):
-        self._dist_log_prefix = LogConfig.get_process_name(dist_log_prefix)
+        self._node_local_tmp_prefix = LogConfig.get_process_name(node_local_tmp_prefix)
         # Get distributed info once during initialization
         self._workload_rank = LogConfig.get_workload_rank()
         self._workload_local_rank = LogConfig.get_workload_local_rank()
@@ -195,7 +195,7 @@ class LogManager:
         self.log_level = LogConfig.get_log_level()
 
         # Use configurable temporary directory for pending messages
-        self._dist_log_dir = LogConfig.get_dist_log_dir(dist_log_dir)
+        self._node_local_tmp_dir = LogConfig.get_node_local_tmp_dir(node_local_tmp_dir)
 
         # File rotation settings (in bytes)
         self._max_msg_file_size = LogConfig.get_max_file_size()
@@ -208,7 +208,7 @@ class LogManager:
     @property
     def distributed_logging_enabled(self) -> bool:
         """Check if distributed logging is enabled."""
-        return self._dist_log_dir is not None
+        return self._node_local_tmp_dir is not None
 
     @property
     def workload_rank(self) -> Optional[int]:
@@ -241,13 +241,13 @@ class LogManager:
             logger.removeHandler(handler)
 
         if self.distributed_logging_enabled:
-            os.makedirs(self._dist_log_dir, exist_ok=True)
+            os.makedirs(self._node_local_tmp_dir, exist_ok=True)
             handler = DistributedLogHandler(
                 self.workload_local_rank,
-                self._dist_log_dir,
+                self._node_local_tmp_dir,
                 self._max_msg_file_size,
                 self._max_backup_files,
-                self._dist_log_prefix,
+                self._node_local_tmp_prefix,
             )
             # Use dynamic formatter with static hostname and dynamic rank info
             formatter = DynamicLogFormatter(
@@ -293,9 +293,9 @@ class LogManager:
 
 
 def setup_logger(
-    dist_log_dir=None,
+    node_local_tmp_dir=None,
     force_reset=False,
-    dist_file_prefix: str = None,
+    node_local_tmp_prefix: str = None,
 ) -> logging.Logger:
     """
     Setup the distributed logger.
@@ -308,14 +308,14 @@ def setup_logger(
     and then the logger is used throughout the program i.e. its a singleton.
 
     The logger automatically adapts to distributed or regular mode based on
-    whether NVRX_DIST_LOG_DIR is set. If set, enables distributed logging
+    whether NVRX_NODE_LOCAL_TMPDIR is set. If set, enables distributed logging
     with aggregation. If not set, logs go directly to stderr/stdout.
 
     The logger is fork-safe: all ranks use file-based message passing to ensure
     child processes can log even when they don't inherit the aggregator thread.
 
     Args:
-        dist_log_dir: Optional directory path for temporary files. If None, uses NVRX_DIST_LOG_DIR env var.
+        node_local_tmp_dir: Optional directory path for temporary files. If None, uses NVRX_NODE_LOCAL_TMPDIR env var.
         force_reset: If True, force reconfiguration even if logger is already configured.
                     Useful for subprocesses that need fresh logger setup.
 
@@ -350,8 +350,8 @@ def setup_logger(
 
         # Create a LogManager instance to handle the configuration
         log_manager = LogManager(
-            dist_log_dir=dist_log_dir,
-            dist_log_prefix=dist_file_prefix,
+            node_local_tmp_dir=node_local_tmp_dir,
+            node_local_tmp_prefix=node_local_tmp_prefix,
         )
 
         # Get the configured logger from the log manager

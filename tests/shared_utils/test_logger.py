@@ -64,7 +64,9 @@ def worker_process(id, num_msg, file_size):
     """Function that each process will execute."""
     setup_vars(id, id, file_size)
     log_dir, temp_dir = create_test_workspace(clean=False)
-    logger = setup_logger(temp_dir, True, "wkrproc")
+    logger = setup_logger(
+        node_local_tmp_dir=temp_dir, force_reset=True, node_local_tmp_prefix="wkrproc"
+    )
     gen_log_msg(logger, num_msg)
 
 
@@ -144,17 +146,19 @@ class TestLogger(unittest.TestCase):
         if is_agg:
             aggregator = NodeLogAggregator(
                 log_dir=log_dir,
-                temp_dir=LogConfig.get_dist_log_dir(temp_dir),
+                temp_dir=LogConfig.get_node_local_tmp_dir(temp_dir),
                 log_file=LogConfig.get_log_file(),
                 max_file_size=LogConfig.get_max_file_size(file_size_kb),
                 en_chrono_ord=True,
             )
             aggregator.start_aggregator()
-        logger = setup_logger(temp_dir, True, "test")
+        logger = setup_logger(
+            node_local_tmp_dir=temp_dir, force_reset=True, node_local_tmp_prefix="test"
+        )
         gen_log_msg(logger, num_msg, log_type)
 
         time.sleep(1)
-        pm = LogConfig.get_dist_log_dir(temp_dir)
+        pm = LogConfig.get_node_local_tmp_dir(temp_dir)
         num_files, file_names = self.count_files_in_dir(pm)
         self.assertEqual(
             num_files, pm_files, f'The number of files should be {pm_files}, instead {num_files}'
@@ -193,7 +197,7 @@ class TestLogger(unittest.TestCase):
 
         aggregator = NodeLogAggregator(
             log_dir=log_dir,
-            temp_dir=LogConfig.get_dist_log_dir(temp_dir),
+            temp_dir=LogConfig.get_node_local_tmp_dir(temp_dir),
             log_file=LogConfig.get_log_file(),
             max_file_size=LogConfig.get_max_file_size(file_size_kb),
             en_chrono_ord=True,
