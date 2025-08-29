@@ -90,6 +90,8 @@ class AbortTorchDistributed(Abort):
         Args:
             torch_fr_trace_path: Path to collect PyTorch Flight Recorder traces.
         '''
+        if torch_fr_trace_path is None:
+            torch_fr_trace_path = os.environ.get('NVRX_FR_TRACE_PATH', None)
         self.torch_fr_trace_path = torch_fr_trace_path
 
     @staticmethod
@@ -125,9 +127,9 @@ class AbortTorchDistributed(Abort):
                 else:
                     backend.abort()
 
-    def collect_fr_trace(self):
+    def collect_fr_trace(self, state: FrozenState):
         def _check_fr_env():
-            check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE']
+            check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE', 'TORCH_FR_BUFFER_SIZE']
             rank = torch.distributed.get_rank()
             for env_var in check_env_variables:
                 env_value = os.environ.get(env_var, '0')
@@ -149,14 +151,15 @@ class AbortTorchDistributed(Abort):
         if _check_fr_env() is True:
             if self.torch_fr_trace_path is None:
                 return
-            if not os.path.exists(self.torch_fr_trace_path):
-                os.makedirs(self.torch_fr_trace_path)
-            trace_analyzer = TorchFRTraceCollector(self.torch_fr_trace_path)
+            trace_path = os.path.join(self.torch_fr_trace_path, f'iter_{state.iteration}')
+            if not os.path.exists(trace_path):
+                os.makedirs(trace_path, exist_ok=True)
+            trace_analyzer = TorchFRTraceCollector(trace_path)
             trace_analyzer.collect()
 
     def __call__(self, state: FrozenState) -> FrozenState:
         if torch.distributed.is_available() and torch.distributed.is_initialized():
-            self.collect_fr_trace()
+            self.collect_fr_trace(state)
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
         return state
