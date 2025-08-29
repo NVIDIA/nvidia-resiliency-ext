@@ -501,8 +501,7 @@ class TestLogging(TestCase):
         def fn():
             return
 
-        with self.assertWarns(UserWarning):
-            fn()
+        fn()
 
         logger = logging.getLogger(inprocess.wrap.__name__)
         self.assertEqual(logger.handlers, [])
@@ -513,7 +512,11 @@ class TestLogging(TestCase):
             return
 
         stream = io.StringIO()
-        logging.basicConfig(level=logging.DEBUG, stream=stream, force=True)
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.DEBUG)
+        logger = logging.getLogger("nvrx")
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
 
         fn()
         self.assertGreater(len(stream.getvalue()), 0)
@@ -524,12 +527,20 @@ class TestLogging(TestCase):
             return
 
         first_stream = io.StringIO()
-        logging.basicConfig(level=logging.INFO, stream=first_stream)
+        handler1 = logging.StreamHandler(first_stream)
+        handler1.setLevel(logging.DEBUG)
+        logger = logging.getLogger("nvrx")
+        logger.addHandler(handler1)
+        logger.setLevel(logging.DEBUG)
         fn()
         first = first_stream.getvalue()
+        logger.removeHandler(handler1)
 
         second_stream = io.StringIO()
-        logging.basicConfig(level=logging.INFO, stream=second_stream, force=True)
+        handler2 = logging.StreamHandler(second_stream)
+        handler2.setLevel(logging.DEBUG)
+        logger.addHandler(handler2)
+        logger.setLevel(logging.DEBUG)
         fn()
         first_again = first_stream.getvalue()
         second = second_stream.getvalue()
@@ -550,8 +561,7 @@ class TestLogging(TestCase):
             def fn():
                 return
 
-            with self.assertWarns(UserWarning):
-                fn()
+            fn()
 
             with open(tmp_file.name, mode='r') as fp:
                 data = fp.read()
@@ -572,8 +582,7 @@ class TestLogging(TestCase):
             def fn():
                 return
 
-            with self.assertWarns(UserWarning):
-                fn()
+            fn()
 
             # Check that the PID file was created and contains a valid PID
             self.assertTrue(os.path.exists(pid_file_path))
@@ -595,8 +604,7 @@ class TestLogging(TestCase):
             def fn():
                 return
 
-            with self.assertWarns(UserWarning):
-                fn()
+            fn()
 
             # Check that the PID file was created with rank substitution
             expected_pid_file = pid_file_path.format(rank=0)  # Assuming rank 0

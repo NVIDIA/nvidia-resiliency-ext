@@ -25,6 +25,11 @@ from typing import Callable, Optional, Union
 
 import defusedxml.ElementTree as ET
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+# Get the nvrx logger
+logger = logging.getLogger(LogConfig.name)
+
 # Adds basic thread safety, allowing to run health checks from multiple threads.
 # This is needed for rendezvous unit tests. NOTE: It will work as long as each
 # function/method that uses NVML performs NVML initialization and shutdown.
@@ -45,7 +50,6 @@ class PynvmlMixin:
     def __init__(self):
         # Initialize pynvml to None
         self.pynvml = None
-        self.log = logging.getLogger(__name__)
 
     def check_pynvml_availability(self) -> bool:
         try:
@@ -54,7 +58,7 @@ class PynvmlMixin:
             self.pynvml = pynvml
             return True
         except ImportError:
-            self.log.warning("Pynvml is not installed.")
+            logger.warning("Pynvml is not installed.")
             return False
 
     def is_gb200_platform(self) -> bool:
@@ -132,13 +136,13 @@ class PynvmlMixin:
                 gpu_pci_map[i] = bus_id[-12:]
 
         except self.pynvml.NVMLError as e:
-            self.log.error(f"NVML Error: {e}\n{traceback.format_exc()}")
+            logger.error(f"NVML Error: {e}\n{traceback.format_exc()}")
 
         finally:
             try:
                 self.pynvml.nvmlShutdown()
             except self.pynvml.NVMLError as e:
-                self.log.error(f"Failed to shut down NVML: {e}")
+                logger.error(f"Failed to shut down NVML: {e}")
 
         return gpu_pci_map
 
@@ -149,7 +153,7 @@ class PciMixin:
     """
 
     def __init__(self):
-        self.log = logging.getLogger(__name__)
+        pass
 
     def get_pci_ancestor(self, pci_bus_id: str):
         """
@@ -190,7 +194,7 @@ class PciMixin:
                 pci_bus_id = ib_device_path.split("/")[-3][-12:]
                 ib_pci_map[ib_device] = pci_bus_id
         except FileNotFoundError:
-            self.log.warning("No such file or directory: %s" % infiniband_path)
+            logger.warning("No such file or directory: %s" % infiniband_path)
 
         return ib_pci_map
 
@@ -228,7 +232,7 @@ class GPUHealthCheck(PynvmlMixin):
         GPU_RECOVERY_API_MIN_DRIVER_VERSION = 570
 
         if not self.pynvml_available:
-            self.log.warning("GPU Health checks are disabled because pynvml is not available.")
+            logger.warning("GPU Health checks are disabled because pynvml is not available.")
             return False
 
         try:
@@ -241,7 +245,7 @@ class GPUHealthCheck(PynvmlMixin):
             major_version = int(driver_version.split('.')[0])
 
             if major_version < GPU_RECOVERY_API_MIN_DRIVER_VERSION:
-                self.log.warning(
+                logger.warning(
                     f"Health checks disabled: GPU driver version r{major_version} is older than "
                     f"required r{GPU_RECOVERY_API_MIN_DRIVER_VERSION} for the GPU Recovery API."
                 )
@@ -249,7 +253,7 @@ class GPUHealthCheck(PynvmlMixin):
             return True
 
         except Exception as e:
-            self.log.warning(
+            logger.warning(
                 f"GPU Health checks disabled: Unable to determine driver version due to: {e}"
             )
             return False
@@ -286,7 +290,7 @@ class GPUHealthCheck(PynvmlMixin):
             bool: Returns True if GPUs are healthy.
         """
         if not self.enabled:
-            self.log.warning("Health checks are disabled; skipping synchronous check.")
+            logger.warning("Health checks are disabled; skipping synchronous check.")
             return True
 
         result = self._perform_health_check()
@@ -320,16 +324,16 @@ class GPUHealthCheck(PynvmlMixin):
             return True
 
         except self.pynvml.NVMLError as e:
-            self.log.warning(f"NVML Error: {str(e)}")
+            logger.warning(f"NVML Error: {str(e)}")
             return False
         except Exception as e:
-            self.log.warning(f"Unexpected Error: {str(e)}")
+            logger.warning(f"Unexpected Error: {str(e)}")
             return False
         finally:
             try:
                 self.pynvml.nvmlShutdown()
             except Exception as e:
-                self.log.warning(f"Error during NVML shutdown: {str(e)}")
+                logger.warning(f"Error during NVML shutdown: {str(e)}")
 
     def _check_gpu_health(self, device_id: int) -> bool:
         """
@@ -357,36 +361,36 @@ class GPUHealthCheck(PynvmlMixin):
             if recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NONE:
                 return True
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_GPU_RESET:
-                self.log.warning(
+                logger.warning(
                     f"GPU {device_id}: Requires a reset to recover. Terminate GPU processes and reset the GPU."
                 )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NODE_REBOOT:
-                self.log.warning(
+                logger.warning(
                     f"GPU {device_id}: Requires a node reboot to recover. Reboot the system."
                 )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_P2P:
-                self.log.warning(
+                logger.warning(
                     f"GPU {device_id}: Requires peer-to-peer traffic to be drained. Terminate related processes."
                 )
                 return False
             elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_AND_RESET:
-                self.log.warning(
+                logger.warning(
                     f"GPU {device_id}: Operating at reduced capacity. Drain existing work and reset the GPU."
                 )
                 return False
             else:
-                self.log.warning(
+                logger.warning(
                     f"GPU {device_id}: Unknown recovery action status: {recovery_action}"
                 )
                 return False
 
         except self.pynvml.NVMLError as e:
-            self.log.warning(f"NVML Error: {str(e)}")
+            logger.warning(f"NVML Error: {str(e)}")
             return False
         except Exception as e:
-            self.log.warning(f"Unexpected Error: {str(e)}")
+            logger.warning(f"Unexpected Error: {str(e)}")
             return False
 
 
@@ -416,8 +420,6 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
                                                     Use {nic} as placeholder for NIC name.
             on_failure (Optional[Callable]): Callback function to handle health check failures.
         """
-        self.log = logging.getLogger(__name__)
-
         self.interval = interval
         self.pci_topo_file = pci_topo_file
         self.on_failure = on_failure
@@ -434,7 +436,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         if self.check_pynvml_availability():
             self._get_gpu_ib_mapping()
         else:
-            self.log.warning("Failed to import pynvml. Nic health checks disabled.")
+            logger.warning("Failed to import pynvml. Nic health checks disabled.")
             self._gpu_ib_map = None
 
         self.link_down_path_template = link_down_path_template or self.DEFAULT_LINK_DOWN_PATH
@@ -456,7 +458,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         """
         gpu_pci_map = self.get_gpu_pci_mapping()
         ib_pci_map = self.get_ib_pci_mapping()
-        self.log.info("gpu_pci_map: %s ib_pci_map: %s" % (gpu_pci_map, ib_pci_map))
+        logger.info("gpu_pci_map: %s ib_pci_map: %s" % (gpu_pci_map, ib_pci_map))
 
         if self.pci_topo_file is not None:
             assignments = self._get_gpu_ib_assignments_from_topo(gpu_pci_map, ib_pci_map)
@@ -482,7 +484,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
             gpu_ib_map = self.get_gb200_static_mapping()
 
         self._gpu_ib_map = gpu_ib_map or None
-        self.log.info("gpu_ib_map: %s" % self._gpu_ib_map)
+        logger.info("gpu_ib_map: %s" % self._gpu_ib_map)
 
     def _get_gpu_ib_assignments_from_system(self, gpu_pci_map: dict, ib_pci_map: dict):
         """
@@ -526,7 +528,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         for gpu_rank, gpu_pci in gpu_pci_map.items():
             parent_pci = device_to_parent.get(gpu_pci, None)
             if not parent_pci:
-                self.log.warning("Failed to find GPU pci_bus_id: %s in the topo file." % (gpu_pci))
+                logger.warning("Failed to find GPU pci_bus_id: %s in the topo file." % (gpu_pci))
                 continue  # Skip if GPU is not found in the topo mapping
 
             # Find IB devices under the same parent PCI bridge
@@ -556,11 +558,11 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
                     pci_mapping[parent_busid].extend(child_devices)
 
         except ET.ParseError as e:
-            self.log.error(f"XML Parsing error in {file_path}: {e}")
+            logger.error(f"XML Parsing error in {file_path}: {e}")
         except FileNotFoundError:
-            self.log.error(f"Topology file not found: {file_path}")
+            logger.error(f"Topology file not found: {file_path}")
         except OSError as e:
-            self.log.error(f"Error opening topology file {file_path}: {e}")
+            logger.error(f"Error opening topology file {file_path}: {e}")
 
         return dict(pci_mapping)
 
@@ -572,7 +574,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
             local_rank (int): Local rank of the GPU.
         """
         if self._gpu_ib_map is None:
-            self.log.error(
+            logger.error(
                 f"gpu_ib_map is empty. Disable NIC health check for local_rank: {local_rank}"
             )
             return
@@ -580,7 +582,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         self._local_rank = local_rank
         self.nic_name = self._gpu_ib_map.get(local_rank, None)
         if self.nic_name is None:
-            self.log.error(
+            logger.error(
                 f"GPU missing in gpu_ib_map. Disable NIC health check for local_rank: {local_rank}"
             )
             return
@@ -588,7 +590,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         # Initialize the baseline link_downed counter for proper delta calculation
         self._perform_health_check()
 
-        self.log.info(
+        logger.info(
             "Local rank: %s Nic name: %s baseline counter: %s"
             % (self._local_rank, self.nic_name, self._prev_link_downed)
         )
@@ -624,7 +626,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
             bool: Returns True if NIC is healthy.
         """
         if self.nic_name is None:
-            self.log.warning("NIC health check is disabled; skipping synchronous check.")
+            logger.warning("NIC health check is disabled; skipping synchronous check.")
             return True
 
         result = self._perform_health_check()
@@ -639,7 +641,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         """
         link_downed_path = self.link_down_path_template.format(nic=self.nic_name)
         if not os.path.exists(link_downed_path):
-            self.log.warning(
+            logger.warning(
                 "NIC/IB: %s link_downed_path not exists: %s" % (self.nic_name, link_downed_path)
             )
             return True
@@ -651,14 +653,14 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
 
             # Check if the counter has been incremented
             if self._prev_link_downed >= 0 and link_downed_value > self._prev_link_downed:
-                self.log.warning(
+                logger.warning(
                     "GPU %s NIC/IB %s link down counter has been incremented: %s -> %s "
                     % (self._local_rank, self.nic_name, self._prev_link_downed, link_downed_value)
                 )
                 return False
             self._prev_link_downed = link_downed_value
         except Exception:
-            self.log.warning(
+            logger.warning(
                 "Exception while reading link_downed counter: %s" % traceback.format_exc()
             )
 
@@ -752,7 +754,7 @@ class NVLHealthCheck(PynvmlMixin):
             try:
                 self.pynvml.nvmlShutdown()
             except Exception as e:
-                self.log.warning(f"Error during NVML shutdown: {str(e)}")
+                logger.warning(f"Error during NVML shutdown: {str(e)}")
 
     def _check_nvl_links_for_device(self, device_index: int) -> bool:
         """
@@ -773,7 +775,7 @@ class NVLHealthCheck(PynvmlMixin):
                     link_state = self.pynvml.nvmlDeviceGetNvLinkState(handle, link_id)
 
                     if link_state == self.pynvml.NVML_FEATURE_DISABLED:
-                        self.log.warning(
+                        logger.warning(
                             f"GPU {device_index}: NVL link {link_id} is in DISABLED state"
                         )
                         return False
@@ -782,7 +784,7 @@ class NVLHealthCheck(PynvmlMixin):
                     # Link might not exist or be accessible, which is normal
                     # Only log if it's not a "not supported" error
                     if "not supported" not in str(e).lower():
-                        self.log.warning(
+                        logger.warning(
                             f"GPU {device_index}: NVL link {link_id} not accessible: {e}"
                         )
                     continue
@@ -790,8 +792,8 @@ class NVLHealthCheck(PynvmlMixin):
             return True
 
         except self.pynvml.NVMLError as e:
-            self.log.warning(f"NVML Error checking GPU {device_index}: {str(e)}")
+            logger.warning(f"NVML Error checking GPU {device_index}: {str(e)}")
             return False
         except Exception as e:
-            self.log.warning(f"Unexpected Error checking GPU {device_index}: {str(e)}")
+            logger.warning(f"Unexpected Error checking GPU {device_index}: {str(e)}")
             return False

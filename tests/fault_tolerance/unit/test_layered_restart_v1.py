@@ -23,7 +23,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         # Valid transition from UNINITIALIZED to INITIALIZE
         self.state_machine.transition_to(RankMonitorState.INITIALIZE)
         self.assertEqual(self.state_machine.state, RankMonitorState.INITIALIZE)
-        self.logger.log_for_restarter.assert_called_with(
+        self.logger.log_restarter_event.assert_called_with(
             "[NestedRestarter] name=[InJob] state=initialize"
         )
 
@@ -79,7 +79,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.HANDLING_START)
         self.state_machine.handle_signal()
         self.assertEqual(self.state_machine.state, RankMonitorState.ABORTED)
-        self.logger.log_for_restarter.assert_called_with(
+        self.logger.log_restarter_event.assert_called_with(
             "[NestedRestarter] name=[InJob] state=aborted"
         )
 
@@ -88,7 +88,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.INITIALIZE)
         self.state_machine.handle_signal()
         self.assertEqual(self.state_machine.state, RankMonitorState.FINALIZED)
-        self.logger.log_for_restarter.assert_called_with(
+        self.logger.log_restarter_event.assert_called_with(
             "[NestedRestarter] name=[InJob] state=finalized"
         )
 
@@ -108,7 +108,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.HANDLING_START)
         self.state_machine.periodic_restart_check()
         self.assertEqual(self.state_machine.state, RankMonitorState.HANDLING_PROCESSING)
-        self.logger.log_for_restarter.assert_called_with(
+        self.logger.log_restarter_event.assert_called_with(
             "[NestedRestarter] name=[InJob] state=handling stage=processing"
         )
 
@@ -117,7 +117,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.INITIALIZE)
         self.state_machine.handle_ipc_connection_lost()
         self.assertEqual(self.state_machine.state, RankMonitorState.HANDLING_START)
-        self.logger.log_for_restarter.assert_called_with(
+        self.logger.log_restarter_event.assert_called_with(
             "[NestedRestarter] name=[InJob] state=handling stage=starting"
         )
 
@@ -239,7 +239,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
             call("[NestedRestarter] name=[InJob] state=handling stage=processing"),
             call("[NestedRestarter] name=[InJob] state=handling stage=completed"),
         ]
-        self.logger.log_for_restarter.assert_has_calls(expected_calls)
+        self.logger.log_restarter_event.assert_has_calls(expected_calls)
 
     def test_normal_flow_with_max_restarts_3_with_periodic_check_section(self):
         # Normal flow with max_restarts = 3
@@ -351,7 +351,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
             call("[NestedRestarter] name=[InJob] state=handling stage=processing"),
             call("[NestedRestarter] name=[InJob] state=handling stage=completed"),
         ]
-        self.logger.log_for_restarter.assert_has_calls(expected_calls)
+        self.logger.log_restarter_event.assert_has_calls(expected_calls)
 
 
 if __name__ == "__main__":
