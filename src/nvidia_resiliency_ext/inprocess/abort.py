@@ -132,7 +132,9 @@ class AbortTorchDistributed(Abort):
                 try:
                     env_value_int = int(env_value)
                 except ValueError:
-                    env_value_int = 0
+                    raise ValueError(
+                        f"Environment variable {env_var} is set to {env_value}, which is not an integer"
+                    )
 
                 if env_value_int <= 0:
                     if rank == 0:
