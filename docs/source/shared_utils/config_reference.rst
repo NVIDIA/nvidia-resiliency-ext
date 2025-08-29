@@ -1,7 +1,10 @@
 Configuration Reference
 ======================
 
-This is a quick reference for all NVRx Logger configuration options.
+This is a comprehensive reference for all NVRx Logger configuration options, examples, and usage guides.
+
+.. note::
+   For detailed API documentation, class methods, and function signatures, see :doc:`api`.
 
 Environment Variables
 --------------------
@@ -260,3 +263,45 @@ This will show:
 - Directory creation status
 - Rank detection results
 - Log handler setup details
+
+Quick API Reference
+-------------------
+
+For developers who need quick access to the most commonly used API methods:
+
+.. list-table:: Common LogConfig Methods
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Method
+     - Description
+   * - ``get_node_local_tmp_dir()``
+     - Returns the configured temporary directory path or None if not set
+   * - ``get_log_level()``
+     - Returns the configured log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+   * - ``get_max_file_size()``
+     - Returns the maximum file size in bytes for log rotation
+   * - ``get_max_log_files()``
+     - Returns the maximum number of log files to keep
+   * - ``get_workload_rank()``
+     - Returns the workload rank from RANK environment variable
+   * - ``get_workload_local_rank()``
+     - Returns the workload local rank from LOCAL_RANK environment variable
+
+.. list-table:: Common LogManager Properties
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Property
+     - Description
+   * - ``node_local_tmp_logging_enabled``
+     - Boolean indicating whether node local temporary logging is enabled
+   * - ``workload_rank``
+     - Integer representing the workload rank
+   * - ``workload_local_rank``
+     - Integer representing the workload local rank
+   * - ``logger``
+     - The configured Python logging.Logger instance
+
+.. note::
+   For complete API documentation including all methods, properties, and detailed signatures, see :doc:`api`.
