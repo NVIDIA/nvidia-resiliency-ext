@@ -17,7 +17,7 @@ Environment Variables
    * - ``NVRX_NODE_LOCAL_TMPDIR``
      - string
      - None
-     - Directory for temporary log files. When set, enables distributed logging mode.
+     - Directory for temporary log files. When set, enables node local temporary logging mode.
    * - ``NVRX_LOG_DEBUG``
      - string
      - INFO
@@ -28,7 +28,7 @@ Environment Variables
      - Set to "1" to log to stdout instead of stderr.
    * - ``NVRX_LOG_MAX_FILE_SIZE_KB``
      - integer
-     - 10
+     - 10240 KB (10 MB)
      - Maximum size of temporary message files in KB before rotation.
    * - ``NVRX_LOG_MAX_LOG_FILES``
      - integer
@@ -87,7 +87,7 @@ Basic Configuration
 
 .. code-block:: bash
 
-    # Enable distributed logging
+    # Enable node local temporary logging
     export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx_logs
     
     # Enable debug logging
@@ -102,7 +102,7 @@ Advanced Configuration
     export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx_logs
     export NVRX_LOG_DEBUG=1
     export NVRX_LOG_TO_STDOUT=1
-    export NVRX_LOG_MAX_FILE_SIZE_KB=100
+    export NVRX_LOG_MAX_FILE_SIZE_KB=10240
     export NVRX_LOG_MAX_LOG_FILES=10
 
 Python Configuration
@@ -132,7 +132,7 @@ SLURM Integration
     # NVRx Logger Configuration
     export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx_logs_${SLURM_JOB_ID}
     export NVRX_LOG_DEBUG=1
-    export NVRX_LOG_MAX_FILE_SIZE_KB=100
+    export NVRX_LOG_MAX_FILE_SIZE_KB=10240
     
     # Launch training
     srun python training_script.py
@@ -151,6 +151,7 @@ Docker Integration
     # Set default logging configuration
     ENV NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx_logs
     ENV NVRX_LOG_DEBUG=1
+    ENV NVRX_LOG_MAX_FILE_SIZE_KB=10240
 
 Kubernetes Integration
 ---------------------
@@ -173,6 +174,8 @@ Kubernetes Integration
               value: "/tmp/nvrx_logs"
             - name: NVRX_LOG_DEBUG
               value: "1"
+            - name: NVRX_LOG_MAX_FILE_SIZE_KB
+              value: "10240"
 
 Configuration Precedence
 -----------------------
@@ -190,7 +193,7 @@ Best Practices
 --------------
 
 ✅ **Do:**
-- Set `NVRX_NODE_LOCAL_TMPDIR` for distributed training
+- Set `NVRX_NODE_LOCAL_TMPDIR` for node local temporary logging
 - Use job-specific directories (e.g., `/tmp/nvrx_logs_${SLURM_JOB_ID}`)
 - Enable debug logging during development
 - Use appropriate file size limits for your workload

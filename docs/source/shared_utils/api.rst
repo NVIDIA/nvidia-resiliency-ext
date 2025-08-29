@@ -135,8 +135,8 @@ Log Manager Properties
 
    * - Property
      - Description
-   * - ``distributed_logging_enabled``
-     - Boolean indicating whether distributed logging is enabled
+   * - ``node_local_tmp_logging_enabled``
+     - Boolean indicating whether node local temporary logging is enabled
    * - ``workload_rank``
      - Integer representing the workload rank
    * - ``workload_local_rank``

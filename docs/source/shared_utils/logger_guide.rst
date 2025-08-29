@@ -1,14 +1,20 @@
 NVRx Logger Guide
 =================
 
-The NVRx Logger is a sophisticated distributed logging system designed specifically for multi-node, multi-rank training workloads. It provides intelligent log aggregation, rank-aware formatting, and automatic adaptation between distributed and regular logging modes.
+The NVRx Logger is a sophisticated logging system designed specifically for multi-node, multi-rank training workloads. It provides intelligent log aggregation, rank-aware formatting, and automatic adaptation between two logging modes:
+
+**Regular Mode**: Logs go directly to stderr/stdout (standard Python logging)
+**Node Local Temporary Mode**: Each rank writes logs to temporary files on local node storage, then local rank 0 aggregates and writes them to a per-node log file
+
+**What "Distributed Logging" Actually Means:**
+The term "distributed logging" in this context refers to the fact that logs are collected from multiple ranks/processes across multiple nodes, but the actual storage and aggregation happens locally on each node. This is different from traditional distributed logging systems that send all logs to a central location over the network. The NVRx approach keeps logging local to each node for better performance and reliability.
 
 Key Features
 -----------
 
-* **Distributed Logging**: When enabled, each node logs independently to avoid overwhelming centralized logging systems
-* **Automatic Aggregation**: Local rank 0 acts as the node aggregator, collecting logs from all ranks on the same node
-* **Environment-driven Behavior**: Automatically adapts between distributed and regular logging based on configuration
+* **Node Local Temporary Logging**: When enabled, each rank writes logs to temporary files on local node storage, avoiding network filesystem bottlenecks
+* **Automatic Log Aggregation**: Local rank 0 acts as the node aggregator, collecting logs from all ranks on the same node and writing them to a single per-node log file
+* **Environment-driven Behavior**: Automatically adapts between regular logging (stderr/stdout) and node local temporary logging based on configuration
 * **Fork-safe Design**: All ranks use file-based message passing to ensure child processes can log even when they don't inherit the aggregator thread
 * **Dynamic Rank Detection**: Automatically reads rank information from environment variables (RANK, LOCAL_RANK, SLURM_PROCID, SLURM_LOCALID)
 
@@ -20,8 +26,8 @@ The logger operates in two modes:
 **Regular Mode** (default)
     Logs go directly to stderr/stdout. This is the standard Python logging behavior.
 
-**Distributed Mode** (when ``NVRX_NODE_LOCAL_TMPDIR`` is set)
-    Each rank writes logs to temporary files in the specified directory. Local rank 0 aggregates these logs and writes them to a per-node log file.
+**Node Local Temporary Mode** (when ``NVRX_NODE_LOCAL_TMPDIR`` is set)
+    Each rank writes logs to temporary files on local node storage (e.g., `/tmp`, `/scratch`, local SSDs). Local rank 0 aggregates these logs and writes them to a single per-node log file. This approach avoids network filesystem bottlenecks and provides better performance for high-throughput logging scenarios.
 
 Configuration
 ------------
@@ -29,7 +35,7 @@ Configuration
 The logger is configured through environment variables. See :doc:`config_reference` for complete configuration details.
 
 Key configuration variable:
-- ``NVRX_NODE_LOCAL_TMPDIR``: Set to enable distributed logging with aggregation
+- ``NVRX_NODE_LOCAL_TMPDIR``: Set to enable node local temporary logging with aggregation
 
 For advanced configuration options, environment variables, and troubleshooting, refer to the :doc:`config_reference`.
 
@@ -54,10 +60,10 @@ Setup the logger at the start of your program:
     log.warning("GPU memory usage high")
     log.error("Rank 0 failed")
 
-Distributed Logging Setup
-------------------------
+Node Local Temporary Logging Setup
+--------------------------------
 
-For distributed training workloads, set the environment variable:
+For workloads that need node-local temporary logging, set the environment variable:
 
 .. code-block:: bash
 

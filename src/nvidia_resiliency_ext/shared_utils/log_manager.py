@@ -44,7 +44,7 @@ Environment Variables:
     NVRX_LOG_DEBUG: Set to "1", "true", "yes", or "on" to enable DEBUG level logging (default: INFO)
     NVRX_LOG_TO_STDOUT: Set to "1" to log to stdout instead of stderr
     NVRX_NODE_LOCAL_TMPDIR: Directory for temporary log files
-    NVRX_LOG_MAX_FILE_SIZE_KB: Maximum size of temporary message files in KB before rotation (default: 10)
+    NVRX_LOG_MAX_FILE_SIZE_KB: Maximum size of temporary message files in KB before rotation (default: 10240 KB = 10 MB)
     NVRX_LOG_MAX_LOG_FILES: Maximum number of log files to keep per rank (default: 4)
     
 Note: File rotation is designed to be safe for the aggregator service. When files are rotated,
@@ -170,7 +170,7 @@ class LogManager:
     """
     Log manager for large-scale LLM training.
 
-    Supports both regular logging and distributed logging. When distributed logging
+    Supports both regular logging and node local temporary logging. When node local temporary logging
     is enabled (NVRX_NODE_LOCAL_TMPDIR is set), each node logs independently to avoid
     overwhelming centralized logging systems. Local rank 0 acts as the node aggregator,
     collecting logs from all ranks on the same node and writing them to a per-node log file.
@@ -206,8 +206,8 @@ class LogManager:
         self._logger = self._setup_logger()
 
     @property
-    def distributed_logging_enabled(self) -> bool:
-        """Check if distributed logging is enabled."""
+    def node_local_tmp_logging_enabled(self) -> bool:
+        """Check if node local temporary logging is enabled."""
         return self._node_local_tmp_dir is not None
 
     @property
@@ -240,7 +240,7 @@ class LogManager:
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
 
-        if self.distributed_logging_enabled:
+        if self.node_local_tmp_logging_enabled:
             os.makedirs(self._node_local_tmp_dir, exist_ok=True)
             handler = DistributedLogHandler(
                 self.workload_local_rank,
