@@ -61,6 +61,9 @@ class PynvmlMixin:
         """
         Detect if the current platform is GB200.
 
+        Since all nodes are homogeneous on GPUs, we only need to check GPU 0.
+        This allows for platforms with different numbers of GPUs (4, 8, etc.).
+
         Returns:
             bool: True if GB200 platform is detected, False otherwise.
         """
@@ -71,22 +74,18 @@ class PynvmlMixin:
             self.pynvml.nvmlInit()
             num_gpus = self.pynvml.nvmlDeviceGetCount()
 
-            # GB200 typically has 4 GPUs per node
-            if num_gpus != 4:
+            # Need at least one GPU to check
+            if num_gpus == 0:
                 return False
 
-            # Check if all GPUs are Blackwell architecture
-            for i in range(num_gpus):
-                handle = self.pynvml.nvmlDeviceGetHandleByIndex(i)
-                name = self.pynvml.nvmlDeviceGetName(handle)
-                if isinstance(name, bytes):
-                    name = name.decode('utf-8')
+            # Check only GPU 0 since all nodes are homogeneous
+            handle = self.pynvml.nvmlDeviceGetHandleByIndex(0)
+            name = self.pynvml.nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):
+                name = name.decode('utf-8')
 
-                # GB200 GPUs have names like "GB200" or "B200"
-                if not any(gpu_type in name.upper() for gpu_type in ["GB200", "B200"]):
-                    return False
-
-            return True
+            # GB200 GPUs have names like "GB200" or "B200"
+            return any(gpu_type in name.upper() for gpu_type in ["GB200", "B200"])
 
         except self.pynvml.NVMLError as e:
             self.log.debug(f"NVML Error while detecting GB200: {e}")
