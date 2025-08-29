@@ -59,7 +59,7 @@ raise_timestamp = None
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Inprocess Restart Optimal Example',
+        description='Inprocess Restart Advanced Example',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
