@@ -26,8 +26,8 @@ from datetime import datetime
 from typing import Dict, List
 
 
-class DistributedLogHandler(logging.Handler):
-    """Custom log handler that logs messages to the file system."""
+class NodeLocalTmpLogHandler(logging.Handler):
+    """Custom log handler that logs messages to temporary files on local node storage."""
 
     def __init__(
         self,

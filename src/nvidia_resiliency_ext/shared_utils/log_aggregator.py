@@ -17,18 +17,20 @@
 """
 NVRx Log Aggregator Service
 
+NVRx Log Aggregator Service
 This module provides a standalone log aggregator service that can run independently
-of training processes. The service monitors a shared temporary directory for log messages
-from training processes and aggregates them into per-node log files.
+of training processes. The service monitors a node-local temporary directory, accessible
+to all training processes on the same node, and aggregates their log messages into
+per-node log files stored on a shared filesystem (e.g., Lustre or NFS).
 
 Example sbatch Usage:
-    export NVRX_DIST_LOG_DIR=/tmp/nvrx
+    export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
     NVRX_REPO=/../nvidia-resiliency-ext:/nvrx_repo
 
     # all node setup, if installing from source
     srun \
         bash -c '
-            echo "export NVRX_DIST_LOG_DIR=$NVRX_DIST_LOG_DIR" >> /tmp/.myenv_${SLURM_JOB_ID}.sh
+            echo "export NVRX_NODE_LOCAL_TMPDIR=$NVRX_NODE_LOCAL_TMPDIR" >> /tmp/.myenv_${SLURM_JOB_ID}.sh
             cd /nvrx_repo && pip install -e .
         '
     # main workload with aggregator
@@ -50,8 +52,8 @@ import argparse
 import os
 import time
 
-from nvidia_resiliency_ext.shared_utils.log_distributed import NodeLogAggregator
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+from nvidia_resiliency_ext.shared_utils.log_node_local_tmp import NodeLogAggregator
 
 
 def main():
@@ -77,23 +79,23 @@ def main():
 
     log_dir = args.log_dir
     log_file = LogConfig.get_log_file()
-    dist_log_dir = LogConfig.get_dist_log_dir()
+    node_local_tmp_dir = LogConfig.get_node_local_tmp_dir()
     max_file_size = LogConfig.get_max_file_size()
     en_chrono_ord = args.en_chronological_ordering
 
     if log_dir is None:
         raise RuntimeError("Log directory must be set for log aggregator service")
-    if dist_log_dir is None:
+    if node_local_tmp_dir is None:
         raise RuntimeError("Distributed Log directory must be set for log aggregator service")
 
     print("Starting NVRx Log Aggregator Service")
     print(f"  Log Path: {os.path.join(log_dir, log_file)}")
-    print(f"  Distributed Log directory: {dist_log_dir}")
+    print(f"  Node Local Temp directory: {node_local_tmp_dir}")
     print(f"  en_chronological_ordering: {en_chrono_ord}")
 
     aggregator = NodeLogAggregator(
         log_dir=log_dir,
-        temp_dir=dist_log_dir,
+        temp_dir=node_local_tmp_dir,
         log_file=log_file,
         max_file_size=max_file_size,
         en_chrono_ord=en_chrono_ord,
