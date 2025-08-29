@@ -188,7 +188,7 @@ class AbortTransformerEngine(Abort):
         return state
 
 
-class AbortCheckpoint(Abort):
+class AbortPersistentCheckpointProcesses(Abort):
     r'''
     Aborts Async Checkpoint processes
 
