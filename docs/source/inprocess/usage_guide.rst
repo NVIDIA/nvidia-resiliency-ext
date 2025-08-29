@@ -515,6 +515,27 @@ main Python interpreter process on the local rank.
 
 Multiple health checks could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose`.
 
+Automatic Health Checks
+~~~~~~~~~~~~~~~~~~~~~~~
+The :py:class:`Wrapper` automatically includes comprehensive health monitoring when the ``LOCAL_RANK``
+environment variable is available. These health checks are executed in sequence during restart to ensure
+the system is in a healthy state before attempting to restart the workload.
+
+**GPU Health Check**: Validates GPU device health and recovery actions using :py:class:`ChainedGPUHealthCheck`.
+
+**NVL Health Check**: Monitors NVLink connectivity and link health using :py:class:`ChainedNVLHealthCheck`.
+
+**NIC Health Check**: Monitors network interface card connectivity and link down events using :py:class:`ChainedNicHealthCheck`.
+This is particularly important for distributed workloads where network connectivity is critical.
+
+The automatic health checks are configured with the same ``device_index`` as the current GPU rank (from ``LOCAL_RANK``),
+ensuring that each GPU monitors its associated network interfaces. No additional configuration is required
+for basic health monitoring - the wrapper automatically handles health check composition and execution.
+
+.. note::
+   The NIC health check automatically establishes baseline link down counter values during initialization,
+   ensuring accurate delta detection from the first health check execution.
+
 Monitoring capabilities
 ~~~~~~~~~~~~~~~~~~~~~~~
 The :py:class:`Wrapper` provides several monitoring mechanisms to track the
