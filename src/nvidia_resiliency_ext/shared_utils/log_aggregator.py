@@ -52,8 +52,8 @@ import argparse
 import os
 import time
 
-from nvidia_resiliency_ext.shared_utils.log_distributed import NodeLogAggregator
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+from nvidia_resiliency_ext.shared_utils.log_node_local_tmp import NodeLogAggregator
 
 
 def main():

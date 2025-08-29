@@ -95,9 +95,9 @@ import socket
 import sys
 from typing import Optional
 
-from nvidia_resiliency_ext.shared_utils.log_distributed import (
-    DistributedLogHandler,
+from nvidia_resiliency_ext.shared_utils.log_node_local_tmp import (
     DynamicLogFormatter,
+    NodeLocalTmpLogHandler,
 )
 
 
@@ -242,7 +242,7 @@ class LogManager:
 
         if self.node_local_tmp_logging_enabled:
             os.makedirs(self._node_local_tmp_dir, exist_ok=True)
-            handler = DistributedLogHandler(
+            handler = NodeLocalTmpLogHandler(
                 self.workload_local_rank,
                 self._node_local_tmp_dir,
                 self._max_msg_file_size,
