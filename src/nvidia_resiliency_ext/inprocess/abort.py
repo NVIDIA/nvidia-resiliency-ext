@@ -88,9 +88,7 @@ class AbortTorchDistributed(Abort):
         Args:
             torch_fr_trace_path: Path to collect PyTorch Flight Recorder traces.
         '''
-        if torch_fr_trace_path is None:
-            torch_fr_trace_path = os.environ.get('NVRX_FR_TRACE_PATH', None)
-        self.torch_fr_trace_path = torch_fr_trace_path
+        self.torch_fr_trace_path = torch_fr_trace_path or os.environ.get('NVRX_FR_TRACE_PATH', None)
 
     @staticmethod
     def shutdown_all_process_group_backends():
@@ -150,8 +148,7 @@ class AbortTorchDistributed(Abort):
             if self.torch_fr_trace_path is None:
                 return
             trace_path = os.path.join(self.torch_fr_trace_path, f'iter_{state.iteration}')
-            if not os.path.exists(trace_path):
-                os.makedirs(trace_path, exist_ok=True)
+            os.makedirs(trace_path, exist_ok=True)
             trace_analyzer = TorchFRTraceCollector(trace_path)
             trace_analyzer.collect()
 
