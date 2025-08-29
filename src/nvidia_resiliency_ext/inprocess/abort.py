@@ -138,12 +138,13 @@ class AbortTorchDistributed(Abort):
                 except ValueError:
                     env_value_int = 0
 
-                if env_value_int <= 0 and rank == 0 and not AbortTorchDistributed._logging_printed:
-                    log = logging.getLogger(__name__)
-                    log.info(
-                        f"Environment variable {env_var} is set to {env_value}"
-                        f", FR trace collection is disabled"
-                    )
+                if env_value_int <= 0 and not AbortTorchDistributed._logging_printed:
+                    if rank == 0:
+                        log = logging.getLogger(__name__)
+                        log.info(
+                            f"Environment variable {env_var} is set to {env_value}"
+                            f", FR trace collection is disabled"
+                        )
                     AbortTorchDistributed._logging_printed = True
                     return False
             return True
