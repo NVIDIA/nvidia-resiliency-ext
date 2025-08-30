@@ -92,7 +92,7 @@ class PynvmlMixin:
             return any(gpu_type in name.upper() for gpu_type in ["GB200", "B200"])
 
         except self.pynvml.NVMLError as e:
-            self.log.debug(f"NVML Error while detecting GB200: {e}")
+            logger.debug(f"NVML Error while detecting GB200: {e}")
             return False
         finally:
             try:
@@ -480,7 +480,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
 
         # If automatic derivation failed and we're on GB200 platform, use static mapping
         if not gpu_ib_map and self.is_gb200_platform():
-            self.log.info("Automatic GPU-IB mapping failed, using GB200 static mapping")
+            logger.info("Automatic GPU-IB mapping failed, using GB200 static mapping")
             gpu_ib_map = self.get_gb200_static_mapping()
 
         self._gpu_ib_map = gpu_ib_map or None
