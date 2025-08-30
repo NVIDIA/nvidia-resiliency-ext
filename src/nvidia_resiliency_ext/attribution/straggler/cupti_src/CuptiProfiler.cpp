@@ -178,7 +178,11 @@ void CuptiProfiler::CUPTIAPI bufferCompleted(CUcontext ctx, uint32_t streamId, u
         status = cuptiActivityGetNextRecord(buffer, validSize, &record);
         if (status == CUPTI_SUCCESS && record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
             const auto *kernel = (const CUpti_ActivityKernel4 *)record;
-            
+
+            if (kernel->start == 0 || kernel->end == 0) {
+                continue;
+            }
+
             snprintf(kernel_name_and_dims, KERNEL_NAME_BUF_LEN, "%s_blk_%d_%d_%d_grid_%d_%d_%d", 
                 kernel->name, 
                 kernel->blockX, kernel->blockY, kernel->blockZ,

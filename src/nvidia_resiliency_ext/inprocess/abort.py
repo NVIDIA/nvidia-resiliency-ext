@@ -68,8 +68,6 @@ class AbortTorchDistributed(Abort):
     thread for each distributed group that has been created.
     '''
 
-    _logging_printed: bool = False
-
     def __init__(self, torch_fr_trace_path: str = None):
         r'''
         This class is used to abort PyTorch distributed collectives, and destroy all PyTorch
@@ -90,7 +88,7 @@ class AbortTorchDistributed(Abort):
         Args:
             torch_fr_trace_path: Path to collect PyTorch Flight Recorder traces.
         '''
-        self.torch_fr_trace_path = torch_fr_trace_path
+        self.torch_fr_trace_path = torch_fr_trace_path or os.environ.get('NVRX_FR_TRACE_PATH', None)
 
     @staticmethod
     def shutdown_all_process_group_backends():
@@ -125,38 +123,40 @@ class AbortTorchDistributed(Abort):
                 else:
                     backend.abort()
 
-    def collect_fr_trace(self):
+    def collect_fr_trace(self, state: FrozenState):
         def _check_fr_env():
-            check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE']
+            check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE', 'TORCH_FR_BUFFER_SIZE']
             rank = torch.distributed.get_rank()
             for env_var in check_env_variables:
                 env_value = os.environ.get(env_var, '0')
                 try:
                     env_value_int = int(env_value)
                 except ValueError:
-                    env_value_int = 0
-
-                if env_value_int <= 0 and rank == 0 and not AbortTorchDistributed._logging_printed:
-                    log = logging.getLogger(__name__)
-                    log.info(
-                        f"Environment variable {env_var} is set to {env_value}"
-                        f", FR trace collection is disabled"
+                    raise ValueError(
+                        f"Environment variable {env_var} is set to {env_value}, which is not an integer"
                     )
-                    AbortTorchDistributed._logging_printed = True
+
+                if env_value_int <= 0:
+                    if rank == 0:
+                        log = logging.getLogger(__name__)
+                        log.info(
+                            f"Environment variable {env_var} is set to {env_value}"
+                            f", FR trace collection is disabled"
+                        )
                     return False
             return True
 
         if _check_fr_env() is True:
             if self.torch_fr_trace_path is None:
                 return
-            if not os.path.exists(self.torch_fr_trace_path):
-                os.makedirs(self.torch_fr_trace_path)
-            trace_analyzer = TorchFRTraceCollector(self.torch_fr_trace_path)
+            trace_path = os.path.join(self.torch_fr_trace_path, f'iter_{state.iteration}')
+            os.makedirs(trace_path, exist_ok=True)
+            trace_analyzer = TorchFRTraceCollector(trace_path)
             trace_analyzer.collect()
 
     def __call__(self, state: FrozenState) -> FrozenState:
         if torch.distributed.is_available() and torch.distributed.is_initialized():
-            self.collect_fr_trace()
+            self.collect_fr_trace(state)
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
         return state

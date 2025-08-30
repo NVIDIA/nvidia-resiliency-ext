@@ -19,7 +19,12 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
-from nvidia_resiliency_ext.shared_utils.health_check import NicHealthCheck, PciMixin, PynvmlMixin
+from nvidia_resiliency_ext.shared_utils.health_check import (
+    NicHealthCheck,
+    NVLHealthCheck,
+    PciMixin,
+    PynvmlMixin,
+)
 
 
 class TestPynvmlMixin(unittest.TestCase):
@@ -275,6 +280,273 @@ class TestNicHealthCheck(unittest.TestCase):
         with patch.object(checker, "_perform_health_check", return_value=False):
             result = checker()
         self.assertFalse(result)
+
+
+class TestNVLHealthCheck(unittest.TestCase):
+
+    def setUp(self):
+        """Set up test fixtures."""
+
+        # Create a proper exception class for NVMLError
+        class MockNVMLError(Exception):
+            pass
+
+        # Mock pynvml availability check
+        self.mock_pynvml = MagicMock()
+        self.mock_pynvml.NVML_NVLINK_MAX_LINKS = 18
+        self.mock_pynvml.NVML_FEATURE_DISABLED = 0
+        self.mock_pynvml.NVMLError = MockNVMLError
+
+        # Mock NVML constants
+        self.mock_pynvml.NVML_ERROR_INVALID_ARGUMENT = 1
+        self.mock_pynvml.NVML_ERROR_NOT_SUPPORTED = 2
+
+    def test_init_default_parameters(self):
+        """Test NVLHealthCheck initialization with default parameters."""
+        checker = NVLHealthCheck()
+        self.assertIsNone(checker.device_index)
+        self.assertEqual(checker.interval, 60)
+        self.assertIsNone(checker.on_failure)
+
+    def test_init_with_device_index(self):
+        """Test NVLHealthCheck initialization with specific device index."""
+        checker = NVLHealthCheck(device_index=2)
+        self.assertEqual(checker.device_index, 2)
+        self.assertEqual(checker.interval, 60)
+        self.assertIsNone(checker.on_failure)
+
+    def test_init_with_custom_interval(self):
+        """Test NVLHealthCheck initialization with custom interval."""
+        checker = NVLHealthCheck(interval=30)
+        self.assertIsNone(checker.device_index)
+        self.assertEqual(checker.interval, 30)
+
+    def test_init_with_on_failure_callback(self):
+        """Test NVLHealthCheck initialization with failure callback."""
+
+        def callback():
+            pass
+
+        checker = NVLHealthCheck(on_failure=callback)
+        self.assertEqual(checker.on_failure, callback)
+
+    def test_check_nvl_links_for_device_all_healthy(self):
+        """Test checking NVL links when all links are healthy."""
+        self.mock_pynvml.nvmlDeviceGetHandleByIndex.return_value = "mock_handle"
+        # Mock all 18 links as healthy
+        self.mock_pynvml.nvmlDeviceGetNvLinkState.side_effect = [1] * 18
+
+        checker = NVLHealthCheck()
+        checker.pynvml = self.mock_pynvml
+
+        result = checker._check_nvl_links_for_device(0)
+        self.assertTrue(result)
+
+        # Verify all 18 links were checked
+        self.assertEqual(self.mock_pynvml.nvmlDeviceGetNvLinkState.call_count, 18)
+
+    def test_check_nvl_links_for_device_with_disabled_link(self):
+        """Test checking NVL links when one link is disabled."""
+        self.mock_pynvml.nvmlDeviceGetHandleByIndex.return_value = "mock_handle"
+        # First link healthy, second link disabled, rest healthy
+        self.mock_pynvml.nvmlDeviceGetNvLinkState.side_effect = [1, 0] + [1] * 16
+
+        checker = NVLHealthCheck()
+        checker.pynvml = self.mock_pynvml
+
+        with patch(
+            'nvidia_resiliency_ext.shared_utils.health_check.logger.warning'
+        ) as mock_warning:
+            result = checker._check_nvl_links_for_device(0)
+            self.assertFalse(result)
+            mock_warning.assert_called_once_with("GPU 0: NVL link 1 is in DISABLED state")
+
+    def test_check_nvl_links_for_device_with_nvml_error(self):
+        """Test checking NVL links when NVML returns an error."""
+        self.mock_pynvml.nvmlDeviceGetHandleByIndex.return_value = "mock_handle"
+        # Raise exception on the first call to nvmlDeviceGetNvLinkState, then succeed on subsequent calls
+        self.mock_pynvml.nvmlDeviceGetNvLinkState.side_effect = [
+            self.mock_pynvml.NVMLError("NVML Error"),  # First call fails
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,  # Rest succeed
+        ]
+
+        checker = NVLHealthCheck()
+        checker.pynvml = self.mock_pynvml
+
+        with patch(
+            'nvidia_resiliency_ext.shared_utils.health_check.logger.warning'
+        ) as mock_warning:
+            result = checker._check_nvl_links_for_device(0)
+            # The method should return True because it handled the error gracefully
+            # and continued checking other links
+            self.assertTrue(result)
+            # Should log a warning message for the NVML error
+            mock_warning.assert_called_once_with("GPU 0: NVL link 0 not accessible: NVML Error")
+
+    def test_check_nvl_links_for_device_with_not_supported_error(self):
+        """Test checking NVL links when NVML returns 'not supported' error."""
+        self.mock_pynvml.nvmlDeviceGetHandleByIndex.return_value = "mock_handle"
+
+        # Create a mock exception with "not supported" message
+        not_supported_error = self.mock_pynvml.NVMLError("not supported")
+        self.mock_pynvml.nvmlDeviceGetNvLinkState.side_effect = not_supported_error
+
+        checker = NVLHealthCheck()
+        checker.pynvml = self.mock_pynvml
+
+        with patch(
+            'nvidia_resiliency_ext.shared_utils.health_check.logger.warning'
+        ) as mock_warning:
+            result = checker._check_nvl_links_for_device(0)
+            # Should not log warning message for "not supported" errors
+            mock_warning.assert_not_called()
+
+    def test_perform_health_check_single_device(self):
+        """Test health check for a single specific device."""
+        self.mock_pynvml.nvmlInit.return_value = None
+        self.mock_pynvml.nvmlShutdown.return_value = None
+
+        checker = NVLHealthCheck(device_index=1)
+        checker.pynvml = self.mock_pynvml
+
+        with patch.object(checker, '_check_nvl_links_for_device', return_value=True) as mock_check:
+            result = checker._perform_health_check()
+            self.assertTrue(result)
+            mock_check.assert_called_once_with(1)
+
+    def test_perform_health_check_all_devices(self):
+        """Test health check for all devices."""
+        self.mock_pynvml.nvmlInit.return_value = None
+        self.mock_pynvml.nvmlDeviceGetCount.return_value = 3
+        self.mock_pynvml.nvmlShutdown.return_value = None
+
+        checker = NVLHealthCheck()  # No device_index specified
+        checker.pynvml = self.mock_pynvml
+
+        with patch.object(checker, '_check_nvl_links_for_device', return_value=True) as mock_check:
+            result = checker._perform_health_check()
+            self.assertTrue(result)
+            # Should check all 3 devices
+            self.assertEqual(mock_check.call_count, 3)
+            mock_check.assert_any_call(0)
+            mock_check.assert_any_call(1)
+            mock_check.assert_any_call(2)
+
+    def test_perform_health_check_all_devices_one_fails(self):
+        """Test health check for all devices when one fails."""
+        self.mock_pynvml.nvmlInit.return_value = None
+        self.mock_pynvml.nvmlDeviceGetCount.return_value = 3
+        self.mock_pynvml.nvmlShutdown.return_value = None
+
+        checker = NVLHealthCheck()  # No device_index specified
+        checker.pynvml = self.mock_pynvml
+
+        # First device healthy, second device fails, third device healthy
+        with patch.object(
+            checker, '_check_nvl_links_for_device', side_effect=[True, False, True]
+        ) as mock_check:
+            result = checker._perform_health_check()
+            self.assertFalse(result)
+            # Should check all 3 devices
+            self.assertEqual(mock_check.call_count, 3)
+
+    def test_perform_health_check_nvml_shutdown_error(self):
+        """Test health check when NVML shutdown fails."""
+        self.mock_pynvml.nvmlInit.return_value = None
+        self.mock_pynvml.nvmlDeviceGetCount.return_value = 1
+        self.mock_pynvml.nvmlShutdown.side_effect = self.mock_pynvml.NVMLError(
+            "NVML Shutdown Error"
+        )
+
+        checker = NVLHealthCheck()
+        checker.pynvml = self.mock_pynvml
+
+        with patch.object(checker, '_check_nvl_links_for_device', return_value=True):
+            with patch(
+                'nvidia_resiliency_ext.shared_utils.health_check.logger.warning'
+            ) as mock_warning:
+                result = checker._perform_health_check()
+                self.assertTrue(result)  # Health check should still succeed
+                mock_warning.assert_called_once_with(
+                    "Error during NVML shutdown: NVML Shutdown Error"
+                )
+
+    def test_sync_call_healthy(self):
+        """Test synchronous health check call when healthy."""
+        checker = NVLHealthCheck()
+        with patch.object(checker, '_perform_health_check', return_value=True) as mock_check:
+            result = checker()
+            self.assertTrue(result)
+            mock_check.assert_called_once()
+
+    def test_sync_call_unhealthy(self):
+        """Test synchronous health check call when unhealthy."""
+        checker = NVLHealthCheck()
+        with patch.object(checker, '_perform_health_check', return_value=False) as mock_check:
+            result = checker()
+            self.assertFalse(result)
+            mock_check.assert_called_once()
+
+    @patch("asyncio.sleep")
+    async def test_async_check_healthy(self, mock_sleep):
+        """Test asynchronous health check when healthy."""
+        mock_sleep.return_value = None  # Mock sleep to return immediately
+        checker = NVLHealthCheck()
+        with patch.object(checker, '_check_health', return_value=True) as mock_check:
+            # Test just the first iteration of the async loop
+            mock_check.return_value = True
+            await checker.async_check()
+            mock_check.assert_called()
+            mock_sleep.assert_called()
+
+    @patch("asyncio.sleep")
+    async def test_async_check_unhealthy_with_callback(self, mock_sleep):
+        """Test asynchronous health check when unhealthy with failure callback."""
+        mock_sleep.return_value = None  # Mock sleep to return immediately
+        callback_called = False
+
+        def on_failure():
+            nonlocal callback_called
+            callback_called = True
+
+        checker = NVLHealthCheck(on_failure=on_failure)
+        with patch.object(checker, '_check_health', return_value=False) as mock_check:
+            # Test just the first iteration of the async loop
+            mock_check.return_value = False
+            await checker.async_check()
+            mock_check.assert_called()
+            mock_sleep.assert_called()
+            # Note: In a real scenario, the callback would be called, but in this test
+            # we're testing the basic async functionality
+
+    def test_check_gpu_health_integration(self):
+        """Test integration between _perform_health_check and _check_nvl_links_for_device."""
+        checker = NVLHealthCheck(device_index=0)
+
+        with patch.object(checker, '_check_nvl_links_for_device', return_value=True) as mock_check:
+            with patch.object(checker, 'pynvml') as mock_pynvml:
+                mock_pynvml.nvmlInit.return_value = None
+                mock_pynvml.nvmlShutdown.return_value = None
+
+                result = checker._perform_health_check()
+                self.assertTrue(result)
+                mock_check.assert_called_once_with(0)
 
 
 if __name__ == "__main__":

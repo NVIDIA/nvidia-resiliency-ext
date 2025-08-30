@@ -60,7 +60,11 @@ Requirements for the wrapped function
   ext/blob/main/examples/fault_tolerance/run_inprocess_injob_example.sh>`_ example for the recommended
   default values (for example, --monitor-interval=5).
 
-- it's heavily recommended for the wrapped function to load the state affected
+    - Any objects whose lifetime crosses the restart boundary *must* be process-group independent _or_
+      the workload must re-align the object, inside the wrapped function, to the new process groups
+      created after the In-process restart.
+
+- It is heavily recommended for the wrapped function to load the state affected
   by distributed collectives from a checkpoint on every restart (e.g. load
   weights of a model); outputs of distributed collectives are likely to become
   corrupted or invalid if a fault happened while a collective was in-flight and
@@ -79,6 +83,61 @@ Requirements for the execution environment
 - The job scheduler must not terminate the entire job if a faulty rank exits
   early or if the main process is terminated; instead, it should wait until all
   user-launched processes have fully exited before ending the distributed job.
+
+- When using SLURM, refer to the :ref:`Running with SLURM <running_with_slurm>` section
+  for specific configuration requirements.
+
+.. _running_with_slurm:
+
+Running with SLURM
+------------------
+When using SLURM as the job scheduler, specific configuration is required to
+ensure the in-process restart functionality works correctly. SLURM has default
+behaviors that can interfere with the restart mechanism, so proper setup is
+essential.
+
+SLURM Configuration Requirements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Use the ``--kill-on-bad-exit=0`` option with ``srun`` to prevent SLURM from
+  terminating the entire job when some ranks exit on failure. This allows the
+  in-process restart mechanism to handle failures and restart the distributed
+  job without SLURM interference.
+
+- The job must be launched using the `wait_daemon.py` utility to ensure proper
+  cleanup of monitoring daemon processes. The :ref:`Monitor Process
+  <monitor_process>` operates as a separate daemon process that participates in
+  the distributed store and hosts the TCPStore for communication between ranks.
+  SLURM by default terminates all user processes when the main job process
+  finishes, which would immediately terminate the Monitor Process and prevent it
+  from properly finalizing the distributed job by waiting on the termination
+  barrier. The `wait_daemon.py` utility ensures that the Monitor Process is the
+  last process to exit, allowing it to complete its cleanup responsibilities.
+
+Complete SLURM Launch Command
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Use the following command format to launch your job with SLURM:
+
+.. code-block:: bash
+
+  srun --kill-on-bad-exit=0 <other_srun_options> bash -c "
+  python -u ${run_cmd}
+  ret=\$?
+  python -m nvidia_resiliency_ext.shared_utils.wait_daemon /tmp/inprocess_monitor\${SLURM_PROCID}.pid
+  exit \$ret"
+
+Wrapper Configuration
+~~~~~~~~~~~~~~~~~~~~
+When creating the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`, the training program
+must specify the ``monitor_process_pidfile`` parameter to match the path used in
+the wait_daemon command:
+
+.. code-block:: python
+
+  train = inprocess.Wrapper(
+      monitor_process_pidfile="/tmp/inprocess_monitor_{rank}.pid",
+      # ... other parameters ...
+  )(train)
 
 Restrictions
 ------------
@@ -125,7 +184,6 @@ purposes only and may omit certain implementation details.
   distributed_store = store_factory(**store_kwargs)
   initial_barrier()
   rank_assignment()
-  rank_filter()  # deprecated
 
   while True:
       initialize()
@@ -142,7 +200,6 @@ purposes only and may omit certain implementation details.
           health_check()
           iteration_barrier()
           rank_assignment()
-          rank_filter()  # deprecated
       else:
           break
 
@@ -257,7 +314,10 @@ workers drops below a specified threshold.
 Multiple initializers could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose`.
 The composition order follows mathematical composition. Therefore, the last listed function is called first.
 Consequently, when using nested restarters, the :py:class:`nvidia_resiliency_ext.inprocess.nested_restarter.NestedRestarterHandlingCompleted`
-should be listed first, as handling a restart is not complete until the end of the `Initialize`.
+should be carefully placed as this callback indicates completion of the restart.
+Subsequent callbacks (e.g., those listed before the nested restarter callback) logically take placed
+at the _beginning_ of the next restart iteration.  For example, :py:class:`nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment`
+is logically part of the next restart iteration and should be called after the nested restarter callback.
 
 Wrapped function termination mechanism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -377,6 +437,55 @@ There are two methods to record progress:
 Timeout event is triggered if either of the active progress monitoring methods
 didn't record a heartbeat in the specified time interval.
 
+Disabling hang protection
+^^^^^^^^^^^^^^^^^^^^^^^^^
+In some cases, certain operations within the wrapped function may legitimately
+take longer than the configured ``soft_timeout`` or ``hard_timeout`` intervals.
+For such operations, the :py:class:`Wrapper` provides a
+:py:meth:`inprocess.CallWrapper.disable_hang_protection` context manager that
+temporarily disables timeout-based hang detection.
+
+.. warning::
+    The :py:meth:`inprocess.CallWrapper.disable_hang_protection` context manager
+    disables critical safety mechanisms designed to protect against hangs and
+    deadlocks. Use with extreme caution and only for operations you are confident
+    will complete.
+
+The context manager is typically used for operations such as:
+
+- Large data loading operations that may take unpredictable amounts of time
+- Complex initialization routines
+- Other legitimate long-running operations that should not be interrupted
+
+When the context manager exits (either normally or due to an exception), hang
+protection is automatically re-enabled.
+
+.. code-block:: python
+
+    def my_training_function(call_wrapper: CallWrapper):
+        # Normal operations are subject to hang protection
+        train_step()
+
+        # Disable hang protection for long-running data loading
+        with call_wrapper.disable_hang_protection():
+            load_large_dataset()  # This won't trigger timeout restarts
+
+        # Hang protection is automatically re-enabled
+        train_step()  # This will trigger hang detection if it hangs
+
+**Important considerations:**
+
+- **Exception handling**: The context manager only disables timeout-based
+  restarts. Exceptions raised within the disabled region will still trigger
+  restarts as expected.
+
+- **Scope minimization**: Use the context manager for the smallest possible
+  scope. Avoid wrapping entire training loops or large code sections.
+
+- **Testing**: Thoroughly test operations within the disabled context to ensure
+  they complete reliably, as the normal hang detection safety net is temporarily
+  removed.
+
 Finalize
 ~~~~~~~~
 The :py:class:`Wrapper` accepts optional, user-provided
@@ -412,6 +521,27 @@ then reraised by the :py:class:`Wrapper`, and should cause termination of the
 main Python interpreter process on the local rank.
 
 Multiple health checks could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose`.
+
+Automatic Health Checks
+~~~~~~~~~~~~~~~~~~~~~~~
+The :py:class:`Wrapper` automatically includes comprehensive health monitoring when the ``LOCAL_RANK``
+environment variable is available. These health checks are executed in sequence during restart to ensure
+the system is in a healthy state before attempting to restart the workload.
+
+**GPU Health Check**: Validates GPU device health and recovery actions using :py:class:`ChainedGPUHealthCheck`.
+
+**NVL Health Check**: Monitors NVLink connectivity and link health using :py:class:`ChainedNVLHealthCheck`.
+
+**NIC Health Check**: Monitors network interface card connectivity and link down events using :py:class:`ChainedNicHealthCheck`.
+This is particularly important for distributed workloads where network connectivity is critical.
+
+The automatic health checks are configured with the same ``device_index`` as the current GPU rank (from ``LOCAL_RANK``),
+ensuring that each GPU monitors its associated network interfaces. No additional configuration is required
+for basic health monitoring - the wrapper automatically handles health check composition and execution.
+
+.. note::
+   The NIC health check automatically establishes baseline link down counter values during initialization,
+   ensuring accurate delta detection from the first health check execution.
 
 Monitoring capabilities
 ~~~~~~~~~~~~~~~~~~~~~~~
