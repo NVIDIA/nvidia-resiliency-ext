@@ -22,6 +22,7 @@ import os
 import torch
 
 from nvidia_resiliency_ext.attribution.trace_analyzer.trace_collector import TorchFRTraceCollector
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue, abort_nvrx_checkpoint
 
 from . import utils
 from .state import FrozenState
@@ -184,4 +185,36 @@ class AbortTransformerEngine(Abort):
             # Clear a class-member containing a process group
             te_fp8.FP8GlobalStateManager.reset()
 
+        return state
+
+
+class AbortCheckpoint(Abort):
+    r'''
+    Aborts Async Checkpoint processes
+
+    '''
+    # def __init__(self):
+    #     # Persistent worker once created is a singleton object
+    #     # During abort, we mus reset this object to a clean state
+    #     log = logging.getLogger(__name__)
+    #     log.error(f"Aarti 1111 init AbortCheckpoint ")
+    #     self.async_queue = AsyncCallsQueue(persistent=True)
+    #     log.error(f"Aarti 2222 {self.__dict__}")
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        # log = logging.getLogger(__name__)
+        # log.error(f"Aarti 33333 {self.__dict__}")
+        # self.async_queue = AsyncCallsQueue(persistent=True)
+        # log.error(f"Aarti 4444 {self.__dict__} and singleton persistent_worker = {self.async_queue.persistent_caller}")
+        # if self.async_queue is not None:
+        #     self.async_queue.close(abort=True)
+        #     del self.async_queue
+        # log.error(f"Aarti 5555 {self.__dict__}")
+        # # global _results_queue
+        # # if _results_queue is not None:
+        # #     _results_queue._manager.shutdown()
+        # #     del _results_queue
+        # # _results_queue = None
+        # # self.async_queue = None
+        abort_nvrx_checkpoint()
         return state
