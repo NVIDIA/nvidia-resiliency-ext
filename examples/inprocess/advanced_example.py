@@ -14,23 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-# This example demonstrates how to integrate ``inprocess.Wrapper()`` into an
-# existing PyTorch training codebase.
-#
-# This example show the optimal usage:
-# - only the training loop and objects depending on a torch distributed process
-# group are being restarted upon a failure
-# - process-group-independent objects (e.g. TCPStore, Model, Optimizer) are
-# created once, and reused between all restart iterations to minimize restart
-# latency
-#
-# NOTE: inprocess.Wrapper is not fully compatible with modern
-# ``torch.distributed.run``, because it automatically terminates all local
-# workers upon any local worker process failure; in this case inprocess.Wrapper
-# can only recover from transient faults that don't terminate any of the
-# training processes
-
 import argparse
 import datetime
 import logging
@@ -47,10 +30,36 @@ import nvidia_resiliency_ext.inprocess as inprocess
 
 raise_timestamp = None
 
+################################################################################
+#
+# THIS EXAMPLE DEMONSTRATES AN ADVANCED CASE WHERE THE MODEL AND OPTIMIZER ARE
+# PROCESS-GROUP INDEPENDENT.
+#
+# In this example, the model and optimizer are process-group independent,
+# so they can safely be created outside of the wrapped function and reused.
+#
+# See the usage guide for more details.
+#
+# This example demonstrates how to integrate ``inprocess.Wrapper()`` into an
+# existing PyTorch training codebase for an advanced use-case where:
+# - only the training loop and objects depending on a torch distributed process
+# group are being restarted upon a failure
+# - process-group-independent objects (e.g. TCPStore, Model, Optimizer) are
+# created once, and reused between all restart iterations to minimize restart
+# latency
+#
+# NOTE: inprocess.Wrapper is not fully compatible with modern
+# ``torch.distributed.run``, because it automatically terminates all local
+# workers upon any local worker process failure; in this case inprocess.Wrapper
+# can only recover from transient faults that don't terminate any of the
+# training processes
+#
+################################################################################
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Inprocess Restart Optimal Example',
+        description='Inprocess Restart Advanced Example',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -236,8 +245,16 @@ def main():
     else:
         raise RuntimeError
 
-    # All objects created in ``main()`` are constructed only once, and reused
-    # for all restart iterations.
+    # In this *specific* example, all objects created in ``main()`` are constructed
+    # only once and reused for all restart iterations. Here, the model and optimizer
+    # are process-group independent, so those objects can safely be created outside
+    # of the wrapped function and reused.
+    #
+    # Normally, variables that are process-group dependent should be created or
+    # initialized inside the wrapped function or the workload is responsible for
+    # ensuring that objects refer to valid process-groups after a restart. See the
+    # usage guide for more details.
+
     if args.seed is not None:
         torch.manual_seed(args.seed)
     model = torch.nn.Sequential(
