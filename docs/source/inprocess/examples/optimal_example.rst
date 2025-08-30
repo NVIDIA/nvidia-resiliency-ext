@@ -1,6 +1,6 @@
-Optimal usage example
+Advanced usage example
 ===============================================================================
 
-.. literalinclude:: ../../../../examples/inprocess/optimal_example.py
+.. literalinclude:: ../../../../examples/inprocess/advanced_example.py
    :language: python
    :linenos:

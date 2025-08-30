@@ -25,6 +25,8 @@ from datetime import timedelta
 
 import torch
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from . import attribution, exception
 from .utils import log_exc
 
@@ -37,7 +39,7 @@ class RankShouldRestart(BaseException):
     '''
 
     def __del__(self):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         if log.isEnabledFor(logging.DEBUG):
             from . import wrap
 
@@ -95,7 +97,7 @@ def reraise_if_unraisable(exc_type):
 
     def reraising_callback(unraisable_hook_args):
         if issubclass(unraisable_hook_args.exc_type, exc_type) and not sys.is_finalizing():
-            log = logging.getLogger(__name__)
+            log = logging.getLogger(LogConfig.name)
             log.debug(f'sys.unraisablehook raises {exc_type}')
             delayed_async_raise(threading.main_thread().ident, exc_type)
 
@@ -145,7 +147,7 @@ class MonitorThread(threading.Thread):
         self.stop_loop = threading.Event()
 
         self.monitor_timeout = 5 * interval + last_call_wait + timedelta(seconds=5)
-        self.log = logging.getLogger(__name__)
+        self.log = logging.getLogger(LogConfig.name)
 
         super().__init__(
             name=f'{type(self).__name__}-{state.rank}',
@@ -153,7 +155,7 @@ class MonitorThread(threading.Thread):
         )
 
     def run(self):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         state = self.state
         store = self.store
 
@@ -203,7 +205,7 @@ class MonitorThread(threading.Thread):
         except RankShouldRestart:
             pass
         finally:
-            log = logging.getLogger(__name__)
+            log = logging.getLogger(LogConfig.name)
             self.join(self.monitor_timeout.total_seconds())
             self.progress_watchdog.resume()
             if self.is_alive():

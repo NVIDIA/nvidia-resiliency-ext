@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import contextlib
+import datetime
 import functools
 import inspect
 import logging
@@ -32,18 +33,125 @@ def torch_older_than(version):
 
 
 def format_exc(exc: BaseException):
-    excs = [repr(exc)]
-    while (exc := exc.__cause__) is not None:
-        excs.append(repr(exc))
-    return ' <- '.join(excs)
+    return repr(exc)
+
+
+def format_rank_set_verbose(ranks):
+    """
+    Format a set of ranks for logging using range compression (e.g., "1-3, 5, 7-9").
+
+    Args:
+        ranks: Set or list of rank numbers
+
+    Returns:
+        str: Formatted rank set string with ranges
+    """
+    if not ranks:
+        return "{}"
+
+    # Convert to sorted list of unique ranks
+    sorted_ranks = sorted(set(ranks))
+
+    # Compress consecutive ranks into ranges
+    ranges = []
+    if sorted_ranks:
+        start = end = sorted_ranks[0]
+
+        for n in sorted_ranks[1:]:
+            if n == end + 1:
+                end = n
+            else:
+                ranges.append(f"{start}-{end}" if start != end else str(start))
+                start = end = n
+
+        ranges.append(f"{start}-{end}" if start != end else str(start))
+
+    result = ", ".join(ranges)
+    return f"{{{result}}}"
+
+
+def format_rank_set_brief(ranks, max_show=8):
+    """
+    Format a set of ranks for logging, showing partial ranks and total count for large sets.
+
+    Args:
+        ranks: Set or list of rank numbers
+        max_show: Maximum number of ranks to show before truncating
+
+    Returns:
+        str: Formatted rank set string
+    """
+    if not ranks:
+        return "{}"
+
+    rank_count = len(ranks)
+    sorted_ranks = sorted(ranks)
+
+    # Show all ranks if count is small enough
+    if rank_count <= max_show:
+        return f"{{{', '.join(map(str, sorted_ranks))}}}"
+
+    # For large sets, show first few and last few with total count
+    first_ranks = sorted_ranks[:4]
+    last_ranks = sorted_ranks[-4:]
+    return f"{{{', '.join(map(str, first_ranks))}...{', '.join(map(str, last_ranks))} (total: {rank_count})}}"
+
+
+def format_rank_set(ranks):
+    """
+    Format a set of ranks for logging using either range compression or partial display.
+
+    The formatting method is controlled by the environment variable
+    'NVRX_LOG_RANK_FORMAT_VERBOSE':
+    - True: Use range compression (e.g., "1-3, 5, 7-9")
+    - False/not set: Use partial display with total count for large sets
+
+    Args:
+        ranks: Set or list of rank numbers
+
+    Returns:
+        str: Formatted rank set string
+
+    Environment Variables:
+        NVRX_LOG_RANK_FORMAT_VERBOSE: Controls the formatting method
+            (True for verbose ranges, False/not set for partial display)
+    """
+    # Get verbose mode from environment variable, default to False (partial display)
+    verbose_mode = os.getenv('NVRX_LOG_RANK_FORMAT_VERBOSE', 'false').lower() in (
+        'true',
+        '1',
+        'yes',
+        'on',
+    )
+
+    if verbose_mode:
+        return format_rank_set_verbose(ranks)
+    else:
+        # Default to brief display mode
+        return format_rank_set_brief(ranks)
 
 
 def log_exc(rank_or_state, exc, name):
+    """
+    Log exception with clean chain formatting to reduce log volume.
+
+    Args:
+        rank_or_state: Rank number or state object
+        exc: Exception to log
+        name: Name identifier for the exception
+
+    Returns:
+        str: Formatted exception message
+    """
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
+
     if isinstance(rank_or_state, int):
         rank = rank_or_state
     else:
         rank = rank_or_state.rank
-    return f'{rank=} {name}: {format_exc(exc)}'
+
+    formatted_exc = format_exc(exc)
+    return f'[{timestamp}] {rank=} {name}: {formatted_exc}'
 
 
 @contextlib.contextmanager
@@ -95,6 +203,7 @@ def find_nearest_handler(logger, handler_cls):
 
 
 class Logging:
+
     @classmethod
     def initialize(cls):
         parent_module_name = cls.__module__.split('.')[-2]

@@ -22,10 +22,11 @@ import datetime
 import enum
 import heapq
 import itertools
+import logging
 import warnings
 from typing import Callable, Optional, Union
 
-from . import exception
+from . import exception, utils
 from .state import Mode, State
 from .store import StoreMixin
 
@@ -174,6 +175,12 @@ class MaxActiveWorldSize(RankFilter):
         else:
             mode = Mode.INACTIVE
             active_rank = None
+            # Log deactivation if transitioning from ACTIVE to INACTIVE
+            if state.mode == Mode.ACTIVE:
+                log = logging.getLogger(__name__)
+                log.info(
+                    f"[In-process] Rank deactivated (rank={state.rank}) due to max active world size limit ({active_world_size})"
+                )
 
         state = dataclasses.replace(
             state,
@@ -215,6 +222,12 @@ class ActiveWorldSizeDivisibleBy(RankFilter):
         else:
             mode = Mode.INACTIVE
             active_rank = None
+            # Log deactivation if transitioning from ACTIVE to INACTIVE
+            if state.mode == Mode.ACTIVE:
+                log = logging.getLogger(__name__)
+                log.info(
+                    f"[In-process] Rank deactivated (rank={state.rank}) due to divisibility requirement (active_world_size={active_world_size}, divisor={divisor})"
+                )
 
         state = dataclasses.replace(
             state,
@@ -511,6 +524,7 @@ class Tree(RankAssignment):
         self.tree = None
         self.rank_map = {}
         self.init_rank_map = {}
+        self.current_state = None
 
     def build_tree(self, state, store):
         key = [
@@ -560,6 +574,8 @@ class Tree(RankAssignment):
     def replace_with_inactive(self, terminated_active_ranks):
         replaced_terminate_active_ranks = set()
 
+        log = logging.getLogger(__name__)
+
         for terminated_active_rank in sorted(terminated_active_ranks):
             terminated_active_node = self.rank_map[terminated_active_rank]
 
@@ -571,6 +587,14 @@ class Tree(RankAssignment):
             ):
                 if parent.inactive_nodes:
                     _, inactive = parent.inactive_nodes.popitem()
+
+                    # If this rank is an inactive rank becoming active, log the transition
+                    if self.current_state.initial_rank == inactive.state.initial_rank:
+                        log.info(
+                            f"[In-process] Hot spare activated: terminated rank (initial_rank={terminated_active_node.state.initial_rank}, active_rank={terminated_active_node.state.active_rank}) "
+                            f"replaced by spare rank (initial_rank={inactive.state.initial_rank}, new_active_rank={terminated_active_node.state.active_rank})"
+                        )
+
                     inactive.activate(terminated_active_node.state.active_rank)
                     replaced_terminate_active_ranks.add(terminated_active_rank)
                     break
@@ -601,12 +625,19 @@ class Tree(RankAssignment):
                 key=lambda node: node.state.active_rank,
             )
 
+            log = logging.getLogger(__name__)
             for backfill_node, terminated_node in itertools.zip_longest(
                 reversed(largest_active_nodes),
                 terminated_nodes,
                 fillvalue=None,
             ):
                 if backfill_node is not None:
+                    # If this rank is being backfilled, log it
+                    if self.current_state.initial_rank == backfill_node.state.initial_rank:
+                        log.info(
+                            f"[In-process] Rank backfilled (initial_rank={backfill_node.state.initial_rank}) "
+                            f"active_rank changed from {backfill_node.state.active_rank} to {terminated_node.state.active_rank})"
+                        )
                     replaced_active.add(backfill_node.state.active_rank)
                     backfill_node.state.active_rank = terminated_node.state.active_rank
                 else:
@@ -616,13 +647,24 @@ class Tree(RankAssignment):
 
     def shift_ranks(self, replaced_active, unhandled_terminations):
         sorted_replaced_active = sorted(replaced_active)
+        log = logging.getLogger(__name__)
 
         for n in self.rank_map.values():
             n.state.active_world_size -= len(unhandled_terminations)
 
             if n.state.active_rank is not None:
+                old_active_rank = n.state.active_rank
                 count_less = bisect.bisect_left(sorted_replaced_active, n.state.active_rank)
                 n.state.active_rank -= count_less
+
+                # If this rank's active_rank shifted, log it
+                if (
+                    self.current_state.initial_rank == n.state.initial_rank
+                    and old_active_rank != n.state.active_rank
+                ):
+                    log.info(
+                        f"[In-process] Rank shifted (initial_rank={n.state.initial_rank}, active_rank changed from {old_active_rank} to {n.state.active_rank})"
+                    )
 
     def filter_active_world_size(self):
         active_world_size = next(iter(self.rank_map.values())).state.active_world_size
@@ -630,9 +672,16 @@ class Tree(RankAssignment):
         new_active_world_size = self.world_size_filter(active_world_size)
         assert new_active_world_size <= active_world_size
 
+        log = logging.getLogger(__name__)
         for leaf in self.tree.iter_leaves():
             leaf.state.active_world_size = new_active_world_size
             if leaf.state.mode == Mode.ACTIVE and leaf.state.active_rank >= new_active_world_size:
+                # If this rank is being deactivated due to world size filter, log it
+                if self.current_state.initial_rank == leaf.state.initial_rank:
+                    log.info(
+                        f"[In-process] Rank deactivated (initial_rank={leaf.state.initial_rank}, "
+                        f"active_rank={leaf.state.active_rank}) due to world size filter (>= {new_active_world_size})"
+                    )
                 leaf.deactivate()
 
     def recompute_rank(self):
@@ -656,6 +705,7 @@ class Tree(RankAssignment):
         tree_state = self.init_rank_map[state.initial_rank].state
 
         if tree_state.mode == Mode.TERMINATED:
+            terminated_ranks = utils.format_rank_set(terminated_ranks)
             raise RankDiscarded(f'{state.rank=} {terminated_ranks=}')
 
         state = State(**dataclasses.asdict(tree_state))
@@ -665,6 +715,9 @@ class Tree(RankAssignment):
         state = ctx.state
         store = ctx.store
         terminated_ranks = ctx.terminated_ranks
+
+        # Store the current rank's initial_rank for logging purposes
+        self.current_state = state.freeze()
 
         if self.tree is None:
             self.build_tree(state, store)
@@ -684,7 +737,14 @@ class Tree(RankAssignment):
         terminated_active_ranks = set(
             rank for rank in terminated_ranks if self.rank_map[rank].state.mode == Mode.ACTIVE
         )
+
+        log = logging.getLogger(__name__)
         for terminated_rank in terminated_ranks:
+            # If this rank is being terminated, log it
+            if self.current_state.initial_rank == self.rank_map[terminated_rank].state.initial_rank:
+                log.info(
+                    f"[In-process] Rank terminated (initial_rank={self.current_state.initial_rank})"
+                )
             self.rank_map[terminated_rank].terminate()
 
         replaced_terminate_active_ranks = self.replace_with_inactive(terminated_active_ranks)
@@ -701,6 +761,8 @@ class Tree(RankAssignment):
         self.recompute_rank()
 
         ctx.state = self.get_state_from_tree(state, terminated_ranks)
+        for leaf in self.tree.iter_leaves():
+            leaf.state.fn_exception = None
         ctx.terminated_ranks = set()
 
         return ctx
@@ -743,9 +805,15 @@ class FillGaps(RankAssignment):
         world_size = world_size - len(terminated_ranks)
 
         if rank in terminated_ranks:
+            terminated_ranks = utils.format_rank_set(terminated_ranks)
             raise RankDiscarded(f'{rank=} {terminated_ranks=}')
         elif rank >= world_size:
+            log = logging.getLogger(__name__)
+            old_rank = rank
             rank = ordered_terminated_ranks[rank - world_size]
+            log.info(
+                f"[In-process] Rank reassigned (rank changed from {old_rank} to {rank}) to fill gap"
+            )
 
         state = dataclasses.replace(
             state,
@@ -795,9 +863,14 @@ class ShiftRanks(RankAssignment):
 
         world_size = world_size - len(terminated_ranks)
         if rank in terminated_ranks:
+            terminated_ranks = utils.format_rank_set(terminated_ranks)
             raise RankDiscarded(f'{rank=} {terminated_ranks=}')
         else:
+            old_rank = rank
             rank = rank - sum(rank > terminated_rank for terminated_rank in terminated_ranks)
+            if old_rank != rank:
+                log = logging.getLogger(__name__)
+                log.info(f"[In-process] Rank shifted (rank changed from {old_rank} to {rank})")
 
         state = dataclasses.replace(
             state,
@@ -907,7 +980,12 @@ class FilterCountGroupedByKey(RankAssignment):
                 timeout=self.timeout,
             )
 
-            if not self.condition(int(store.get(prefixed_key))):
+            group_count = int(store.get(prefixed_key))
+            if not self.condition(group_count):
+                log = logging.getLogger(__name__)
+                log.info(
+                    f"[In-process] Rank marked for termination (rank={rank}, group_key={key}, group_count={group_count}) due to failed group condition"
+                )
                 store.append(RANKS_TO_TERMINATE, f'{rank},')
 
             store.barrier(

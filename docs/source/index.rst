@@ -1,5 +1,5 @@
-nvidia-resiliency-ext v0.4.0
-=============================
+nvidia-resiliency-ext
+=====================
 
 **nvidia-resiliency-ext** is a set of tools developed by NVIDIA to improve large-scale distributed training resiliency.
 
@@ -15,6 +15,7 @@ Features
 * `Async checkpointing <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/async/index.rst>`_
 * `Local checkpointing <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/local/index.rst>`_
 * `Straggler (slower ranks) detection <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/straggler_det/index.rst>`_
+* `Shared utilities and distributed logging <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/shared_utils/index.rst>`_
 
 .. toctree::
    :maxdepth: 3
@@ -25,3 +26,4 @@ Features
    checkpointing/async/index
    checkpointing/local/index
    straggler_det/index
+   shared_utils/index

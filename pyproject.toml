@@ -4,7 +4,7 @@
 [tool.poetry]
 name = "nvidia-resiliency-ext"
 repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
-version = "0.4.0"
+version = "0.4.1"
 description = "NVIDIA Resiliency Package"
 authors = ["NVIDIA Corporation"]
 readme = "README.md"
@@ -20,7 +20,7 @@ packages = [
 ]
 
 exclude = [
-    "src/nvidia_resiliency_ext/straggler/cupti_src"
+    "src/nvidia_resiliency_ext/attribution/straggler/cupti_src"
 ]
 
 [tool.poetry.build]
@@ -53,8 +53,7 @@ py_version = 310   # python 3.10 as a target version
 filter_files = true 
 extend_skip_glob = [
     "setup.py", 
-    "cupti_build.py",
-    "src/nvidia_resiliency_ext/fault_tolerance/_torch_elastic_compat/*"
+    "cupti_build.py"
 ]
 
 [tool.black]
@@ -72,15 +71,13 @@ force-exclude = '''
 (
   ^\/setup.py\/
   | ^\/build.py\/
-  | ^\/src/nvidia_resiliency_ext/fault_tolerance/_torch_elastic_compat\/
 )
 '''
 
 [tool.ruff]
 extend-exclude = [
     "setup.py", 
-    "build.py",
-    "src/nvidia_resiliency_ext/fault_tolerance/_torch_elastic_compat"
+    "build.py"
 ]
 
 [tool.ruff.lint]

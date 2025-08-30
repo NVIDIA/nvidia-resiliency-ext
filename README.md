@@ -11,25 +11,26 @@ For detailed documentation and usage information about each component, please re
 
 ## Core Components and Capabilities
 
-- **[Fault Tolerance](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/index.rst)**
+- **[Fault Tolerance](https://nvidia.github.io/nvidia-resiliency-ext/fault_tolerance/index.html)**
   - Detection of hung ranks.  
   - Restarting training in-job, without the need to reallocate SLURM nodes.
 
-- **[In-Process Restarting](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/inprocess/index.rst)**
+- **[In-Process Restarting](https://nvidia.github.io/nvidia-resiliency-ext/inprocess/index.html)**
   - Detecting failures and enabling quick recovery.
 
-- **[Async Checkpointing](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/async/index.rst)**
+- **[Async Checkpointing](https://nvidia.github.io/nvidia-resiliency-ext/checkpointing/async/index.html)**
   - Providing an efficient framework for asynchronous checkpointing.
 
-- **[Local Checkpointing](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/local/index.rst)**
+- **[Local Checkpointing](https://nvidia.github.io/nvidia-resiliency-ext/checkpointing/local/index.html)**
   - Providing an efficient framework for local checkpointing.
 
-- **[Straggler Detection](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/straggler_det/index.rst)**
+- **[Straggler Detection](https://nvidia.github.io/nvidia-resiliency-ext/straggler_det/index.html)**
   - Monitoring GPU and CPU performance of ranks.  
   - Identifying slower ranks that may impede overall training efficiency.
 
-- **[PyTorch Lightning Callbacks](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/integration/ptl.rst)**
-  - Facilitating seamless NVRx integration with PyTorch Lightning.
+- **Framework Integration**
+  - Facilitating seamless [fault tolerance](https://nvidia.github.io/nvidia-resiliency-ext/fault_tolerance/integration/ptl.html) and [straggler detection](https://nvidia.github.io/nvidia-resiliency-ext/straggler_det/usage_guide.html#integration-guide) integration with PyTorch Lightning based workloads.
+  - Providing integration with NVIDIA [NeMo](https://docs.nvidia.com/nemo-framework/user-guide/latest/resiliency.html) framework, a scalable and cloud-native generative AI framework built for researchers and developers working on Large Language Models, Multimodal, and Speech AI (e.g. Automatic Speech Recognition and Text-to-Speech).
 
 ## Installation
 

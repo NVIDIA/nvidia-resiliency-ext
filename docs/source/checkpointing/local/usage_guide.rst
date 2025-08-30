@@ -37,7 +37,8 @@ Requirements for `BasicTensorAwareStateDict`
 
 Restrictions
 ------------
-Currently under review - no documented restrictions at this time.
+- `AsyncCallsQueue` must be initialized with `persistence=False`, because some local checkpointing routines
+  are not pickleable. This restriction may be lifted in the future.
 
 Functionality Overview
 ----------------------
@@ -108,12 +109,16 @@ controlled by the `is_async` parameter in the `save(...)` method.
   performs a blocking save operation, ensuring all data is written before returning.
 - Asynchronous Save: When `is_async` is set to `True`, the `save(...)` method
   initiates a non-blocking save and returns an `AsyncRequest` object.
-  This class is fully compatible with the `nvidia_resiliency_ext.checkpointing.async_ckpt` module.
+  This class is compatible with the `nvidia_resiliency_ext.checkpointing.async_ckpt` module.
 
 The returned `AsyncRequest` can then be submitted to an `AsyncCallsQueue`,
 enabling advanced asynchronous processing.
 The usage of `AsyncRequest` with `AsyncCallsQueue` is demonstrated in the provided example,
 showcasing how to efficiently manage non-blocking saves within your workflow.
+
+.. note::
+   Per the Restrictions and the included example, `AsyncCallsQueue` must be initialized with
+   `persistence=False`. This is because some local checkpointing routines are not pickleable.
 
 Logging
 ~~~~~~~

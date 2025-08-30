@@ -32,10 +32,11 @@ from typing import Optional
 
 import torch
 
-from . import exception
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+from . import exception, utils
 from .attribution import InterruptionRecord
 from .state import Mode
-from .utils import log_exc
 
 
 class BarrierError(exception.RestartError):
@@ -198,7 +199,7 @@ class StoreMixin:
         timeout: datetime.timedelta,
         timeout_chunk: Optional[datetime.timedelta] = None,
     ):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         cn = inspect.currentframe().f_code.co_name
         log.debug(f'{ranks=} enter {group_name=} {cn} {rendezvous_count=}')
 
@@ -212,7 +213,10 @@ class StoreMixin:
 
         if arrived_count > rendezvous_count:
             arrived_ranks = sorted([int(r) for r in self.get_packed(arrived_key, ',') if r.strip()])
-            raise BarrierOverflow(f'{ranks=} {rendezvous_count=} {group_name=} {arrived_ranks=}')
+            formatted_ranks = utils.format_rank_set(arrived_ranks)
+            raise BarrierOverflow(
+                f'{ranks=} {rendezvous_count=} {arrived_count=} {group_name=} {formatted_ranks=}'
+            )
 
         if arrived_count == rendezvous_count:
             self.set(last_worker_arrived_key, '1')
@@ -242,13 +246,14 @@ class StoreMixin:
         rank: int,
         group_name: str,
     ):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         barrier_name = self.reentrant_barrier.__name__
         store_key = f'{self.BARRIER_PREFIX}:{barrier_name}:{group_name}'
         arrived_key = f'{store_key}:arrived'
         self.append(arrived_key, '')
         arrived_ranks = set([int(r) for r in self.get_packed(arrived_key, ',') if r.strip()])
-        log.debug(f'{rank=} {arrived_ranks=}')
+        formatted_ranks = utils.format_rank_set(arrived_ranks)
+        log.debug(f'{rank=} {formatted_ranks=}')
         arrived = rank in arrived_ranks
         if arrived:
             log.debug(f'{rank=} already arrived {group_name=}')
@@ -262,7 +267,7 @@ class StoreMixin:
         timeout: datetime.timedelta,
         timeout_chunk: Optional[datetime.timedelta] = None,
     ):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         cn = inspect.currentframe().f_code.co_name
         log.debug(f'{ranks=} enter {group_name=} {cn} {rendezvous_count=}')
 
@@ -278,7 +283,10 @@ class StoreMixin:
 
         if arrived_count > rendezvous_count:
             arrived_ranks = sorted(list(arrived_ranks))
-            raise BarrierOverflow(f'{ranks=} {rendezvous_count=} {group_name=} {arrived_ranks=}')
+            formatted_ranks = utils.format_rank_set(arrived_ranks)
+            raise BarrierOverflow(
+                f'{ranks=} {rendezvous_count=} {arrived_count=} {group_name=} {formatted_ranks=}'
+            )
 
         if arrived_count == rendezvous_count:
             self.set(last_worker_arrived_key, '1')
@@ -334,7 +342,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         multi_tenant: bool = False,
         use_libuv: bool = True,
     ):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         if host_name is None:
             host_name = os.environ['MASTER_ADDR']
@@ -360,7 +368,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
                 super().__init__(is_master=True, **kwargs)
                 log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
             except Exception as store_ex:
-                log.debug(log_exc(rank, store_ex, 'store_ex'))
+                log.debug(utils.log_exc(rank, store_ex, 'store_ex'))
                 super().__init__(is_master=False, **kwargs)
         else:
             super().__init__(is_master=False, **kwargs)

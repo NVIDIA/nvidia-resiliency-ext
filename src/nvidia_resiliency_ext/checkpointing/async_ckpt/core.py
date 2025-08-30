@@ -78,11 +78,18 @@ class AsyncRequest(NamedTuple):
 
         This logic is equivalent to what should happen in case of the async call.
         """
+        # preload tensors.
+        async_fn_args = list(self.async_fn_args)
+        if self.preload_fn:
+            # the 2nd arg is state dict
+            async_fn_args[1] = self.preload_fn()
+        # persist the state
         if self.async_fn is not None:
-            self.async_fn(*self.async_fn_args)
+            self.async_fn(*async_fn_args, **self.async_fn_kwargs)
+        # This utility implements a sync cp save. Hence the barrier.
         torch.distributed.barrier()
-        for finalize_fn in self.finalize_fns:
-            finalize_fn()
+        # Finalize the CP state
+        self.execute_finalize_fns(validate_matching_call_idx=False)
 
     def freeze(self) -> 'AsyncRequest':
         """Freezes the async request, disallowing adding new finalization functions.
@@ -92,6 +99,35 @@ class AsyncRequest(NamedTuple):
                 `is_frozen` flag.
         """
         return self._replace(is_frozen=True)
+
+    def execute_finalize_fns(self, validate_matching_call_idx: bool = True) -> int:
+        """Execute all the finalize functions associated with this async request.
+
+        Args:
+            validate_matching_call_idx (bool, optional): Validate that all ranks
+                invoke CP finalize on the same call_idx. This is typically useful in
+                async CP stages where multiple CP requests can be pending.
+                This validation is unnecessary during synchronous CP step.
+                When this param is True, an AllReduce Sync across all participating
+                ranks is invoked. Default set to True for conservative validation.
+
+        Returns:
+            call_idx: The call_idx of async request that has been finalized
+        """
+        with debug_time("finalize", logger):
+            for finalize_fn in self.finalize_fns:
+                finalize_fn()
+
+            # Validate that matching call_idx are invoked from all ranks.
+            # This ensures all ranks are correctly participating in CP save invocations
+            if validate_matching_call_idx:
+                ten = torch.tensor(
+                    [self.call_idx], dtype=torch.int, device=torch.cuda.current_device()
+                )
+                torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
+                assert ten.item() == self.call_idx, "Unmatched async calls. "
+                "That probably means not all ranks are participating in async finalization"
+        return self.call_idx
 
 
 class AsyncCaller(ABC):
@@ -406,7 +442,7 @@ class PersistentAsyncCaller(AsyncCaller):
             self.process = None
 
     def __del__(self):
-        pass
+        self.close()
 
     @staticmethod
     @_disable_gc()
@@ -485,7 +521,7 @@ class AsyncCallsQueue:
     active calls with `maybe_finalize_async_calls`.
     """
 
-    def __init__(self, persistent: bool = False):
+    def __init__(self, persistent: bool = True):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
         self.persistent: bool = persistent
@@ -493,6 +529,7 @@ class AsyncCallsQueue:
 
     def _get_async_caller(self):
         if not self.persistent:
+            logger.warning("The TemporalAsyncCaller will be deprecated soon. ")
             return TemporalAsyncCaller()
         if self.persistent_caller is None:
             self.persistent_caller = PersistentAsyncCaller()
@@ -545,18 +582,10 @@ class AsyncCallsQueue:
             if not next_async_done:
                 break
             with debug_time("finalize", logger):
-                call_idx, _, async_request = self.async_calls.popleft()
-                for finalize_fn in async_request.finalize_fns:
-                    finalize_fn()
-                if not no_dist:
-                    ten = torch.tensor(
-                        [call_idx], dtype=torch.int, device=torch.cuda.current_device()
-                    )
-                    torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
-                    assert ten.item() == call_idx, (
-                        'Unmatched async calls. '
-                        'That probably means not all ranks are participating in async finalization'
-                    )
+                _, _, async_request = self.async_calls.popleft()
+                call_idx = async_request.execute_finalize_fns(
+                    validate_matching_call_idx=(not no_dist)
+                )
                 call_idx_finalized.append(call_idx)
         return call_idx_finalized
 
