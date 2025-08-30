@@ -26,8 +26,8 @@ from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwar
 
 class Utils:
 
-    world_size = torch.cuda.device_count()
-    rank = int(os.environ['LOCAL_RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
+    rank = int(os.environ['RANK'])
     inited = False
     store = None
 
