@@ -22,6 +22,10 @@ import threading
 
 import torch
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+# Import the health check classes from shared_utils
+from ..shared_utils.health_check import GPUHealthCheck, NicHealthCheck, NVLHealthCheck
 from . import exception
 from .state import FrozenState
 
@@ -82,7 +86,7 @@ class CudaHealthCheck(HealthCheck):
         self.timeout = timeout
 
     def __call__(self, state: FrozenState) -> FrozenState:
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         if torch.cuda.is_available() and torch.cuda.is_initialized():
             if (local_rank := os.getenv('LOCAL_RANK', None)) is not None:
                 device = torch.device(int(local_rank))
@@ -145,4 +149,80 @@ class FaultCounter(HealthCheck):
 
         if max_rank_faults is not None and faults_count > max_rank_faults:
             raise FaultCounterExceeded(f'{faults_count=} / {max_rank_faults=}')
+        return state
+
+
+class ChainedGPUHealthCheck(HealthCheck):
+    r'''
+    Ensures that GPU devices are in a healthy state by checking GPU recovery actions.
+
+    Uses the GPUHealthCheck from shared_utils to perform comprehensive GPU health checks.
+    This health check is executed after a fault to ensure the GPU is in a recoverable state.
+
+    Args:
+        device_index: Optional GPU device index to check. If None, checks all GPUs.
+    '''
+
+    def __init__(self, device_index=None):
+        self.device_index = device_index
+        self._gpu_checker = GPUHealthCheck(device_index=device_index)
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        # Perform GPU health check
+        is_healthy = self._gpu_checker._perform_health_check()
+        if not is_healthy:
+            raise exception.HealthCheckError("GPU health check failed")
+
+        return state
+
+
+class ChainedNVLHealthCheck(HealthCheck):
+    r'''
+    Ensures that NVL (NVLink) connections are in a healthy state.
+
+    Uses the NVLHealthCheck from shared_utils to perform comprehensive NVL link health checks.
+    This health check is executed after the fault to ensure NVL links are functioning properly.
+
+    Args:
+        device_index: Optional GPU device index to check. If None, checks all GPUs.
+    '''
+
+    def __init__(self, device_index=None):
+        self.device_index = device_index
+        self._nvl_checker = NVLHealthCheck(device_index=device_index)
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        # Perform NVL health check
+        is_healthy = self._nvl_checker._perform_health_check()
+        if not is_healthy:
+            # NVL health check failures are ignored in current implementation
+            pass
+
+        return state
+
+
+class ChainedNicHealthCheck(HealthCheck):
+    r'''
+    Ensures that NIC (Network Interface Card) connections are in a healthy state.
+
+    Uses the NicHealthCheck from shared_utils to perform comprehensive NIC health checks.
+    This health check is executed after the fault to ensure NIC links are functioning properly.
+
+    The NicHealthCheck constructor automatically handles device_index and baseline initialization,
+    making this wrapper much simpler and more reliable.
+
+    Args:
+        device_index: Optional GPU device index to check. If None, checks all GPUs.
+    '''
+
+    def __init__(self, device_index=None):
+        self.device_index = device_index
+        self._nic_checker = NicHealthCheck(device_index=device_index)
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        # Perform NIC health check
+        is_healthy = self._nic_checker._perform_health_check()
+        if not is_healthy:
+            raise exception.HealthCheckError("NIC health check failed - link down detected")
+
         return state

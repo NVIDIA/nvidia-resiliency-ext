@@ -25,10 +25,12 @@ import sys
 import tempfile
 import time
 import traceback
-from typing import Mapping, Optional
+from typing import Dict, Mapping, Optional
 
 import torch
 import torch.multiprocessing as mp
+
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck, NicHealthCheck
 from .config import FaultToleranceConfig
@@ -95,6 +97,22 @@ class RankMonitorLogger(logging.Logger):
         self.restarter_logger.propagate = False
         return self.restarter_logger
 
+    def log_restarter_event(self, message, *args, **kwargs):
+        """
+        Log a restart event that should always be visible, but only if restarter logging is enabled.
+        Args:
+            is_restarter_logger: Whether restarter logging is enabled
+            message: The message to log
+            *args, **kwargs: Additional arguments for logging
+        """
+        if self.is_restarter_logger:
+            self.log_for_restarter(message, *args, **kwargs)
+
+        # Get the nvrx logger directly
+        nvlogger = logging.getLogger(LogConfig.name)
+        # Log with [RESTARTER] prefix to indicate it's a restart event
+        nvlogger.info(f"[RESTARTER] {message}", *args, **kwargs)
+
 
 class RankMonitorServer:
     """
@@ -113,7 +131,6 @@ class RankMonitorServer:
         cfg: FaultToleranceConfig,
         ipc_socket_path: str,
         rank_monitor_ready_event,
-        is_restarter_logger: bool,
         logger: RankMonitorLogger,
     ):
         """
@@ -124,7 +141,7 @@ class RankMonitorServer:
             ipc_socket_path (str): Path of the IPC socket connecting this monitor with its rank
             rank_monitor_ready_event (mp.Event): The event indicating that the rank monitor is ready.
             is_restarter_logger (bool): True if this monitor writes state transition logs
-            logger (Logger.Logger): The logger object for logging.
+            logger (logging.Logger): The logger object for logging.
 
         """
         self.cfg = cfg
@@ -510,17 +527,31 @@ class RankMonitorServer:
         ipc_socket_path: str,
         rank_monitor_ready_event,
         is_restarter_logger: bool,
+        env: Optional[Dict[str, str]] = None,
     ) -> None:
+        # Set environment variables if provided
+        if env is not None:
+            for key, value in env.items():
+                os.environ[key] = value
+
+        # Set up the nvrx logger for subprocess
+        # Use force_reset=True to ensure fresh logger setup with correct rank info
+        from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
+
         try:
-            logger = RankMonitorLogger(level=cfg.log_level, is_restarter_logger=is_restarter_logger)
+            setup_logger(force_reset=True, node_local_tmp_prefix="rankmonsvr")
+            rmlogger = RankMonitorLogger(
+                level=cfg.log_level, is_restarter_logger=is_restarter_logger
+            )
+
+            logger = logging.getLogger(LogConfig.name)
 
             logger.debug(f"Starting RankMonitorServer... PID={os.getpid()}")
             inst = RankMonitorServer(
                 cfg,
                 ipc_socket_path,
                 rank_monitor_ready_event,
-                is_restarter_logger,
-                logger,
+                rmlogger,
             )
             asyncio.run(inst._rank_monitor_loop())
             logger.debug("Leaving RankMonitorServer process")
@@ -533,7 +564,11 @@ class RankMonitorServer:
 
     @staticmethod
     def run_in_subprocess(
-        cfg, ipc_socket_path: str, is_restarter_logger: bool = False, mp_ctx=torch.multiprocessing
+        cfg,
+        ipc_socket_path: str,
+        is_restarter_logger: bool = False,
+        mp_ctx=torch.multiprocessing,
+        env=None,
     ):
         rank_monitor_ready_event = mp_ctx.Event()
 
@@ -542,6 +577,7 @@ class RankMonitorServer:
             "ipc_socket_path": ipc_socket_path,
             "rank_monitor_ready_event": rank_monitor_ready_event,
             "is_restarter_logger": is_restarter_logger,
+            "env": env,
         }
 
         rank_monitor_process = mp_ctx.Process(
