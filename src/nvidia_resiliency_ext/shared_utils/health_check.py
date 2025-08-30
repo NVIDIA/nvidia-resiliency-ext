@@ -61,6 +61,56 @@ class PynvmlMixin:
             logger.warning("Pynvml is not installed.")
             return False
 
+    def is_gb200_platform(self) -> bool:
+        """
+        Detect if the current platform is GB200.
+
+        Since all nodes are homogeneous on GPUs, we only need to check GPU 0.
+        This allows for platforms with different numbers of GPUs (4, 8, etc.).
+
+        Returns:
+            bool: True if GB200 platform is detected, False otherwise.
+        """
+        if not self.pynvml:
+            return False
+
+        try:
+            self.pynvml.nvmlInit()
+            num_gpus = self.pynvml.nvmlDeviceGetCount()
+
+            # Need at least one GPU to check
+            if num_gpus == 0:
+                return False
+
+            # Check only GPU 0 since all nodes are homogeneous
+            handle = self.pynvml.nvmlDeviceGetHandleByIndex(0)
+            name = self.pynvml.nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):
+                name = name.decode('utf-8')
+
+            # GB200 GPUs have names like "GB200" or "B200"
+            return any(gpu_type in name.upper() for gpu_type in ["GB200", "B200"])
+
+        except self.pynvml.NVMLError as e:
+            logger.debug(f"NVML Error while detecting GB200: {e}")
+            return False
+        finally:
+            try:
+                self.pynvml.nvmlShutdown()
+            except self.pynvml.NVMLError:
+                pass
+
+        return False
+
+    def get_gb200_static_mapping(self) -> dict:
+        """
+        Get the static GPU to NIC mapping for GB200 platform.
+
+        Returns:
+            dict: Mapping from GPU rank to NIC name for GB200.
+        """
+        return {0: "mlx5_0", 1: "mlx5_1", 2: "mlx5_3", 3: "mlx5_4"}
+
     @with_pynvml_lock
     def get_gpu_pci_mapping(self):
         """
@@ -350,6 +400,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
 
     def __init__(
         self,
+        device_index: Optional[int] = None,
         interval: int = 60,
         pci_topo_file: Optional[str] = None,
         link_down_path_template: Optional[str] = None,
@@ -360,6 +411,8 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         GPUs and NIC topology, where the PCIe Bus ID is obfusticated in the VM.
 
         Args:
+            device_index (Optional[int]): GPU device index to monitor. If provided, automatically sets the NIC device
+                                        and initializes the baseline counter during construction.
             interval (int): Interval in seconds between asynchronous health checks.
             pci_topo_file (Optional[str]): The topo file describes the hardware topology of a system,
                                             specifically how CPUs and PCI devices (like GPUs and NICs) are connected.
@@ -388,6 +441,10 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
 
         self.link_down_path_template = link_down_path_template or self.DEFAULT_LINK_DOWN_PATH
 
+        # If device_index is provided, automatically set the NIC device and initialize baseline
+        if device_index is not None:
+            self.set_nic_device(device_index)
+
     def _get_gpu_ib_mapping(self):
         """
         Find GPU local rank to closest IB/NIC mapping.
@@ -397,6 +454,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         2. Extract IB/NIC PCI Bus IDs from /sys/class/infiniband symlinks.
         3. Find the closest NIC for each GPU by identifying their nearest common ancestor in the PCI hierarchy.
         4. If there are multiple NICs having the same nearest common ancestor, favors the NIC that hasn't been assigned.
+        5. If automatic derivation fails and platform is GB200, use static mapping table.
         """
         gpu_pci_map = self.get_gpu_pci_mapping()
         ib_pci_map = self.get_ib_pci_mapping()
@@ -419,6 +477,11 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         for gpu_rank, ib_dev, _ in assignments:
             if gpu_rank not in gpu_ib_map:
                 gpu_ib_map[gpu_rank] = ib_dev  # Assign even if it's the same IB device
+
+        # If automatic derivation failed and we're on GB200 platform, use static mapping
+        if not gpu_ib_map and self.is_gb200_platform():
+            logger.info("Automatic GPU-IB mapping failed, using GB200 static mapping")
+            gpu_ib_map = self.get_gb200_static_mapping()
 
         self._gpu_ib_map = gpu_ib_map or None
         logger.info("gpu_ib_map: %s" % self._gpu_ib_map)
@@ -524,7 +587,13 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
             )
             return
 
-        logger.info("Local rank: %s Nic name: %s" % (self._local_rank, self.nic_name))
+        # Initialize the baseline link_downed counter for proper delta calculation
+        self._perform_health_check()
+
+        logger.info(
+            "Local rank: %s Nic name: %s baseline counter: %s"
+            % (self._local_rank, self.nic_name, self._prev_link_downed)
+        )
 
     async def async_check(self) -> None:
         """
