@@ -37,6 +37,7 @@ import psutil
 import torch
 from torch import multiprocessing as mp
 from torch.distributed.checkpoint import FileSystemWriter
+from torch.distributed.checkpoint.api import WRAPPED_EXCEPTION, _wrap_exception
 from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX, _StoragePrefix, _write_item
 from torch.distributed.checkpoint.metadata import Metadata
 
@@ -91,6 +92,7 @@ class FileSystemWriterAsync(FileSystemWriter):
     ):
         self.checkpoint_dir = path
         self.use_msc = kwargs.pop("use_msc", False)
+        self.open_file = kwargs.pop("open_file", open)  # for overriding in tests
 
         super().__init__(path, *args, **kwargs)
         if not self.single_file_per_rank:
@@ -204,10 +206,16 @@ class FileSystemWriterAsync(FileSystemWriter):
             3) arguments to that function in 1).
         """
         if not self.write_buckets:
-            return None, None, ()
+            return None, None, []
+        if self.use_msc:
+            import multistorageclient as msc
+
+            open_file = msc.open
+        else:
+            open_file = self.open_file
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
         return (
-            partial(self.write_preloaded_data_multiproc, transform_list, self.use_msc),
+            partial(self.write_preloaded_data_multiproc, transform_list, self.use_msc, open_file),
             partial(self.preload_tensors, self.write_buckets, True),
             [torch.distributed.get_rank(), self.write_buckets, self.results_queue],
         )
@@ -238,6 +246,7 @@ class FileSystemWriterAsync(FileSystemWriter):
     def write_preloaded_data_multiproc(
         transform_list: List[_StorageWriterTransforms],
         use_msc: bool,
+        open_file: Callable,
         rank: int,
         write_buckets: List[WriteBucket],
         global_results_queue: mp.Queue,
@@ -287,7 +296,9 @@ class FileSystemWriterAsync(FileSystemWriter):
 
                 p_list.append(
                     ctx.Process(
-                        target=partial(FileSystemWriterAsync.write_preloaded_data, transform_list),
+                        target=partial(
+                            FileSystemWriterAsync.write_preloaded_data, transform_list, open_file
+                        ),
                         kwargs=kwargs,
                     )
                 )
@@ -339,6 +350,7 @@ class FileSystemWriterAsync(FileSystemWriter):
     @_disable_gc()
     def write_preloaded_data(
         transform_list: List[_StorageWriterTransforms],
+        open_file: Callable,
         local_proc_idx: int,
         write_bucket: WriteBucket,
         results_queue: mp.SimpleQueue,
@@ -378,12 +390,6 @@ class FileSystemWriterAsync(FileSystemWriter):
                 assert len(transform_list) <= 1
                 write_fn = partial(_write_item, *transform_list)
 
-            if use_msc:
-                import multistorageclient as msc
-
-                open_file = msc.open
-            else:
-                open_file = open
             with open_file(file_name, "wb") as stream:
                 for write_item, data in bytes_data:
                     local_results.append(
@@ -421,14 +427,14 @@ class FileSystemWriterAsync(FileSystemWriter):
         """Write all items from ``plan``."""
         raise NotImplementedError('write_data not implemented for FileSystemWriterAsync')
 
-    def retrieve_write_results(self) -> List[WriteResult]:
+    def retrieve_write_results(self) -> Union[List[WriteResult], WRAPPED_EXCEPTION]:
         """
         Turn the latest dict including write results from `self.results_queue`
             into a single results lists. Includes error check.
 
-        Returns (List[WriteResult]): the list of write results
-            from all local processes performing the save.
-
+        Returns (Union(List[WriteResult], WRAPPED_EXCEPTION): the list of write results
+            from all local processes performing the save, or a WRAPPED_EXCEPTION if
+            an exception was raised during the writing process.
         """
         assert self.write_buckets is not None
 
@@ -438,15 +444,22 @@ class FileSystemWriterAsync(FileSystemWriter):
             try:
                 write_results_or_exc = self.results_queue.get_nowait()
             except queue.Empty:
-                raise RuntimeError('results_queue should not be empty')
+                return _wrap_exception(RuntimeError('results_queue should not be empty'))
 
         if isinstance(write_results_or_exc, Exception):
-            raise RuntimeError(f'Worker failure: {write_results_or_exc}') from write_results_or_exc
+            try:
+                raise RuntimeError(
+                    f'Worker failure: {write_results_or_exc}'
+                ) from write_results_or_exc
+            except Exception as e:
+                return _wrap_exception(e)
         write_results: dict = write_results_or_exc
         if len(write_results) != len(self.write_buckets):
-            raise RuntimeError(
-                f'Incomplete worker results (expected {len(self.write_buckets)},'
-                f' got {len(write_results)}. This probably indicates a worker failure.'
+            return _wrap_exception(
+                RuntimeError(
+                    f'Incomplete worker results (expected {len(self.write_buckets)},'
+                    f' got {len(write_results)}. This probably indicates a worker failure.'
+                )
             )
         return list(chain.from_iterable(write_results.values()))
 
@@ -484,7 +497,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 
             # storage_meta was introduced since PyTorch 2.4
             if "storage_meta" in inspect.signature(Metadata).parameters:
-                metadata.stoage_meta = self.storage_meta()
+                metadata.storage_meta = self.storage_meta()
 
             path = os.path.join(self.checkpoint_dir, ".metadata")
 
