@@ -122,3 +122,4 @@ class TestAsyncSaveWithMSC:
                 assert torch.equal(
                     loaded_async_state_dict[key], state_dict[key]
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
+            async_queue.close()

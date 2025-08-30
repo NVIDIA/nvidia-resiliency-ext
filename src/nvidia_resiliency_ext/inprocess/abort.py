@@ -22,6 +22,7 @@ import os
 import torch
 
 from nvidia_resiliency_ext.attribution.trace_analyzer.trace_collector import TorchFRTraceCollector
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import abort_nvrx_checkpoint
 
 from . import utils
 from .state import FrozenState
@@ -184,4 +185,15 @@ class AbortTransformerEngine(Abort):
             # Clear a class-member containing a process group
             te_fp8.FP8GlobalStateManager.reset()
 
+        return state
+
+
+class AbortPersistentCheckpointProcesses(Abort):
+    r'''
+    Aborts Async Checkpoint processes
+
+    '''
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        abort_nvrx_checkpoint()
         return state

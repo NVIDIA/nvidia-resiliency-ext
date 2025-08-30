@@ -74,3 +74,23 @@ class TorchAsyncCheckpoint(object):
         self._async_calls_queue.maybe_finalize_async_calls(blocking, no_dist=no_dist)
         if terminate:
             self._async_calls_queue.close()
+
+    def _get_async_calls_queue(self):
+        """
+        Function introduced for unit test purpose to validate the state of the Async CP workers.
+        """
+        return self._async_calls_queue
+
+    def close(self, abort=False):
+        """This method make sure the TorchAsyncCheckpoint is terminated
+        with all its assigned async request completed
+
+        Args:
+            abort (bool, optional): Default to False. Needs to be manually set to true when
+                the checkpoint async process needs to be aborted.
+        """
+        if self._async_calls_queue is not None:
+            self._async_calls_queue.close()
+
+    def __del__(self):
+        self.close()

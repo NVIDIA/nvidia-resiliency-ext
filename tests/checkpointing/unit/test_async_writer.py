@@ -124,6 +124,7 @@ class TestAsyncSave:
                 assert torch.equal(
                     loaded_sync_state_dict[key], state_dict[key]
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
+            async_queue.close()
 
     def test_cached_metadata(self, tmp_path_dist_ckpt):
         Utils.initialize_distributed()
@@ -178,3 +179,4 @@ class TestAsyncSave:
                     len(x) for x in diffs
                 ), f'{field.name} is different in metadata from non-cached, cached metadata impls'
         ckpt_dir.cleanup()
+        async_queue.close()
