@@ -109,6 +109,9 @@ def main():
     # Clean up checkpoint directory only on rank 0
     cleanup(ckpt_dir)
 
+    # Close the async save queue to shutdown async processes
+    ckpt_impl.close()
+
     # Ensure NCCL process group is properly destroyed
     if dist.is_initialized():
         dist.destroy_process_group()
