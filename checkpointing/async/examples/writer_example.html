@@ -284,7 +284,7 @@
 <span class="linenos">190</span>
 <span class="linenos">191</span>    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Finalizing checkpoint save...&quot;</span><span class="p">)</span>
 <span class="linenos">192</span>    <span class="n">async_queue</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-<span class="linenos">193</span>    <span class="n">async_queue</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>  <span class="c1"># Explicitly close queue (optional)</span>
+<span class="linenos">193</span>    <span class="n">async_queue</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>  <span class="c1"># Explicitly close queue</span>
 <span class="linenos">194</span>
 <span class="linenos">195</span>    <span class="c1"># Synchronize processes before loading</span>
 <span class="linenos">196</span>    <span class="n">dist</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>

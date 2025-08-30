@@ -101,6 +101,7 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.attribution.trace_analyzer.trace_collector</span><span class="w"> </span><span class="kn">import</span> <span class="n">TorchFRTraceCollector</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.checkpointing.async_ckpt.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">abort_nvrx_checkpoint</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">utils</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.state</span><span class="w"> </span><span class="kn">import</span> <span class="n">FrozenState</span>
@@ -274,6 +275,20 @@
             <span class="c1"># Clear a class-member containing a process group</span>
             <span class="n">te_fp8</span><span class="o">.</span><span class="n">FP8GlobalStateManager</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
 
+        <span class="k">return</span> <span class="n">state</span></div>
+
+
+
+<div class="viewcode-block" id="AbortPersistentCheckpointProcesses">
+<a class="viewcode-back" href="../../../inprocess/api/abort.html#nvidia_resiliency_ext.inprocess.abort.AbortPersistentCheckpointProcesses">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">AbortPersistentCheckpointProcesses</span><span class="p">(</span><span class="n">Abort</span><span class="p">):</span>
+<span class="w">    </span><span class="sa">r</span><span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Aborts Async Checkpoint processes</span>
+
+<span class="sd">    &#39;&#39;&#39;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">FrozenState</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FrozenState</span><span class="p">:</span>
+        <span class="n">abort_nvrx_checkpoint</span><span class="p">()</span>
         <span class="k">return</span> <span class="n">state</span></div>
 
 </pre></div>

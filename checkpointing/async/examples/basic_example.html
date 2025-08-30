@@ -203,13 +203,16 @@
 <span class="linenos">109</span>    <span class="c1"># Clean up checkpoint directory only on rank 0</span>
 <span class="linenos">110</span>    <span class="n">cleanup</span><span class="p">(</span><span class="n">ckpt_dir</span><span class="p">)</span>
 <span class="linenos">111</span>
-<span class="linenos">112</span>    <span class="c1"># Ensure NCCL process group is properly destroyed</span>
-<span class="linenos">113</span>    <span class="k">if</span> <span class="n">dist</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">():</span>
-<span class="linenos">114</span>        <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
-<span class="linenos">115</span>
-<span class="linenos">116</span>
-<span class="linenos">117</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
-<span class="linenos">118</span>    <span class="n">main</span><span class="p">()</span>
+<span class="linenos">112</span>    <span class="c1"># Close the async save queue to shutdown async processes</span>
+<span class="linenos">113</span>    <span class="n">ckpt_impl</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+<span class="linenos">114</span>
+<span class="linenos">115</span>    <span class="c1"># Ensure NCCL process group is properly destroyed</span>
+<span class="linenos">116</span>    <span class="k">if</span> <span class="n">dist</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">():</span>
+<span class="linenos">117</span>        <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
+<span class="linenos">118</span>
+<span class="linenos">119</span>
+<span class="linenos">120</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+<span class="linenos">121</span>    <span class="n">main</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>

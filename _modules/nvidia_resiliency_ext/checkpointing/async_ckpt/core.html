@@ -224,6 +224,19 @@
 
 
 
+<span class="c1"># Singleton metaclass</span>
+<div class="viewcode-block" id="Singleton">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.Singleton">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">Singleton</span><span class="p">(</span><span class="nb">type</span><span class="p">):</span>
+    <span class="n">_instances</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">cls</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_instances</span><span class="p">:</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">_instances</span><span class="p">[</span><span class="bp">cls</span><span class="p">]</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">Singleton</span><span class="p">,</span> <span class="bp">cls</span><span class="p">)</span><span class="o">.</span><span class="fm">__call__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_instances</span><span class="p">[</span><span class="bp">cls</span><span class="p">]</span></div>
+
+
+
 <div class="viewcode-block" id="AsyncCaller">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">AsyncCaller</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
@@ -299,8 +312,13 @@
 <div class="viewcode-block" id="AsyncCaller.close">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller.close">[docs]</a>
     <span class="nd">@abstractmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Terminate the async caller at exit of an application or some termination conditions&quot;&quot;&quot;</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">abort</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Terminate the async caller at exit of an application or some termination conditions</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            abort (bool, optional): Default to False. Needs to be manually set to true when</span>
+<span class="sd">                the checkpoint async process needs to be aborted.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;AsyncCaller: </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, Destroying Async Caller&quot;</span><span class="p">)</span></div>
 
 
@@ -402,15 +420,23 @@
 
 <div class="viewcode-block" id="TemporalAsyncCaller.close">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller.close">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">abort</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;For TemporalAsyncCaller, this method is called explictly in `is_current_async_calls_done`</span>
 
 <span class="sd">        This method make sure the TemporalAsyncCaller terminated</span>
 <span class="sd">        with all its assigned async request completed</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            abort (bool, optional): Default to False. Needs to be manually set to true when</span>
+<span class="sd">                the checkpoint async process needs to be aborted.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, joining self.process&quot;</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">abort</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Temporal worker aborted in rank </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="kc">None</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                 <span class="s2">&quot;TemporalAsyncCaller: Async process join finished &quot;</span>
@@ -420,7 +446,13 @@
 
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">pass</span></div>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_debug_is_async_process_running</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Utility for unit test purpose to validate expected state of the async process that performs async CP.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()</span></div>
 
 
 
@@ -485,7 +517,7 @@
                 <span class="p">),</span>
             <span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Started Async Caller&quot;</span><span class="p">)</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Started Async Caller </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
         <span class="k">if</span> <span class="n">async_req</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">preload_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">async_req</span><span class="o">.</span><span class="n">call_idx</span><span class="p">)</span>
@@ -560,21 +592,36 @@
 
 <div class="viewcode-block" id="PersistentAsyncCaller.close">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.close">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">abort</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Wait on the left async requests and terminate the PersistentAsyncCaller</span>
 
 <span class="sd">        Signals the PersistentAsyncCaller by sending a &#39;DONE&#39; message to make it terminated</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            abort (bool, optional): Default to False. Needs to be manually set to true when</span>
+<span class="sd">                the checkpoint async process needs to be aborted.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Destroying Async Caller&quot;</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s1">&#39;DONE&#39;</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">abort</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Persistent worker aborted in rank </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s1">&#39;DONE&#39;</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+
             <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="kc">None</span></div>
 
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_debug_is_async_process_running</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Utility for unit test purpose to validate expected state of the async process that performs async CP.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()</span>
 
 <div class="viewcode-block" id="PersistentAsyncCaller.async_loop">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.async_loop">[docs]</a>
@@ -652,11 +699,15 @@
 
 <div class="viewcode-block" id="AsyncCallsQueue">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">AsyncCallsQueue</span><span class="p">:</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">AsyncCallsQueue</span><span class="p">(</span><span class="n">metaclass</span><span class="o">=</span><span class="n">Singleton</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Manages a queue of async calls.</span>
 
 <span class="sd">    Allows adding a new async call with `schedule_async_request` and finalizing</span>
 <span class="sd">    active calls with `maybe_finalize_async_calls`.</span>
+
+<span class="sd">    This class is a Singleton implying there will be only one instance of AsyncCallsQueue per rank.</span>
+<span class="sd">    Making this object a singleton avoids mis-use from users where they could potentially spin multiple async CP workers.</span>
+<span class="sd">    Making this object a singleton also enables simplification of process life-cycle management during CP aborts.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">persistent</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">):</span>
@@ -742,12 +793,38 @@
 
 <div class="viewcode-block" id="AsyncCallsQueue.close">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.close">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Finalize all calls upon closing.&quot;&quot;&quot;</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">abort</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Finalize all calls upon closing.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            abort (bool, optional): Default to False. Needs to be manually set to true when</span>
+<span class="sd">                the checkpoint async process needs to be aborted.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">abort</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></div>
-</div>
+            <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="n">abort</span><span class="o">=</span><span class="n">abort</span><span class="p">)</span>
+
+        <span class="c1"># Reset all class params</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span> <span class="o">=</span> <span class="kc">None</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Ensure clean closure of AsyncCallsQueue at object deletion&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></div>
+
+
+
+<div class="viewcode-block" id="abort_nvrx_checkpoint">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.abort_nvrx_checkpoint">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">abort_nvrx_checkpoint</span><span class="p">():</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Abort NVRx Checkpoint Utility. This will close the AsyncCallsQueue that manages async checkpoints&quot;&quot;&quot;</span>
+    <span class="c1"># we have a singleton persistent worker in our async calls queue</span>
+    <span class="c1"># close the async calls queue which will ensure a clean restart</span>
+    <span class="c1"># of the CP async process in subsequent async save requests.</span>
+    <span class="n">async_queue_singleton</span> <span class="o">=</span> <span class="n">AsyncCallsQueue</span><span class="p">(</span><span class="n">persistent</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">async_queue_singleton</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="n">abort</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span></div>
 
 </pre></div>
 

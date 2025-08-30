@@ -59,6 +59,7 @@
 <li class="toctree-l3"><a class="reference internal" href="initialize.html">Initialize</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Abort</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.Abort"><code class="docutils literal notranslate"><span class="pre">Abort</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.AbortPersistentCheckpointProcesses"><code class="docutils literal notranslate"><span class="pre">AbortPersistentCheckpointProcesses</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed"><code class="docutils literal notranslate"><span class="pre">AbortTorchDistributed</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.abort.AbortTransformerEngine"><code class="docutils literal notranslate"><span class="pre">AbortTransformerEngine</span></code></a></li>
 </ul>
@@ -139,6 +140,12 @@ communicate with a terminated rank.</p>
 </dd></dl>
 
 <dl class="py class" id="module-nvidia_resiliency_ext.inprocess.abort">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.AbortPersistentCheckpointProcesses">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">AbortPersistentCheckpointProcesses</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#AbortPersistentCheckpointProcesses"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.AbortPersistentCheckpointProcesses" title="Link to this definition"></a></dt>
+<dd><p>Aborts Async Checkpoint processes</p>
+</dd></dl>
+
+<dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.abort.</span></span><span class="sig-name descname"><span class="pre">AbortTorchDistributed</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">torch_fr_trace_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/abort.html#AbortTorchDistributed"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.abort.AbortTorchDistributed" title="Link to this definition"></a></dt>
 <dd><p>Aborts PyTorch distributed collectives, and destroys all PyTorch
