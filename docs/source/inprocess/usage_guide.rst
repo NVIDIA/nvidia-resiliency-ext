@@ -60,7 +60,11 @@ Requirements for the wrapped function
   ext/blob/main/examples/fault_tolerance/run_inprocess_injob_example.sh>`_ example for the recommended
   default values (for example, --monitor-interval=5).
 
-- it's heavily recommended for the wrapped function to load the state affected
+    - Any objects whose lifetime crosses the restart boundary *must* be process-group independent _or_
+      the workload must re-align the object, inside the wrapped function, to the new process groups
+      created after the In-process restart.
+
+- It is heavily recommended for the wrapped function to load the state affected
   by distributed collectives from a checkpoint on every restart (e.g. load
   weights of a model); outputs of distributed collectives are likely to become
   corrupted or invalid if a fault happened while a collective was in-flight and
@@ -310,7 +314,10 @@ workers drops below a specified threshold.
 Multiple initializers could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose`.
 The composition order follows mathematical composition. Therefore, the last listed function is called first.
 Consequently, when using nested restarters, the :py:class:`nvidia_resiliency_ext.inprocess.nested_restarter.NestedRestarterHandlingCompleted`
-should be listed first, as handling a restart is not complete until the end of the `Initialize`.
+should be carefully placed as this callback indicates completion of the restart.
+Subsequent callbacks (e.g., those listed before the nested restarter callback) logically take placed
+at the _beginning_ of the next restart iteration.  For example, :py:class:`nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment`
+is logically part of the next restart iteration and should be called after the nested restarter callback.
 
 Wrapped function termination mechanism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -514,6 +521,27 @@ then reraised by the :py:class:`Wrapper`, and should cause termination of the
 main Python interpreter process on the local rank.
 
 Multiple health checks could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose`.
+
+Automatic Health Checks
+~~~~~~~~~~~~~~~~~~~~~~~
+The :py:class:`Wrapper` automatically includes comprehensive health monitoring when the ``LOCAL_RANK``
+environment variable is available. These health checks are executed in sequence during restart to ensure
+the system is in a healthy state before attempting to restart the workload.
+
+**GPU Health Check**: Validates GPU device health and recovery actions using :py:class:`ChainedGPUHealthCheck`.
+
+**NVL Health Check**: Monitors NVLink connectivity and link health using :py:class:`ChainedNVLHealthCheck`.
+
+**NIC Health Check**: Monitors network interface card connectivity and link down events using :py:class:`ChainedNicHealthCheck`.
+This is particularly important for distributed workloads where network connectivity is critical.
+
+The automatic health checks are configured with the same ``device_index`` as the current GPU rank (from ``LOCAL_RANK``),
+ensuring that each GPU monitors its associated network interfaces. No additional configuration is required
+for basic health monitoring - the wrapper automatically handles health check composition and execution.
+
+.. note::
+   The NIC health check automatically establishes baseline link down counter values during initialization,
+   ensuring accurate delta detection from the first health check execution.
 
 Monitoring capabilities
 ~~~~~~~~~~~~~~~~~~~~~~~
