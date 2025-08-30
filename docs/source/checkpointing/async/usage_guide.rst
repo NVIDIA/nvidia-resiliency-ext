@@ -3,6 +3,9 @@ Usage guide
 The :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue`
 provides application users with an interface to schedule :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest`, 
 which defines checkpoint routine, its args/kwargs and finalization steps when the checkpoint routine is finished.
+This class is a singleton, implying each rank will have only one instance of this class.
+It is recommended to call the `close()` API on the `AsyncCallsQueue` at the end of training to ensure a clean shutdown of the process that manages async checkpointing.
+We also extend the API of `abort_nvrx_checkpoint()` to abort the async processes and cleanly restart the `AsyncCallsQueue` in case of any restarts of the training processes.  
 
 :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint` 
            is an instatiation of the core utilities to make `torch.save` run asynchronously.
