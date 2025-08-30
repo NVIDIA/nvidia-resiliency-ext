@@ -60,7 +60,11 @@ Requirements for the wrapped function
   ext/blob/main/examples/fault_tolerance/run_inprocess_injob_example.sh>`_ example for the recommended
   default values (for example, --monitor-interval=5).
 
-- it's heavily recommended for the wrapped function to load the state affected
+    - Any objects whose lifetime crosses the restart boundary *must* be process-group independent _or_
+      the workload must re-align the object, inside the wrapped function, to the new process groups
+      created after the In-process restart.
+
+- It is heavily recommended for the wrapped function to load the state affected
   by distributed collectives from a checkpoint on every restart (e.g. load
   weights of a model); outputs of distributed collectives are likely to become
   corrupted or invalid if a fault happened while a collective was in-flight and
@@ -310,7 +314,10 @@ workers drops below a specified threshold.
 Multiple initializers could be composed with :py:class:`nvidia_resiliency_ext.inprocess.Compose`.
 The composition order follows mathematical composition. Therefore, the last listed function is called first.
 Consequently, when using nested restarters, the :py:class:`nvidia_resiliency_ext.inprocess.nested_restarter.NestedRestarterHandlingCompleted`
-should be listed first, as handling a restart is not complete until the end of the `Initialize`.
+should be carefully placed as this callback indicates completion of the restart.
+Subsequent callbacks (e.g., those listed before the nested restarter callback) logically take placed
+at the _beginning_ of the next restart iteration.  For example, :py:class:`nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment`
+is logically part of the next restart iteration and should be called after the nested restarter callback.
 
 Wrapped function termination mechanism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
