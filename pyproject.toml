@@ -1,35 +1,41 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
+[build-system]
+requires = [ "poetry-core>=1.0.0", "pybind11", "setuptools", "wheel",]
+build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "nvidia-resiliency-ext"
 repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
-version = "0.3.0"
+version = "0.5.0-rc1"
 description = "NVIDIA Resiliency Package"
-authors = ["NVIDIA Corporation"]
+authors = [ "NVIDIA Corporation",]
 readme = "README.md"
 license = "Apache 2.0"
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Operating System :: OS Independent",
-]
-packages = [
-    { include = "nvidia_resiliency_ext", from = "src" },
-]
+classifiers = [ "Development Status :: 4 - Beta", "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.10", "Operating System :: OS Independent",]
+exclude = [ "src/nvidia_resiliency_ext/attribution/straggler/cupti_src",]
+[[tool.poetry.packages]]
+include = "nvidia_resiliency_ext"
+from = "src"
 
-exclude = [
-    "src/nvidia_resiliency_ext/straggler/cupti_src"
-]
+[tool.isort]
+profile = "black"
+line_length = 100
+py_version = 310
+filter_files = true
+extend_skip_glob = [ "setup.py", "cupti_build.py",]
+
+[tool.black]
+line_length = 100
+skip_string_normalization = true
+required_version = "24"
+target-version = [ "py310", "py311", "py312",]
+force-exclude = "# Force exclude, as this config is also used by pre-commit\n# https://stackoverflow.com/questions/73247204/black-not-respecting-extend-exclude-in-pyproject-toml\n# A regex preceded with ^/ will apply only to files and directories # in the root of the project.\n(\n  ^\\/setup.py\\/\n  | ^\\/build.py\\/\n)\n"
+
+[tool.ruff]
+extend-exclude = [ "setup.py", "build.py",]
 
 [tool.poetry.build]
 script = "cupti_build.py"
 generate-setup-file = true
-
-[build-system]
-requires = ["poetry-core>=1.0.0", "pybind11", "setuptools", "wheel"]
-build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.dependencies]
 torch = ">=2.3.0"
@@ -44,49 +50,8 @@ defusedxml = "*"
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
 
-
-[tool.isort]
-profile = "black"  # black-compatible
-line_length = 100  # should match black parameters
-py_version = 310   # python 3.10 as a target version
-# filter_files and extend_skip_glob are needed for pre-commit to filter out the files
-filter_files = true 
-extend_skip_glob = [
-    "setup.py", 
-    "cupti_build.py",
-    "src/nvidia_resiliency_ext/fault_tolerance/_torch_elastic_compat/*"
-]
-
-[tool.black]
-line_length = 100
-skip_string_normalization = true
-# major year version is stable, see details in
-# https://black.readthedocs.io/en/stable/the_black_code_style/index.html
-# `required_version` is necessary for consistency (other `black` versions will fail to reformat files)
-required_version = "24"
-target-version = ['py310', 'py311', 'py312']
-force-exclude = '''
-# Force exclude, as this config is also used by pre-commit
-# https://stackoverflow.com/questions/73247204/black-not-respecting-extend-exclude-in-pyproject-toml
-# A regex preceded with ^/ will apply only to files and directories # in the root of the project.
-(
-  ^\/setup.py\/
-  | ^\/build.py\/
-  | ^\/src/nvidia_resiliency_ext/fault_tolerance/_torch_elastic_compat\/
-)
-'''
-
-[tool.ruff]
-extend-exclude = [
-    "setup.py", 
-    "build.py",
-    "src/nvidia_resiliency_ext/fault_tolerance/_torch_elastic_compat"
-]
-
 [tool.ruff.lint]
-# F841 Local variable `...` is assigned to but never used
-ignore = ["F841"] 
+ignore = [ "F841",]
 
 [tool.ruff.lint.per-file-ignores]
-# avoid "unused import" warnings for __init__.py files
-"__init__.py" = ["F401"]
+"__init__.py" = [ "F401",]

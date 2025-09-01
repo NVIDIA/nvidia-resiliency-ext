@@ -27,11 +27,13 @@ from typing import Any, Optional
 
 import psutil
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+
+from . import utils
 from .attribution import Interruption, InterruptionRecord
 from .progress_watchdog import Timestamp
 from .sibling_monitor import SiblingMonitor
 from .store import PrefixStore, StoreMixin
-from .utils import find_nearest_handler
 
 
 class Message(enum.Enum):
@@ -41,6 +43,8 @@ class Message(enum.Enum):
     DAEMON_PID = enum.auto()
     ITERATION_START = enum.auto()
     TERMINATE = enum.auto()
+    DISABLE_TIMEOUTS = enum.auto()
+    ENABLE_TIMEOUTS = enum.auto()
 
 
 def is_process_active(process):
@@ -48,8 +52,9 @@ def is_process_active(process):
     return is_active
 
 
-def terminate_process(process: psutil.Process, termination_grace_time: datetime.timedelta):
-    log = logging.getLogger(__name__)
+def terminate_process(
+    process: psutil.Process, termination_grace_time: datetime.timedelta, log: logging.Logger
+):
     try:
         log.info(f'SIGCONT {process}')
         process.resume()
@@ -136,39 +141,53 @@ class MonitorProcess:
         heartbeat_interval: datetime.timedelta,
         heartbeat_timeout: datetime.timedelta,
         log_filename: Optional[str],
+        pid_filename: Optional[str],
         log_level: int,
         store_factory: type[StoreMixin],
         store_kwargs: dict[str, Any],
     ):
-        if log_filename is not None:
-            log_filename = log_filename.format(rank=rank)
+        if LogConfig.get_node_local_tmp_dir() is not None:
+            setup_logger(force_reset=True, node_local_tmp_prefix="monproc")
+            log = logging.getLogger(LogConfig.name)
         else:
-            log_filename = os.devnull
+            if log_filename is not None:
+                log_filename = log_filename.format(rank=rank)
+            else:
+                log_filename = os.devnull
 
-        parent_module_name = MonitorProcess.__module__.split('.')[-2]
-        parent_logger = logging.getLogger(parent_module_name)
-        parent_logger.propagate = True
+            parent_module_name = MonitorProcess.__module__.split('.')[-2]
+            parent_logger = logging.getLogger(parent_module_name)
+            parent_logger.propagate = True
 
-        try:
-            nearest_file_handler = find_nearest_handler(
-                logging.getLogger(__name__),
-                logging.FileHandler,
+            try:
+                nearest_file_handler = utils.find_nearest_handler(
+                    logging.getLogger(__name__),
+                    logging.FileHandler,
+                )
+                log_format = nearest_file_handler.formatter._fmt
+            except Exception:
+                log_format = '%(asctime)s | %(levelname)-5s | %(name)s | %(message)s'
+
+            logging.basicConfig(
+                filename=log_filename,
+                filemode='w',
+                level=log_level,
+                format=log_format,
+                force=True,
             )
-            log_format = nearest_file_handler.formatter._fmt
-        except Exception:
-            log_format = '%(asctime)s | %(levelname)-5s | %(name)s | %(message)s'
-
-        logging.basicConfig(
-            filename=log_filename,
-            filemode='w',
-            level=log_level,
-            format=log_format,
-            force=True,
-        )
-        log = logging.getLogger(__name__)
+            log = logging.getLogger(__name__)
 
         daemon_pid = os.getpid()
         log.info(f'{target_pid=} {daemon_pid=} {log_level=} {rank=} {world_size=}')
+
+        # Handle PID file
+        if pid_filename is not None:
+            pid_filename = pid_filename.format(rank=rank)
+            try:
+                with open(pid_filename, 'w') as f:
+                    f.write(str(daemon_pid))
+            except Exception as e:
+                log.error(f"Failed to write PID file {pid_filename}: {e}")
 
         target_process = psutil.Process(target_pid)
         msg_queue.put((Message.DAEMON_PID, daemon_pid))
@@ -193,6 +212,8 @@ class MonitorProcess:
         initial_hard_timeout = hard_timeout
         soft_timeout_expired = False
         timestamp = Timestamp(auto=time.monotonic())
+        timeouts_enabled = True  # Flag to track if timeouts are enabled
+
         sibling_monitor = None
 
         try:
@@ -223,6 +244,12 @@ class MonitorProcess:
                         case Message.DISABLE_SIBLING_MONITOR:
                             if sibling_monitor is not None:
                                 sibling_monitor.shutdown()
+                        case Message.DISABLE_TIMEOUTS:
+                            timeouts_enabled = False
+                            log.info('Soft and hard timeouts disabled')
+                        case Message.ENABLE_TIMEOUTS:
+                            timeouts_enabled = True
+                            log.info('Soft and hard timeouts enabled')
                         case Message.TERMINATE:
                             break
                         case Message.RECORD_INTERRUPTED:
@@ -239,23 +266,26 @@ class MonitorProcess:
                     status = ex
                 log.debug(f'{status=} {timestamp=}')
 
-                if not soft_timeout_expired and timestamp.is_timed_out(soft_timeout):
-                    store.record_interrupted([InterruptionRecord(rank, Interruption.SOFT_TIMEOUT)])
-                    soft_timeout_expired = True
+                if timeouts_enabled:
+                    if not soft_timeout_expired and timestamp.is_timed_out(soft_timeout):
+                        store.record_interrupted(
+                            [InterruptionRecord(rank, Interruption.SOFT_TIMEOUT)]
+                        )
+                        soft_timeout_expired = True
 
-                if timestamp.is_timed_out(hard_timeout):
-                    already_arrived = store.is_rank_at_reentrant_barrier(
-                        rank=rank,
-                        group_name=StoreMixin.ITERATION_BARRIER,
-                    )
-                    if already_arrived and hard_timeout != barrier_timeout:
-                        hard_timeout = barrier_timeout
-                        continue
+                    if timestamp.is_timed_out(hard_timeout):
+                        already_arrived = store.is_rank_at_reentrant_barrier(
+                            rank=rank,
+                            group_name=StoreMixin.ITERATION_BARRIER,
+                        )
+                        if already_arrived and hard_timeout != barrier_timeout:
+                            hard_timeout = barrier_timeout
+                            continue
 
-                    interruption = Interruption.HARD_TIMEOUT
-                    store.record_interrupted([InterruptionRecord(rank, interruption)])
-                    store.record_terminated_ranks([rank])
-                    terminate_process(target_process, termination_grace_time)
+                        interruption = Interruption.HARD_TIMEOUT
+                        store.record_interrupted([InterruptionRecord(rank, interruption)])
+                        store.record_terminated_ranks([rank])
+                        terminate_process(target_process, termination_grace_time, log)
 
                 if not is_process_active(target_process):
                     log.info('target process is terminated')
@@ -323,6 +353,12 @@ class MonitorProcess:
     def disable_sibling_monitor(self):
         self.msg_queue.put((Message.DISABLE_SIBLING_MONITOR, None))
 
+    def disable_timeouts(self):
+        self.msg_queue.put((Message.DISABLE_TIMEOUTS, None))
+
+    def enable_timeouts(self):
+        self.msg_queue.put((Message.ENABLE_TIMEOUTS, None))
+
     def send_timestamp(self, timestamp):
         self.msg_queue.put((Message.TIMESTAMP, timestamp))
 
@@ -341,6 +377,7 @@ class MonitorProcess:
         heartbeat_interval,
         heartbeat_timeout,
         log_filename,
+        pid_filename,
         store_factory,
         store_kwargs,
     ):
@@ -376,6 +413,7 @@ class MonitorProcess:
                     'heartbeat_interval': heartbeat_interval,
                     'heartbeat_timeout': heartbeat_timeout,
                     'log_filename': log_filename,
+                    'pid_filename': pid_filename,
                     'log_level': log.getEffectiveLevel(),
                     'store_factory': store_factory,
                     'store_kwargs': store_kwargs,

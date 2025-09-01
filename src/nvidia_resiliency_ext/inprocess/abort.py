@@ -16,8 +16,13 @@
 
 import abc
 import concurrent.futures
+import logging
+import os
 
 import torch
+
+from nvidia_resiliency_ext.attribution.trace_analyzer.trace_collector import TorchFRTraceCollector
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import abort_nvrx_checkpoint
 
 from . import utils
 from .state import FrozenState
@@ -64,6 +69,28 @@ class AbortTorchDistributed(Abort):
     thread for each distributed group that has been created.
     '''
 
+    def __init__(self, torch_fr_trace_path: str = None):
+        r'''
+        This class is used to abort PyTorch distributed collectives, and destroy all PyTorch
+        distributed process groups.
+
+        It also collects PyTorch Flight Recorder traces, which can be used to analyze the
+        behavior of the distributed collectives.
+
+        PyTorch Flight Recorder traces are collected by setting the
+        TORCH_NCCL_TRACE_BUFFER_SIZE environment variable to a non-zero value.
+        We disable the collection of stack traces by default, which requires GIL, leading to a deadlock.
+        This feature is still experimental and need to be used with care.
+
+        The traces are collected in the directory specified by torch_fr_trace_path.
+        If the directory does not exist, it will be created.
+        If the directory is not provided, the traces will not be collected.
+
+        Args:
+            torch_fr_trace_path: Path to collect PyTorch Flight Recorder traces.
+        '''
+        self.torch_fr_trace_path = torch_fr_trace_path or os.environ.get('NVRX_FR_TRACE_PATH', None)
+
     @staticmethod
     def shutdown_all_process_group_backends():
         device = torch.device('cuda')
@@ -97,8 +124,40 @@ class AbortTorchDistributed(Abort):
                 else:
                     backend.abort()
 
+    def collect_fr_trace(self, state: FrozenState):
+        def _check_fr_env():
+            check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE', 'TORCH_FR_BUFFER_SIZE']
+            rank = torch.distributed.get_rank()
+            for env_var in check_env_variables:
+                env_value = os.environ.get(env_var, '0')
+                try:
+                    env_value_int = int(env_value)
+                except ValueError:
+                    raise ValueError(
+                        f"Environment variable {env_var} is set to {env_value}, which is not an integer"
+                    )
+
+                if env_value_int <= 0:
+                    if rank == 0:
+                        log = logging.getLogger(__name__)
+                        log.info(
+                            f"Environment variable {env_var} is set to {env_value}"
+                            f", FR trace collection is disabled"
+                        )
+                    return False
+            return True
+
+        if _check_fr_env() is True:
+            if self.torch_fr_trace_path is None:
+                return
+            trace_path = os.path.join(self.torch_fr_trace_path, f'iter_{state.iteration}')
+            os.makedirs(trace_path, exist_ok=True)
+            trace_analyzer = TorchFRTraceCollector(trace_path)
+            trace_analyzer.collect()
+
     def __call__(self, state: FrozenState) -> FrozenState:
         if torch.distributed.is_available() and torch.distributed.is_initialized():
+            self.collect_fr_trace(state)
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
         return state
@@ -118,4 +177,23 @@ class AbortTransformerEngine(Abort):
         else:
             te.module.base.destroy_ub()
 
+        try:
+            import transformer_engine.pytorch.fp8 as te_fp8
+        except Exception:
+            pass
+        else:
+            # Clear a class-member containing a process group
+            te_fp8.FP8GlobalStateManager.reset()
+
+        return state
+
+
+class AbortPersistentCheckpointProcesses(Abort):
+    r'''
+    Aborts Async Checkpoint processes
+
+    '''
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        abort_nvrx_checkpoint()
         return state

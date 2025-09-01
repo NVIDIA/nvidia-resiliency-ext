@@ -6,11 +6,11 @@
 
 # SPDX-License-Identifier: BSD-3-Clause
 # Modifications made by NVIDIA
-# All occurences of 'torch.distributed.elastic' were replaced with 'nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat'
+# This file uses PyTorch's distributed elastic module directly
 # Added suppression for pickle low serverity issue
 
 
-# This file is based on _torch_elastic_compat/rendezvous/dynamic_rendezvous.py
+# This file is based on torch.distributed.elastic.rendezvous.dynamic_rendezvous
 # It includes NVRx related modifications for the node health checking, KSO and others.
 
 
@@ -31,15 +31,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, cast
 
 from torch.distributed import PrefixStore, Store
-
-from nvidia_resiliency_ext.fault_tolerance._torch_elastic_compat.agent.server.api import WorkerState
-
-from ..shared_utils.health_check import GPUHealthCheck
-from ._torch_elastic_compat.events import NodeState, construct_and_record_rdzv_event
-from ._torch_elastic_compat.rendezvous.api import (
+from torch.distributed.elastic.agent.server.api import WorkerState
+from torch.distributed.elastic.events import NodeState, construct_and_record_rdzv_event
+from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
     RendezvousError,
     RendezvousGracefulExitError,
@@ -48,12 +45,26 @@ from ._torch_elastic_compat.rendezvous.api import (
     RendezvousStateError,
     RendezvousTimeoutError,
 )
-from ._torch_elastic_compat.rendezvous.utils import _delay, _PeriodicTimer
+
+# Try to import newer PyTorch features, fall back gracefully if not available
+try:
+    from torch.distributed.elastic.rendezvous.api import RendezvousInfo, RendezvousStoreInfo
+
+    _RENDEZVOUS_INFO_AVAILABLE = True
+except ImportError:
+    _RENDEZVOUS_INFO_AVAILABLE = False
+    RendezvousInfo = None
+    RendezvousStoreInfo = None
+from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
+
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+from ..shared_utils.health_check import GPUHealthCheck
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
 
-log = logging.getLogger(__name__)
+log = logging.getLogger(LogConfig.name)
 
 
 def get_method_name(depth=2):
@@ -644,7 +655,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
     _state: _RendezvousState
     _state_holder: _RendezvousStateHolder
     _settings: RendezvousSettings
-    _ranks_connector: IpcConnector
     _prev_participants: Dict[_NodeDesc, int]
     _prev_round: Optional[int]
 
@@ -653,12 +663,10 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         node: _NodeDesc,
         state_holder: _RendezvousStateHolder,
         settings: RendezvousSettings,
-        ranks_connector: IpcConnector,
     ) -> None:
         self._node = node
         self._state_holder = state_holder
         self._settings = settings
-        self._ranks_connector = ranks_connector
         self._prev_participants = {}
         self._prev_round = None
 
@@ -763,45 +771,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
 
         self._state.last_heartbeats[self._node] = datetime.utcnow()
 
-    def _ensure_node_is_healthy(self) -> None:
-        # Record the health check message
-        msg = f"Checking health status of {self._node}."
-        self._record(message=msg)
-        # Perform GPU health check
-        health_checker = GPUHealthCheck()
-        try:
-            health_status = health_checker()
-            if not health_status:
-                raise UnhealthyNodeException(f"Node {self._node} has an unhealthy GPU.")
-        except UnhealthyNodeException as e:
-            # Log specific health check failure
-            log.error(f"Health check failed for node {self._node}: {str(e)}")
-            raise
-        except Exception as e:
-            # General exception for unexpected issues during health check
-            log.error(f"Unexpected error during health check for node {self._node}: {str(e)}")
-            raise UnhealthyNodeException(str(e))
-
-    def _handle_control_requests_from_rank(self) -> None:
-        # Check control messages received from local ranks
-        excl_this_node = False
-        shutdown_workload = False
-        for rank, req in self._ranks_connector.fetch_received():
-            log.error(f"Received request from rank={rank}: req={req}")
-            if req.action == WorkloadAction.ExcludeThisNode:
-                excl_this_node = True
-            if req.action == WorkloadAction.ShutdownWorkload:
-                shutdown_workload = True
-        if shutdown_workload:
-            self._mark_rendezvous_closed()
-        if excl_this_node:
-            raise UnhealthyNodeException(
-                f"Node {self._node} is excluded from the training due to an user request."
-            )
-
     def _add_to_participants(self) -> None:
-        self._ensure_node_is_healthy()
-        self._handle_control_requests_from_rank()
 
         msg = (
             f"The node '{self._node}' added itself to the participants of round "
@@ -832,8 +802,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             log.debug("Rendezvous marked as complete due to max nodes reached.")
 
     def _add_to_wait_list(self) -> None:
-        self._ensure_node_is_healthy()
-        self._handle_control_requests_from_rank()
 
         msg = (
             f"The node '{self._node}' added itself to the wait list of round "
@@ -849,8 +817,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         self._keep_alive()
 
     def _add_to_redundancy_list(self) -> None:
-        self._ensure_node_is_healthy()
-        self._handle_control_requests_from_rank()
 
         msg = (
             f"The node '{self._node}' added itself to the redundancy list of round "
@@ -1266,7 +1232,6 @@ class FtRendezvousHandler(RendezvousHandler):
             self._this_node,
             self._state_holder,
             self._settings,
-            self._ranks_connector,
         )
 
         self._heartbeat_lock = threading.Lock()
@@ -1299,8 +1264,57 @@ class FtRendezvousHandler(RendezvousHandler):
         """See base class."""
         return self._backend_name
 
-    def next_rendezvous(self) -> Tuple[Store, int, int]:
+    @property
+    def use_agent_store(self) -> bool:
         """See base class."""
+        return False
+
+    def ensure_node_is_healthy(self) -> None:
+        """Perform GPU health check for this node."""
+        # Record the health check message
+        msg = f"Checking health status of {self._this_node}."
+        self._record(message=msg)
+        # Perform GPU health check
+        health_checker = GPUHealthCheck()
+        try:
+            health_status = health_checker()
+            if not health_status:
+                raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
+        except UnhealthyNodeException as e:
+            # Log specific health check failure
+            log.error(f"Health check failed for node {self._this_node}: {str(e)}")
+            raise
+        except Exception as e:
+            # General exception for unexpected issues during health check
+            log.error(f"Unexpected error during health check for node {self._this_node}: {str(e)}")
+            raise UnhealthyNodeException(str(e))
+
+    def handle_control_requests_from_rank(self) -> None:
+        """Check control messages received from local ranks."""
+        # Check control messages received from local ranks
+        excl_this_node = False
+        shutdown_workload = False
+        for rank, req in self._ranks_connector.fetch_received():
+            log.error(f"Received request from rank={rank}: req={req}")
+            if req.action == WorkloadAction.ExcludeThisNode:
+                excl_this_node = True
+            if req.action == WorkloadAction.ShutdownWorkload:
+                shutdown_workload = True
+        if shutdown_workload:
+            self._close()
+        if excl_this_node:
+            raise UnhealthyNodeException(
+                f"Node {self._this_node} is excluded from the training due to an user request."
+            )
+
+    def next_rendezvous(self) -> Union[RendezvousInfo, Tuple[Store, int, int]]:
+        """See base class.
+
+        Returns:
+            RendezvousInfo object if supported by PyTorch version,
+            otherwise tuple of (store, rank, world_size)
+        """
+
         msg = (
             f"The node '{self._this_node}' attempts to join the next round of the rendezvous "
             f"'{self._settings.run_id}'."
@@ -1310,6 +1324,10 @@ class FtRendezvousHandler(RendezvousHandler):
 
         try:
             self._stop_heartbeats()
+
+            # Check node health and control requests before starting rendezvous
+            self.ensure_node_is_healthy()
+            self.handle_control_requests_from_rank()
 
             # Delay the execution for a small random amount of time if this is our
             # first run. This will slightly skew the rendezvous attempts across the
@@ -1344,7 +1362,28 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg, rank=rank)
         log.info(msg)
 
-        return store, rank, world_size
+        # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
+        # Fall back to tuple format if RendezvousInfo is not supported
+        if _RENDEZVOUS_INFO_AVAILABLE:
+            # TCPStore sharing is disabled, TORCH_DISABLE_SHARE_RDZV_TCP_STORE=1.
+            # Handle backward compatibility for RendezvousStoreInfo.build
+            try:
+                bootstrap_store_info = RendezvousStoreInfo.build(
+                    rank, store, local_addr=self._this_node.addr
+                )
+            except TypeError:
+                # For older PyTorch versions (<= 2.5.1), local_addr parameter is not supported
+                bootstrap_store_info = RendezvousStoreInfo.build(rank, store)
+            return RendezvousInfo(
+                store,
+                rank,
+                world_size,
+                bootstrap_store_info,
+            )
+        else:
+            # RendezvousInfo not supported, use tuple format
+            log.debug("RendezvousInfo not available, using tuple format")
+            return store, rank, world_size
 
     def is_closed(self) -> bool:
         """See base class."""

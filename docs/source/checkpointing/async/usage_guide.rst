@@ -3,23 +3,48 @@ Usage guide
 The :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue`
 provides application users with an interface to schedule :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest`, 
 which defines checkpoint routine, its args/kwargs and finalization steps when the checkpoint routine is finished.
+This class is a singleton, implying each rank will have only one instance of this class.
+It is recommended to call the `close()` API on the `AsyncCallsQueue` at the end of training to ensure a clean shutdown of the process that manages async checkpointing.
+We also extend the API of `abort_nvrx_checkpoint()` to abort the async processes and cleanly restart the `AsyncCallsQueue` in case of any restarts of the training processes.  
 
 :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint` 
            is an instatiation of the core utilities to make `torch.save` run asynchronously.
 
+:py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan` is an instantiation of the core utilities to make `torch.distributed.save_state_dict` run asynchronously.
 
-The implementation assumes all training ranks creates :py:class:`core.AsyncCallsQueue` and synchronize with :py:class:`core.AsyncCallsQueue.maybe_finalize_async_calls` by default.
+The implementation assumes all training ranks creates :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue` and synchronize with :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.maybe_finalize_async_calls` by default.
 
 
-Requirements
-------------
-:py:class:`nvidia_resiliency_ext.checkpointing.utils` includes a couple of routines used for :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core`
-:py:class:`nvidia_resiliency_ext.checkpointing.utils.wrap_for_async` disables garbage collection in a forked process to run user's checkpoint routine
-to prevent failures incurred by GC, which tries to deallocate CUDA tensors in a forked process.
-This routine requires the first argument of the passed user fn should be state dictionary containing tensors or objects for checkpoint
- 
-The current implementation uses a forked process to run pre-staged tensors in host memory by pinned memcpy. 
-So, the routine should include :py:class:`nvidia_resiliency_ext.checkpointing.utils.preload_tensors` to stage GPU tensors in a state dictionary to host memory before it's passed to `AsyncCallsQueue`
+Implementation Changes and Evolution
+------------------------------------
+* We have deprecated our initial implementation of async checkpointing, :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller`, using a forked process to run the checkpointing in the background. 
+
+* :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue` is now initialized by default to use :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` instead of :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller`.
+
+* :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` spawns a persistent process that runs in a separate CUDA context and forks processes optionally for intra-node parallelism.
+
+* Now, we don't need :py:func:`~nvidia_resiliency_ext.checkpointing.utils.wrap_for_async` anymore because :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` is safe to call garbage collection in the spawned process.
+
+* :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` runs :py:func:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors` in the spawned process. 
+   So, we've added a new field, :py:attr:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn`, to pass the preload function(preload_fn) to the spawned process.
+  
+  * The preload_fn should be self-contained with a proper list of arguments with :py:class:`functools.partial`.
+
+  * The preload_fn should be a function that takes a state dictionary and returns a state dictionary.
+
+  * :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` receives GPU tensor IPC handles and prestages them to host memory through a preload_fn 
+    so dereference of GPU tensors should be done promptly inside of `preload_fn` if possible.
+
+* A proper termination of the persistent process is required for graceful shutdown.
+    
+  * Job schedulers(e.g. Slurm, torchrun) should clean up the persistent process and its child workers when the job step is terminated.
+
+  * The following changes will be made in the next release to the implementation of :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller`:
+
+    * We'll make the persistent process to be terminated when the main process is terminated.
+
+    * Optional child workers created by :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync` are terminated when the persistent process is terminated.
+
 
 
 Synchronization of Asynchronous Checkpoint Requests
@@ -218,3 +243,13 @@ The following example demonstrates a complete workflow for saving and loading ch
 
     # Load checkpoint synchronously
     loaded_state_dict = load_checkpoint(checkpoint_path, state_dict.copy())
+
+
+Best Practices
+--------------
+* Use process binding to pin the checkpointing process to a specific GPU. This is important for pre-staging tensors to host memory.
+
+.. code-block:: bash
+
+    # Example for a 8 GPU on 2 socket CPU with SLURM
+    numactl --cpunodebind=$((SLURM_LOCALID / 4)) --membind=$((SLURM_LOCALID / 4)) python train.py

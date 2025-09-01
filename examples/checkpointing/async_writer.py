@@ -50,9 +50,14 @@ def parse_args():
         help="Threads to use during saving. Affects the number of files in the checkpoint (saving ranks * num_threads).",
     )
     parser.add_argument(
-        '--persistent_queue',
-        action='store_true',
-        help="Enables a persistent version of AsyncCallsQueue.",
+        '--no_persistent_queue',
+        action='store_false',
+        default=True,
+        dest='persistent_queue',
+        help=(
+            "Disables a persistent version of AsyncCallsQueue. "
+            "Effective only when --async_save is set."
+        ),
     )
 
     return parser.parse_args()
@@ -185,7 +190,7 @@ def main():
 
     logging.info("Finalizing checkpoint save...")
     async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-    async_queue.close()  # Explicitly close queue (optional)
+    async_queue.close()  # Explicitly close queue
 
     # Synchronize processes before loading
     dist.barrier()
