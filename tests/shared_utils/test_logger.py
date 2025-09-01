@@ -26,6 +26,18 @@ from datetime import datetime
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.log_node_local_tmp import LogMessage, NodeLogAggregator
 
+'''
+Unit Test Usage:
+
+To run logger unit tests:
+    PYTHONPATH=./src:$PYTHONPATH python -m unittest tests.shared_utils.test_logger
+
+To enable tests inclusive of 8 GPU's (e.g. H100), set RUN_EIGHT_PROC_TESTS=1:
+    PYTHONPATH=./src:$PYTHONPATH RUN_EIGHT_PROC_TESTS=1 python -m unittest tests.shared_utils.test_logger
+
+The RUN_EIGHT_PROC_TESTS almost triples the UT time and therefore skipped by default.
+'''
+
 
 def create_test_workspace(clean: bool = True):
     tmp_dir = "/tmp/nvrxtest"
@@ -246,11 +258,10 @@ class TestLogger(unittest.TestCase):
         # gb200 has 4 GPU's, check that config
         self.multiple_processes(4, 2000, 1024)
 
-    '''
     def test_eight_proc(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(8, 2000, 1024)
-    '''
+        if os.environ.get("RUN_EIGHT_PROC_TESTS", "0") == "1":
+            self.multiple_processes(8, 2000, 1024)
 
     def test_one_proc_w_rotate(self):
         self.multiple_processes(1, 2000, 10)
@@ -258,17 +269,15 @@ class TestLogger(unittest.TestCase):
     def test_four_proc_w_rotate(self):
         self.multiple_processes(1, 2000, 10)
 
-    '''
     def test_eight_proc_w_rotate(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(8, 2000, 10)
-    '''
+        if os.environ.get("RUN_EIGHT_PROC_TESTS", "0") == "1":
+            self.multiple_processes(8, 2000, 10)
 
     def test_four_proc_w_rotate_nochrono(self):
         self.multiple_processes(1, 2000, 10, False)
 
-    '''
     def test_eight_proc_w_rotate_nochrono(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(8, 2000, 1000, False)
-    '''
+        if os.environ.get("RUN_EIGHT_PROC_TESTS", "0") == "1":
+            self.multiple_processes(8, 2000, 1000, False)
