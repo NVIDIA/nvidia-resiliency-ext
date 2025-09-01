@@ -24,6 +24,22 @@ to all training processes on the same node, and aggregates their log messages in
 per-node log files stored on a shared filesystem (e.g., Lustre or NFS).
 
 Example sbatch Usage:
+
+# For PyPI installation:
+    export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
+    # Call python module directly
+    srun \
+        bash -c '
+          if [[ ${SLURM_LOCALID:-0} -eq 0 ]]; then
+            python -m nvidia_resiliency_ext.shared_utils.log_aggregator \
+              --wait-file "${WAIT_FILE}" \
+              --log-dir "${AGG_DIR}" &
+          fi
+          $LAUNCHER_CMD $LAUNCHER_ARGS $WORKLOAD_CMD $WORKLOAD_ARGS
+          touch "${WAIT_FILE}"
+        '
+
+# For source installation:
     export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
     NVRX_REPO=/../nvidia-resiliency-ext:/nvrx_repo
 
