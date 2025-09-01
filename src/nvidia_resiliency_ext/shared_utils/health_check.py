@@ -362,60 +362,6 @@ class GPUHealthCheck(PynvmlMixin):
                 if not self._check_gpu_health(device_id):
                     return False
 
-                # Check for simulated failure conditions
-                recovery_action = None
-                if (
-                    self.simulate_failure_rank == i
-                    and self.start_time is not None
-                    and self.simulate_failure_time is not None
-                ):
-                    elapsed_seconds = int(time.time() - self.start_time)
-                    if elapsed_seconds >= self.simulate_failure_time:
-                        if self.simulate_recovery_action:
-                            nvml_constant_name = self.RECOVERY_ACTION_MAP[
-                                self.simulate_recovery_action
-                            ]
-                            recovery_action = getattr(self.pynvml, nvml_constant_name)
-                            self.log.warning(
-                                f"Simulated GPU failure on GPU {i} "
-                                f"after {elapsed_seconds} seconds with "
-                                f"recovery action: {self.simulate_recovery_action}"
-                            )
-                            # Disable the simulated failure on future checks.
-                            self.simulate_failure_time = None
-
-                # Get the GPU recovery action status
-                if recovery_action is None:
-                    recovery_action = self.pynvml.nvmlDeviceGetFieldValues(
-                        handle, [self.pynvml.NVML_FI_DEV_GET_GPU_RECOVERY_ACTION]
-                    )[0].value.uiVal
-
-                # Interpret the recovery action
-                if recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NONE:
-                    continue  # No issues with this GPU
-                elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_GPU_RESET:
-                    self.log.warning(
-                        f"GPU {i}: Requires a reset to recover. Terminate GPU processes and reset the GPU."
-                    )
-                    return False
-                elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NODE_REBOOT:
-                    self.log.warning(
-                        f"GPU {i}: Requires a node reboot to recover. Reboot the system."
-                    )
-                    return False
-                elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_P2P:
-                    self.log.warning(
-                        f"GPU {i}: Requires peer-to-peer traffic to be drained. Terminate related processes."
-                    )
-                    return False
-                elif recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_DRAIN_AND_RESET:
-                    self.log.warning(
-                        f"GPU {i}: Operating at reduced capacity. Drain existing work and reset the GPU."
-                    )
-                    return False
-                else:
-                    self.log.warning(f"GPU {i}: Unknown recovery action status: {recovery_action}")
-                    return False
             return True
 
         except self.pynvml.NVMLError as e:
@@ -447,10 +393,31 @@ class GPUHealthCheck(PynvmlMixin):
                 # PyNVML is not available so we assume the GPU is healthy
                 return True
 
+            # Check for simulated failure conditions
+            recovery_action = None
+            if (
+                self.simulate_failure_rank == device_id
+                and self.start_time is not None
+                and self.simulate_failure_time is not None
+            ):
+                elapsed_seconds = int(time.time() - self.start_time)
+                if elapsed_seconds >= self.simulate_failure_time:
+                    if self.simulate_recovery_action:
+                        nvml_constant_name = self.RECOVERY_ACTION_MAP[self.simulate_recovery_action]
+                        recovery_action = getattr(self.pynvml, nvml_constant_name)
+                        self.log.warning(
+                            f"Simulated GPU failure on GPU {device_id} "
+                            f"after {elapsed_seconds} seconds with "
+                            f"recovery action: {self.simulate_recovery_action}"
+                        )
+                        # Disable the simulated failure on future checks.
+                        self.simulate_failure_time = None
+
             # Get the GPU recovery action status
-            recovery_action = self.pynvml.nvmlDeviceGetFieldValues(
-                handle, [self.pynvml.NVML_FI_DEV_GET_GPU_RECOVERY_ACTION]
-            )[0].value.uiVal
+            if recovery_action is None:
+                recovery_action = self.pynvml.nvmlDeviceGetFieldValues(
+                    handle, [self.pynvml.NVML_FI_DEV_GET_GPU_RECOVERY_ACTION]
+                )[0].value.uiVal
 
             # Interpret the recovery action
             if recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NONE:
