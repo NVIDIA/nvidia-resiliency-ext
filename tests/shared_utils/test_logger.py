@@ -51,21 +51,26 @@ def create_test_workspace(clean: bool = True):
     return log_dir, temp_dir
 
 
-def setup_vars(global_id, local_id, file_size, dbg_on="0"):
+def setup_vars(global_id, local_id, file_size, max_file_num=None, dbg_on="0"):
     os.environ["SLURM_PROCID"] = str(global_id)
     os.environ["SLURM_LOCALID"] = str(local_id)
     os.environ["RANK"] = str(global_id)
     os.environ["LOCAL_RANK"] = str(local_id)
     os.environ["NVRX_LOG_MAX_FILE_SIZE_KB"] = str(file_size)
     os.environ["NVRX_LOG_DEBUG"] = dbg_on
+    if max_file_num is not None:
+        os.environ["NVRX_LOG_MAX_LOG_FILES"] = str(max_file_num)
+    elif "NVRX_LOG_MAX_LOG_FILES" in os.environ:
+        del os.environ["NVRX_LOG_MAX_LOG_FILES"]
 
 
 def gen_log_msg(logger, num_msg, log_type="info"):
+    skip = random.uniform(1, 50)
     for i in range(num_msg):
-        skip = random.uniform(1, 50)
         skip -= 1
         if skip == 0:
             time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
+            skip = random.uniform(1, 50)
         if log_type == "info":
             logger.info(f"My Info Logging Message {i}")
         if log_type == "debug":
@@ -74,7 +79,7 @@ def gen_log_msg(logger, num_msg, log_type="info"):
 
 def worker_process(id, num_msg, file_size):
     """Function that each process will execute."""
-    setup_vars(id, id, file_size)
+    setup_vars(global_id=id, local_id=id, file_size=file_size, max_file_num=50)
     log_dir, temp_dir = create_test_workspace(clean=False)
     logger = setup_logger(
         node_local_tmp_dir=temp_dir, force_reset=True, node_local_tmp_prefix="wkrproc"
@@ -166,9 +171,24 @@ class TestLogger(unittest.TestCase):
                 os.path.join(log_dir, fname), num_lines, global_id, local_id, chrono_on
             )
 
-    def check_msg(self, num_msg, file_size_kb, pm_files, is_agg: bool, log_type="info", dbg_on="0"):
+    def check_msg(
+        self,
+        num_msg,
+        file_size_kb,
+        pm_files,
+        is_agg: bool,
+        log_type="info",
+        dbg_on="0",
+        max_file_num=None,
+    ):
         log_dir, temp_dir = create_test_workspace(clean=True)
-        setup_vars(0, 0, file_size_kb, dbg_on)
+        setup_vars(
+            global_id=0,
+            local_id=0,
+            file_size=file_size_kb,
+            max_file_num=max_file_num,
+            dbg_on=dbg_on,
+        )
 
         if is_agg:
             agg_temp_dir = LogConfig.get_node_local_tmp_dir(temp_dir)
@@ -202,19 +222,23 @@ class TestLogger(unittest.TestCase):
             self.check_files(log_dir, file_names, num_msg, 0, 0, "1")
 
     def test_single_msg(self):
-        self.check_msg(1, 1024, 1, True, "info", "0")
+        self.check_msg(
+            num_msg=1, file_size_kb=1024, pm_files=1, is_agg=True, log_type="info", dbg_on="0"
+        )
 
     def test_single_dbg_msg(self):
-        self.check_msg(1, 1024, 1, True, "debug", "1")
+        self.check_msg(
+            num_msg=1, file_size_kb=1024, pm_files=1, is_agg=True, log_type="debug", dbg_on="1"
+        )
 
     def test_many_msg(self):
-        self.check_msg(2000, 1024, 1, True)
+        self.check_msg(num_msg=2000, file_size_kb=1024, pm_files=1, is_agg=True)
 
     def test_rotation(self):
-        self.check_msg(900, 10, 5, False)
+        self.check_msg(num_msg=900, file_size_kb=10, pm_files=5, is_agg=False)
 
     def test_rotation_cleanup(self):
-        self.check_msg(2000, 10, 1, True)
+        self.check_msg(num_msg=2000, file_size_kb=10, pm_files=1, is_agg=True, max_file_num=50)
 
     def multiple_processes(self, num_procs, num_msg, file_size_kb, chrono_on=True):
         log_dir, temp_dir = create_test_workspace(clean=True)
@@ -223,6 +247,7 @@ class TestLogger(unittest.TestCase):
             local_id=0,
             file_size=file_size_kb,
             dbg_on="0",
+            max_file_num=50,
         )
 
         agg_temp_dir = LogConfig.get_node_local_tmp_dir(temp_dir)
