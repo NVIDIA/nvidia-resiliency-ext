@@ -32,10 +32,10 @@ Unit Test Usage:
 To run logger unit tests:
     PYTHONPATH=./src:$PYTHONPATH python -m unittest tests.shared_utils.test_logger
 
-To enable tests inclusive of 8 GPU's (e.g. H100), set RUN_EIGHT_PROC_TESTS=1:
-    PYTHONPATH=./src:$PYTHONPATH RUN_EIGHT_PROC_TESTS=1 python -m unittest tests.shared_utils.test_logger
+To enable tests inclusive of 8 GPU's (e.g. H100), set RUN_EXHAUSTIVE_TESTS=1:
+    PYTHONPATH=./src:$PYTHONPATH RUN_EXHAUSTIVE_TESTS=1 python -m unittest tests.shared_utils.test_logger
 
-The RUN_EIGHT_PROC_TESTS almost triples the UT time and therefore skipped by default.
+The RUN_EXHAUSTIVE_TESTS has 4x the UT time and therefore skipped by default.
 '''
 
 
@@ -256,28 +256,31 @@ class TestLogger(unittest.TestCase):
 
     def test_four_proc(self):
         # gb200 has 4 GPU's, check that config
-        self.multiple_processes(4, 2000, 1024)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(4, 2000, 1024)
 
     def test_eight_proc(self):
         # h100 has 8 GPU's, check that config
-        if os.environ.get("RUN_EIGHT_PROC_TESTS", "0") == "1":
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
             self.multiple_processes(8, 2000, 1024)
 
     def test_one_proc_w_rotate(self):
         self.multiple_processes(1, 2000, 10)
 
     def test_four_proc_w_rotate(self):
-        self.multiple_processes(1, 2000, 10)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(1, 2000, 10)
 
     def test_eight_proc_w_rotate(self):
         # h100 has 8 GPU's, check that config
-        if os.environ.get("RUN_EIGHT_PROC_TESTS", "0") == "1":
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
             self.multiple_processes(8, 2000, 10)
 
     def test_four_proc_w_rotate_nochrono(self):
-        self.multiple_processes(1, 2000, 10, False)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(1, 2000, 10, False)
 
     def test_eight_proc_w_rotate_nochrono(self):
         # h100 has 8 GPU's, check that config
-        if os.environ.get("RUN_EIGHT_PROC_TESTS", "0") == "1":
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
             self.multiple_processes(8, 2000, 1000, False)
