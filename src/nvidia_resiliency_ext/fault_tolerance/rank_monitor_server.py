@@ -108,11 +108,6 @@ class RankMonitorLogger(logging.Logger):
         if self.is_restarter_logger:
             self.log_for_restarter(message, *args, **kwargs)
 
-        # Get the nvrx logger directly
-        nvlogger = logging.getLogger(LogConfig.name)
-        # Log with [RESTARTER] prefix to indicate it's a restart event
-        nvlogger.info(f"[RESTARTER] {message}", *args, **kwargs)
-
 
 class RankMonitorServer:
     """

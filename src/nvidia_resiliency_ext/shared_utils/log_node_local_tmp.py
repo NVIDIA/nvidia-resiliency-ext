@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 class NodeLocalTmpLogHandler(logging.Handler):
@@ -31,7 +31,7 @@ class NodeLocalTmpLogHandler(logging.Handler):
 
     def __init__(
         self,
-        rank_id: int,
+        rank_id: Optional[int],
         file_path: str,
         max_file_size: int,
         max_backup_files: int,
@@ -58,13 +58,17 @@ class NodeLocalTmpLogHandler(logging.Handler):
             sys.stderr.flush()
 
     def _log_file_namer(self):
-        return f"rank_{self.rank_id}_{self.proc_name}.msg.{int(time.time()*1000)}"
+        # Use "unknown" for rank_id if it's None
+        rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
+        return f"rank_{rank_str}_{self.proc_name}.msg.{int(time.time()*1000)}"
 
     def _cleanup_old_backup_files(self):
         """Clean up old log files, keeping only the most recent one's."""
         backup_files = []
+        # Use "unknown" for rank_id if it's None
+        rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
         for filename in os.listdir(self.file_path):
-            match = re.match(rf"rank_{self.rank_id}_{self.proc_name}.msg\.(\d+)", filename)
+            match = re.match(rf"rank_{rank_str}_{self.proc_name}.msg\.(\d+)", filename)
             if not match:
                 continue
             backup_files.append(filename)
