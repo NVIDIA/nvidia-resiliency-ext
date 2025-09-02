@@ -395,8 +395,25 @@ This module provides a standalone log aggregator service that can run independen
 of training processes. The service monitors a node-local temporary directory, accessible
 to all training processes on the same node, and aggregates their log messages into
 per-node log files stored on a shared filesystem (e.g., Lustre or NFS).</p>
+<p>Example sbatch Usage:</p>
 <dl>
-<dt>Example sbatch Usage:</dt><dd><p>export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
+<dt># For PyPI installation:</dt><dd><p>export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
+# Call python module directly
+srun         bash -c ‘</p>
+<blockquote>
+<div><blockquote>
+<div><dl class="simple">
+<dt>if [[ ${SLURM_LOCALID:-0} -eq 0 ]]; then</dt><dd><p>python -m nvidia_resiliency_ext.shared_utils.log_aggregator               –wait-file “${WAIT_FILE}”               –log-dir “${AGG_DIR}” &amp;</p>
+</dd>
+</dl>
+<p>fi
+$LAUNCHER_CMD $LAUNCHER_ARGS $WORKLOAD_CMD $WORKLOAD_ARGS
+touch “${WAIT_FILE}”</p>
+</div></blockquote>
+<p>‘</p>
+</div></blockquote>
+</dd>
+<dt># For source installation:</dt><dd><p>export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
 NVRX_REPO=/../nvidia-resiliency-ext:/nvrx_repo</p>
 <p># all node setup, if installing from source
 srun         bash -c ‘</p>

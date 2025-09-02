@@ -103,6 +103,22 @@
 <span class="sd">per-node log files stored on a shared filesystem (e.g., Lustre or NFS).</span>
 
 <span class="sd">Example sbatch Usage:</span>
+
+<span class="sd"># For PyPI installation:</span>
+<span class="sd">    export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx</span>
+<span class="sd">    # Call python module directly</span>
+<span class="sd">    srun \</span>
+<span class="sd">        bash -c &#39;</span>
+<span class="sd">          if [[ ${SLURM_LOCALID:-0} -eq 0 ]]; then</span>
+<span class="sd">            python -m nvidia_resiliency_ext.shared_utils.log_aggregator \</span>
+<span class="sd">              --wait-file &quot;${WAIT_FILE}&quot; \</span>
+<span class="sd">              --log-dir &quot;${AGG_DIR}&quot; &amp;</span>
+<span class="sd">          fi</span>
+<span class="sd">          $LAUNCHER_CMD $LAUNCHER_ARGS $WORKLOAD_CMD $WORKLOAD_ARGS</span>
+<span class="sd">          touch &quot;${WAIT_FILE}&quot;</span>
+<span class="sd">        &#39;</span>
+
+<span class="sd"># For source installation:</span>
 <span class="sd">    export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx</span>
 <span class="sd">    NVRX_REPO=/../nvidia-resiliency-ext:/nvrx_repo</span>
 
