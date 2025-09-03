@@ -1837,6 +1837,38 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-simulate-failure-type",
+        "--ft_simulate_failure_type",
+        type=str,
+        default=None,
+        help="Type of failure to simulate ('gpu' or 'nic')",
+    )
+
+    parser.add_argument(
+        "--ft-simulate-failure-rank",
+        "--ft_simulate_failure_rank",
+        type=int,
+        default=None,
+        help="Local rank on which to simulate the failure",
+    )
+
+    parser.add_argument(
+        "--ft-simulate-failure-time",
+        "--ft_simulate_failure_time",
+        type=int,
+        default=None,
+        help="Time in seconds after which to simulate the failure",
+    )
+
+    parser.add_argument(
+        "--ft-simulate-recovery-action",
+        "--ft_simulate_recovery_action",
+        type=str,
+        default=None,
+        help="GPU recovery action to simulate (e.g. 'gpu_reset', 'node_reboot', etc.)",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
