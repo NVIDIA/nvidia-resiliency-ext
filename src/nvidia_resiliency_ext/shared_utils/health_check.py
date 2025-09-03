@@ -405,7 +405,7 @@ class GPUHealthCheck(PynvmlMixin):
                     if self.simulate_recovery_action:
                         nvml_constant_name = self.RECOVERY_ACTION_MAP[self.simulate_recovery_action]
                         recovery_action = getattr(self.pynvml, nvml_constant_name)
-                        self.log.warning(
+                        logger.warning(
                             f"Simulated GPU failure on GPU {device_id} "
                             f"after {elapsed_seconds} seconds with "
                             f"recovery action: {self.simulate_recovery_action}"
@@ -726,7 +726,7 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         ):
             elapsed_seconds = int(time.time() - self.start_time)
             if elapsed_seconds >= self.simulate_failure_time:
-                self.log.warning(
+                logger.warning(
                     f"Simulated NIC failure on rank {self._local_rank} "
                     f"after {elapsed_seconds} seconds"
                 )
