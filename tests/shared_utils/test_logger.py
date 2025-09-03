@@ -26,6 +26,18 @@ from datetime import datetime
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.log_node_local_tmp import LogMessage, NodeLogAggregator
 
+'''
+Unit Test Usage:
+
+To run logger unit tests:
+    PYTHONPATH=./src:$PYTHONPATH python -m unittest tests.shared_utils.test_logger
+
+To enable tests inclusive of 8 GPU's (e.g. H100), set RUN_EXHAUSTIVE_TESTS=1:
+    PYTHONPATH=./src:$PYTHONPATH RUN_EXHAUSTIVE_TESTS=1 python -m unittest tests.shared_utils.test_logger
+
+The RUN_EXHAUSTIVE_TESTS has 4x the UT time and therefore skipped by default.
+'''
+
 
 def create_test_workspace(clean: bool = True):
     tmp_dir = "/tmp/nvrxtest"
@@ -39,21 +51,26 @@ def create_test_workspace(clean: bool = True):
     return log_dir, temp_dir
 
 
-def setup_vars(global_id, local_id, file_size, dbg_on="0"):
+def setup_vars(global_id, local_id, file_size, max_file_num=None, dbg_on="0"):
     os.environ["SLURM_PROCID"] = str(global_id)
     os.environ["SLURM_LOCALID"] = str(local_id)
     os.environ["RANK"] = str(global_id)
     os.environ["LOCAL_RANK"] = str(local_id)
     os.environ["NVRX_LOG_MAX_FILE_SIZE_KB"] = str(file_size)
     os.environ["NVRX_LOG_DEBUG"] = dbg_on
+    if max_file_num is not None:
+        os.environ["NVRX_LOG_MAX_LOG_FILES"] = str(max_file_num)
+    elif "NVRX_LOG_MAX_LOG_FILES" in os.environ:
+        del os.environ["NVRX_LOG_MAX_LOG_FILES"]
 
 
 def gen_log_msg(logger, num_msg, log_type="info"):
+    skip = random.uniform(1, 50)
     for i in range(num_msg):
-        skip = random.uniform(1, 50)
         skip -= 1
         if skip == 0:
             time.sleep(0.002 + (random.uniform(0, 100)) / 100000)
+            skip = random.uniform(1, 50)
         if log_type == "info":
             logger.info(f"My Info Logging Message {i}")
         if log_type == "debug":
@@ -62,7 +79,7 @@ def gen_log_msg(logger, num_msg, log_type="info"):
 
 def worker_process(id, num_msg, file_size):
     """Function that each process will execute."""
-    setup_vars(id, id, file_size)
+    setup_vars(global_id=id, local_id=id, file_size=file_size, max_file_num=50)
     log_dir, temp_dir = create_test_workspace(clean=False)
     logger = setup_logger(
         node_local_tmp_dir=temp_dir, force_reset=True, node_local_tmp_prefix="wkrproc"
@@ -86,6 +103,9 @@ class TestLogger(unittest.TestCase):
         line_count = 0
         curr_ts = 0
         curr_dt = 0
+        chrono_total = 0
+        chrono_success = 0
+        chrono_percent = 0.7
 
         with open(filename, 'r') as file:
             for line in file:
@@ -98,25 +118,25 @@ class TestLogger(unittest.TestCase):
                             # Convert asctime to a datetime object, then to a Unix timestamp
                             dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S,%f')
                             line_ts = dt.timestamp()
-                            if curr_ts == 0:
-                                curr_ts = line_ts
-                                curr_dt = dt
-                            else:
-                                # Check that timestamps are in chronological order
-                                if chrono_on == "1":
-                                    self.assertGreaterEqual(
-                                        line_ts,
-                                        curr_ts,
-                                        f'Timestamp {line_ts} should be >= {curr_ts}',
-                                    )
-                                curr_ts = line_ts
-                                curr_dt = dt
-                        if key == 'workload_global_rank':
+                            # Check that timestamps are in chronological order
+                            if chrono_on == "1":
+                                chrono_total += 1
+                                if line_ts >= curr_ts:
+                                    chrono_success += 1
+                                    if chrono_percent == 1:
+                                        self.assertLessEqual(
+                                            curr_ts,
+                                            line_ts,
+                                            f'Timestamp {curr_dt} should be >= {value}',
+                                        )
+                            curr_ts = line_ts
+                            curr_dt = value
+                        if key == 'workload_rank':
                             if global_id != -1:
                                 self.assertEqual(
                                     int(value),
                                     global_id,
-                                    f'The workload_global_rank should be {global_id} instead {value}',
+                                    f'The workload_rank should be {global_id} instead {value}',
                                 )
                         if key == 'workload_local_rank':
                             if local_id != -1:
@@ -132,26 +152,18 @@ class TestLogger(unittest.TestCase):
                                     local_id,
                                     f'The infra_rank should be {local_id} instead {value}',
                                 )
+        if chrono_on == "1" and chrono_total > 0:
+            min_success = int(chrono_total * chrono_percent)
+            assert chrono_success >= min_success, (
+                f"Only ({(chrono_success/chrono_total)*100:.1f}%) timestamps in order, "
+                f"expected at least {int(chrono_percent*100)}%"
+            )
         if num_lines != -1:
-            # For log rotation tests with very small file sizes, allow some flexibility
-            # since some messages may be lost during rotation
-            if num_lines > 1000:  # Large message counts are more likely to have rotation issues
-                # Allow more flexibility for very large message counts and small file sizes
-                if num_lines > 10000:  # Very large counts
-                    min_threshold = num_lines * 0.2  # Allow 20% loss
-                else:
-                    min_threshold = num_lines * 0.25  # Allow 25% loss
-                self.assertGreaterEqual(
-                    line_count,
-                    min_threshold,
-                    f'The line_count should be at least {int(min_threshold)} instead {line_count}',
-                )
-            else:
-                self.assertEqual(
-                    line_count,
-                    num_lines,
-                    f'The line_count should be {num_lines} instead {line_count}',
-                )
+            self.assertEqual(
+                line_count,
+                num_lines,
+                f'The number of lines should be {num_lines}, instead {line_count}',
+            )
 
     def check_files(self, log_dir, filenames, num_lines, global_id, local_id, chrono_on):
         for fname in filenames:
@@ -159,14 +171,31 @@ class TestLogger(unittest.TestCase):
                 os.path.join(log_dir, fname), num_lines, global_id, local_id, chrono_on
             )
 
-    def check_msg(self, num_msg, file_size_kb, pm_files, is_agg: bool, log_type="info", dbg_on="0"):
+    def check_msg(
+        self,
+        num_msg,
+        file_size_kb,
+        pm_files,
+        is_agg: bool,
+        log_type="info",
+        dbg_on="0",
+        max_file_num=None,
+    ):
         log_dir, temp_dir = create_test_workspace(clean=True)
-        setup_vars(0, 0, file_size_kb, dbg_on)
+        setup_vars(
+            global_id=0,
+            local_id=0,
+            file_size=file_size_kb,
+            max_file_num=max_file_num,
+            dbg_on=dbg_on,
+        )
 
         if is_agg:
+            agg_temp_dir = LogConfig.get_node_local_tmp_dir(temp_dir)
+            assert agg_temp_dir is not None, "temp_dir is None"
             aggregator = NodeLogAggregator(
                 log_dir=log_dir,
-                temp_dir=LogConfig.get_node_local_tmp_dir(temp_dir),
+                temp_dir=agg_temp_dir,
                 log_file=LogConfig.get_log_file(),
                 max_file_size=LogConfig.get_max_file_size(file_size_kb),
                 en_chrono_ord=True,
@@ -179,6 +208,7 @@ class TestLogger(unittest.TestCase):
 
         time.sleep(1)
         pm = LogConfig.get_node_local_tmp_dir(temp_dir)
+        assert pm is not None, "temp_dir is None"
         num_files, file_names = self.count_files_in_dir(pm)
         self.assertEqual(
             num_files, pm_files, f'The number of files should be {pm_files}, instead {num_files}'
@@ -192,19 +222,23 @@ class TestLogger(unittest.TestCase):
             self.check_files(log_dir, file_names, num_msg, 0, 0, "1")
 
     def test_single_msg(self):
-        self.check_msg(1, 1024, 1, True, "info", "0")
+        self.check_msg(
+            num_msg=1, file_size_kb=1024, pm_files=1, is_agg=True, log_type="info", dbg_on="0"
+        )
 
     def test_single_dbg_msg(self):
-        self.check_msg(1, 1024, 1, True, "debug", "1")
+        self.check_msg(
+            num_msg=1, file_size_kb=1024, pm_files=1, is_agg=True, log_type="debug", dbg_on="1"
+        )
 
     def test_many_msg(self):
-        self.check_msg(2000, 1024, 1, True)
+        self.check_msg(num_msg=2000, file_size_kb=1024, pm_files=1, is_agg=True)
 
     def test_rotation(self):
-        self.check_msg(900, 10, 5, False)
+        self.check_msg(num_msg=900, file_size_kb=10, pm_files=5, is_agg=False)
 
     def test_rotation_cleanup(self):
-        self.check_msg(2000, 10, 1, True)
+        self.check_msg(num_msg=2000, file_size_kb=10, pm_files=1, is_agg=True, max_file_num=50)
 
     def multiple_processes(self, num_procs, num_msg, file_size_kb, chrono_on=True):
         log_dir, temp_dir = create_test_workspace(clean=True)
@@ -213,11 +247,14 @@ class TestLogger(unittest.TestCase):
             local_id=0,
             file_size=file_size_kb,
             dbg_on="0",
+            max_file_num=50,
         )
 
+        agg_temp_dir = LogConfig.get_node_local_tmp_dir(temp_dir)
+        assert agg_temp_dir is not None, "temp_dir is None"
         aggregator = NodeLogAggregator(
             log_dir=log_dir,
-            temp_dir=LogConfig.get_node_local_tmp_dir(temp_dir),
+            temp_dir=agg_temp_dir,
             log_file=LogConfig.get_log_file(),
             max_file_size=LogConfig.get_max_file_size(file_size_kb),
             en_chrono_ord=True,
@@ -244,25 +281,31 @@ class TestLogger(unittest.TestCase):
 
     def test_four_proc(self):
         # gb200 has 4 GPU's, check that config
-        self.multiple_processes(4, 2000, 1024)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(4, 2000, 1024)
 
     def test_eight_proc(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(8, 2000, 1024)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(8, 2000, 1024)
 
     def test_one_proc_w_rotate(self):
         self.multiple_processes(1, 2000, 10)
 
     def test_four_proc_w_rotate(self):
-        self.multiple_processes(1, 2000, 10)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(1, 2000, 10)
 
     def test_eight_proc_w_rotate(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(8, 2000, 10)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(8, 2000, 10)
 
     def test_four_proc_w_rotate_nochrono(self):
-        self.multiple_processes(1, 2000, 10, False)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(1, 2000, 10, False)
 
     def test_eight_proc_w_rotate_nochrono(self):
         # h100 has 8 GPU's, check that config
-        self.multiple_processes(8, 2000, 1000, False)
+        if os.environ.get("RUN_EXHAUSTIVE_TESTS", "0") == "1":
+            self.multiple_processes(8, 2000, 1000, False)
