@@ -41,7 +41,7 @@ def tmp_path_dist_ckpt(tmp_path_factory) -> Path:
         yield tmp_dir
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def async_queue():
     async_queue = AsyncCallsQueue()
     yield async_queue

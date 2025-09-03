@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import pytest
 import torch
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import abort_nvrx_checkpoint
@@ -22,7 +21,6 @@ from . import TempNamedDir
 from .test_utilities import Model, Utils
 
 
-@pytest.mark.skip(reason='broken test, needs reviving')
 class TestAsyncSave:
 
     def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt):
@@ -59,7 +57,7 @@ class TestAsyncSave:
 
     def test_persistent_async_cp_abort(self, tmp_path_dist_ckpt):
         Utils.initialize_distributed()
-        model = TestModel((1024, 1024), 10)
+        model = Model((1024, 1024), 10)
         ckpt_impl = TorchAsyncCheckpoint(persistent_queue=True)
         state_dict = model.state_dict()
 
@@ -124,7 +122,7 @@ class TestAsyncSave:
 
     def test_persistent_async_cp_abort_during_cp_ops(self, tmp_path_dist_ckpt):
         Utils.initialize_distributed()
-        model = TestModel((1024, 1024), 10)
+        model = Model((1024, 1024), 10)
         ckpt_impl = TorchAsyncCheckpoint(persistent_queue=True)
         state_dict = model.state_dict()
 
