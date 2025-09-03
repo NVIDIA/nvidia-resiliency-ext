@@ -158,7 +158,7 @@ distributed process groups.</p>
 <p>It also collects PyTorch Flight Recorder traces, which can be used to analyze the
 behavior of the distributed collectives.</p>
 <p>PyTorch Flight Recorder traces are collected by setting the
-TORCH_NCCL_TRACE_BUFFER_SIZE environment variable to a non-zero value.
+TORCH_NCCL_TRACE_BUFFER_SIZE or TORCH_FR_BUFFER_SIZE(&gt;=2.8.0) environment variable to a non-zero value.
 We disable the collection of stack traces by default, which requires GIL, leading to a deadlock.
 This feature is still experimental and need to be used with care.</p>
 <p>The traces are collected in the directory specified by torch_fr_trace_path.

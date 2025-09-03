@@ -165,7 +165,7 @@
 <span class="sd">        behavior of the distributed collectives.</span>
 
 <span class="sd">        PyTorch Flight Recorder traces are collected by setting the</span>
-<span class="sd">        TORCH_NCCL_TRACE_BUFFER_SIZE environment variable to a non-zero value.</span>
+<span class="sd">        TORCH_NCCL_TRACE_BUFFER_SIZE or TORCH_FR_BUFFER_SIZE(&gt;=2.8.0) environment variable to a non-zero value.</span>
 <span class="sd">        We disable the collection of stack traces by default, which requires GIL, leading to a deadlock.</span>
 <span class="sd">        This feature is still experimental and need to be used with care.</span>
 
@@ -213,7 +213,10 @@
 
     <span class="k">def</span><span class="w"> </span><span class="nf">collect_fr_trace</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">FrozenState</span><span class="p">):</span>
         <span class="k">def</span><span class="w"> </span><span class="nf">_check_fr_env</span><span class="p">():</span>
-            <span class="n">check_env_variables</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;TORCH_NCCL_TRACE_BUFFER_SIZE&#39;</span><span class="p">,</span> <span class="s1">&#39;TORCH_FR_BUFFER_SIZE&#39;</span><span class="p">]</span>
+            <span class="n">check_env_variables</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;TORCH_NCCL_TRACE_BUFFER_SIZE&#39;</span><span class="p">]</span>
+            <span class="c1"># TORCH_FR_BUFFER_SIZE is introduced in PyTorch 2.8.0</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">utils</span><span class="o">.</span><span class="n">torch_older_than</span><span class="p">(</span><span class="s1">&#39;2.8.0&#39;</span><span class="p">):</span>
+                <span class="n">check_env_variables</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;TORCH_FR_BUFFER_SIZE&#39;</span><span class="p">)</span>
             <span class="n">rank</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
             <span class="k">for</span> <span class="n">env_var</span> <span class="ow">in</span> <span class="n">check_env_variables</span><span class="p">:</span>
                 <span class="n">env_value</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">env_var</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">)</span>
@@ -224,15 +227,15 @@
                         <span class="sa">f</span><span class="s2">&quot;Environment variable </span><span class="si">{</span><span class="n">env_var</span><span class="si">}</span><span class="s2"> is set to </span><span class="si">{</span><span class="n">env_value</span><span class="si">}</span><span class="s2">, which is not an integer&quot;</span>
                     <span class="p">)</span>
 
-                <span class="k">if</span> <span class="n">env_value_int</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">env_value_int</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
                     <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
                         <span class="n">log</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
                         <span class="n">log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
                             <span class="sa">f</span><span class="s2">&quot;Environment variable </span><span class="si">{</span><span class="n">env_var</span><span class="si">}</span><span class="s2"> is set to </span><span class="si">{</span><span class="n">env_value</span><span class="si">}</span><span class="s2">&quot;</span>
-                            <span class="sa">f</span><span class="s2">&quot;, FR trace collection is disabled&quot;</span>
+                            <span class="sa">f</span><span class="s2">&quot;, FR trace collection is enabled&quot;</span>
                         <span class="p">)</span>
-                    <span class="k">return</span> <span class="kc">False</span>
-            <span class="k">return</span> <span class="kc">True</span>
+                    <span class="k">return</span> <span class="kc">True</span>
+            <span class="k">return</span> <span class="kc">False</span>
 
         <span class="k">if</span> <span class="n">_check_fr_env</span><span class="p">()</span> <span class="ow">is</span> <span class="kc">True</span><span class="p">:</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">torch_fr_trace_path</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
