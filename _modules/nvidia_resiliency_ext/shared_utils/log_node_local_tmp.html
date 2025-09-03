@@ -355,11 +355,11 @@
         <span class="n">keep_processing</span> <span class="o">=</span> <span class="mi">50</span>
         <span class="n">msg_dict</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="n">heap</span> <span class="o">=</span> <span class="p">[]</span>
-
         <span class="k">while</span> <span class="n">keep_processing</span><span class="p">:</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stop_event</span><span class="o">.</span><span class="n">is_set</span><span class="p">():</span>
                 <span class="c1"># Gives room for aggregator to catch up with writes</span>
-                <span class="n">keep_processing</span> <span class="o">-=</span> <span class="mi">1</span>
+                <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">heap</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                    <span class="n">keep_processing</span> <span class="o">-=</span> <span class="mi">1</span>
             <span class="c1"># Check for pending messages from other ranks</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_check_pending_messages</span><span class="p">()</span>
 
