@@ -121,8 +121,8 @@ class TorchFRTraceCollector(TraceCollector):
             nic_health_check.set_nic_device(local_rank)
             nic_health = nic_health_check._perform_health_check()
 
-        logger.info(f"GPU Health Check: {stderr_gpu.getvalue()}")
-        logger.info(f"NIC Health Check: {stderr_nic.getvalue()}")
+        logger.debug(f"GPU Health Check: {stderr_gpu.getvalue()}")
+        logger.debug(f"NIC Health Check: {stderr_nic.getvalue()}")
         health_check_results['gpu_health_check'] = {
             'status': 'Healthy' if gpu_health else 'Failed',
             'output': stderr_gpu.getvalue(),
