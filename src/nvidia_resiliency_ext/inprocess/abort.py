@@ -78,7 +78,7 @@ class AbortTorchDistributed(Abort):
         behavior of the distributed collectives.
 
         PyTorch Flight Recorder traces are collected by setting the
-        TORCH_NCCL_TRACE_BUFFER_SIZE environment variable to a non-zero value.
+        TORCH_NCCL_TRACE_BUFFER_SIZE or TORCH_FR_BUFFER_SIZE(>=2.8.0) environment variable to a non-zero value.
         We disable the collection of stack traces by default, which requires GIL, leading to a deadlock.
         This feature is still experimental and need to be used with care.
 
@@ -126,7 +126,10 @@ class AbortTorchDistributed(Abort):
 
     def collect_fr_trace(self, state: FrozenState):
         def _check_fr_env():
-            check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE', 'TORCH_FR_BUFFER_SIZE']
+            check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE']
+            # TORCH_FR_BUFFER_SIZE is introduced in PyTorch 2.8.0
+            if not utils.torch_older_than('2.8.0'):
+                check_env_variables.append('TORCH_FR_BUFFER_SIZE')
             rank = torch.distributed.get_rank()
             for env_var in check_env_variables:
                 env_value = os.environ.get(env_var, '0')
@@ -137,15 +140,15 @@ class AbortTorchDistributed(Abort):
                         f"Environment variable {env_var} is set to {env_value}, which is not an integer"
                     )
 
-                if env_value_int <= 0:
+                if env_value_int > 0:
                     if rank == 0:
                         log = logging.getLogger(__name__)
                         log.info(
                             f"Environment variable {env_var} is set to {env_value}"
-                            f", FR trace collection is disabled"
+                            f", FR trace collection is enabled"
                         )
-                    return False
-            return True
+                    return True
+            return False
 
         if _check_fr_env() is True:
             if self.torch_fr_trace_path is None:
