@@ -144,7 +144,7 @@ Create a configuration file for the Multi-Storage Client and export the environm
 Basic Usage
 ^^^^^^^^^^^
 
-To enable MSC integration, simply pass ``use_msc=True`` when creating the ``FileSystemWriterAsync`` instance:
+To enable MSC integration, simply pass ``use_msc=True`` when creating the ``FileSystemWriterAsync`` instance.
 
 The MSC URL scheme is ``msc://<profile-name>/<path>``. The example below shows how to save a checkpoint to the ``model-checkpoints`` profile, the data will be stored in the ``bucket-checkpoints`` bucket in AWS S3.
 
@@ -162,7 +162,7 @@ The MSC URL scheme is ``msc://<profile-name>/<path>``. The example below shows h
 Example: Saving and Loading Checkpoints with MSC
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The following example demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integration:
+The following code demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integrations. The `FileSystemWriter example`_ also provides an ``enable_msc`` option to use MSC for checkpoint saving and loading.
 
 .. code-block:: python
 
