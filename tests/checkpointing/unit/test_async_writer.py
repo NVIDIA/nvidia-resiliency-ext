@@ -16,9 +16,12 @@ import filecmp
 import pickle
 from copy import deepcopy
 from dataclasses import fields
+from typing import IO, Any
 
+import pytest
 import torch
 from torch.distributed.checkpoint import (
+    CheckpointException,
     DefaultLoadPlanner,
     DefaultSavePlanner,
     FileSystemReader,
@@ -36,7 +39,16 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 )
 from nvidia_resiliency_ext.checkpointing.utils import diff
 from tests.checkpointing.unit import TempNamedDir
-from tests.checkpointing.unit.test_utilities import TestModel, Utils
+from tests.checkpointing.unit.test_utilities import Model, Utils
+
+
+def mock_open(
+    self,
+    path: str,
+    mode: str = "rb",
+) -> IO[Any]:
+    """Function matching the system open() signature that always raises an error."""
+    raise OSError('worker critical failure during open()')
 
 
 class TestAsyncSave:
@@ -47,15 +59,23 @@ class TestAsyncSave:
         def finalize_fn():
             """Finalizes async checkpointing and synchronizes processes."""
             save_state_dict_async_finalize(*save_state_dict_ret)
-            torch.distributed.barrier()
 
         return AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
 
     def async_save_checkpoint(
-        self, checkpoint_dir, state_dict, planner, async_queue, thread_count=1, caching=False
+        self,
+        checkpoint_dir,
+        state_dict,
+        planner,
+        async_queue: AsyncCallsQueue,
+        thread_count=1,
+        caching=False,
+        open_file=open,
     ):
         """Performs an asynchronous model checkpoint save."""
-        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count)
+        writer = FileSystemWriterAsync(
+            checkpoint_dir, thread_count=thread_count, open_file=open_file
+        )
         coordinator_rank = 0
 
         save_state_dict_ret = save_state_dict_async_plan(
@@ -81,11 +101,10 @@ class TestAsyncSave:
         )
         return state_dict
 
-    def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt):
+    def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt, async_queue):
         """Verifies that async checkpointing produces the same results as sync checkpointing."""
         Utils.initialize_distributed()
-        model = FSDP(TestModel((1024, 1024), 8))
-        async_queue = AsyncCallsQueue()
+        model = FSDP(Model((1024, 1024), 8))
         with (
             TempNamedDir(tmp_path_dist_ckpt / 'async_checkpoint', sync=True) as async_ckpt_dir,
             TempNamedDir(tmp_path_dist_ckpt / 'sync_checkpoint', sync=True) as sync_ckpt_dir,
@@ -126,41 +145,61 @@ class TestAsyncSave:
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
 
-    def test_cached_metadata(self, tmp_path_dist_ckpt):
+    def test_errors_are_reported(self, tmp_path_dist_ckpt, async_queue):
         Utils.initialize_distributed()
-        async_queue = AsyncCallsQueue()
+        rank = torch.distributed.get_rank()
+        model = FSDP(Model((1024, 1024), 8))
+        state_dict = model.state_dict()
+        planner = DefaultSavePlanner()
 
-        model = FSDP(TestModel((1024, 1024), 8))
+        if rank == 1:
+            open_file = mock_open
+        else:
+            open_file = open
+
+        with TempNamedDir(tmp_path_dist_ckpt / 'test_errors_are_reported', sync=True) as ckpt_dir:
+            self.async_save_checkpoint(
+                ckpt_dir, state_dict, planner, async_queue, open_file=open_file
+            )
+            with pytest.raises(CheckpointException) as exc_info:
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            if rank == 0:
+                assert 'Worker failure' in str(exc_info.value)
+            else:
+                assert 'Worker failure' not in str(exc_info.value)
+
+    def test_cached_metadata(self, tmp_path_dist_ckpt, async_queue):
+        Utils.initialize_distributed()
+        model = FSDP(Model((1024, 1024), 8))
         state_dict_non_cached = model.state_dict()
         state_dict_cached = deepcopy(state_dict_non_cached)
         loaded_non_cached, loaded_cached = None, None
         md_non_cached, md_cached = None, None
         planner = DefaultSavePlanner()
 
-        with TempNamedDir(tmp_path_dist_ckpt / 'ckpt_dir', sync=True) as ckpt_dir:
+        with TempNamedDir(tmp_path_dist_ckpt / 'ckpt_dir', sync=True) as ckpt_path:
             self.async_save_checkpoint(
-                ckpt_dir, state_dict_non_cached, planner, async_queue, caching=True
+                ckpt_path, state_dict_non_cached, planner, async_queue, caching=True
             )
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-            loaded_non_cached = self.load_checkpoint(ckpt_dir, state_dict_non_cached)
-            md_path = ckpt_dir.__enter__() / '.metadata'
+            loaded_non_cached = self.load_checkpoint(ckpt_path, state_dict_non_cached)
+            md_path = ckpt_path / '.metadata'
             with md_path.open('rb') as f:
                 md_non_cached = pickle.load(f)
 
         # Run over 3 iterations with cached metadata enabled
         # The 3rd iteration will run with cached metadata
         # `ckpt_dir` at the 3rd iteration 2 will be maintained for comparison
-        ckpt_dir = None
         for i in range(3):
             ckpt_dir = TempNamedDir(tmp_path_dist_ckpt / f'ckpt_dir_{i}_cached', sync=True)
             self.async_save_checkpoint(
-                ckpt_dir.__enter__(), state_dict_cached, planner, async_queue, caching=True
+                ckpt_dir, state_dict_cached, planner, async_queue, caching=True
             )
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
             if i < 2:
                 ckpt_dir.cleanup()
-        loaded_cached = self.load_checkpoint(ckpt_dir.__enter__(), state_dict_cached)
-        md_path = ckpt_dir.__enter__() / '.metadata'
+        loaded_cached = self.load_checkpoint(ckpt_dir, state_dict_cached)
+        md_path = ckpt_dir.path() / '.metadata'
 
         with md_path.open('rb') as f:
             md_cached = pickle.load(f)

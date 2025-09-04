@@ -69,6 +69,7 @@ class Utils:
             and Utils.world_size != torch.distributed.get_world_size()
         ):
             torch.distributed.destroy_process_group()
+            Utils.inited = False
 
         if rank is None:
             Utils.rank = int(os.environ['LOCAL_RANK'])
@@ -78,7 +79,7 @@ class Utils:
             Utils.rank = rank
 
 
-class TestModel(torch.nn.Module):
+class Model(torch.nn.Module):
     def __init__(self, size: Tuple, ntensor: int) -> None:
         super().__init__()
         for i in range(ntensor):
