@@ -18,19 +18,14 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.core import abort_nvrx_check
 from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 
 from . import TempNamedDir
-from .test_utilities import TestModel, Utils
+from .test_utilities import Model, Utils
 
 
 class TestAsyncSave:
-    def setup_method(self, method):
-        Utils.set_world_size(1)
-
-    def teardown_method(self, method):
-        Utils.set_world_size()
 
     def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt):
         Utils.initialize_distributed()
-        model = TestModel((1024, 1024), 10)
+        model = Model((1024, 1024), 10)
         ckpt_impl = TorchAsyncCheckpoint()
         state_dict = model.state_dict()
         with (
@@ -62,7 +57,7 @@ class TestAsyncSave:
 
     def test_persistent_async_cp_abort(self, tmp_path_dist_ckpt):
         Utils.initialize_distributed()
-        model = TestModel((1024, 1024), 10)
+        model = Model((1024, 1024), 10)
         ckpt_impl = TorchAsyncCheckpoint(persistent_queue=True)
         state_dict = model.state_dict()
 
@@ -127,7 +122,7 @@ class TestAsyncSave:
 
     def test_persistent_async_cp_abort_during_cp_ops(self, tmp_path_dist_ckpt):
         Utils.initialize_distributed()
-        model = TestModel((1024, 1024), 10)
+        model = Model((1024, 1024), 10)
         ckpt_impl = TorchAsyncCheckpoint(persistent_queue=True)
         state_dict = model.state_dict()
 
