@@ -243,6 +243,10 @@ asynchronous checkpoint writer without synchronization.</p></li>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>List[<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)">int</a>]</p>
 </dd>
+<dt class="field-even">Raises<span class="colon">:</span></dt>
+<dd class="field-even"><p><strong>CheckpointException</strong> – if any rank(s) raised an exception during checkpoint
+    writing, the exceptions are wrapped and raised on all ranks.</p>
+</dd>
 </dl>
 </dd></dl>
 
@@ -521,7 +525,7 @@ schedule a checkpointing request</p></li>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller.close">
 <span class="sig-name descname"><span class="pre">close</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">abort</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#TemporalAsyncCaller.close"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller.close" title="Link to this definition"></a></dt>
-<dd><p>For TemporalAsyncCaller, this method is called explictly in <cite>is_current_async_calls_done</cite></p>
+<dd><p>For TemporalAsyncCaller, this method is called explictly in <cite>is_current_async_call_done</cite></p>
 <p>This method make sure the TemporalAsyncCaller terminated
 with all its assigned async request completed</p>
 <dl class="field-list simple">

@@ -421,7 +421,7 @@
 <div class="viewcode-block" id="TemporalAsyncCaller.close">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller.close">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">abort</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;For TemporalAsyncCaller, this method is called explictly in `is_current_async_calls_done`</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;For TemporalAsyncCaller, this method is called explictly in `is_current_async_call_done`</span>
 
 <span class="sd">        This method make sure the TemporalAsyncCaller terminated</span>
 <span class="sd">        with all its assigned async request completed</span>
@@ -767,6 +767,9 @@
 <span class="sd">        Returns:</span>
 <span class="sd">            List[int]: list of indices (as returned by `schedule_async_request`)</span>
 <span class="sd">                of async calls that have been successfully finalized.</span>
+<span class="sd">        Raises:</span>
+<span class="sd">            CheckpointException: if any rank(s) raised an exception during checkpoint</span>
+<span class="sd">                writing, the exceptions are wrapped and raised on all ranks.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">call_idx_finalized</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="p">:</span>

@@ -259,12 +259,13 @@ This function should be self-contained.</p></li>
 <dd><dl class="simple">
 <dt>Turn the latest dict including write results from <cite>self.results_queue</cite></dt><dd><p>into a single results lists. Includes error check.</p>
 </dd>
-<dt>Returns (List[WriteResult]): the list of write results</dt><dd><p>from all local processes performing the save.</p>
+<dt>Returns (Union(List[WriteResult], WRAPPED_EXCEPTION): the list of write results</dt><dd><p>from all local processes performing the save, or a WRAPPED_EXCEPTION if
+an exception was raised during the writing process.</p>
 </dd>
 </dl>
 <dl class="field-list simple">
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<em>WriteResult</em>]</p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<em>WriteResult</em>] | <a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.13)">tuple</a>[<a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)">BaseException</a>, <a class="reference external" href="https://docs.python.org/3/library/traceback.html#traceback.StackSummary" title="(in Python v3.13)"><em>StackSummary</em></a>]</p>
 </dd>
 </dl>
 </dd></dl>
@@ -303,7 +304,7 @@ us to enable automatic storage selection.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">write_preloaded_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">local_proc_idx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_bucket</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">results_queue</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">count_queue</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_fsync</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">write_preloaded_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">open_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">local_proc_idx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_bucket</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">results_queue</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">count_queue</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_fsync</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data" title="Link to this definition"></a></dt>
 <dd><p>Performs actual data saving to storage.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -315,6 +316,7 @@ to the proxy checkpoint process.</p></li>
 <li><p><strong>count_queue</strong> (<em>mp.JoinableQueue</em>) – queue to marks worker task as completed</p></li>
 <li><p><strong>use_fsync</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – if True, calls os.fsync at the end of saving</p></li>
 <li><p><strong>transform_list</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><em>_StorageWriterTransforms</em><em>]</em>)</p></li>
+<li><p><strong>open_file</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
@@ -326,7 +328,7 @@ to the proxy checkpoint process.</p></li>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multiproc">
-<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">write_preloaded_data_multiproc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_msc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_buckets</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_results_queue</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data_multiproc"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multiproc" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">write_preloaded_data_multiproc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_msc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">open_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_buckets</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_results_queue</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data_multiproc"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multiproc" title="Link to this definition"></a></dt>
 <dd><p>Performs saving data to storage with multiple processes.</p>
 <p>Starts predefined number of processes and uses 2 queues to make sure the results
 are complete:
@@ -345,6 +347,7 @@ To prevent this, we disable the GC explicitly for this function with _disable_gc
 (or an Exception) from parallel write processes to the main training process</p></li>
 <li><p><strong>transform_list</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><em>_StorageWriterTransforms</em><em>]</em>)</p></li>
 <li><p><strong>use_msc</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>)</p></li>
+<li><p><strong>open_file</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.13)"><em>Callable</em></a>)</p></li>
 <li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>)</p></li>
 </ul>
 </dd>

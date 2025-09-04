@@ -558,8 +558,21 @@
             <span class="n">storage_writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">global_metadata</span><span class="p">,</span> <span class="n">all_results</span><span class="p">)</span>
             <span class="n">write_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">write_end</span><span class="si">}</span><span class="s2">, metadata_write: </span><span class="si">{</span><span class="n">write_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">write_start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="n">CheckpointException</span><span class="p">(</span><span class="s2">&quot;write&quot;</span><span class="p">,</span> <span class="n">node_failures</span><span class="p">)</span></div>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">node_failures</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="c1"># Broadcast failure status to all ranks to raise exceptions everywhere if needed.</span>
+    <span class="c1"># The failure details are only raised on the coordinator.</span>
+    <span class="n">failures_occurred</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">(</span>
+        <span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">node_failures</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)],</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">(),</span>
+    <span class="p">)</span>
+    <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span>
+        <span class="n">failures_occurred</span><span class="p">,</span> <span class="n">src</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">coordinator_rank</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">failures_occurred</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">CheckpointException</span><span class="p">(</span><span class="s2">&quot;write&quot;</span><span class="p">,</span> <span class="n">node_failures</span><span class="p">)</span></div>
 
 </pre></div>
 
