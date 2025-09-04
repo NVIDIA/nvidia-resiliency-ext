@@ -57,27 +57,33 @@ class NodeLocalTmpLogHandler(logging.Handler):
             sys.stderr.write(f"Log handler error: {record.getMessage()}\n")
             sys.stderr.flush()
 
-    def _log_file_namer(self):
-        # Use "unknown" for rank_id if it's None
+    def _get_backup_files(self):
+        """Return sorted list of backup files for this rank/process."""
         rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
-        return f"rank_{rank_str}_{self.proc_name}.msg.{int(time.time()*1000)}"
+        file_prefix = f"rank_{rank_str}_{self.proc_name}.msg."
+        backup_files = [
+            filename
+            for filename in os.listdir(self.file_path)
+            if re.match(rf"{file_prefix}(\d+)", filename)
+        ]
+        backup_files.sort()
+        return backup_files
+
+    def _log_file_namer(self):
+        backup_files = self._get_backup_files()
+        if self.fname is None and backup_files:
+            return backup_files[0]
+        rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
+        file_prefix = f"rank_{rank_str}_{self.proc_name}.msg."
+        return f"{file_prefix}{int(time.time()*1000)}"
 
     def _cleanup_old_backup_files(self):
-        """Clean up old log files, keeping only the most recent one's."""
-        backup_files = []
-        # Use "unknown" for rank_id if it's None
-        rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
-        for filename in os.listdir(self.file_path):
-            match = re.match(rf"rank_{rank_str}_{self.proc_name}.msg\.(\d+)", filename)
-            if not match:
-                continue
-            backup_files.append(filename)
-        backup_files.sort()
+        """Clean up old log files, keeping only the most recent ones."""
+        backup_files = self._get_backup_files()
         for old_file in backup_files[: -self.max_backup_files]:
             try:
                 os.remove(os.path.join(self.file_path, old_file))
             except (OSError, IOError) as e:
-                # Log the error but don't fail the entire operation
                 sys.stderr.write(f"Failed to remove backup file {old_file}: {e}\n")
                 sys.stderr.flush()
 
@@ -156,7 +162,7 @@ class LogMessage:
                     # Convert asctime to a datetime object, then to a Unix timestamp
                     dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S,%f')
                     timestamp = int(dt.timestamp())
-                    self.hash_table[key] = value
+                    self.hash_table[key] = timestamp
                 else:
                     self.hash_table[key] = value
 
