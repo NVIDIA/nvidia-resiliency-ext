@@ -265,11 +265,11 @@ class NodeLogAggregator:
         keep_processing = 50
         msg_dict = {}
         heap = []
-
         while keep_processing:
             if self._stop_event.is_set():
                 # Gives room for aggregator to catch up with writes
-                keep_processing -= 1
+                if len(heap) == 0:
+                    keep_processing -= 1
             # Check for pending messages from other ranks
             self._check_pending_messages()
 

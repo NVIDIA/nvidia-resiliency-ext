@@ -304,7 +304,7 @@ class TemporalAsyncCaller(AsyncCaller):
         return is_done
 
     def close(self, abort=False):
-        """For TemporalAsyncCaller, this method is called explictly in `is_current_async_calls_done`
+        """For TemporalAsyncCaller, this method is called explictly in `is_current_async_call_done`
 
         This method make sure the TemporalAsyncCaller terminated
         with all its assigned async request completed
@@ -622,6 +622,9 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         Returns:
             List[int]: list of indices (as returned by `schedule_async_request`)
                 of async calls that have been successfully finalized.
+        Raises:
+            CheckpointException: if any rank(s) raised an exception during checkpoint
+                writing, the exceptions are wrapped and raised on all ranks.
         """
         call_idx_finalized = []
         while self.async_calls:
