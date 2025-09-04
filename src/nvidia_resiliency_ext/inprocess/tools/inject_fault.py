@@ -33,6 +33,7 @@ import torch
 
 class Fault(enum.Enum):
     GPU_ERROR = enum.auto()
+    GPU_ERROR_FIXED = enum.auto()  # 新增：使用LOCAL_RANK的GPU错误注入
     GPU_SLEEP = enum.auto()
     WORKLOAD_EXC = enum.auto()
     ASYNC_EXC = enum.auto()
@@ -191,6 +192,49 @@ register_fault(
     Fault.GPU_ERROR,
     lambda delay, callback: threading.Thread(
         target=raise_gpu_error,
+        args=(delay, callback),
+        daemon=True,
+    ).start(),
+)
+
+
+def raise_gpu_error_fixed(delay, callback):
+    """
+    Fixed version of GPU error injection that uses LOCAL_RANK environment variable
+    instead of torch.cuda.current_device() to ensure correct GPU targeting.
+    """
+    import os
+    
+    # Get LOCAL_RANK before delay to ensure correct GPU targeting
+    local_rank = int(os.getenv('LOCAL_RANK', 0))
+    rank = int(os.getenv('RANK', 0))
+    
+    time.sleep(delay)
+    log = logging.getLogger(__name__)
+    
+    # Use LOCAL_RANK to determine target device
+    device = torch.device(f'cuda:{local_rank}')
+    
+    log.critical(f'raising GPU error on {device} (LOCAL_RANK={local_rank}, RANK={rank})')
+    log.critical(f'torch.cuda.current_device() = {torch.cuda.current_device()} (for comparison)')
+    
+    if callback is not None:
+        callback()
+    
+    # Set device explicitly before creating tensors
+    torch.cuda.set_device(local_rank)
+    
+    # Create tensors on the target device and trigger index out of bounds error
+    b = torch.ones(1, dtype=torch.int64).to(device)
+    a = torch.ones(1, dtype=torch.int64).to(device)
+    a[b] = 0  # This will trigger "index out of bounds" assertion
+
+
+# Register fixed GPU error fault
+register_fault(
+    Fault.GPU_ERROR_FIXED,
+    lambda delay, callback: threading.Thread(
+        target=raise_gpu_error_fixed,
         args=(delay, callback),
         daemon=True,
     ).start(),
