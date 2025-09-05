@@ -180,8 +180,9 @@ class TestLogger(unittest.TestCase):
         log_type="info",
         dbg_on="0",
         max_file_num=None,
+        clean_workspace=True,
     ):
-        log_dir, temp_dir = create_test_workspace(clean=True)
+        log_dir, temp_dir = create_test_workspace(clean=clean_workspace)
         setup_vars(
             global_id=0,
             local_id=0,
@@ -236,6 +237,19 @@ class TestLogger(unittest.TestCase):
 
     def test_rotation(self):
         self.check_msg(num_msg=900, file_size_kb=10, pm_files=5, is_agg=False)
+
+    def test_rotation_existing_file(self):
+        _, temp_dir = create_test_workspace(clean=True)
+        os.makedirs(temp_dir, exist_ok=True)
+        fname = os.path.join(temp_dir, "rank_0_test.msg.1757013222372")
+        with open(fname, 'x') as f:
+            for i in range(50):
+                f.write(f"My Old Logging Message {i}\n")
+            f.flush()
+        file_size = os.path.getsize(fname)
+        self.check_msg(clean_workspace=False, num_msg=90, file_size_kb=10, pm_files=2, is_agg=False)
+        file_size_after_logging = os.path.getsize(fname)
+        assert file_size_after_logging > file_size, "File size after logging should be > before"
 
     def test_rotation_cleanup(self):
         self.check_msg(num_msg=2000, file_size_kb=10, pm_files=1, is_agg=True, max_file_num=50)
