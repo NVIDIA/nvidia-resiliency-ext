@@ -31,12 +31,17 @@ from torch.distributed.checkpoint import (
 )
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue, AsyncRequest
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
+    AsyncCallsQueue,
+    AsyncRequest,
+    abort_nvrx_checkpoint,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     save_state_dict_async_finalize,
     save_state_dict_async_plan,
 )
+from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 from nvidia_resiliency_ext.checkpointing.utils import diff
 from tests.checkpointing.unit import TempNamedDir
 from tests.checkpointing.unit.test_utilities import Model, Utils
@@ -91,6 +96,10 @@ class TestAsyncSave:
             storage_writer=FileSystemWriter(checkpoint_dir),
             planner=planner,
         )
+
+    def async_save_checkpoint_on_rank0(self, checkpoint_dir, state_dict, torch_ckpt_impl):
+        if torch.distributed.get_rank() == 0:
+            torch_ckpt_impl.async_save(state_dict, checkpoint_dir / 'test')
 
     def load_checkpoint(self, checkpoint_dir, state_dict):
         """Loads a checkpoint into the given state_dict."""
@@ -219,3 +228,83 @@ class TestAsyncSave:
                 ), f'{field.name} is different in metadata from non-cached, cached metadata impls'
         ckpt_dir.cleanup()
         async_queue.close()
+
+    def test_async_cp_with_multiple_queue_and_abort(self, tmp_path_dist_ckpt):
+        """
+        Verifies that async checkpointing backend can be used with multiple async queues.
+        For example, user may want to save 2 checkpoints i.e. one sharded state and one only on rank-0.
+        Verify the abort CP functionality and the ability to resume after an abort operation
+        """
+        Utils.initialize_distributed()
+        model = FSDP(Model((1024, 1024), 8))
+        async_queue_dist = AsyncCallsQueue()
+        ckpt_impl = TorchAsyncCheckpoint(persistent_queue=True)
+        with (
+            TempNamedDir(
+                tmp_path_dist_ckpt / 'async_checkpoint_dist', sync=True
+            ) as async_ckpt_dir_dist,
+            TempNamedDir(
+                tmp_path_dist_ckpt / 'async_checkpoint_no_dist', sync=True
+            ) as async_ckpt_dir_no_dist,
+        ):
+            state_dict = model.state_dict()
+            planner = DefaultSavePlanner()
+
+            # Perform async saves for both dist CP and non-dict CP use cases.
+            self.async_save_checkpoint(async_ckpt_dir_dist, state_dict, planner, async_queue_dist)
+            self.async_save_checkpoint_on_rank0(async_ckpt_dir_no_dist, state_dict, ckpt_impl)
+            async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
+
+            # Abort the CP workers to mock the action of inprocess restarts
+            abort_nvrx_checkpoint()
+
+            # validate state of the Async CP workers after abort operation
+            async_calls_queue_no_dist = ckpt_impl._get_async_calls_queue()
+            assert (
+                async_calls_queue_no_dist is not None
+            ), "We expect a valid state of AsyncCallsQueue"
+            async_process_no_dist = async_calls_queue_no_dist._get_async_caller()
+            if async_process_no_dist is not None:
+                assert (
+                    async_process_no_dist._debug_is_async_process_running() is False
+                ), "After abort async process must stop"
+
+            async_process_dist = async_queue_dist._get_async_caller()
+            if async_process_dist is not None:
+                assert (
+                    async_process_dist._debug_is_async_process_running() is False
+                ), "After abort async process must stop"
+
+            # Perform async saves for both dist CP and non-dist CP use cases.
+            # Validate that operations seamlessly resume after an abort operation
+            self.async_save_checkpoint(async_ckpt_dir_dist, state_dict, planner, async_queue_dist)
+            self.async_save_checkpoint_on_rank0(async_ckpt_dir_no_dist, state_dict, ckpt_impl)
+            async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
+
+            # validate state of the Async CP workers after resume operation
+            async_calls_queue_no_dist = ckpt_impl._get_async_calls_queue()
+            assert (
+                async_calls_queue_no_dist is not None
+            ), "We expect a valid state of AsyncCallsQueue object in TorchAsyncCheckpoint after a CP event"
+            async_process_no_dist = async_calls_queue_no_dist._get_async_caller()
+            # for the non_dist CP use case, only rank-0 is expected to trigger an async process
+            if torch.distributed.get_rank() == 0:
+                assert (
+                    async_process_no_dist is not None
+                ), "We expect a valid state of AsyncCaller after a CP event"
+                assert (
+                    async_process_no_dist._debug_is_async_process_running() is True
+                ), "After resume, we expect async process to be running on rank 0 for non dist async save"
+
+            async_process_dist = async_queue_dist._get_async_caller()
+            assert (
+                async_process_dist is not None
+            ), "We expect a valid state of AsyncCaller after a CP event"
+            assert (
+                async_process_dist._debug_is_async_process_running() is True
+            ), "After resume, we expect async process to be running on all ranks for dist async save"
+
+            async_queue_dist.close()
+            ckpt_impl.close()
