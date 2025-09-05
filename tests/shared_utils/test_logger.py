@@ -162,7 +162,6 @@ class TestLogger(unittest.TestCase):
     def check_msg(self, num_msg, file_size_kb, pm_files, is_agg: bool, log_type="info", dbg_on="0"):
         log_dir, temp_dir = create_test_workspace(clean=True)
         setup_vars(0, 0, file_size_kb, dbg_on)
-
         if is_agg:
             aggregator = NodeLogAggregator(
                 log_dir=log_dir,
