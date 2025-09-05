@@ -102,7 +102,6 @@
 <p>The <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue</span></code></a>
 provides application users with an interface to schedule <a class="reference internal" href="api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest" title="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest</span></code></a>,
 which defines checkpoint routine, its args/kwargs and finalization steps when the checkpoint routine is finished.
-This class is a singleton, implying each rank will have only one instance of this class.
 It is recommended to call the <cite>close()</cite> API on the <cite>AsyncCallsQueue</cite> at the end of training to ensure a clean shutdown of the process that manages async checkpointing.
 We also extend the API of <cite>abort_nvrx_checkpoint()</cite> to abort the async processes and cleanly restart the <cite>AsyncCallsQueue</cite> in case of any restarts of the training processes.</p>
 <dl class="simple">
