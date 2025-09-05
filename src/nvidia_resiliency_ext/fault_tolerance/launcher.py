@@ -478,6 +478,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     ipc_socket_path=rmon_ipc_socket,
                     is_restarter_logger=is_restarter_logger,
                     mp_ctx=fork_mp_ctx,
+                    env=worker_env,
                 )
 
     def shutdown_rank_monitors(self):
