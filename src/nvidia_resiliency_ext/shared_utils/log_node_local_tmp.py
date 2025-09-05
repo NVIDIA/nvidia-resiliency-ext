@@ -72,7 +72,7 @@ class NodeLocalTmpLogHandler(logging.Handler):
     def _log_file_namer(self):
         backup_files = self._get_backup_files()
         if self.fname is None and backup_files:
-            return backup_files[0]
+            return backup_files[-1]
         rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
         file_prefix = f"rank_{rank_str}_{self.proc_name}.msg."
         return f"{file_prefix}{int(time.time()*1000)}"
