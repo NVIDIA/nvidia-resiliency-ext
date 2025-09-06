@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 import traceback
 from collections import defaultdict
 from functools import wraps
@@ -200,11 +201,22 @@ class PciMixin:
 
 
 class GPUHealthCheck(PynvmlMixin):
+    # Define the mapping of string names to NVML recovery actions
+    RECOVERY_ACTION_MAP = {
+        'gpu_reset': 'NVML_GPU_RECOVERY_ACTION_GPU_RESET',
+        'node_reboot': 'NVML_GPU_RECOVERY_ACTION_NODE_REBOOT',
+        'drain_p2p': 'NVML_GPU_RECOVERY_ACTION_DRAIN_P2P',
+        'drain_and_reset': 'NVML_GPU_RECOVERY_ACTION_DRAIN_AND_RESET',
+    }
+
     def __init__(
         self,
         device_index: Optional[int] = None,
         interval: int = 60,
         on_failure: Optional[Callable] = None,
+        simulate_failure_rank: Optional[int] = None,
+        simulate_failure_time: Optional[int] = None,
+        simulate_recovery_action: Optional[str] = None,
     ):
         """
         Initializes the GPUHealthCheck class.
@@ -213,13 +225,42 @@ class GPUHealthCheck(PynvmlMixin):
             device_index (Optional[int]): GPU device index to check. If None, checks all GPUs.
             interval (int): Interval in seconds between asynchronous health checks.
             on_failure (Optional[Callable]): Callback function to handle health check failures.
+            simulate_failure_rank (Optional[int]): Rank number to simulate failure on.
+            simulate_failure_time (Optional[int]): Time in seconds after start to simulate failure.
+            simulate_recovery_action (Optional[str]): Recovery action to simulate.
+                                                      Valid values: 'gpu_reset', 'node_reboot',
+                                                      'drain_p2p', 'drain_and_reset'
         """
+        # Validate simulation parameters
+        if simulate_failure_time is not None:
+            if not isinstance(simulate_failure_time, int) or simulate_failure_time <= 0:
+                raise ValueError(
+                    "simulate_failure_time must be a positive integer number of seconds"
+                )
+
+        # Convert and validate recovery action
+        if simulate_recovery_action is not None:
+            if simulate_failure_time is None:
+                raise ValueError(
+                    "simulate_recovery_action requires simulate_failure_time to be set"
+                )
+
+            if simulate_recovery_action not in self.RECOVERY_ACTION_MAP:
+                raise ValueError(
+                    f"Invalid recovery action '{simulate_recovery_action}'. "
+                    f"Must be one of: {list(self.RECOVERY_ACTION_MAP.keys())}"
+                )
+
         super().__init__()
         self.device_index = device_index
         self.interval = interval
         self.on_failure = on_failure
         self.pynvml_available = self.check_pynvml_availability()
         self.enabled = self._check_driver_version()
+        self.simulate_failure_rank = simulate_failure_rank
+        self.simulate_failure_time = simulate_failure_time
+        self.simulate_recovery_action = simulate_recovery_action
+        self.start_time = int(time.time()) if simulate_failure_time is not None else None
 
     @with_pynvml_lock
     def _check_driver_version(self) -> bool:
@@ -352,10 +393,31 @@ class GPUHealthCheck(PynvmlMixin):
                 # PyNVML is not available so we assume the GPU is healthy
                 return True
 
+            # Check for simulated failure conditions
+            recovery_action = None
+            if (
+                self.simulate_failure_rank == device_id
+                and self.start_time is not None
+                and self.simulate_failure_time is not None
+            ):
+                elapsed_seconds = int(time.time() - self.start_time)
+                if elapsed_seconds >= self.simulate_failure_time:
+                    if self.simulate_recovery_action:
+                        nvml_constant_name = self.RECOVERY_ACTION_MAP[self.simulate_recovery_action]
+                        recovery_action = getattr(self.pynvml, nvml_constant_name)
+                        logger.warning(
+                            f"Simulated GPU failure on GPU {device_id} "
+                            f"after {elapsed_seconds} seconds with "
+                            f"recovery action: {self.simulate_recovery_action}"
+                        )
+                        # Disable the simulated failure on future checks.
+                        self.simulate_failure_time = None
+
             # Get the GPU recovery action status
-            recovery_action = self.pynvml.nvmlDeviceGetFieldValues(
-                handle, [self.pynvml.NVML_FI_DEV_GET_GPU_RECOVERY_ACTION]
-            )[0].value.uiVal
+            if recovery_action is None:
+                recovery_action = self.pynvml.nvmlDeviceGetFieldValues(
+                    handle, [self.pynvml.NVML_FI_DEV_GET_GPU_RECOVERY_ACTION]
+                )[0].value.uiVal
 
             # Interpret the recovery action
             if recovery_action == self.pynvml.NVML_GPU_RECOVERY_ACTION_NONE:
@@ -405,6 +467,8 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         pci_topo_file: Optional[str] = None,
         link_down_path_template: Optional[str] = None,
         on_failure: Optional[Callable] = None,
+        simulate_failure_rank: Optional[int] = None,
+        simulate_failure_time: Optional[int] = None,
     ):
         """
         Initializes the NicHealthCheck class. 'pci_topo_file' is required on some CSPs (e.g. Azure) to describe
@@ -415,11 +479,26 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
                                         and initializes the baseline counter during construction.
             interval (int): Interval in seconds between asynchronous health checks.
             pci_topo_file (Optional[str]): The topo file describes the hardware topology of a system,
-                                            specifically how CPUs and PCI devices (like GPUs and NICs) are connected.
+                                           specifically how CPUs and PCI devices (like GPUs and NICs) are connected.
             link_down_path_template (Optional[str]): Template string for the link down counter path.
                                                     Use {nic} as placeholder for NIC name.
             on_failure (Optional[Callable]): Callback function to handle health check failures.
+            simulate_failure_rank (Optional[int]): Rank number to simulate failure on.
+            simulate_failure_time (Optional[int]): Time in seconds after start to simulate failure.
+                                                 Must be a positive integer.
         """
+
+        # Validate simulation parameters
+        if simulate_failure_time is not None:
+            if not isinstance(simulate_failure_time, int) or simulate_failure_time <= 0:
+                raise ValueError(
+                    "simulate_failure_time must be a positive integer number of seconds"
+                )
+
+        self.simulate_failure_rank = simulate_failure_rank
+        self.simulate_failure_time = simulate_failure_time
+        self.start_time = int(time.time()) if simulate_failure_time is not None else None
+
         self.interval = interval
         self.pci_topo_file = pci_topo_file
         self.on_failure = on_failure
@@ -639,6 +718,22 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         Returns:
             bool: True if NIC/IB is healthy, False otherwise.
         """
+        # Check for simulated failure conditions
+        if (
+            self.simulate_failure_rank == self._local_rank
+            and self.start_time is not None
+            and self.simulate_failure_time is not None
+        ):
+            elapsed_seconds = int(time.time() - self.start_time)
+            if elapsed_seconds >= self.simulate_failure_time:
+                logger.warning(
+                    f"Simulated NIC failure on rank {self._local_rank} "
+                    f"after {elapsed_seconds} seconds"
+                )
+                # Disable the simulated failure on future checks.
+                self.simulate_failure_time = None
+                return False
+
         link_downed_path = self.link_down_path_template.format(nic=self.nic_name)
         if not os.path.exists(link_downed_path):
             logger.warning(
