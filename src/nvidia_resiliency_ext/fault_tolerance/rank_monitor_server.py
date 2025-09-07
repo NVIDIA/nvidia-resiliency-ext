@@ -126,7 +126,8 @@ class RankMonitorServer:
         cfg: FaultToleranceConfig,
         ipc_socket_path: str,
         rank_monitor_ready_event,
-        logger: RankMonitorLogger,
+        logger: logging.Logger,
+        is_restarter_logger: bool,
     ):
         """
         Initializes the RankMonitorServer object.
@@ -151,7 +152,10 @@ class RankMonitorServer:
         self.connection_lock = asyncio.Lock()
         self.rank_monitor_ready_event = rank_monitor_ready_event
         self.logger = logger
-        self.state_machine = RankMonitorStateMachine(logger)
+        self.rmlogger = RankMonitorLogger(
+            level=logger.level, is_restarter_logger=is_restarter_logger
+        )
+        self.state_machine = RankMonitorStateMachine(self.rmlogger)
         self._periodic_restart_task = None
         self.health_checker = GPUHealthCheck(
             interval=self.cfg.node_health_check_interval, on_failure=self._handle_unhealthy_node
@@ -264,7 +268,7 @@ class RankMonitorServer:
         # Update NIC health checker on the rank to monitor.
         if self.nic_health_checker is not None:
             self.nic_health_checker.set_nic_device(local_rank=self.rank_info.local_rank)
-        self.logger.set_connected_rank(msg.rank_info.global_rank)
+        self.rmlogger.set_connected_rank(msg.rank_info.global_rank)
         await write_obj_to_ipc_stream(OkMsg(cfg=self.cfg), writer)
 
     async def _handle_heartbeat_msg(self, msg, writer):
@@ -318,7 +322,7 @@ class RankMonitorServer:
                 f"Section(s) {open_section_names} were still open. you can use`.end_all_sections` to avoid this warning"
             )
             self.open_sections.clear()
-        self.logger.set_connected_rank(None)
+        self.rmlogger.set_connected_rank(None)
         if self.connection_lock.locked():
             self.connection_lock.release()
 
@@ -546,7 +550,8 @@ class RankMonitorServer:
                 cfg,
                 ipc_socket_path,
                 rank_monitor_ready_event,
-                rmlogger,
+                logger,
+                is_restarter_logger,
             )
             asyncio.run(inst._rank_monitor_loop())
             logger.debug("Leaving RankMonitorServer process")
