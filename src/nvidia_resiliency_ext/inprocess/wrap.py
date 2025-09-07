@@ -219,6 +219,7 @@ class Wrapper:
         self.finalize = finalize
         self.health_check = health_check
 
+        setup_logger(node_local_tmp_prefix="wrapper")
         # Construct internal restart_health_check by chaining user's health_check with GPU and NVL checks
         self._construct_restart_health_check()
 
