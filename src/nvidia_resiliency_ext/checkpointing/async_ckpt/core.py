@@ -19,6 +19,7 @@ a checkpoint save process in the background.
 """
 
 import logging
+import weakref
 from abc import ABC, abstractmethod
 from collections import deque
 from queue import Empty
@@ -130,6 +131,20 @@ class AsyncRequest(NamedTuple):
         return self.call_idx
 
 
+class ObjectTracker(type):
+    def __init__(cls, name, bases, attrs):
+        super().__init__(name, bases, attrs)
+        cls._instances = weakref.WeakSet()
+
+    def __call__(cls, *args, **kwargs):
+        instance = super().__call__(*args, **kwargs)
+        cls._instances.add(instance)
+        return instance
+
+    def get_instances(cls):
+        return list(cls._instances)
+
+
 class AsyncCaller(ABC):
     """Wrapper around mp.Process that ensures correct semantic of distributed finalization.
 
@@ -192,8 +207,13 @@ class AsyncCaller(ABC):
         return ten[0] == 0
 
     @abstractmethod
-    def close(self):
-        """Terminate the async caller at exit of an application or some termination conditions"""
+    def close(self, abort=False):
+        """Terminate the async caller at exit of an application or some termination conditions
+
+        Args:
+            abort (bool, optional): Default to False. Needs to be manually set to true when
+                the checkpoint async process needs to be aborted.
+        """
         logger.info(f"AsyncCaller: {torch.distributed.get_rank()}, Destroying Async Caller")
 
     @abstractmethod
@@ -283,15 +303,23 @@ class TemporalAsyncCaller(AsyncCaller):
             is_done = True
         return is_done
 
-    def close(self):
-        """For TemporalAsyncCaller, this method is called explictly in `is_current_async_calls_done`
+    def close(self, abort=False):
+        """For TemporalAsyncCaller, this method is called explictly in `is_current_async_call_done`
 
         This method make sure the TemporalAsyncCaller terminated
         with all its assigned async request completed
+
+        Args:
+            abort (bool, optional): Default to False. Needs to be manually set to true when
+                the checkpoint async process needs to be aborted.
         """
         if self.process:
             logger.debug(f"rank: {self.rank}, joining self.process")
-            self.process.join()
+            if abort:
+                logger.warning(f"Temporal worker aborted in rank {torch.distributed.get_rank()}")
+                self.process.kill()
+            else:
+                self.process.join()
             self.process = None
             logger.debug(
                 "TemporalAsyncCaller: Async process join finished "
@@ -301,6 +329,12 @@ class TemporalAsyncCaller(AsyncCaller):
 
     def __del__(self):
         pass
+
+    def _debug_is_async_process_running(self):
+        """Utility for unit test purpose to validate expected state of the async process that performs async CP."""
+        if self.process is None:
+            return False
+        return self.process.is_alive()
 
 
 class PersistentAsyncCaller(AsyncCaller):
@@ -360,7 +394,7 @@ class PersistentAsyncCaller(AsyncCaller):
                 ),
             )
             self.process.start()
-            logger.info(f"PersistentAsyncCaller: {self.rank}, Started Async Caller")
+            logger.debug(f"PersistentAsyncCaller: {self.rank}, Started Async Caller {self.process}")
 
         if async_req.preload_fn:
             self.preload_q.put(async_req.call_idx)
@@ -429,20 +463,35 @@ class PersistentAsyncCaller(AsyncCaller):
 
         return is_done
 
-    def close(self):
+    def close(self, abort=False):
         """Wait on the left async requests and terminate the PersistentAsyncCaller
 
         Signals the PersistentAsyncCaller by sending a 'DONE' message to make it terminated
+
+        Args:
+            abort (bool, optional): Default to False. Needs to be manually set to true when
+                the checkpoint async process needs to be aborted.
         """
         logger.info(f"PersistentAsyncCaller: {self.rank}, Destroying Async Caller")
         if self.process:
-            self.queue.put('DONE')
-            self.queue.join()
-            self.process.join()
+            if abort:
+                logger.error(f"Persistent worker aborted in rank {torch.distributed.get_rank()}")
+                self.process.kill()
+            else:
+                self.queue.put('DONE')
+                self.queue.join()
+                self.process.join()
+
             self.process = None
 
     def __del__(self):
         self.close()
+
+    def _debug_is_async_process_running(self):
+        """Utility for unit test purpose to validate expected state of the async process that performs async CP."""
+        if self.process is None:
+            return False
+        return self.process.is_alive()
 
     @staticmethod
     @_disable_gc()
@@ -514,7 +563,7 @@ class _ActiveAsyncRequest(NamedTuple):
     async_request: AsyncRequest
 
 
-class AsyncCallsQueue:
+class AsyncCallsQueue(metaclass=ObjectTracker):
     """Manages a queue of async calls.
 
     Allows adding a new async call with `schedule_async_request` and finalizing
@@ -573,6 +622,9 @@ class AsyncCallsQueue:
         Returns:
             List[int]: list of indices (as returned by `schedule_async_request`)
                 of async calls that have been successfully finalized.
+        Raises:
+            CheckpointException: if any rank(s) raised an exception during checkpoint
+                writing, the exceptions are wrapped and raised on all ranks.
         """
         call_idx_finalized = []
         while self.async_calls:
@@ -593,8 +645,30 @@ class AsyncCallsQueue:
         """Get the number of active async calls."""
         return len(self.async_calls)
 
-    def close(self):
-        """Finalize all calls upon closing."""
-        self.maybe_finalize_async_calls(blocking=True)
+    def close(self, abort=False):
+        """Finalize all calls upon closing.
+
+        Args:
+            abort (bool, optional): Default to False. Needs to be manually set to true when
+                the checkpoint async process needs to be aborted.
+        """
+        if not abort:
+            self.maybe_finalize_async_calls(blocking=True)
         if self.persistent and self.persistent_caller:
-            self.persistent_caller.close()
+            self.persistent_caller.close(abort=abort)
+
+        # Reset all class params
+        self.call_idx = -1
+        self.persistent_caller = None
+
+    def __del__(self):
+        """Ensure clean closure of AsyncCallsQueue at object deletion"""
+        self.close()
+
+
+def abort_nvrx_checkpoint():
+    """Abort NVRx Checkpoint Utility. This will close the AsyncCallsQueue that manages async checkpoints"""
+    # close the async calls queue which will ensure a clean restart
+    # of the CP async process in subsequent async save requests.
+    for async_queue in AsyncCallsQueue.get_instances():
+        async_queue.close(abort=True)

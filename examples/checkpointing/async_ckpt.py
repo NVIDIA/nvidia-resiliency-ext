@@ -62,7 +62,7 @@ def init_distributed_backend(backend="nccl"):
         logging.info(f"Rank {dist.get_rank()} initialized with {backend} backend.")
 
         # Ensure each process uses a different GPU
-        torch.cuda.set_device(dist.get_rank())
+        torch.cuda.set_device(dist.get_node_local_rank())
     except Exception as e:
         logging.error(f"Error initializing the distributed backend: {e}")
         raise
@@ -108,6 +108,9 @@ def main():
 
     # Clean up checkpoint directory only on rank 0
     cleanup(ckpt_dir)
+
+    # Close the async save queue to shutdown async processes
+    ckpt_impl.close()
 
     # Ensure NCCL process group is properly destroyed
     if dist.is_initialized():

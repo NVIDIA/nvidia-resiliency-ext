@@ -3,6 +3,8 @@ Usage guide
 The :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue`
 provides application users with an interface to schedule :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest`, 
 which defines checkpoint routine, its args/kwargs and finalization steps when the checkpoint routine is finished.
+It is recommended to call the `close()` API on the `AsyncCallsQueue` at the end of training to ensure a clean shutdown of the process that manages async checkpointing.
+We also extend the API of `abort_nvrx_checkpoint()` to abort the async processes and cleanly restart the `AsyncCallsQueue` in case of any restarts of the training processes.  
 
 :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint` 
            is an instatiation of the core utilities to make `torch.save` run asynchronously.
@@ -141,7 +143,7 @@ Create a configuration file for the Multi-Storage Client and export the environm
 Basic Usage
 ^^^^^^^^^^^
 
-To enable MSC integration, simply pass ``use_msc=True`` when creating the ``FileSystemWriterAsync`` instance:
+To enable MSC integration, simply pass ``use_msc=True`` when creating the ``FileSystemWriterAsync`` instance.
 
 The MSC URL scheme is ``msc://<profile-name>/<path>``. The example below shows how to save a checkpoint to the ``model-checkpoints`` profile, the data will be stored in the ``bucket-checkpoints`` bucket in AWS S3.
 
@@ -159,7 +161,7 @@ The MSC URL scheme is ``msc://<profile-name>/<path>``. The example below shows h
 Example: Saving and Loading Checkpoints with MSC
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The following example demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integration:
+The following code demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integrations. The `FileSystemWriter example`_ also provides an ``enable_msc`` option to use MSC for checkpoint saving and loading.
 
 .. code-block:: python
 

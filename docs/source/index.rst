@@ -10,11 +10,12 @@ nvidia-resiliency-ext
 Features
 --------
 
-* `Hang detection and automatic in-job restarting <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/fault_tolerance/index.rst>`_
-* `In-process restarting <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/inprocess/index.rst>`_
-* `Async checkpointing <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/async/index.rst>`_
-* `Local checkpointing <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/checkpointing/local/index.rst>`_
-* `Straggler (slower ranks) detection <https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/docs/source/straggler_det/index.rst>`_
+* `Hang detection and automatic in-job restarting <fault_tolerance/index.html>`_
+* `In-process restarting <inprocess/index.html>`_
+* `Async checkpointing <checkpointing/async/index.html>`_
+* `Local checkpointing <checkpointing/local/index.html>`_
+* `Straggler (slower ranks) detection <straggler_det/index.html>`_
+* `Shared utilities and distributed logging <shared_utils/index.html>`_
 
 .. toctree::
    :maxdepth: 3
@@ -25,3 +26,4 @@ Features
    checkpointing/async/index
    checkpointing/local/index
    straggler_det/index
+   shared_utils/index

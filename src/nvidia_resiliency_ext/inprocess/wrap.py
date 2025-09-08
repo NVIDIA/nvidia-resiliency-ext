@@ -19,31 +19,37 @@ import datetime
 import functools
 import gc
 import logging
+import os
 import pathlib
 import sys
 import threading
 import time
-import warnings
 from datetime import timedelta
 from typing import Any, Optional
 
 import torch
 
-from . import param_utils, utils
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+
+from . import param_utils
 from .abort import Abort, AbortTorchDistributed
 from .attribution import Interruption, InterruptionRecord
 from .completion import Completion
 from .compose import Compose
 from .exception import HealthCheckError, InternalError, RestartAbort
 from .finalize import Finalize
-from .health_check import HealthCheck
+from .health_check import (
+    ChainedGPUHealthCheck,
+    ChainedNicHealthCheck,
+    ChainedNVLHealthCheck,
+    HealthCheck,
+)
 from .initialize import Initialize
 from .monitor_process import MonitorProcess
 from .monitor_thread import MonitorThread, RankShouldRestart, reraise_if_unraisable
 from .param_utils import enforce_subclass, enforce_type, enforce_value
 from .progress_watchdog import ProgressWatchdog
 from .rank_assignment import ActivateAllRanks, RankAssignment, RankAssignmentCtx, ShiftRanks
-from .rank_filter import RankFilter
 from .state import Mode, State
 from .store import PrefixStore, StoreMixin, TCPStore
 from .terminate import Terminate
@@ -55,7 +61,7 @@ class HealthCheckPassed(Exception):
 
 
 def reserve_fn(state, store, progress_watchdog, progress_watchdog_interval):
-    log = logging.getLogger(__name__)
+    log = logging.getLogger(LogConfig.name)
     rank = state.rank
 
     log.debug(f'{rank=} starting reserve_fn')
@@ -95,11 +101,12 @@ class Wrapper:
         initialize: Rank-local initialize.
         abort: Asynchronously aborts execution.
         finalize: Rank-local finalize.
-        health_check: Rank-local health check.
+        health_check: Rank-local health check executed before restart. This health check is
+            automatically enhanced with GPU and NVL health validation to ensure comprehensive
+            system health before restart.
+
         rank_assignment: Reassigns ranks, computes the new world size and
             specifies which ranks are calling the wrapped function.
-        rank_filter: (DEPRECATED) Specifies ranks actively calling the wrapped
-            function.
         monitor_thread_interval: Monitoring interval for the monitor thread.
         monitor_process_interval: Monitoring interval for the monitor process.
         heartbeat_interval: Monitoring interval for detecting unresponsive
@@ -143,7 +150,6 @@ class Wrapper:
             ActivateAllRanks(),
             ShiftRanks(),
         ),
-        rank_filter: Optional[RankFilter] = None,
         monitor_thread_interval: datetime.timedelta = timedelta(seconds=1),
         monitor_process_interval: datetime.timedelta = timedelta(seconds=1),
         heartbeat_interval: datetime.timedelta = timedelta(seconds=1),
@@ -168,8 +174,8 @@ class Wrapper:
         enforce_type('abort', (Abort, type(None)))
         enforce_type('finalize', (Finalize, type(None)))
         enforce_type('health_check', (HealthCheck, type(None)))
+
         enforce_type('rank_assignment', RankAssignment)
-        enforce_type('rank_filter', (RankFilter, type(None)))
         enforce_type('monitor_thread_interval', datetime.timedelta)
         enforce_type('monitor_process_interval', datetime.timedelta)
         enforce_type('heartbeat_interval', datetime.timedelta)
@@ -205,15 +211,6 @@ class Wrapper:
 
         enforce_value(torch.distributed.is_available())
 
-        if rank_filter is not None:
-            warnings.warn(
-                'The "rank_filter" argument is deprecated and will be removed '
-                'in the next release. The functionality is merged into '
-                '"rank_assignment".',
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         if store_kwargs is None:
             store_kwargs = {}
 
@@ -223,8 +220,12 @@ class Wrapper:
         self.abort = abort
         self.finalize = finalize
         self.health_check = health_check
+
+        setup_logger(node_local_tmp_prefix="wrapper")
+        # Construct internal restart_health_check by chaining user's health_check with GPU and NVL checks
+        self._construct_restart_health_check()
+
         self.rank_assignment = rank_assignment
-        self.rank_filter = rank_filter
         self.monitor_thread_interval = monitor_thread_interval
         self.monitor_process_interval = monitor_process_interval
         self.heartbeat_interval = heartbeat_interval
@@ -254,6 +255,36 @@ class Wrapper:
 
         return wrapped
 
+    def _construct_restart_health_check(self):
+        """Construct internal restart_health_check by chaining user's health_check with GPU and NVL checks."""
+        # Start with user's health_check components if provided
+        health_checks = []
+        if self.health_check is not None:
+            if hasattr(self.health_check, 'instances'):
+                # If it's a Compose object, extract its instances
+                health_checks.extend(self.health_check.instances)
+            else:
+                # If it's a single health check, add it directly
+                health_checks.append(self.health_check)
+
+        # Add GPU, NVL, and NIC health checks if LOCAL_RANK is available
+        if 'LOCAL_RANK' in os.environ:
+            try:
+                local_rank = int(os.environ['LOCAL_RANK'])
+                gpu_check = ChainedGPUHealthCheck(device_index=local_rank)
+                nvl_check = ChainedNVLHealthCheck(device_index=local_rank)
+                nic_check = ChainedNicHealthCheck(device_index=local_rank)
+                health_checks.extend([gpu_check, nvl_check, nic_check])
+            except (ValueError, TypeError):
+                # If LOCAL_RANK is not a valid integer, skip GPU/NVL/NIC checks
+                pass
+
+        # Compose all health checks (or set to None if no health checks)
+        if health_checks:
+            self.restart_health_check = Compose(*health_checks)
+        else:
+            self.restart_health_check = None
+
 
 class CallWrapper:
     r'''
@@ -280,8 +311,8 @@ class CallWrapper:
         self.state = None
 
         try:
-            utils.Logging.initialize()
-            log = logging.getLogger(__name__)
+            setup_logger(node_local_tmp_prefix="wrapper")
+            log = logging.getLogger(LogConfig.name)
 
             enforce_value(not torch.distributed.is_initialized())
 
@@ -397,8 +428,6 @@ class CallWrapper:
         if self.monitor_process is not None:
             self.monitor_process.shutdown()
 
-        utils.Logging.deinitialize()
-
     def __enter__(self):
         return self
 
@@ -449,9 +478,67 @@ class CallWrapper:
         finally:
             self.atomic_lock.release()
 
+    def _disable_hang_protection(self):
+        '''
+        Disables hang protection (soft and hard timeouts) in the monitor process.
+
+        This method is exposed to allow hang protection to be disabled over long sections
+        of code and across multiple functions.  When using this method directly, the partner
+        `_enable_hang_protection` method must be called to re-enable hang protection.
+
+        Using this method directly is not recommended.  Instead, use the context manager
+        `disable_hang_protection` to disable hang protection for a specific section of code.
+        '''
+
+        self.monitor_process.disable_timeouts()
+
+    def _enable_hang_protection(self):
+        '''
+        Partner method to `_disable_hang_protection`.
+        '''
+
+        # Reset the progress watchdog timestamp before re-enabling timeouts
+        # to prevent immediate timeout due to stale timestamp
+        self.progress_watchdog.reset()
+        self.monitor_process.enable_timeouts()
+
+    @contextlib.contextmanager
+    def disable_hang_protection(self):
+        r'''
+        A context manager that temporarily disables hang protection (soft and hard timeouts) in the monitor process.
+
+        WARNING: This disables critical safety mechanisms that protect against hangs and deadlocks.
+        Use with extreme caution and only for operations you know will complete.
+
+        This is useful for operations that may take a long time to complete and should not
+        be interrupted by hang detection mechanisms, such as some aspects of data loading.
+
+        The hang protection is automatically re-enabled when exiting the context, even if an
+        exception occurs within the context.
+
+        Example:
+            def my_training_function(call_wrapper: CallWrapper):
+                # Normal operations subject to hang protection
+                train_step()
+
+                # Disable hang protection for long-running checkpoint operation
+                with call_wrapper.disable_hang_protection():
+                    load_data()  # This won't trigger hang detection
+
+                train_step()   # This will trigger hang detection
+
+                # Hang protection is automatically re-enabled
+                train_step()
+        '''
+        self._disable_hang_protection()
+        try:
+            yield
+        finally:
+            self._enable_hang_protection()
+
     @reraise_if_unraisable(RankShouldRestart)
     def __call__(self, fn, args, kwargs):
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         store = self.base_store
         base_store = self.base_store
@@ -464,8 +551,6 @@ class CallWrapper:
         reassigned_ctx = wrapper.rank_assignment(rank_assignment_ctx)
         self.state = state = reassigned_ctx.state
 
-        if wrapper.rank_filter is not None:
-            state = wrapper.rank_filter(state)
         state.set_distributed_vars()
 
         monitor_process.start()
@@ -572,8 +657,8 @@ class CallWrapper:
                             raise finalize_ex from term_ex
 
                         try:
-                            if wrapper.health_check is not None:
-                                wrapper.health_check(state.freeze())
+                            if wrapper.restart_health_check is not None:
+                                wrapper.restart_health_check(state.freeze())
                         except Exception as health_ex:
                             log.error(log_exc(state, health_ex, 'health_ex'))
                             try:
@@ -603,8 +688,6 @@ class CallWrapper:
                     reassigned_ctx = wrapper.rank_assignment(rank_assignment_ctx)
                     self.state = state = reassigned_ctx.state
 
-                    if wrapper.rank_filter is not None:
-                        state = wrapper.rank_filter(state)
                     state.set_distributed_vars()
                 else:
                     break

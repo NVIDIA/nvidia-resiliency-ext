@@ -89,7 +89,7 @@ def init_distributed_backend(backend="nccl"):
         logging.info(f"Rank {dist.get_rank()} initialized with {backend} backend.")
 
         # Ensure each process uses a different GPU
-        torch.cuda.set_device(dist.get_rank())
+        torch.cuda.set_device(dist.get_node_local_rank())
     except Exception as e:
         logging.error(f"Error initializing the distributed backend: {e}")
         raise
@@ -159,7 +159,7 @@ def main():
 
         logging.info("Finalize TASD checkpoint saving.")
         async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-        async_queue.close()  # Explicitly close queue (optional)
+        async_queue.close()  # Explicitly close queue
 
     # Synchronize processes to ensure all have completed the saving
     dist.barrier()

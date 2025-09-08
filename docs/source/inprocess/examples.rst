@@ -6,4 +6,4 @@ Examples
    :caption: Examples
 
    examples/basic_example.rst
-   examples/optimal_example.rst
+   examples/advanced_example.rst

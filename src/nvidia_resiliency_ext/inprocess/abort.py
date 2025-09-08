@@ -22,6 +22,7 @@ import os
 import torch
 
 from nvidia_resiliency_ext.attribution.trace_analyzer.trace_collector import TorchFRTraceCollector
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import abort_nvrx_checkpoint
 
 from . import utils
 from .state import FrozenState
@@ -68,8 +69,6 @@ class AbortTorchDistributed(Abort):
     thread for each distributed group that has been created.
     '''
 
-    _logging_printed: bool = False
-
     def __init__(self, torch_fr_trace_path: str = None):
         r'''
         This class is used to abort PyTorch distributed collectives, and destroy all PyTorch
@@ -79,7 +78,7 @@ class AbortTorchDistributed(Abort):
         behavior of the distributed collectives.
 
         PyTorch Flight Recorder traces are collected by setting the
-        TORCH_NCCL_TRACE_BUFFER_SIZE environment variable to a non-zero value.
+        TORCH_NCCL_TRACE_BUFFER_SIZE or TORCH_FR_BUFFER_SIZE(>=2.8.0) environment variable to a non-zero value.
         We disable the collection of stack traces by default, which requires GIL, leading to a deadlock.
         This feature is still experimental and need to be used with care.
 
@@ -90,7 +89,7 @@ class AbortTorchDistributed(Abort):
         Args:
             torch_fr_trace_path: Path to collect PyTorch Flight Recorder traces.
         '''
-        self.torch_fr_trace_path = torch_fr_trace_path
+        self.torch_fr_trace_path = torch_fr_trace_path or os.environ.get('NVRX_FR_TRACE_PATH', None)
 
     @staticmethod
     def shutdown_all_process_group_backends():
@@ -125,38 +124,43 @@ class AbortTorchDistributed(Abort):
                 else:
                     backend.abort()
 
-    def collect_fr_trace(self):
+    def collect_fr_trace(self, state: FrozenState):
         def _check_fr_env():
             check_env_variables = ['TORCH_NCCL_TRACE_BUFFER_SIZE']
+            # TORCH_FR_BUFFER_SIZE is introduced in PyTorch 2.8.0
+            if not utils.torch_older_than('2.8.0'):
+                check_env_variables.append('TORCH_FR_BUFFER_SIZE')
             rank = torch.distributed.get_rank()
             for env_var in check_env_variables:
                 env_value = os.environ.get(env_var, '0')
                 try:
                     env_value_int = int(env_value)
                 except ValueError:
-                    env_value_int = 0
-
-                if env_value_int <= 0 and rank == 0 and not AbortTorchDistributed._logging_printed:
-                    log = logging.getLogger(__name__)
-                    log.info(
-                        f"Environment variable {env_var} is set to {env_value}"
-                        f", FR trace collection is disabled"
+                    raise ValueError(
+                        f"Environment variable {env_var} is set to {env_value}, which is not an integer"
                     )
-                    AbortTorchDistributed._logging_printed = True
-                    return False
-            return True
+
+                if env_value_int > 0:
+                    if rank == 0:
+                        log = logging.getLogger(__name__)
+                        log.info(
+                            f"Environment variable {env_var} is set to {env_value}"
+                            f", FR trace collection is enabled"
+                        )
+                    return True
+            return False
 
         if _check_fr_env() is True:
             if self.torch_fr_trace_path is None:
                 return
-            if not os.path.exists(self.torch_fr_trace_path):
-                os.makedirs(self.torch_fr_trace_path)
-            trace_analyzer = TorchFRTraceCollector(self.torch_fr_trace_path)
+            trace_path = os.path.join(self.torch_fr_trace_path, f'iter_{state.iteration}')
+            os.makedirs(trace_path, exist_ok=True)
+            trace_analyzer = TorchFRTraceCollector(trace_path)
             trace_analyzer.collect()
 
     def __call__(self, state: FrozenState) -> FrozenState:
         if torch.distributed.is_available() and torch.distributed.is_initialized():
-            self.collect_fr_trace()
+            self.collect_fr_trace(state)
             AbortTorchDistributed.shutdown_all_process_group_backends()
             torch.distributed.destroy_process_group()
         return state
@@ -184,4 +188,15 @@ class AbortTransformerEngine(Abort):
             # Clear a class-member containing a process group
             te_fp8.FP8GlobalStateManager.reset()
 
+        return state
+
+
+class AbortPersistentCheckpointProcesses(Abort):
+    r'''
+    Aborts Async Checkpoint processes
+
+    '''
+
+    def __call__(self, state: FrozenState) -> FrozenState:
+        abort_nvrx_checkpoint()
         return state
