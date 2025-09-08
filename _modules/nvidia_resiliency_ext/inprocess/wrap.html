@@ -300,6 +300,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">finalize</span> <span class="o">=</span> <span class="n">finalize</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">health_check</span> <span class="o">=</span> <span class="n">health_check</span>
 
+        <span class="n">setup_logger</span><span class="p">(</span><span class="n">node_local_tmp_prefix</span><span class="o">=</span><span class="s2">&quot;wrapper&quot;</span><span class="p">)</span>
         <span class="c1"># Construct internal restart_health_check by chaining user&#39;s health_check with GPU and NVL checks</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_construct_restart_health_check</span><span class="p">()</span>
 

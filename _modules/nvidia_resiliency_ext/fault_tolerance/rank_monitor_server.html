@@ -213,7 +213,8 @@
         <span class="n">cfg</span><span class="p">:</span> <span class="n">FaultToleranceConfig</span><span class="p">,</span>
         <span class="n">ipc_socket_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
         <span class="n">rank_monitor_ready_event</span><span class="p">,</span>
-        <span class="n">logger</span><span class="p">:</span> <span class="n">RankMonitorLogger</span><span class="p">,</span>
+        <span class="n">logger</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">Logger</span><span class="p">,</span>
+        <span class="n">is_restarter_logger</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
     <span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Initializes the RankMonitorServer object.</span>
@@ -238,7 +239,10 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">connection_lock</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_ready_event</span> <span class="o">=</span> <span class="n">rank_monitor_ready_event</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">logger</span> <span class="o">=</span> <span class="n">logger</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span> <span class="o">=</span> <span class="n">RankMonitorStateMachine</span><span class="p">(</span><span class="n">logger</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rmlogger</span> <span class="o">=</span> <span class="n">RankMonitorLogger</span><span class="p">(</span>
+            <span class="n">level</span><span class="o">=</span><span class="n">logger</span><span class="o">.</span><span class="n">level</span><span class="p">,</span> <span class="n">is_restarter_logger</span><span class="o">=</span><span class="n">is_restarter_logger</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span> <span class="o">=</span> <span class="n">RankMonitorStateMachine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rmlogger</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">health_checker</span> <span class="o">=</span> <span class="n">GPUHealthCheck</span><span class="p">(</span>
             <span class="n">interval</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">node_health_check_interval</span><span class="p">,</span> <span class="n">on_failure</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_handle_unhealthy_node</span>
@@ -351,7 +355,7 @@
         <span class="c1"># Update NIC health checker on the rank to monitor.</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">nic_health_checker</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">nic_health_checker</span><span class="o">.</span><span class="n">set_nic_device</span><span class="p">(</span><span class="n">local_rank</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">set_connected_rank</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rmlogger</span><span class="o">.</span><span class="n">set_connected_rank</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">)</span>
         <span class="k">await</span> <span class="n">write_obj_to_ipc_stream</span><span class="p">(</span><span class="n">OkMsg</span><span class="p">(</span><span class="n">cfg</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="p">),</span> <span class="n">writer</span><span class="p">)</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_heartbeat_msg</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">,</span> <span class="n">writer</span><span class="p">):</span>
@@ -405,7 +409,7 @@
                 <span class="sa">f</span><span class="s2">&quot;Section(s) </span><span class="si">{</span><span class="n">open_section_names</span><span class="si">}</span><span class="s2"> were still open. you can use`.end_all_sections` to avoid this warning&quot;</span>
             <span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">set_connected_rank</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rmlogger</span><span class="o">.</span><span class="n">set_connected_rank</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">connection_lock</span><span class="o">.</span><span class="n">locked</span><span class="p">():</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">connection_lock</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
 
@@ -633,7 +637,8 @@
                 <span class="n">cfg</span><span class="p">,</span>
                 <span class="n">ipc_socket_path</span><span class="p">,</span>
                 <span class="n">rank_monitor_ready_event</span><span class="p">,</span>
-                <span class="n">rmlogger</span><span class="p">,</span>
+                <span class="n">logger</span><span class="p">,</span>
+                <span class="n">is_restarter_logger</span><span class="p">,</span>
             <span class="p">)</span>
             <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">inst</span><span class="o">.</span><span class="n">_rank_monitor_loop</span><span class="p">())</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Leaving RankMonitorServer process&quot;</span><span class="p">)</span>
