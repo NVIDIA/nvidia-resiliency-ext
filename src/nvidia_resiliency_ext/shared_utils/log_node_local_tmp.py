@@ -161,14 +161,14 @@ class LogMessage:
                 if key == 'asctime':
                     # Convert asctime to a datetime object, then to a Unix timestamp
                     dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S,%f')
-                    timestamp = int(dt.timestamp())
+                    timestamp = int(dt.timestamp() * 1000)
                     self.hash_table[key] = timestamp
                 else:
                     self.hash_table[key] = value
 
         if 'asctime' not in self.hash_table:
             current_datetime = datetime.now()
-            self.hash_table['asctime'] = int(current_datetime.timestamp())
+            self.hash_table['asctime'] = int(current_datetime.timestamp() * 1000)
 
     def getts(self):
         return self.hash_table['asctime']
