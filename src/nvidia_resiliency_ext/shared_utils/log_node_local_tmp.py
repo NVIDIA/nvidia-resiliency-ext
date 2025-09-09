@@ -220,7 +220,7 @@ class NodeLogAggregator:
         for msg in messages:
             try:
                 # The message is already formatted by the formatter, just write it
-                output.write(msg.log_message + '\n')
+                output.write(msg.log_message)
                 output.flush()
             except Exception as e:
                 # Fallback to stderr if output fails
@@ -368,8 +368,8 @@ class NodeLogAggregator:
         # Process each line
         log_msg_q = queue.SimpleQueue()
         for line in lines:
-            line = line.strip()
-            if not line:
+            lineChk = line.strip()
+            if not lineChk:
                 continue
             log_msg = LogMessage(line)
             log_msg_q.put(log_msg)
