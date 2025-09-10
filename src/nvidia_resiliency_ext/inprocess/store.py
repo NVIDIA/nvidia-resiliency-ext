@@ -146,10 +146,15 @@ class StoreMixin:
                 try:
                     current_count = int(self.get(ack_key))
                     if current_count >= world_size:
-                        log.debug(f'{rank=} all ranks acknowledged, clearing initial barrier keys')
+                        log.debug(f'{rank=} all ranks acknowledged, clearing initial barrier keys.')
+                        # Start timing the acknowledge operations
+                        clear_start = time.monotonic()
                         self.clear_initial_barrier_keys()
                         # Increment global iteration counter by 100
                         new_iteration = self.increment_global_iteration_counter(100)
+                        log.info(
+                            f'{rank=} clear_duration={(time.monotonic()-clear_start):.3f}s, total_duration={(time.monotonic()-start):.3f}s, new_iteration={new_iteration}'
+                        )
                         break
                 except (torch.distributed.DistStoreError, ValueError) as ex:
                     if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
