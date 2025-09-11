@@ -13,8 +13,9 @@ import torch
 
 from nvidia_resiliency_ext.attribution.utils import capture_logs
 from nvidia_resiliency_ext.shared_utils.health_check import GPUHealthCheck, NicHealthCheck
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(LogConfig.name)
 
 
 class TraceCollector(ABC):
@@ -65,6 +66,7 @@ class TorchFRTraceCollector(TraceCollector):
         self.stack_trace = None
         self.dump_fn = torch._C._distributed_c10d._dump_nccl_trace
         self.json = json
+        logger = logging.getLogger(LogConfig.name)
         logger.info(f"{self.rank} created TorchFRTraceCollector")
 
     def collect(self):
@@ -112,11 +114,10 @@ class TorchFRTraceCollector(TraceCollector):
         - Returns the bypassed output strings for GPU and NIC health checks
         """
         health_check_results = {}
-
-        with capture_logs() as stderr_gpu:
+        with capture_logs(LogConfig.name) as stderr_gpu:
             gpu_health_check = GPUHealthCheck(device_index=local_rank)
             gpu_health = gpu_health_check._perform_health_check()
-        with capture_logs() as stderr_nic:
+        with capture_logs(LogConfig.name) as stderr_nic:
             nic_health_check = NicHealthCheck()
             nic_health_check.set_nic_device(local_rank)
             nic_health = nic_health_check._perform_health_check()

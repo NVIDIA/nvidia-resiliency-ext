@@ -539,10 +539,6 @@ class RankMonitorServer:
 
         try:
             setup_logger(force_reset=True, node_local_tmp_prefix="rankmonsvr")
-            rmlogger = RankMonitorLogger(
-                level=cfg.log_level, is_restarter_logger=is_restarter_logger
-            )
-
             logger = logging.getLogger(LogConfig.name)
 
             logger.debug(f"Starting RankMonitorServer... PID={os.getpid()}")
