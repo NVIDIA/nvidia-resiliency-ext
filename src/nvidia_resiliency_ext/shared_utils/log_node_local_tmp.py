@@ -154,8 +154,10 @@ class LogMessage:
     def __init__(self, log_message: str):
         self.log_message = log_message
         self.hash_table = {}
+        self.log_message_valid = False
         match = LogMessage.log_pattern.match(log_message)
         if match:
+            self.log_message_valid = True
             log_fields = match.groupdict()
             for key, value in log_fields.items():
                 if key == 'asctime':
@@ -367,12 +369,21 @@ class NodeLogAggregator:
 
         # Process each line
         log_msg_q = queue.SimpleQueue()
+        old_log_msg: LogMessage = None
         for line in lines:
             lineChk = line.strip()
             if not lineChk:
                 continue
             log_msg = LogMessage(line)
-            log_msg_q.put(log_msg)
+            if log_msg.log_message_valid:
+                old_log_msg = log_msg
+                log_msg_q.put(log_msg)
+            else:
+                if old_log_msg is not None:
+                    old_log_msg.log_message += line
+                else:
+                    old_log_msg = log_msg
+                    log_msg_q.put(log_msg)
 
         self._log_dict_queue[msg_file] = log_msg_q
 
