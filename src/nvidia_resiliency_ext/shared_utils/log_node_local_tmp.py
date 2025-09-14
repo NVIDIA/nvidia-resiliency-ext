@@ -368,6 +368,9 @@ class NodeLogAggregator:
             return
 
         # Process each line
+        # Multi-line logs (e.g., tracebacks) have a single header line (matches log_pattern)
+        # followed by one or more continuation lines. A non-header line is treated as a
+        # continuation of the previous record, and the entire block is collapsed into a log message.
         log_msg_q = queue.SimpleQueue()
         old_log_msg: LogMessage = None
         for line in lines:
