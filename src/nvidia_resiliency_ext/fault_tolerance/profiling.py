@@ -146,23 +146,41 @@ class FaultToleranceProfiler:
                 by_event[event_type] = []
             by_event[event_type].append(measurement)
 
+        # Group events by cycles to assign cycle numbers (only call once)
+        cycles = self._group_events_by_restart_cycles(measurements)
+        event_to_cycle = {}
+        for cycle_idx, cycle_events in enumerate(cycles):
+            for event in cycle_events:
+                # Create a unique key for this event
+                event_key = f"{event.event.value}_{event.timestamp}_{event.node_id}_{event.rank}"
+                event_to_cycle[event_key] = cycle_idx
+
         self._logger.info("=== Fault Tolerance Profiling Summary ===")
         for event_type, event_measurements in by_event.items():
             self._logger.info(f"{event_type}: {len(event_measurements)} events recorded")
             for measurement in event_measurements:
                 utc_time = self._timestamp_to_utc_datetime(measurement.timestamp)
+                # Get cycle number for this event
+                event_key = f"{measurement.event.value}_{measurement.timestamp}_{measurement.node_id}_{measurement.rank}"
+                cycle_num = event_to_cycle.get(event_key, "Unknown")
                 self._logger.info(
-                    f"  - Node: {measurement.node_id}, Rank: {measurement.rank}, "
+                    f"  - Cycle: {cycle_num}, Node: {measurement.node_id}, Rank: {measurement.rank}, "
                     f"Time: {utc_time} UTC"
                 )
 
         # Calculate and log timing metrics if we have the right events
-        self._log_timing_metrics(measurements)
+        # Pass the already computed cycles to avoid duplicate computation
+        self._log_timing_metrics(measurements, cycles)
 
-    def _log_timing_metrics(self, measurements: Dict[str, ProfilingMeasurement]):
+    def _log_timing_metrics(
+        self,
+        measurements: Dict[str, ProfilingMeasurement],
+        cycles: Optional[List[List[ProfilingMeasurement]]] = None,
+    ):
         """Log calculated timing metrics grouped by cycles."""
-        # Group events by cycles using temporal proximity
-        cycles = self._group_events_by_restart_cycles(measurements)
+        # Group events by cycles using temporal proximity (only if not provided)
+        if cycles is None:
+            cycles = self._group_events_by_restart_cycles(measurements)
 
         self._logger.info("=== Timing Metrics by Cycle ===")
         self._logger.info(f"Found {len(cycles)} cycle(s)")
@@ -282,8 +300,7 @@ class FaultToleranceProfiler:
                 if matching_complete:
                     duration = matching_complete.timestamp - start_event.timestamp
                     self._logger.info(
-                        f"  Worker start time: {duration:.3f}s "
-                        f"(GroupRank: {start_event.rank})"
+                        f"  Worker start time: {duration:.3f}s " f"(GroupRank: {start_event.rank})"
                     )
 
         # Calculate total cycle time
