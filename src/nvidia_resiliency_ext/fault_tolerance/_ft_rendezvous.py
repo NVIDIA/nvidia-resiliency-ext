@@ -63,6 +63,7 @@ from ..shared_utils.health_check import GPUHealthCheck
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
+from .profiling import ProfilingEvent, record_profiling_event
 
 log = logging.getLogger(LogConfig.name)
 
@@ -1322,6 +1323,13 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg)
         log.info(msg)
 
+        # Record rendezvous start event
+        rendezvous_start_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_STARTED,
+            node_id=self._this_node.addr,
+            metadata={"run_id": self._settings.run_id, "round": self._state_holder.state.round},
+        )
+
         try:
             self._stop_heartbeats()
 
@@ -1361,6 +1369,17 @@ class FtRendezvousHandler(RendezvousHandler):
         )
         self._record(message=msg, rank=rank)
         log.info(msg)
+
+        # Record rendezvous completion event
+        rendezvous_completion_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_COMPLETED,
+            node_id=self._this_node.addr,
+            metadata={
+                "run_id": self._settings.run_id,
+                "round": self._state_holder.state.round,
+                "world_size": world_size,
+            },
+        )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
         # Fall back to tuple format if RendezvousInfo is not supported

@@ -69,6 +69,11 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
+from nvidia_resiliency_ext.fault_tolerance.profiling import (
+    ProfilingEvent,
+    log_profiling_summary,
+    record_profiling_event,
+)
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     patched_method,
@@ -138,7 +143,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     python multiprocessing compatible. To pass multiprocessing data structures
     to the workers you may create the data structure in the same multiprocessing
     context as the specified ``start_method`` and pass it as a function argument.
-    
+
     Note: If your training script uses the nvrx logger, make sure to call
     ``setup_logger()`` at the beginning of your training function to ensure
     the logger is properly set up in each subprocess.
@@ -179,12 +184,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             # Ensure nvrx logger is set up in this subprocess
             from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
             setup_logger()
-            
+
             # Use the nvrx logger
             import logging
             logger = logging.getLogger(LogConfig.name)
             logger.info("Training started")
-            
+
             return "do train"
 
         def main():
@@ -251,6 +256,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._ft_cfg = fault_tol_cfg
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
+        self._node_id = self._get_fq_hostname()
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -322,6 +328,14 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._exit_barrier()
                 return run_result
             elif state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                # Record failure detection event
+                record_profiling_event(
+                    ProfilingEvent.FAILURE_DETECTED,
+                    node_id=self._node_id,
+                    rank=self._worker_group.group_rank,
+                    metadata={"state": state.name, "role": role}
+                )
+
                 if self._remaining_restarts > 0:
                     logger.info(
                         "[%s] Worker group %s. "
@@ -347,6 +361,14 @@ class LocalElasticAgent(SimpleElasticAgent):
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 group_rank = self._worker_group.group_rank
                 if num_nodes_waiting > 0:
+                    # Record failure detection event
+                    record_profiling_event(
+                        ProfilingEvent.FAILURE_DETECTED,
+                        node_id=self._node_id,
+                        rank=self._worker_group.group_rank,
+                        metadata={"state": state.name, "role": role}
+                    )
+
                     logger.info(
                         "[%s] Detected %s "
                         "new nodes from group_rank=%s; "
@@ -587,6 +609,14 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._shutdown(timeout=self._workers_stop_timeout)
 
+        # Record worker termination event after shutdown is complete
+        record_profiling_event(
+            ProfilingEvent.WORKER_TERMINATED,
+            node_id=self._node_id,
+            rank=worker_group.group_rank,
+            metadata={"group_rank": worker_group.group_rank, "world_size": worker_group.group_world_size}
+        )
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -595,6 +625,14 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
         restart_count = spec.max_restarts - self._remaining_restarts
+
+        # Record worker start start event
+        start_start_event_id = record_profiling_event(
+            ProfilingEvent.WORKER_START_STARTED,
+            node_id=self._node_id,
+            rank=worker_group.group_rank,
+            metadata={"group_rank": worker_group.group_rank, "world_size": worker_group.group_world_size}
+        )
 
         use_agent_store = spec.rdzv_handler.use_agent_store
 
@@ -666,6 +704,14 @@ class LocalElasticAgent(SimpleElasticAgent):
         )
 
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
+
+        # Record worker start completion event
+        start_completion_event_id = record_profiling_event(
+            ProfilingEvent.WORKER_START_COMPLETED,
+            node_id=self._node_id,
+            rank=worker_group.group_rank,
+            metadata={"group_rank": worker_group.group_rank, "world_size": worker_group.group_world_size}
+        )
 
         return self._pcontext.pids()
 
@@ -1054,6 +1100,7 @@ def launch_agent(
             )
 
         logger.info(f"Agent .run() is OK. No failures in the result. {result=}")
+
         return result.return_values
     except UnhealthyNodeException as e:
         # do not shutdown rendezvous when an unhealthy node is leaving
@@ -1083,6 +1130,10 @@ def launch_agent(
         agent.shutdown_rank_monitors()
         with contextlib.suppress(Exception):
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
+
+        # Log profiling summary
+        log_profiling_summary()
+
 
 
 # Source
