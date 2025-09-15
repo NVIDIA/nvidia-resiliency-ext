@@ -233,8 +233,10 @@
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">log_message</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">log_message</span> <span class="o">=</span> <span class="n">log_message</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">hash_table</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">log_message_valid</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="n">match</span> <span class="o">=</span> <span class="n">LogMessage</span><span class="o">.</span><span class="n">log_pattern</span><span class="o">.</span><span class="n">match</span><span class="p">(</span><span class="n">log_message</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">match</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">log_message_valid</span> <span class="o">=</span> <span class="kc">True</span>
             <span class="n">log_fields</span> <span class="o">=</span> <span class="n">match</span><span class="o">.</span><span class="n">groupdict</span><span class="p">()</span>
             <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">log_fields</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
                 <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;asctime&#39;</span><span class="p">:</span>
@@ -310,7 +312,7 @@
         <span class="k">for</span> <span class="n">msg</span> <span class="ow">in</span> <span class="n">messages</span><span class="p">:</span>
             <span class="k">try</span><span class="p">:</span>
                 <span class="c1"># The message is already formatted by the formatter, just write it</span>
-                <span class="n">output</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">log_message</span> <span class="o">+</span> <span class="s1">&#39;</span><span class="se">\n</span><span class="s1">&#39;</span><span class="p">)</span>
+                <span class="n">output</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">log_message</span><span class="p">)</span>
                 <span class="n">output</span><span class="o">.</span><span class="n">flush</span><span class="p">()</span>
             <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
                 <span class="c1"># Fallback to stderr if output fails</span>
@@ -456,13 +458,25 @@
             <span class="k">return</span>
 
         <span class="c1"># Process each line</span>
+        <span class="c1"># Multi-line logs (e.g., tracebacks) have a single header line (matches log_pattern)</span>
+        <span class="c1"># followed by one or more continuation lines. A non-header line is treated as a</span>
+        <span class="c1"># continuation of the previous record, and the entire block is collapsed into a log message.</span>
         <span class="n">log_msg_q</span> <span class="o">=</span> <span class="n">queue</span><span class="o">.</span><span class="n">SimpleQueue</span><span class="p">()</span>
+        <span class="n">old_log_msg</span><span class="p">:</span> <span class="n">LogMessage</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">:</span>
-            <span class="n">line</span> <span class="o">=</span> <span class="n">line</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
-            <span class="k">if</span> <span class="ow">not</span> <span class="n">line</span><span class="p">:</span>
+            <span class="n">lineChk</span> <span class="o">=</span> <span class="n">line</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">lineChk</span><span class="p">:</span>
                 <span class="k">continue</span>
             <span class="n">log_msg</span> <span class="o">=</span> <span class="n">LogMessage</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
-            <span class="n">log_msg_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">log_msg</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">log_msg</span><span class="o">.</span><span class="n">log_message_valid</span><span class="p">:</span>
+                <span class="n">old_log_msg</span> <span class="o">=</span> <span class="n">log_msg</span>
+                <span class="n">log_msg_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">log_msg</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">old_log_msg</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="n">old_log_msg</span><span class="o">.</span><span class="n">log_message</span> <span class="o">+=</span> <span class="n">line</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">old_log_msg</span> <span class="o">=</span> <span class="n">log_msg</span>
+                    <span class="n">log_msg_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">log_msg</span><span class="p">)</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_log_dict_queue</span><span class="p">[</span><span class="n">msg_file</span><span class="p">]</span> <span class="o">=</span> <span class="n">log_msg_q</span>
 
