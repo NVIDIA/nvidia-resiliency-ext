@@ -164,7 +164,7 @@ class FaultToleranceProfiler:
                 event_key = f"{measurement.event.value}_{measurement.timestamp}_{measurement.node_id}_{measurement.rank}"
                 cycle_num = event_to_cycle.get(event_key, "Unknown")
                 self._logger.info(
-                    f"  - Cycle: {cycle_num}, Node: {measurement.node_id}, Rank: {measurement.rank}, "
+                    f"  - Cycle: {cycle_num} Event: {measurement.event.value} Node: {measurement.node_id} Rank: {measurement.rank} "
                     f"Time: {utc_time} UTC"
                 )
 
@@ -254,7 +254,7 @@ class FaultToleranceProfiler:
                 if matching_termination:
                     duration = matching_termination.timestamp - failure_event.timestamp
                     self._logger.info(
-                        f"  Failure to termination: {duration:.3f}s "
+                        f"  Cycle: {cycle_num} failure_to_termination: {duration:.3f}s "
                         f"(GroupRank: {failure_event.rank})"
                     )
 
@@ -270,7 +270,7 @@ class FaultToleranceProfiler:
                 )
                 if matching_complete:
                     duration = matching_complete.timestamp - start_event.timestamp
-                    self._logger.info(f"  Rendezvous duration: {duration:.3f}s")
+                    self._logger.info(f"  Cycle: {cycle_num} rendezvous_duration: {duration:.3f}s")
 
         # Calculate rendezvous to worker start time
         if rendezvous_complete:
@@ -281,7 +281,9 @@ class FaultToleranceProfiler:
                 )
                 if matching_start:
                     duration = matching_start.timestamp - complete_event.timestamp
-                    self._logger.info(f"  Rendezvous to worker start: {duration:.3f}s")
+                    self._logger.info(
+                        f"  Cycle: {cycle_num} rendezvous_complete_to_worker_start: {duration:.3f}s"
+                    )
 
         # Calculate worker start time
         start_start = events_by_type.get(ProfilingEvent.WORKER_START_STARTED, [])
@@ -300,7 +302,8 @@ class FaultToleranceProfiler:
                 if matching_complete:
                     duration = matching_complete.timestamp - start_event.timestamp
                     self._logger.info(
-                        f"  Worker start time: {duration:.3f}s " f"(GroupRank: {start_event.rank})"
+                        f"  Cycle: {cycle_num} worker_start_time: {duration:.3f}s "
+                        f"(GroupRank: {start_event.rank})"
                     )
 
         # Calculate total cycle time
@@ -312,7 +315,7 @@ class FaultToleranceProfiler:
             if start_complete:
                 last_start = max(start_complete, key=lambda e: e.timestamp)
                 total_duration = last_start.timestamp - first_failure.timestamp
-                self._logger.info(f"  Total restart cycle time: {total_duration:.3f}s")
+                self._logger.info(f"  Cycle: {cycle_num} total_restart_time: {total_duration:.3f}s")
             else:
                 # Fallback to worker start if completed events not available
                 start_start = events_by_type.get(ProfilingEvent.WORKER_START_STARTED, [])
@@ -320,14 +323,14 @@ class FaultToleranceProfiler:
                     last_start = max(start_start, key=lambda e: e.timestamp)
                     total_duration = last_start.timestamp - first_failure.timestamp
                     self._logger.info(
-                        f"  Total restart cycle time (to worker start): {total_duration:.3f}s"
+                        f"  Cycle: {cycle_num} total_restart_time (to worker start): {total_duration:.3f}s"
                     )
         elif start_complete:
             # Startup cycle: from first event to worker start completion
             first_event = min(cycle_events, key=lambda e: e.timestamp)
             last_start = max(start_complete, key=lambda e: e.timestamp)
             total_duration = last_start.timestamp - first_event.timestamp
-            self._logger.info(f"  Total startup cycle time: {total_duration:.3f}s")
+            self._logger.info(f"  Cycle: {cycle_num} total_startup_time: {total_duration:.3f}s")
 
 
 # Global profiler instance
