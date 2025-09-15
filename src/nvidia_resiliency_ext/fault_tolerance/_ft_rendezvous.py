@@ -60,10 +60,10 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
-from .profiling import ProfilingEvent, record_profiling_event
 
 log = logging.getLogger(LogConfig.name)
 
