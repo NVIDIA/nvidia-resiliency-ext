@@ -26,6 +26,8 @@ import logging
 import warnings
 from typing import Callable, Optional, Union
 
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
 from . import exception, utils
 from .state import Mode, State
 from .store import StoreMixin
@@ -177,7 +179,8 @@ class MaxActiveWorldSize(RankFilter):
             active_rank = None
             # Log deactivation if transitioning from ACTIVE to INACTIVE
             if state.mode == Mode.ACTIVE:
-                log = logging.getLogger(__name__)
+                log = logging.getLogger(LogConfig.name)
+
                 log.info(
                     f"[In-process] Rank deactivated (rank={state.rank}) due to max active world size limit ({active_world_size})"
                 )
@@ -224,7 +227,7 @@ class ActiveWorldSizeDivisibleBy(RankFilter):
             active_rank = None
             # Log deactivation if transitioning from ACTIVE to INACTIVE
             if state.mode == Mode.ACTIVE:
-                log = logging.getLogger(__name__)
+                log = logging.getLogger(LogConfig.name)
                 log.info(
                     f"[In-process] Rank deactivated (rank={state.rank}) due to divisibility requirement (active_world_size={active_world_size}, divisor={divisor})"
                 )
@@ -574,7 +577,7 @@ class Tree(RankAssignment):
     def replace_with_inactive(self, terminated_active_ranks):
         replaced_terminate_active_ranks = set()
 
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         for terminated_active_rank in sorted(terminated_active_ranks):
             terminated_active_node = self.rank_map[terminated_active_rank]
@@ -625,7 +628,7 @@ class Tree(RankAssignment):
                 key=lambda node: node.state.active_rank,
             )
 
-            log = logging.getLogger(__name__)
+            log = logging.getLogger(LogConfig.name)
             for backfill_node, terminated_node in itertools.zip_longest(
                 reversed(largest_active_nodes),
                 terminated_nodes,
@@ -647,7 +650,7 @@ class Tree(RankAssignment):
 
     def shift_ranks(self, replaced_active, unhandled_terminations):
         sorted_replaced_active = sorted(replaced_active)
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
 
         for n in self.rank_map.values():
             n.state.active_world_size -= len(unhandled_terminations)
@@ -672,7 +675,7 @@ class Tree(RankAssignment):
         new_active_world_size = self.world_size_filter(active_world_size)
         assert new_active_world_size <= active_world_size
 
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         for leaf in self.tree.iter_leaves():
             leaf.state.active_world_size = new_active_world_size
             if leaf.state.mode == Mode.ACTIVE and leaf.state.active_rank >= new_active_world_size:
@@ -738,7 +741,7 @@ class Tree(RankAssignment):
             rank for rank in terminated_ranks if self.rank_map[rank].state.mode == Mode.ACTIVE
         )
 
-        log = logging.getLogger(__name__)
+        log = logging.getLogger(LogConfig.name)
         for terminated_rank in terminated_ranks:
             # If this rank is being terminated, log it
             if self.current_state.initial_rank == self.rank_map[terminated_rank].state.initial_rank:
@@ -808,7 +811,7 @@ class FillGaps(RankAssignment):
             terminated_ranks = utils.format_rank_set(terminated_ranks)
             raise RankDiscarded(f'{rank=} {terminated_ranks=}')
         elif rank >= world_size:
-            log = logging.getLogger(__name__)
+            log = logging.getLogger(LogConfig.name)
             old_rank = rank
             rank = ordered_terminated_ranks[rank - world_size]
             log.info(
@@ -869,7 +872,7 @@ class ShiftRanks(RankAssignment):
             old_rank = rank
             rank = rank - sum(rank > terminated_rank for terminated_rank in terminated_ranks)
             if old_rank != rank:
-                log = logging.getLogger(__name__)
+                log = logging.getLogger(LogConfig.name)
                 log.info(f"[In-process] Rank shifted (rank changed from {old_rank} to {rank})")
 
         state = dataclasses.replace(
@@ -982,7 +985,7 @@ class FilterCountGroupedByKey(RankAssignment):
 
             group_count = int(store.get(prefixed_key))
             if not self.condition(group_count):
-                log = logging.getLogger(__name__)
+                log = logging.getLogger(LogConfig.name)
                 log.info(
                     f"[In-process] Rank marked for termination (rank={rank}, group_key={key}, group_count={group_count}) due to failed group condition"
                 )
