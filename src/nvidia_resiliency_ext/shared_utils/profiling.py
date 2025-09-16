@@ -172,6 +172,38 @@ class FaultToleranceProfiler:
         # Pass the already computed cycles to avoid duplicate computation
         self._log_timing_metrics(measurements, cycles)
 
+    def log_cycle_summary(self, cycle_events: List[ProfilingMeasurement], cycle_num: int):
+        """Log a summary for a specific restart cycle."""
+        if not self.is_enabled() or not cycle_events:
+            return
+
+        # Determine cycle type
+        has_failure = any(event.event == ProfilingEvent.FAILURE_DETECTED for event in cycle_events)
+        cycle_type = "Restart" if has_failure else "Startup"
+
+        self._logger.info(f"=== {cycle_type} Cycle {cycle_num} Profiling Summary ===")
+
+        # Group events by type for this cycle
+        by_event = {}
+        for event in cycle_events:
+            event_type = event.event.value
+            if event_type not in by_event:
+                by_event[event_type] = []
+            by_event[event_type].append(event)
+
+        # Log events in this cycle
+        for event_type, event_measurements in by_event.items():
+            self._logger.info(f"{event_type}: {len(event_measurements)} events")
+            for measurement in event_measurements:
+                utc_time = self._timestamp_to_utc_datetime(measurement.timestamp)
+                self._logger.info(
+                    f"  - Event: {measurement.event.value} Node: {measurement.node_id} Rank: {measurement.rank} "
+                    f"Time: {utc_time} UTC"
+                )
+
+        # Log timing metrics for this cycle
+        self._log_cycle_timing_metrics(cycle_events, cycle_num, cycle_type)
+
     def _log_timing_metrics(
         self,
         measurements: Dict[str, ProfilingMeasurement],
@@ -355,3 +387,8 @@ def record_profiling_event(
 def log_profiling_summary():
     """Convenience function to log profiling summary."""
     _global_profiler.log_metrics_summary()
+
+
+def log_cycle_profiling_summary(cycle_events: List[ProfilingMeasurement], cycle_num: int):
+    """Convenience function to log profiling summary for a specific cycle."""
+    _global_profiler.log_cycle_summary(cycle_events, cycle_num)
