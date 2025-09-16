@@ -352,7 +352,7 @@ class Node:
         return f'{type(self).__name__}({self.name=})'
 
 
-def bounded_activate(node, counter, path=None):
+def bounded_activate(node, counter, path=None, current_state=None):
     if path is None:
         path = []
 
@@ -364,17 +364,29 @@ def bounded_activate(node, counter, path=None):
                 for ascendant in path
             )
         ):
+            # Log activation if this is the current rank
+            if current_state and current_state.initial_rank == node.state.initial_rank:
+                log = logging.getLogger(LogConfig.name)
+                log.info(
+                    f"[In-process] Rank activated (initial_rank={node.state.initial_rank}, active_rank={counter}) in topology tree"
+                )
             node.activate(counter)
             counter += 1
             for ascendant in path:
                 ascendant.active_count += 1
         else:
+            # Log deactivation if this is the current rank
+            if current_state and current_state.initial_rank == node.state.initial_rank:
+                log = logging.getLogger(LogConfig.name)
+                log.info(
+                    f"[In-process] Rank deactivated (initial_rank={node.state.initial_rank}) due to max_ranks constraint in topology layer"
+                )
             node.deactivate()
 
     path.append(node)
 
     for child in node.children.values():
-        counter = bounded_activate(child, counter, path)
+        counter = bounded_activate(child, counter, path, current_state)
     path.pop()
     return counter
 
@@ -725,7 +737,7 @@ class Tree(RankAssignment):
         if self.tree is None:
             self.build_tree(state, store)
 
-            active_world_size = bounded_activate(self.tree, 0)
+            active_world_size = bounded_activate(self.tree, 0, None, self.current_state)
             for node in self.rank_map.values():
                 node.state.active_world_size = active_world_size
 
