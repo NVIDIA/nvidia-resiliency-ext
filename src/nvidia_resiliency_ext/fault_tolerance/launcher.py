@@ -1126,14 +1126,13 @@ def launch_agent(
         events.record(agent.get_event_failed())
         raise
     finally:
+        # Log profiling summary
+        log_profiling_summary()
+
         agent.clean_rdzv_shutdown(close=shutdown_rdzv)
         agent.shutdown_rank_monitors()
         with contextlib.suppress(Exception):
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
-
-        # Log profiling summary
-        log_profiling_summary()
-
 
 
 # Source
