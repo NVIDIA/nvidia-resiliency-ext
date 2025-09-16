@@ -197,7 +197,7 @@ class FaultToleranceProfiler:
             for measurement in event_measurements:
                 utc_time = self._timestamp_to_utc_datetime(measurement.timestamp)
                 self._logger.info(
-                    f"  - Event: {measurement.event.value} Node: {measurement.node_id} Rank: {measurement.rank} "
+                    f"  - Cycle: {cycle_num} Event: {measurement.event.value} Node: {measurement.node_id} Rank: {measurement.rank} "
                     f"Time: {utc_time} UTC"
                 )
 
