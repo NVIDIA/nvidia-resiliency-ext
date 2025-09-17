@@ -237,7 +237,9 @@ class FaultToleranceProfiler:
 
         return cycles
 
-    def _group_events_by_type(self, events: List[ProfilingMeasurement]) -> Dict[ProfilingEvent, List[ProfilingMeasurement]]:
+    def _group_events_by_type(
+        self, events: List[ProfilingMeasurement]
+    ) -> Dict[ProfilingEvent, List[ProfilingMeasurement]]:
         """Group events by their type for easier lookup."""
         events_by_type = {}
         for event in events:
@@ -255,7 +257,9 @@ class FaultToleranceProfiler:
         """Create a unique key for an event measurement."""
         return f"{measurement.event.value}_{measurement.timestamp}_{measurement.node_id}_{measurement.rank}"
 
-    def _create_event_to_cycle_mapping(self, measurements: Dict[str, ProfilingMeasurement]) -> Dict[str, int]:
+    def _create_event_to_cycle_mapping(
+        self, measurements: Dict[str, ProfilingMeasurement]
+    ) -> Dict[str, int]:
         """Create a mapping from event keys to cycle numbers."""
         cycles = self._group_events_by_restart_cycles(measurements)
         event_to_cycle = {}
@@ -392,23 +396,24 @@ def log_profiling_summary():
     """Convenience function to log profiling summary."""
     _global_profiler.log_metrics_summary()
 
+
 def log_current_cycle_summary():
     """Log profiling summary for the current restart cycle."""
     profiler = get_profiler()
-    
+
     # Get all measurements
     all_measurements = profiler.get_all_measurements()
     if not all_measurements:
         return
-        
+
     # Group events by cycles
     cycles = profiler._group_events_by_restart_cycles(all_measurements)
     if not cycles:
         return
-        
+
     # Get the most recent cycle (last one)
     current_cycle = cycles[-1]
     cycle_num = len(cycles) - 1
-    
+
     # Log the cycle summary
     profiler.log_cycle_summary(current_cycle, cycle_num)
