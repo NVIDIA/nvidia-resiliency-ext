@@ -78,7 +78,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.profiling import (
     ProfilingEvent,
-    log_cycle_profiling_summary,
+    log_current_cycle_summary,
     record_profiling_event,
 )
 
@@ -714,35 +714,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         )
 
         # Log profiling summary for this restart cycle
-        self._log_current_cycle_summary()
+        log_current_cycle_summary()
 
         return self._pcontext.pids()
 
-    def _log_current_cycle_summary(self):
-        """Log profiling summary for the current restart cycle."""
-        try:
-            from ..shared_utils.profiling import get_profiler
-            profiler = get_profiler()
-
-            # Get all measurements
-            all_measurements = profiler.get_all_measurements()
-            if not all_measurements:
-                return
-
-            # Group events by cycles
-            cycles = profiler._group_events_by_restart_cycles(all_measurements)
-            if not cycles:
-                return
-
-            # Get the most recent cycle (last one)
-            current_cycle = cycles[-1]
-            cycle_num = len(cycles) - 1
-
-            # Log the cycle summary
-            log_cycle_profiling_summary(current_cycle, cycle_num)
-
-        except Exception as e:
-            logger.warning(f"Failed to log current cycle summary: {e}")
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
         if self._worker_watchdog is not None:

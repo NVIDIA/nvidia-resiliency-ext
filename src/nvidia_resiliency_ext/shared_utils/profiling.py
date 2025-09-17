@@ -139,37 +139,26 @@ class FaultToleranceProfiler:
             return
 
         # Group measurements by event type
-        by_event = {}
-        for measurement in measurements.values():
-            event_type = measurement.event.value
-            if event_type not in by_event:
-                by_event[event_type] = []
-            by_event[event_type].append(measurement)
+        events_by_type = self._group_events_by_type(list(measurements.values()))
 
-        # Group events by cycles to assign cycle numbers (only call once)
-        cycles = self._group_events_by_restart_cycles(measurements)
-        event_to_cycle = {}
-        for cycle_idx, cycle_events in enumerate(cycles):
-            for event in cycle_events:
-                # Create a unique key for this event
-                event_key = f"{event.event.value}_{event.timestamp}_{event.node_id}_{event.rank}"
-                event_to_cycle[event_key] = cycle_idx
+        # Create mapping from event keys to cycle numbers
+        event_to_cycle = self._create_event_to_cycle_mapping(measurements)
 
+        # Log the summary
         self._logger.info("=== Fault Tolerance Profiling Summary ===")
-        for event_type, event_measurements in by_event.items():
-            self._logger.info(f"{event_type}: {len(event_measurements)} events recorded")
+        for event_type, event_measurements in events_by_type.items():
+            self._logger.info(f"{event_type.value}: {len(event_measurements)} events recorded")
             for measurement in event_measurements:
                 utc_time = self._timestamp_to_utc_datetime(measurement.timestamp)
-                # Get cycle number for this event
-                event_key = f"{measurement.event.value}_{measurement.timestamp}_{measurement.node_id}_{measurement.rank}"
+                event_key = self._create_event_key(measurement)
                 cycle_num = event_to_cycle.get(event_key, "Unknown")
                 self._logger.info(
                     f"  - Cycle: {cycle_num} Event: {measurement.event.value} Node: {measurement.node_id} Rank: {measurement.rank} "
                     f"Time: {utc_time} UTC"
                 )
 
-        # Calculate and log timing metrics if we have the right events
-        # Pass the already computed cycles to avoid duplicate computation
+        # Calculate and log timing metrics
+        cycles = self._group_events_by_restart_cycles(measurements)
         self._log_timing_metrics(measurements, cycles)
 
     def log_cycle_summary(self, cycle_events: List[ProfilingMeasurement], cycle_num: int):
@@ -178,22 +167,16 @@ class FaultToleranceProfiler:
             return
 
         # Determine cycle type
-        has_failure = any(event.event == ProfilingEvent.FAILURE_DETECTED for event in cycle_events)
-        cycle_type = "Restart" if has_failure else "Startup"
+        cycle_type = self._determine_cycle_type(cycle_events)
 
         self._logger.info(f"=== {cycle_type} Cycle {cycle_num} Profiling Summary ===")
 
         # Group events by type for this cycle
-        by_event = {}
-        for event in cycle_events:
-            event_type = event.event.value
-            if event_type not in by_event:
-                by_event[event_type] = []
-            by_event[event_type].append(event)
+        events_by_type = self._group_events_by_type(cycle_events)
 
         # Log events in this cycle
-        for event_type, event_measurements in by_event.items():
-            self._logger.info(f"{event_type}: {len(event_measurements)} events")
+        for event_type, event_measurements in events_by_type.items():
+            self._logger.info(f"{event_type.value}: {len(event_measurements)} events")
             for measurement in event_measurements:
                 utc_time = self._timestamp_to_utc_datetime(measurement.timestamp)
                 self._logger.info(
@@ -219,10 +202,7 @@ class FaultToleranceProfiler:
 
         for cycle_idx, cycle_events in enumerate(cycles):
             # Determine if this is a startup or restart cycle
-            has_failure = any(
-                event.event == ProfilingEvent.FAILURE_DETECTED for event in cycle_events
-            )
-            cycle_type = "Restart" if has_failure else "Startup"
+            cycle_type = self._determine_cycle_type(cycle_events)
 
             self._logger.info(f"--- {cycle_type} Cycle {cycle_idx} ---")
             self._log_cycle_timing_metrics(cycle_events, cycle_idx, cycle_type)
@@ -257,16 +237,40 @@ class FaultToleranceProfiler:
 
         return cycles
 
+    def _group_events_by_type(self, events: List[ProfilingMeasurement]) -> Dict[ProfilingEvent, List[ProfilingMeasurement]]:
+        """Group events by their type for easier lookup."""
+        events_by_type = {}
+        for event in events:
+            if event.event not in events_by_type:
+                events_by_type[event.event] = []
+            events_by_type[event.event].append(event)
+        return events_by_type
+
+    def _determine_cycle_type(self, cycle_events: List[ProfilingMeasurement]) -> str:
+        """Determine if this is a startup or restart cycle."""
+        has_failure = any(event.event == ProfilingEvent.FAILURE_DETECTED for event in cycle_events)
+        return "Restart" if has_failure else "Startup"
+
+    def _create_event_key(self, measurement: ProfilingMeasurement) -> str:
+        """Create a unique key for an event measurement."""
+        return f"{measurement.event.value}_{measurement.timestamp}_{measurement.node_id}_{measurement.rank}"
+
+    def _create_event_to_cycle_mapping(self, measurements: Dict[str, ProfilingMeasurement]) -> Dict[str, int]:
+        """Create a mapping from event keys to cycle numbers."""
+        cycles = self._group_events_by_restart_cycles(measurements)
+        event_to_cycle = {}
+        for cycle_idx, cycle_events in enumerate(cycles):
+            for event in cycle_events:
+                event_key = self._create_event_key(event)
+                event_to_cycle[event_key] = cycle_idx
+        return event_to_cycle
+
     def _log_cycle_timing_metrics(
         self, cycle_events: List[ProfilingMeasurement], cycle_num: int, cycle_type: str = "Cycle"
     ):
         """Log timing metrics for a single cycle."""
         # Group events by type for easier lookup
-        events_by_type = {}
-        for event in cycle_events:
-            if event.event not in events_by_type:
-                events_by_type[event.event] = []
-            events_by_type[event.event].append(event)
+        events_by_type = self._group_events_by_type(cycle_events)
 
         # Calculate failure to termination time
         failure_events = events_by_type.get(ProfilingEvent.FAILURE_DETECTED, [])
@@ -388,7 +392,23 @@ def log_profiling_summary():
     """Convenience function to log profiling summary."""
     _global_profiler.log_metrics_summary()
 
-
-def log_cycle_profiling_summary(cycle_events: List[ProfilingMeasurement], cycle_num: int):
-    """Convenience function to log profiling summary for a specific cycle."""
-    _global_profiler.log_cycle_summary(cycle_events, cycle_num)
+def log_current_cycle_summary():
+    """Log profiling summary for the current restart cycle."""
+    profiler = get_profiler()
+    
+    # Get all measurements
+    all_measurements = profiler.get_all_measurements()
+    if not all_measurements:
+        return
+        
+    # Group events by cycles
+    cycles = profiler._group_events_by_restart_cycles(all_measurements)
+    if not cycles:
+        return
+        
+    # Get the most recent cycle (last one)
+    current_cycle = cycles[-1]
+    cycle_num = len(cycles) - 1
+    
+    # Log the cycle summary
+    profiler.log_cycle_summary(current_cycle, cycle_num)
