@@ -1991,6 +1991,10 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
 
+    # Add use_libuv=False for c10d backend
+    if args.rdzv_backend == 'c10d':
+        rdzv_configs['use_libuv'] = False
+
     if args.rdzv_backend == "static":
         rdzv_configs["rank"] = args.node_rank
 
