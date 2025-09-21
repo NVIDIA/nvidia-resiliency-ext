@@ -14,7 +14,9 @@ Usage:
 
 import logging
 
-logger = logging.getLogger(__name__)
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+logger = logging.getLogger(LogConfig.name)
 
 
 def _patched_create_tcp_store(params: "RendezvousParameters") -> "TCPStore":  # noqa: F821
