@@ -508,19 +508,11 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
                 state_bits, token, has_set = set_response
 
                 # Track CAS result
-                cas_failed = False
                 with self._cas_metrics_lock:
                     if has_set:
                         self._cas_successful_attempts += 1
                     else:
                         self._cas_failed_attempts += 1
-                        cas_failed = True
-
-                # Add random delay on CAS failure to reduce thundering herd effect
-                # This spreads out retry attempts when multiple nodes compete for the same state update
-                # Delay is applied outside the lock to avoid blocking other threads
-                if cas_failed:
-                    _delay(seconds=(0, 0.3))
         else:
             has_set = None
 
