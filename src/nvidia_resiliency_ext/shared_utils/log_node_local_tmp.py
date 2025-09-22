@@ -57,27 +57,33 @@ class NodeLocalTmpLogHandler(logging.Handler):
             sys.stderr.write(f"Log handler error: {record.getMessage()}\n")
             sys.stderr.flush()
 
-    def _log_file_namer(self):
-        # Use "unknown" for rank_id if it's None
+    def _get_backup_files(self):
+        """Return sorted list of backup files for this rank/process."""
         rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
-        return f"rank_{rank_str}_{self.proc_name}.msg.{int(time.time()*1000)}"
+        file_prefix = f"rank_{rank_str}_{self.proc_name}.msg."
+        backup_files = [
+            filename
+            for filename in os.listdir(self.file_path)
+            if re.match(rf"{file_prefix}(\d+)", filename)
+        ]
+        backup_files.sort()
+        return backup_files
+
+    def _log_file_namer(self):
+        backup_files = self._get_backup_files()
+        if self.fname is None and backup_files:
+            return backup_files[-1]
+        rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
+        file_prefix = f"rank_{rank_str}_{self.proc_name}.msg."
+        return f"{file_prefix}{int(time.time()*1000)}"
 
     def _cleanup_old_backup_files(self):
-        """Clean up old log files, keeping only the most recent one's."""
-        backup_files = []
-        # Use "unknown" for rank_id if it's None
-        rank_str = str(self.rank_id) if self.rank_id is not None else "unknown"
-        for filename in os.listdir(self.file_path):
-            match = re.match(rf"rank_{rank_str}_{self.proc_name}.msg\.(\d+)", filename)
-            if not match:
-                continue
-            backup_files.append(filename)
-        backup_files.sort()
+        """Clean up old log files, keeping only the most recent ones."""
+        backup_files = self._get_backup_files()
         for old_file in backup_files[: -self.max_backup_files]:
             try:
                 os.remove(os.path.join(self.file_path, old_file))
             except (OSError, IOError) as e:
-                # Log the error but don't fail the entire operation
                 sys.stderr.write(f"Failed to remove backup file {old_file}: {e}\n")
                 sys.stderr.flush()
 
@@ -148,21 +154,23 @@ class LogMessage:
     def __init__(self, log_message: str):
         self.log_message = log_message
         self.hash_table = {}
+        self.log_message_valid = False
         match = LogMessage.log_pattern.match(log_message)
         if match:
+            self.log_message_valid = True
             log_fields = match.groupdict()
             for key, value in log_fields.items():
                 if key == 'asctime':
                     # Convert asctime to a datetime object, then to a Unix timestamp
                     dt = datetime.strptime(value, '%Y-%m-%d %H:%M:%S,%f')
-                    timestamp = int(dt.timestamp())
-                    self.hash_table[key] = value
+                    timestamp = int(dt.timestamp() * 1000)
+                    self.hash_table[key] = timestamp
                 else:
                     self.hash_table[key] = value
 
         if 'asctime' not in self.hash_table:
             current_datetime = datetime.now()
-            self.hash_table['asctime'] = int(current_datetime.timestamp())
+            self.hash_table['asctime'] = int(current_datetime.timestamp() * 1000)
 
     def getts(self):
         return self.hash_table['asctime']
@@ -214,7 +222,7 @@ class NodeLogAggregator:
         for msg in messages:
             try:
                 # The message is already formatted by the formatter, just write it
-                output.write(msg.log_message + '\n')
+                output.write(msg.log_message)
                 output.flush()
             except Exception as e:
                 # Fallback to stderr if output fails
@@ -360,13 +368,25 @@ class NodeLogAggregator:
             return
 
         # Process each line
+        # Multi-line logs (e.g., tracebacks) have a single header line (matches log_pattern)
+        # followed by one or more continuation lines. A non-header line is treated as a
+        # continuation of the previous record, and the entire block is collapsed into a log message.
         log_msg_q = queue.SimpleQueue()
+        old_log_msg: LogMessage = None
         for line in lines:
-            line = line.strip()
-            if not line:
+            lineChk = line.strip()
+            if not lineChk:
                 continue
             log_msg = LogMessage(line)
-            log_msg_q.put(log_msg)
+            if log_msg.log_message_valid:
+                old_log_msg = log_msg
+                log_msg_q.put(log_msg)
+            else:
+                if old_log_msg is not None:
+                    old_log_msg.log_message += line
+                else:
+                    old_log_msg = log_msg
+                    log_msg_q.put(log_msg)
 
         self._log_dict_queue[msg_file] = log_msg_q
 

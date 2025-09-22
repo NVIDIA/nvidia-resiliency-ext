@@ -215,6 +215,7 @@ class GPUHealthCheck(PynvmlMixin):
             on_failure (Optional[Callable]): Callback function to handle health check failures.
         """
         super().__init__()
+        logger = logging.getLogger(LogConfig.name)
         self.device_index = device_index
         self.interval = interval
         self.on_failure = on_failure

@@ -19,6 +19,7 @@ import multiprocessing
 import os
 import random
 import shutil
+import textwrap
 import time
 import unittest
 from datetime import datetime
@@ -75,6 +76,21 @@ def gen_log_msg(logger, num_msg, log_type="info"):
             logger.info(f"My Info Logging Message {i}")
         if log_type == "debug":
             logger.debug(f"My Debug Logging Message {i}")
+        if log_type == "error":
+            msg = textwrap.dedent(
+                """\
+            monitor_process.py:316 Traceback (most recent call last):
+              File "/usr/local/lib/python3.12/dist-packages/nvidia_resiliency_ext/inprocess/monitor_process.py", line 297, in run
+                store.iteration_barrier(
+
+              File "/usr/local/lib/python3.12/dist-packages/nvidia_resiliency_ext/inprocess/store.py", line 303, in reentrant_barrier
+                self.wait([last_worker_arrived_key], timeout_chunk)
+              torch.distributed.DistNetworkError: Failed to recv, got 0 bytes. Connection was likely closed. Did the remote server shutdown or crash?
+
+
+            """
+            )
+            logger.error(msg)
 
 
 def worker_process(id, num_msg, file_size):
@@ -180,8 +196,9 @@ class TestLogger(unittest.TestCase):
         log_type="info",
         dbg_on="0",
         max_file_num=None,
+        clean_workspace=True,
     ):
-        log_dir, temp_dir = create_test_workspace(clean=True)
+        log_dir, temp_dir = create_test_workspace(clean=clean_workspace)
         setup_vars(
             global_id=0,
             local_id=0,
@@ -226,6 +243,9 @@ class TestLogger(unittest.TestCase):
             num_msg=1, file_size_kb=1024, pm_files=1, is_agg=True, log_type="info", dbg_on="0"
         )
 
+    def test_traceback_msg(self):
+        self.check_msg(2, 1024, 1, True, "error", "0")
+
     def test_single_dbg_msg(self):
         self.check_msg(
             num_msg=1, file_size_kb=1024, pm_files=1, is_agg=True, log_type="debug", dbg_on="1"
@@ -236,6 +256,19 @@ class TestLogger(unittest.TestCase):
 
     def test_rotation(self):
         self.check_msg(num_msg=900, file_size_kb=10, pm_files=5, is_agg=False)
+
+    def test_rotation_existing_file(self):
+        _, temp_dir = create_test_workspace(clean=True)
+        os.makedirs(temp_dir, exist_ok=True)
+        fname = os.path.join(temp_dir, "rank_0_test.msg.1757013222372")
+        with open(fname, 'x') as f:
+            for i in range(50):
+                f.write(f"My Old Logging Message {i}\n")
+            f.flush()
+        file_size = os.path.getsize(fname)
+        self.check_msg(clean_workspace=False, num_msg=90, file_size_kb=10, pm_files=2, is_agg=False)
+        file_size_after_logging = os.path.getsize(fname)
+        assert file_size_after_logging > file_size, "File size after logging should be > before"
 
     def test_rotation_cleanup(self):
         self.check_msg(num_msg=2000, file_size_kb=10, pm_files=1, is_agg=True, max_file_num=50)
