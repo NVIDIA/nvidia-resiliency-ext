@@ -87,6 +87,8 @@ class CollectiveAnalyzer(NVRxAttribution):
         """
         # the data structures to store the collective operations
         self.collectives_by_file: Dict[str, List[Collective]] = {}
+        # the data structure to store the process group status per rank
+        self.pg_status: Dict[str, Dict[str, Dict[str, int]]] = {}
         # the data structure to store the collective operations grouped by process group
         self.collective_groups: Dict[Tuple[str, str], List[Collective]] = defaultdict(list)
         # the data structure to store the process group configurations
@@ -193,7 +195,8 @@ class CollectiveAnalyzer(NVRxAttribution):
                 head_nodes.add(pg_indices[0])
             return head_nodes
 
-        haed_nodes_missing, head_nodes_completed = None, None
+        head_nodes_missing = None
+        head_nodes_completed = None
         # Gather the head node of each group
         if len(grouped_missing_pgs) > 0:
             head_nodes_missing = gather_head_nodes(grouped_missing_pgs)
@@ -222,6 +225,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                     )
 
             if head_nodes_missing:
+                logger.debug(f"head_nodes_missing: {head_nodes_missing}")
                 print_ranks_in_pgs(head_nodes_missing, missing_pg, "Missing")
             # TODO: using this completed pg needs to be updated with new algorithm for isolation
             if head_nodes_completed:
@@ -397,20 +401,53 @@ class CollectiveAnalyzer(NVRxAttribution):
                 sorted_groups = sorted(categorized_groups[group_type], key=lambda x: x[0][0])
                 for key, collectives in sorted_groups:
                     process_group, sub_group = key
-
                     # Count occurrences of each rank ID
-                    rank_counts = Counter(c.file_id for c in collectives)
-                    total_unique_ranks = len(rank_counts)
+                    group_by_seq_id = defaultdict(list)
+                    max_completed_collective_seq_id = -1
+                    max_enqueued_collective_seq_id = -1
+                    for c in collectives:
+                        rank_id = c.file_id
+                        pg_status = self.pg_status[rank_id][str(c.pg_id)]
+                        logger.debug(
+                            f"rank_id: {rank_id}, pg_id: {c.pg_id}, pg_status: {pg_status}, collective_seq_id: {c.collective_seq_id}"
+                        )
+                        if (
+                            pg_status['last_completed_collective']
+                            >= max_completed_collective_seq_id
+                        ):
+                            max_completed_collective_seq_id = pg_status['last_completed_collective']
+                        if pg_status['last_enqueued_collective'] >= max_enqueued_collective_seq_id:
+                            max_enqueued_collective_seq_id = pg_status['last_enqueued_collective']
+                    logger.debug(
+                        f"max_completed_collective_seq_id: {max_completed_collective_seq_id}"
+                    )
+                    logger.debug(
+                        f"max_enqueued_collective_seq_id: {max_enqueued_collective_seq_id}"
+                    )
+                    # Ranks holding entries earlier than max_completed_collective_seq_id -> ranks with problems
+                    rank_counts = defaultdict(list)
+                    for c in collectives:
+                        rank_counts['appeared'].append(c.file_id)
+                        if c.collective_seq_id <= max_completed_collective_seq_id:
+                            rank_counts['mismatched'].append(c.file_id)
+                    appeared_rank_counts = Counter(rank_counts['appeared'])
+                    mismatched_rank_counts = Counter(rank_counts['mismatched'])
+                    # print(f"rank_counts: {rank_counts}")
+                    logger.debug(f"mismatched_rank_counts: {mismatched_rank_counts}")
+                    total_unique_ranks = len(appeared_rank_counts)
 
-                    # Get a list of unique ranks
-                    unique_ranks = sorted(map(int, rank_counts.keys()))
+                    # Get a list of unique ranks that appeared in the trace
+                    unique_ranks = sorted(map(int, appeared_rank_counts.keys()))
 
                     # Find the most common operation type
                     op_counts = Counter(c.profiling_name for c in collectives)
                     op_type = op_counts.most_common(1)[0][0] if op_counts else "Unknown"
 
+                    # expected ranks for this process group
                     global_ranks = list(self.pg_configs[process_group]['ranks'])
-                    missing_ranks = set(global_ranks) - set(unique_ranks)
+                    missing_ranks = set(mismatched_rank_counts.keys()) | set(global_ranks) - set(
+                        unique_ranks
+                    )
                     process_group_str = process_group
 
                     # Get size and dtype from the first collective
@@ -436,6 +473,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                     parsed_row = tuple(row_elem[0] for row_elem in row_data)
                     if len(missing_ranks) <= 0:
                         completed_pg[(int)(parsed_row[0])].append(parsed_row)
+                        # print(row)
                         continue
                     else:
                         missing_pg[(int)(parsed_row[0])].append(parsed_row)
@@ -444,7 +482,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                     # Print detailed rank count distribution
                     if verbose:
                         print(f"  Rank count distribution for {process_group_str}:")
-                        for rank, count in sorted(rank_counts.items()):
+                        for rank, count in sorted(appeared_rank_counts.items()):
                             print(f"    Rank {rank}: {count} occurrences")
 
                             # Print operation type distribution with paired send/recv analysis
@@ -734,7 +772,12 @@ class CollectiveAnalyzer(NVRxAttribution):
                     with open(filename, 'rb') as f:
                         data = pickle.load(f)
                         # Convert pickle data to JSON-compatible format
-                        return json.loads(json.dumps(data))
+                        converted_data = json.loads(json.dumps(data))
+                    if self.args.debug:
+                        with open(filename + '.json', 'w') as f:
+                            f.write(json.dumps(converted_data, indent=2))
+                            f.write('\n')
+                    return converted_data
                 except (pickle.PickleError, FileNotFoundError, json.JSONDecodeError):
                     raise ValueError(f"Error loading pickle file: {filename}")
 
@@ -796,6 +839,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                             self.pg_configs[group]['ranks'] | mapping['ranks']
                         )
             collectives = extract_collectives(data, rank_id)
+            self.pg_status[rank_id] = data['pg_status']
             self.collectives_by_file[rank_id] = collectives
 
             if 'health_check_results' in data:
@@ -878,6 +922,13 @@ def main():
         default="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
         help='Model to use for LLM analysis',
     )
+
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Convert the trace file to json file, if the trace is binary, for debugging',
+    )
+
     args = parser.parse_args()
 
     analyzer = CollectiveAnalyzer(args)
