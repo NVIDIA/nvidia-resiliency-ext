@@ -417,6 +417,13 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
     _last_sync_time: float
     _dead_nodes: List[_NodeDesc]
 
+    # CAS metrics tracking
+    _cas_metrics_lock: threading.Lock
+    _cas_total_attempts: int
+    _cas_successful_attempts: int
+    _cas_failed_attempts: int
+    _cas_start_time: float
+
     def __init__(
         self,
         backend: RendezvousBackend,
@@ -431,6 +438,40 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
         self._dirty = False
         self._last_sync_time = -1
         self._dead_nodes = []
+
+        # Initialize CAS metrics lock (created once)
+        self._cas_metrics_lock = threading.Lock()
+        # Initialize CAS metrics values
+        self._init_cas_metrics()
+
+    def _init_cas_metrics(self) -> None:
+        """Initialize CAS metrics tracking."""
+        with self._cas_metrics_lock:
+            self._cas_total_attempts = 0
+            self._cas_successful_attempts = 0
+            self._cas_failed_attempts = 0
+            self._cas_start_time = time.monotonic()
+
+    def get_cas_metrics(self) -> dict:
+        """Get CAS operation metrics for debugging rendezvous issues."""
+        with self._cas_metrics_lock:
+            current_time = time.monotonic()
+            elapsed_time = current_time - self._cas_start_time
+
+            success_rate = 0.0
+            if self._cas_total_attempts > 0:
+                success_rate = (self._cas_successful_attempts / self._cas_total_attempts) * 100.0
+
+            return {
+                "total_attempts": self._cas_total_attempts,
+                "successful_attempts": self._cas_successful_attempts,
+                "failed_attempts": self._cas_failed_attempts,
+                "success_rate_percent": success_rate,
+                "elapsed_time_seconds": elapsed_time,
+                "attempts_per_second": (
+                    self._cas_total_attempts / elapsed_time if elapsed_time > 0 else 0.0
+                ),
+            }
 
     def _record(self, message: str, node_state: NodeState = NodeState.RUNNING):
         construct_and_record_rdzv_event(
@@ -458,9 +499,28 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
 
             state_bits = pickle.dumps(self._state)
 
+            # Track CAS operation
+            with self._cas_metrics_lock:
+                self._cas_total_attempts += 1
+
             set_response = self._backend.set_state(state_bits, self._token)
             if set_response is not None:
                 state_bits, token, has_set = set_response
+
+                # Track CAS result
+                cas_failed = False
+                with self._cas_metrics_lock:
+                    if has_set:
+                        self._cas_successful_attempts += 1
+                    else:
+                        self._cas_failed_attempts += 1
+                        cas_failed = True
+
+                # Add random delay on CAS failure to reduce thundering herd effect
+                # This spreads out retry attempts when multiple nodes compete for the same state update
+                # Delay is applied outside the lock to avoid blocking other threads
+                if cas_failed:
+                    _delay(seconds=(0, 0.3))
         else:
             has_set = None
 
@@ -1322,6 +1382,9 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg)
         log.info(msg)
 
+        # Reset CAS metrics for this rendezvous round
+        self._state_holder._init_cas_metrics()
+
         try:
             self._stop_heartbeats()
 
@@ -1361,6 +1424,17 @@ class FtRendezvousHandler(RendezvousHandler):
         )
         self._record(message=msg, rank=rank)
         log.info(msg)
+
+        # Print CAS metrics on success
+        cas_metrics = self._state_holder.get_cas_metrics()
+        if cas_metrics['total_attempts'] > 0:
+            log.info(
+                f"CAS METRICS [{self._this_node}] - "
+                f"Total: {cas_metrics['total_attempts']}, "
+                f"Success: {cas_metrics['successful_attempts']}, "
+                f"Failed: {cas_metrics['failed_attempts']}, "
+                f"Success Rate: {cas_metrics['success_rate_percent']:.1f}%"
+            )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
         # Fall back to tuple format if RendezvousInfo is not supported
