@@ -1,0 +1,4 @@
+Fault ranks: [10, 15]
+Fault delay: 180.0
+Rank 10, fault_type: LOCK_GIL
+Rank 15, fault_type: LOCK_GIL
