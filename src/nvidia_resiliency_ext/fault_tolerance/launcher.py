@@ -332,7 +332,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                     ProfilingEvent.FAILURE_DETECTED,
                     node_id=self._node_id,
                     rank=self._worker_group.group_rank,
-                    metadata={"state": state.name, "role": role}
                 )
 
                 if self._remaining_restarts > 0:
@@ -365,7 +364,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                         ProfilingEvent.FAILURE_DETECTED,
                         node_id=self._node_id,
                         rank=self._worker_group.group_rank,
-                        metadata={"state": state.name, "role": role}
                     )
 
                     logger.info(
