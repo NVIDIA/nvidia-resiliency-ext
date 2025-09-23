@@ -78,7 +78,6 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.profiling import (
     ProfilingEvent,
-    log_current_cycle_summary,
     record_profiling_event,
 )
 
@@ -614,7 +613,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             ProfilingEvent.WORKER_TERMINATED,
             node_id=self._node_id,
             rank=worker_group.group_rank,
-            metadata={"group_rank": worker_group.group_rank, "world_size": worker_group.group_world_size}
         )
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
@@ -631,7 +629,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             ProfilingEvent.WORKER_START_STARTED,
             node_id=self._node_id,
             rank=worker_group.group_rank,
-            metadata={"group_rank": worker_group.group_rank, "world_size": worker_group.group_world_size}
         )
 
         use_agent_store = spec.rdzv_handler.use_agent_store
@@ -710,11 +707,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             ProfilingEvent.WORKER_START_COMPLETED,
             node_id=self._node_id,
             rank=worker_group.group_rank,
-            metadata={"group_rank": worker_group.group_rank, "world_size": worker_group.group_world_size}
         )
-
-        # Log profiling summary for this restart cycle
-        log_current_cycle_summary()
 
         return self._pcontext.pids()
 

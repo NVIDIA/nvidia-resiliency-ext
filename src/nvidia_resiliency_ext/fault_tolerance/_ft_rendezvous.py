@@ -1327,7 +1327,6 @@ class FtRendezvousHandler(RendezvousHandler):
         rendezvous_start_event_id = record_profiling_event(
             ProfilingEvent.RENDEZVOUS_STARTED,
             node_id=self._this_node.addr,
-            metadata={"run_id": self._settings.run_id, "round": self._state_holder.state.round},
         )
 
         try:
@@ -1374,11 +1373,6 @@ class FtRendezvousHandler(RendezvousHandler):
         rendezvous_completion_event_id = record_profiling_event(
             ProfilingEvent.RENDEZVOUS_COMPLETED,
             node_id=self._this_node.addr,
-            metadata={
-                "run_id": self._settings.run_id,
-                "round": self._state_holder.state.round,
-                "world_size": world_size,
-            },
         )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
