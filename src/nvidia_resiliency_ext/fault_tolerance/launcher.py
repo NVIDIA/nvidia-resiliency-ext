@@ -620,7 +620,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         restart_count = spec.max_restarts - self._remaining_restarts
 
         # Record worker start start event
-        start_start_event_id = record_profiling_event(
+        record_profiling_event(
             ProfilingEvent.WORKER_START_STARTED,
             node_id=self._node_id,
             rank=worker_group.group_rank,
@@ -698,7 +698,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
         # Record worker start completion event
-        start_completion_event_id = record_profiling_event(
+        record_profiling_event(
             ProfilingEvent.WORKER_START_COMPLETED,
             node_id=self._node_id,
             rank=worker_group.group_rank,
