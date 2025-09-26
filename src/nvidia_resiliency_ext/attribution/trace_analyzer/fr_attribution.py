@@ -211,7 +211,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             def print_ranks_in_pgs(head_nodes, pg_dict, missing_or_completed="Missing"):
                 print(
                     f"{'PGID':<6} | {'Process Group Desc':<25} | {'Op Type':<10} | {'Size':<8} \
-                        | {'Dtype':<8} | {'{missing_or_completed} Ranks'}"
+                        | {'Dtype':<8} | {missing_or_completed} Ranks"
                 )
                 for pg_idx in head_nodes:
                     entry = list(pg_dict[pg_idx][0])
@@ -418,10 +418,7 @@ class CollectiveAnalyzer(NVRxAttribution):
 
                     for c in collectives:
                         rank_id = c.file_id
-                        pg_status = self.pg_status[rank_id][str(c.pg_id)]
-                        logger.debug(
-                            f"rank_id: {rank_id}, pg_id: {c.pg_id}, c.profiling_name: {c.profiling_name}, pg_status: {pg_status}, collective_seq_id: {get_correct_seq_id(c)}"
-                        )
+                        pg_status = self.pg_status[rank_id][process_group]
                         if (
                             pg_status['last_completed_collective']
                             >= max_completed_collective_seq_id
@@ -429,6 +426,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                             max_completed_collective_seq_id = pg_status['last_completed_collective']
                         if pg_status['last_enqueued_collective'] >= max_enqueued_collective_seq_id:
                             max_enqueued_collective_seq_id = pg_status['last_enqueued_collective']
+
                     logger.debug(
                         f"max_completed_collective_seq_id: {max_completed_collective_seq_id}"
                     )
@@ -436,15 +434,24 @@ class CollectiveAnalyzer(NVRxAttribution):
                         f"max_enqueued_collective_seq_id: {max_enqueued_collective_seq_id}"
                     )
 
-                    # Ranks holding entries earlier than max_completed_collective_seq_id -> ranks with problems
+                    # Ranks holding entries earlier than max_completed_collective_seq_id -> ranks failing to complete expected collectives
                     rank_counts = defaultdict(list)
                     for c in collectives:
                         rank_counts['appeared'].append(c.file_id)
                         if get_correct_seq_id(c) <= max_completed_collective_seq_id:
                             rank_counts['mismatched'].append(c.file_id)
                     appeared_rank_counts = Counter(rank_counts['appeared'])
+
+                    # Ranks with less number of enqueued collectives than max_enqueued_collective_seq_id -> host not making expected progress
+                    for rank_id in self.pg_configs[process_group]['ranks']:
+                        rank_id = str(rank_id)
+                        if (
+                            self.pg_status[str(rank_id)][process_group]['last_enqueued_collective']
+                            < max_enqueued_collective_seq_id
+                        ):
+                            rank_counts['mismatched'].append(rank_id)
+
                     mismatched_rank_counts = Counter(rank_counts['mismatched'])
-                    # print(f"rank_counts: {rank_counts}")
                     logger.debug(f"mismatched_rank_counts: {mismatched_rank_counts}")
                     total_unique_ranks = len(appeared_rank_counts)
 
