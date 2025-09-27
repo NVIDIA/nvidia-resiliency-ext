@@ -17,21 +17,18 @@ import os
 import socket
 import threading
 import time
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from torch.distributed import PrefixStore, Store
 from torch.distributed.elastic.events import NodeState, construct_and_record_rdzv_event
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
     RendezvousError,
-    RendezvousGracefulExitError,
     RendezvousHandler,
     RendezvousParameters,
-    RendezvousStateError,
     RendezvousTimeoutError,
 )
 
@@ -44,11 +41,11 @@ except ImportError:
     _RENDEZVOUS_INFO_AVAILABLE = False
     RendezvousInfo = None
     RendezvousStoreInfo = None
-from torch.distributed.elastic.rendezvous.utils import _delay
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
@@ -439,7 +436,9 @@ class _RendezvousBarrierState:
             if should_complete:
                 # Mark rendezvous as complete
                 self.store.set(self.last_participant_arrived_key, "1")
-                log.debug(f"[{node_desc}] [Step 2] Rendezvous marked as complete with arrived_count={self._arrived_count}")
+                log.debug(
+                    f"[{node_desc}] [Step 2] Rendezvous marked as complete with arrived_count={self._arrived_count}"
+                )
                 break
 
             # Small delay before next check
@@ -554,9 +553,13 @@ class _RendezvousBarrierState:
             except Exception as e:
                 log.debug(f"[{node_desc}] Failed to delete key {key}: {e}")
 
-        log.debug(f"[{node_desc}] [Step 3b] Cleared {len(keys_to_clear)} barrier keys: {keys_to_clear}")
+        log.debug(
+            f"[{node_desc}] [Step 3b] Cleared {len(keys_to_clear)} barrier keys: {keys_to_clear}"
+        )
 
-    def assign_group_ranks(self, min_nodes: int, total_participants: int, node_desc: _NodeDesc) -> bool:
+    def assign_group_ranks(
+        self, min_nodes: int, total_participants: int, node_desc: _NodeDesc
+    ) -> bool:
         """Assign group ranks to all participants while preserving previous assignments. Called by Rank 0 (TCPStore host).
 
         Args:
@@ -808,6 +811,12 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._record(message=msg)
         log.info(msg)
 
+        # Record rendezvous start event
+        rendezvous_start_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_STARTED,
+            node_id=self._this_node,
+        )
+
         try:
             # Check node health and control requests before starting rendezvous
             self.ensure_node_is_healthy()
@@ -835,6 +844,12 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         )
         self._record(message=msg, rank=rank)
         log.info(msg)
+
+        # Record rendezvous completion event
+        rendezvous_completion_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_COMPLETED,
+            node_id=self._this_node,
+        )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
         # Fall back to tuple format if RendezvousInfo is not supported

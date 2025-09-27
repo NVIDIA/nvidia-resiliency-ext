@@ -76,6 +76,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -322,6 +323,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._exit_barrier()
                 return run_result
             elif state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                # Record failure detection event
+                record_profiling_event(
+                    ProfilingEvent.FAILURE_DETECTED,
+                    node_id=self._rdzv_handler._this_node,
+                    rank=self._worker_group.group_rank,
+                )
+
                 if self._remaining_restarts > 0:
                     logger.info(
                         "[%s] Worker group %s. "
@@ -347,6 +355,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 group_rank = self._worker_group.group_rank
                 if num_nodes_waiting > 0:
+                    # Record failure detection event
+                    record_profiling_event(
+                        ProfilingEvent.FAILURE_DETECTED,
+                        node_id=self._rdzv_handler._this_node,
+                        rank=self._worker_group.group_rank,
+                    )
+
                     logger.info(
                         "[%s] Detected %s "
                         "new nodes from group_rank=%s; "
@@ -587,6 +602,13 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._shutdown(timeout=self._workers_stop_timeout)
 
+        # Record worker termination event after shutdown is complete
+        record_profiling_event(
+            ProfilingEvent.WORKER_TERMINATED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -595,6 +617,13 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
         restart_count = spec.max_restarts - self._remaining_restarts
+
+        # Record worker start start event
+        record_profiling_event(
+            ProfilingEvent.WORKER_START_STARTED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
 
         use_agent_store = spec.rdzv_handler.use_agent_store
 
@@ -666,6 +695,13 @@ class LocalElasticAgent(SimpleElasticAgent):
         )
 
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
+
+        # Record worker start completion event
+        record_profiling_event(
+            ProfilingEvent.WORKER_START_COMPLETED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
 
         return self._pcontext.pids()
 
