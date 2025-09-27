@@ -464,7 +464,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
-        return
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
         for worker_env in envs.values():
             # Start rank monitors if not already started
