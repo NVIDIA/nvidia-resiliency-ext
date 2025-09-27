@@ -139,7 +139,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     python multiprocessing compatible. To pass multiprocessing data structures
     to the workers you may create the data structure in the same multiprocessing
     context as the specified ``start_method`` and pass it as a function argument.
-    
+
     Note: If your training script uses the nvrx logger, make sure to call
     ``setup_logger()`` at the beginning of your training function to ensure
     the logger is properly set up in each subprocess.
@@ -180,12 +180,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             # Ensure nvrx logger is set up in this subprocess
             from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
             setup_logger()
-            
+
             # Use the nvrx logger
             import logging
             logger = logging.getLogger(LogConfig.name)
             logger.info("Training started")
-            
+
             return "do train"
 
         def main():
@@ -479,6 +479,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
+        # Skip rank monitor setup if disabled in configuration
+        if not self._ft_cfg.enable_rank_monitors:
+            return
+
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
         for worker_env in envs.values():
             # Start rank monitors if not already started
@@ -1009,7 +1013,7 @@ def launch_agent(
 
     master_addr, master_port = _get_addr_and_port(rdzv_parameters)
     is_store_host = _is_store_host(rdzv_parameters)
-    
+
     # Add is_store_host to rdzv_parameters
     rdzv_parameters.config["is_store_host"] = is_store_host
 
@@ -1825,6 +1829,15 @@ def get_args_parser() -> ArgumentParser:
         default=True,
         dest="ft_enable_nic_monitor",
         help="Enable or Disable NIC health monitoring in training.",
+    )
+
+    parser.add_argument(
+        "--ft-enable-rank-monitors",
+        "--ft-enable_rank_monitors",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+        default=True,
+        dest="ft_enable_rank_monitors",
+        help="Enable or disable rank monitor setup. When disabled, rank monitors will not be started, which is useful for simulation environments.",
     )
 
     parser.add_argument(
