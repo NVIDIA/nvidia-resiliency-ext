@@ -100,9 +100,9 @@ def _register_ft_rdzv_handler():
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
-    from ._ft_rendezvous import FtRendezvousHandler, create_handler
+    from .ft_rendezvous_barrier import FtRendezvousBarrierHandler, create_handler
 
-    def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousHandler:
+    def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousBarrierHandler:
         backend, store = create_backend(params)
         return create_handler(store, backend, params)
 
@@ -464,6 +464,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
+        return
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
         for worker_env in envs.values():
             # Start rank monitors if not already started
@@ -742,38 +743,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
-    def clean_rdzv_shutdown(self, close):
-        # Try to exit rendezvous gracefully, with the store host leaving last.
-        # If the store host exits early, other nodes might try to use the store
-        # and fail due to connection errors.
-        # Marking the rdzv as closed causes spare nodes to exit the rdzv with RendezvousGracefulExitError.
-        # and prevents all other agents from using the rdzv, so it should be closed only when leaving
-        # the workload
-        try:
-            rdzv_handler = self._rdzv_handler
-            rdzv_handler._stop_heartbeats()  # stops rdzv backround thread
-            rdzv_handler.remove_this_node()
-            if close:
-                rdzv_handler.set_closed()
-            if self._is_store_host:
-                timeout = self._exit_barrier_timeout
-                pooling_interval = 1.0
-                time_left = timeout
-                while rdzv_handler.num_nodes() > 0 and time_left > 0:
-                    time.sleep(pooling_interval)
-                    time_left -= pooling_interval
-                if rdzv_handler.num_nodes() > 0:
-                    logger.warning(
-                        f"Some nodes did not leave the rendezvous on time ({timeout=} seconds). "
-                        "Exiting agent anyway, but this might result in rdzv failures."
-                    )
-                else:
-                    logger.info(
-                        "Rendezvous don't have any nodes. Leaving the store hosting process..."
-                    )
-        except Exception as e:
-            logger.warning(f"Error while trying to gracefully exit the rendezvous: {e}")
-            pass  # continue, we are exiting the process anyway
 
 
 # Source
@@ -1004,6 +973,10 @@ def launch_agent(
     )
 
     master_addr, master_port = _get_addr_and_port(rdzv_parameters)
+    is_store_host = _is_store_host(rdzv_parameters)
+    
+    # Add is_store_host to rdzv_parameters
+    rdzv_parameters.config["is_store_host"] = is_store_host
 
     spec = WorkerSpec(
         role=config.role,
@@ -1027,7 +1000,7 @@ def launch_agent(
         term_timeout=config.term_timeout,
         workers_stop_timeout=config.workers_stop_timeout,
         restart_policy=config.restart_policy,
-        is_store_host=_is_store_host(rdzv_parameters),
+        is_store_host=is_store_host,
     )
 
     shutdown_rdzv = True
@@ -1079,7 +1052,8 @@ def launch_agent(
         events.record(agent.get_event_failed())
         raise
     finally:
-        agent.clean_rdzv_shutdown(close=shutdown_rdzv)
+        if shutdown_rdzv:
+            agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
         with contextlib.suppress(Exception):
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
