@@ -221,7 +221,6 @@ class GroupRankStatus(Enum):
     """Group rank status for participants."""
 
     UNASSIGNED = -1  # Initially unassigned
-    STANDBY = -2  # Standby participant (not active)
 
 
 class RendezvousParticipantInfo:
@@ -264,6 +263,25 @@ class _RendezvousBarrierState:
 
     This class manages the barrier state using atomic operations and
     simple key-based coordination instead of compare_set operations.
+
+    DESIGN PHILOSOPHY:
+    This implementation prioritizes flexibility and fault tolerance over strict
+    synchronization. Key design principles:
+
+    1. ATOMIC BARRIER: Uses atomic increments instead of compare-and-swap operations
+       for better performance and simpler coordination
+
+    2. GRACEFUL COMPLETION: Completes rendezvous on last_call_timeout rather than
+       waiting for max_nodes, enabling hot-fix scenarios and flexible scaling
+
+    3. EVENTUAL CONVERGENCE: New comers trigger restarts of existing participants,
+       ensuring all nodes eventually participate in the same rendezvous round
+
+    4. RACE CONDITION TOLERANCE: The last_call_timeout provides a grace period
+       for restarting nodes, preventing premature completion
+
+    This design trades some synchronization guarantees for better fault tolerance
+    and operational flexibility in production environments.
     """
 
     def __init__(
@@ -289,36 +307,47 @@ class _RendezvousBarrierState:
 
     @staticmethod
     def _assign_group_ranks_preserving_previous(
-        participants: List[Tuple[_NodeDesc, ParticipantStatus, int]],
+        participants: List[Tuple[_NodeDesc, ParticipantStatus]],
         prev_participants: Dict[_NodeDesc, int],
     ) -> Dict[_NodeDesc, int]:
         """Assign group ranks while preserving previous group rank assignments as much as possible.
 
         Args:
-            participants: List of (node_desc, status, current_group_rank) tuples
+            participants: List of (node_desc, status) tuples
             prev_participants: Dictionary of previous round's node_desc -> group_rank mapping
 
         Returns:
             Dictionary of node_desc -> assigned_group_rank
         """
-        # Filter only active participants for group rank assignment
+        # Separate active and standby participants
         active_participants = [
-            (node_desc, status, current_group_rank)
-            for node_desc, status, current_group_rank in participants
+            (node_desc, status)
+            for node_desc, status in participants
             if status == ParticipantStatus.ACTIVE
         ]
 
-        world_size = len(active_participants)
-        sorted_participants = sorted(active_participants, key=lambda x: x[0])  # Sort by node_desc
-        free_group_ranks = set(range(world_size))
+        standby_participants = [
+            (node_desc, status)
+            for node_desc, status in participants
+            if status == ParticipantStatus.STANDBY
+        ]
+
+        active_world_size = len(active_participants)
+        total_participants = len(participants)
         result = {}
 
-        # First pass: try to reuse previous group rank assignments
-        for node_desc, status, current_group_rank in sorted_participants:
+        # Assign group ranks to active participants (0 to active_world_size-1)
+        sorted_active_participants = sorted(
+            active_participants, key=lambda x: x[0]
+        )  # Sort by node_desc
+        free_group_ranks = set(range(active_world_size))
+
+        # First pass: try to reuse previous group rank assignments for active participants
+        for node_desc, status in sorted_active_participants:
             prev_group_rank = prev_participants.get(node_desc, -1)
             if (
                 prev_group_rank >= 0
-                and prev_group_rank < world_size
+                and prev_group_rank < active_world_size
                 and prev_group_rank in free_group_ranks
             ):
                 # This node can have the same group rank as before
@@ -328,15 +357,24 @@ class _RendezvousBarrierState:
                 # Mark as unassigned for now
                 result[node_desc] = -1
 
-        # Second pass: fill gaps with remaining free group ranks
+        # Second pass: fill gaps with remaining free group ranks for active participants
         free_group_ranks = sorted(free_group_ranks)
-        for node_desc, status, current_group_rank in sorted_participants:
+        for node_desc, status in sorted_active_participants:
             if result[node_desc] < 0:
                 result[node_desc] = free_group_ranks.pop(0)
 
+        # Assign group ranks to standby participants (active_world_size to total_participants-1)
+        sorted_standby_participants = sorted(
+            standby_participants, key=lambda x: x[0]
+        )  # Sort by node_desc
+        standby_group_rank = active_world_size
+        for node_desc, status in sorted_standby_participants:
+            result[node_desc] = standby_group_rank
+            standby_group_rank += 1
+
         assert (
             not free_group_ranks
-        ), f"Should have assigned all group ranks, but {free_group_ranks} remain"
+        ), f"Should have assigned all active group ranks, but {free_group_ranks} remain"
         return result
 
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
@@ -367,17 +405,40 @@ class _RendezvousBarrierState:
 
     def perform_rendezvous(
         self, node_desc: _NodeDesc, min_nodes: int, max_nodes: int, last_call_timeout: timedelta
-    ) -> int:
+    ) -> Tuple[int, int]:
         """Perform the complete rendezvous process: join, wait for completion, acknowledge, and get rank.
+
+        DESIGN RATIONALE:
+        This atomic barrier-based rendezvous design balances flexibility with convergence guarantees:
+
+        1. FLEXIBILITY: We use last_call_timeout (not max_nodes) as completion criteria because:
+           - Future hot-fix scenarios may need to exclude broken participants without failing
+           - We cannot wait for max_nodes (active + standby) as this would block legitimate completions
+           - The system needs to be resilient to partial failures while maintaining progress
+
+        2. CONVERGENCE: The rendezvous will complete when either:
+           - max_nodes is reached (immediate completion), OR
+           - min_nodes is reached AND last_call_timeout expires (graceful completion)
+
+        3. NEW COMER HANDLING:
+           - New comers arriving during active rendezvous participate in the current round
+           - New comers arriving after completion trigger the next rendezvous round
+           - All existing participants detect new comers and restart to join the new round
+           - This ensures eventual convergence with the new comer
+
+        4. RACE CONDITION MITIGATION:
+           - The last_call_timeout provides a grace period for nodes that are restarting
+           - This prevents premature completion when nodes are in the process of joining
+           - The timeout balances responsiveness with inclusion of restarting nodes
 
         Args:
             node_desc: Node descriptor for this participant
-            min_nodes: Minimum number of nodes required
-            max_nodes: Maximum number of nodes allowed
-            last_call_timeout: Additional wait time after min_nodes reached
+            min_nodes: Minimum number of nodes required for training to proceed
+            max_nodes: Maximum number of nodes allowed (active + standby)
+            last_call_timeout: Grace period after min_nodes reached to allow restarting nodes to join
 
         Returns:
-            group_rank
+            Tuple of (group_rank, total_participants)
         """
         # Check if rendezvous is closed
         if self.is_closed():
@@ -389,6 +450,14 @@ class _RendezvousBarrierState:
         # Step 1: Join the rendezvous and get unique identifier
         self._arrived_count = self.store.add(self.arrived_count_key, 1)
 
+        # Check if we exceed max_nodes (can happen due to race conditions or user misconfiguration)
+        if self._arrived_count > max_nodes:
+            raise RendezvousClosedError(
+                f"Maximum number of nodes ({max_nodes}) exceeded. "
+                f"Participant count: {self._arrived_count}. "
+                f"This is likely a configuration error - please check max_nodes setting."
+            )
+
         # Store participant information in arrived_<count> key using the unique identifier
         arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
         # Participants 1 to min_nodes are active, participants min_nodes+1 to max_nodes are standby
@@ -398,9 +467,10 @@ class _RendezvousBarrierState:
         participant_data = RendezvousParticipantInfo.pack(node_desc, status)
         self.store.set(arrived_key, participant_data)
 
-        # Set initial group rank
+        # Set initial group rank (unassigned)
         rank_key = f"{self.prefix}:arrived_{self._arrived_count}_group_rank"
-        self.store.set(rank_key, str(GroupRankStatus.UNASSIGNED.value))  # Initially unassigned
+        # Initially unassigned - use format "unassigned,0" for consistency
+        self.store.set(rank_key, f"{GroupRankStatus.UNASSIGNED.value},0".encode('utf-8'))
 
         log.debug(
             f"[{node_desc}] [Step 1] Joined rendezvous with arrived_count={self._arrived_count}, status={status.value}"
@@ -420,22 +490,27 @@ class _RendezvousBarrierState:
                 break
 
             # Check if we should mark completion now
+            # DESIGN NOTE: We complete on last_call_timeout (not max_nodes) to support:
+            # 1. Hot-fix scenarios where broken participants are excluded without failing the job
+            # 2. Flexibility in participant count while ensuring convergence
+            # 3. Grace period for restarting nodes to join before completion
             should_complete = False
 
             if self._arrived_count >= max_nodes:
-                # Max nodes reached
+                # Max nodes reached - immediate completion
                 should_complete = True
             elif (
                 self._arrived_count >= min_nodes
                 and last_call_deadline
                 and datetime.utcnow() >= last_call_deadline
             ):
-                # Min nodes reached and deadline passed
+                # Min nodes reached and grace period expired - graceful completion
+                # This allows the system to proceed even if not all potential nodes have joined
                 should_complete = True
 
             if should_complete:
                 # Mark rendezvous as complete
-                self.store.set(self.last_participant_arrived_key, "1")
+                self.store.set(self.last_participant_arrived_key, "1".encode('utf-8'))
                 log.debug(
                     f"[{node_desc}] [Step 2] Rendezvous marked as complete with arrived_count={self._arrived_count}"
                 )
@@ -474,7 +549,7 @@ class _RendezvousBarrierState:
                     self._clear_barrier_keys(node_desc)
 
                     # Assign group ranks to all participants
-                    self.assign_group_ranks(min_nodes, total_participants, node_desc)
+                    self.assign_group_ranks(min_nodes, max_nodes, total_participants, node_desc)
                     break
 
                 time.sleep(0.1)
@@ -488,50 +563,58 @@ class _RendezvousBarrierState:
             # Check for early closure and timeout
             self._check_timeout_and_closure(node_desc)
 
-            rank_str = self.store.get(rank_key)
-            rank = int(rank_str)
+            rank_value_bytes = self.store.get(rank_key)
+            rank_value = rank_value_bytes.decode('utf-8')
+
+            # Parse the combined rank value: "group_rank,total_participants"
+            try:
+                rank_str, total_participants_str = rank_value.split(',', 1)
+                rank = int(rank_str)
+                total_participants = int(total_participants_str)
+            except (ValueError, AttributeError) as e:
+                raise RuntimeError(
+                    f"[{node_desc}] Failed to parse rank value '{rank_value}': {e}. "
+                    f"Expected format 'group_rank,total_participants' but got malformed data."
+                )
 
             # Check if rank has been assigned (not unassigned)
             if rank != GroupRankStatus.UNASSIGNED.value:
-                log.debug(f"[{node_desc}] [Step 4] Received group rank {rank}")
-                return rank
+                log.debug(
+                    f"[{node_desc}] [Step 4] Received group rank {rank}, total participants {total_participants}"
+                )
+                return rank, total_participants
 
             # Delay before next check
             time.sleep(1)
 
     def get_all_participants(
         self, total_participants: int
-    ) -> List[Tuple[_NodeDesc, ParticipantStatus, int]]:
+    ) -> List[Tuple[_NodeDesc, ParticipantStatus]]:
         """Get all participants that have arrived using multi_get.
 
         Args:
             total_participants: Total number of participants
 
         Returns:
-            List of tuples: (node_desc, status, group_rank)
+            List of tuples: (node_desc, status)
         """
         arrived_count = total_participants
 
         # Prepare keys for multi_get
         participant_keys = [f"{self.prefix}:arrived_{i}" for i in range(1, arrived_count + 1)]
-        rank_keys = [f"{self.prefix}:arrived_{i}_group_rank" for i in range(1, arrived_count + 1)]
 
         # Use multi_get to fetch all data at once
-        all_keys = participant_keys + rank_keys
-        all_data = self.store.multi_get(all_keys)
-
-        # Split the results
-        participant_data_list = all_data[:arrived_count]
-        rank_data_list = all_data[arrived_count:]
+        participant_data_list = self.store.multi_get(participant_keys)
 
         # Unpack participant information
         participants = []
         for i in range(arrived_count):
-            if participant_data_list[i] and rank_data_list[i]:
+            if participant_data_list[i]:
                 try:
-                    node_desc, status = RendezvousParticipantInfo.unpack(participant_data_list[i])
-                    group_rank = int(rank_data_list[i])
-                    participants.append((node_desc, status, group_rank))
+                    # Handle bytes to string conversion
+                    participant_data = participant_data_list[i].decode('utf-8')
+                    node_desc, status = RendezvousParticipantInfo.unpack(participant_data)
+                    participants.append((node_desc, status))
                 except Exception as e:
                     log.warning(f"Failed to unpack participant data for arrived_{i+1}: {e}")
 
@@ -558,12 +641,13 @@ class _RendezvousBarrierState:
         )
 
     def assign_group_ranks(
-        self, min_nodes: int, total_participants: int, node_desc: _NodeDesc
+        self, min_nodes: int, max_nodes: int, total_participants: int, node_desc: _NodeDesc
     ) -> bool:
         """Assign group ranks to all participants while preserving previous assignments. Called by Rank 0 (TCPStore host).
 
         Args:
             min_nodes: Minimum number of active participants
+            max_nodes: Maximum number of participants allowed
             total_participants: Total number of participants (passed to avoid race condition)
         """
         all_participants = self.get_all_participants(total_participants)
@@ -575,27 +659,45 @@ class _RendezvousBarrierState:
             len(all_participants) == total_participants
         ), f"Expected {total_participants} participants, got {len(all_participants)}"
 
+        # Ensure we don't exceed max_nodes
+        if total_participants > max_nodes:
+            # This should be rare in practice - likely a user configuration error
+            # We'll process only the first max_nodes participants
+            log.warning(
+                f"Total participants ({total_participants}) exceeds max_nodes ({max_nodes}). "
+                f"Processing only first {max_nodes} participants. "
+                f"Please check your max_nodes configuration."
+            )
+            # Limit to max_nodes participants
+            total_participants = max_nodes
+            all_participants = all_participants[:max_nodes]
+
         assigned_group_ranks = self._assign_group_ranks_preserving_previous(
             all_participants, self._prev_participants
         )
 
-        # Store the assigned ranks in the store
-        for i, (node_desc, status, current_rank) in enumerate(all_participants):
+        # Store the assigned ranks and total participants in the store
+        for i, (node_desc, status) in enumerate(all_participants):
             rank_key = f"{self.prefix}:arrived_{i+1}_group_rank"
+            assigned_group_rank = assigned_group_ranks.get(node_desc, -1)
 
-            if status == ParticipantStatus.ACTIVE:
-                # Use preserved group rank assignment
-                assigned_group_rank = assigned_group_ranks.get(node_desc, -1)
-                self.store.set(rank_key, str(assigned_group_rank))
-            elif status == ParticipantStatus.STANDBY:
-                # Mark standby participant
-                self.store.set(rank_key, str(GroupRankStatus.STANDBY.value))
+            # Ensure every participant gets a valid rank assignment
+            if assigned_group_rank == -1:
+                raise RuntimeError(
+                    f"Failed to assign group rank to participant {node_desc}. "
+                    f"This should never happen - all participants should be assigned ranks."
+                )
+
+            # Store both group_rank and total_participants in the rank key
+            # Format: "group_rank,total_participants"
+            rank_value = f"{assigned_group_rank},{total_participants}"
+            self.store.set(rank_key, rank_value.encode('utf-8'))
 
         # Save current participants for next round (similar to _ft_rendezvous.py)
         self._prev_participants = assigned_group_ranks.copy()
 
         log.debug(
-            f"[{node_desc}] [Step 3b] Assigned group ranks to {len(assigned_group_ranks)} active participants, preserving previous assignments"
+            f"[{node_desc}] [Step 3b] Assigned group ranks to {len(assigned_group_ranks)} participants, preserving previous assignments"
         )
 
     def is_closed(self) -> bool:
@@ -608,7 +710,7 @@ class _RendezvousBarrierState:
     def set_closed(self):
         """Mark rendezvous as closed."""
         try:
-            self.store.set(self.closed_key, "1")
+            self.store.set(self.closed_key, "1".encode('utf-8'))
         except Exception as e:
             log.error(f"Failed to set closed: {e}")
 
@@ -624,6 +726,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     _backend_name: str
     _store: Store
     _barrier_state: _RendezvousBarrierState
+    _worker_group: Optional[Any] = None  # Store reference to worker group
 
     @classmethod
     def from_backend(
@@ -704,6 +807,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._ranks_connector = IpcConnector(FT_LAUNCHER_IPC_SOCKET)
         self._ranks_connector.start_receiving()
 
+    def set_worker_group(self, worker_group: Any) -> None:
+        """Set the worker group reference for this handler."""
+        self._worker_group = worker_group
+
     def _record(
         self,
         message: str,
@@ -776,23 +883,26 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     def _perform_rendezvous(self) -> None:
         """Perform the complete rendezvous process."""
         # Perform complete rendezvous process
-        group_rank = self._barrier_state.perform_rendezvous(
+        group_rank, total_participants = self._barrier_state.perform_rendezvous(
             self._this_node,
             self._settings.min_nodes,
             self._settings.max_nodes,
             self._settings.timeout.last_call,
         )
 
-        # Store the assigned rank and calculate world size
+        # Store the assigned rank and world size
         self._assigned_rank = group_rank
-        self._world_size = self._settings.min_nodes  # World size = number of active participants
+
+        # World size should be the total number of participants (active + standby)
+        # This represents the total number of groups in the distributed system
+        # PyTorch will calculate global_world_size = sum of local_world_size across all groups
+        # Standby participants will report local_world_size = 0
+        self._world_size = total_participants
 
         if group_rank == GroupRankStatus.UNASSIGNED.value:
             log.warning("Failed to get group rank assignment, but continuing")
-        elif group_rank == GroupRankStatus.STANDBY.value:
-            log.info(
-                f"Node {self._this_node} is in standby mode (rank {GroupRankStatus.STANDBY.value})"
-            )
+        elif group_rank >= self._settings.min_nodes:
+            log.info(f"Node {self._this_node} is in standby mode (rank {group_rank})")
         else:
             log.info(f"Node {self._this_node} assigned group rank {group_rank}")
 
@@ -829,6 +939,12 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             rank = self._assigned_rank
             world_size = self._world_size
             store = self._get_store()
+
+            # If this is a standby participant, modify the worker group's local_world_size
+            if self._worker_group is not None and rank >= self._settings.min_nodes:
+                # This is a standby participant, set local_world_size to 0
+                self._worker_group.spec.local_world_size = 0
+                log.info(f"Set local_world_size to 0 for standby participant with rank {rank}")
 
         except Exception as e:
             self._record(
@@ -902,7 +1018,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         if not self._barrier_state.store.check([self._barrier_state.arrived_count_key]):
             return 0
 
-        return int(self._barrier_state.store.get(self._barrier_state.arrived_count_key))
+        arrived_count_bytes = self._barrier_state.store.get(self._barrier_state.arrived_count_key)
+        arrived_count_str = arrived_count_bytes.decode('utf-8')
+        return int(arrived_count_str)
 
     def remove_this_node(self):
         raise NotImplementedError("Not implemented")
@@ -950,12 +1068,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         key_prefix = f"torch.rendezvous.{self._settings.run_id}.0"
 
         return PrefixStore(key_prefix, self._store)
-
-    def should_create_workers(self) -> bool:
-        """Check if this node should create workers (only active nodes should)."""
-        # Only active nodes (rank >= 0) should create workers
-        # Standby nodes should not create workers
-        return self._assigned_rank is not None and self._assigned_rank >= 0
 
 
 def _get_timeout(params: RendezvousParameters, key: str) -> Optional[timedelta]:

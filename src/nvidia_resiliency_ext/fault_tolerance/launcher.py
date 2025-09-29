@@ -769,10 +769,17 @@ class LocalElasticAgent(SimpleElasticAgent):
                 for local_rank, ret_val in result.return_values.items():
                     worker = worker_group.workers[local_rank]
                     workers_ret_vals[worker.global_rank] = ret_val
-                return RunResult(
-                    state=WorkerState.SUCCEEDED,
-                    return_values=workers_ret_vals,
-                )
+
+                # Check if this is a standby participant with no workers
+                # Standby participants have empty return_values AND no workers
+                if not result.return_values and not worker_pids:
+                    return RunResult(state=WorkerState.HEALTHY)
+                else:
+                    # For active participants, return SUCCEEDED as normal
+                    return RunResult(
+                        state=WorkerState.SUCCEEDED,
+                        return_values=workers_ret_vals,
+                    )
         else:
             return RunResult(state=WorkerState.HEALTHY)
 
@@ -782,6 +789,17 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
+    def _rendezvous(self, worker_group: WorkerGroup) -> None:
+        """Override _rendezvous to set worker group reference in the handler."""
+        spec = worker_group.spec
+
+        # Set worker group reference in the rendezvous handler
+        # Since we only support c10d backend and replace it with our custom handler,
+        # this will always be FtRendezvousBarrierHandler
+        spec.rdzv_handler.set_worker_group(worker_group)
+
+        # Call the parent class _rendezvous method
+        super()._rendezvous(worker_group)
 
 
 # Source
