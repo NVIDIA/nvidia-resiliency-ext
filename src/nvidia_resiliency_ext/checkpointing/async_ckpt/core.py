@@ -19,6 +19,7 @@ a checkpoint save process in the background.
 """
 
 import logging
+import weakref
 from abc import ABC, abstractmethod
 from collections import deque
 from queue import Empty
@@ -130,14 +131,18 @@ class AsyncRequest(NamedTuple):
         return self.call_idx
 
 
-# Singleton metaclass
-class Singleton(type):
-    _instances = {}
+class ObjectTracker(type):
+    def __init__(cls, name, bases, attrs):
+        super().__init__(name, bases, attrs)
+        cls._instances = weakref.WeakSet()
 
     def __call__(cls, *args, **kwargs):
-        if cls not in cls._instances:
-            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
-        return cls._instances[cls]
+        instance = super().__call__(*args, **kwargs)
+        cls._instances.add(instance)
+        return instance
+
+    def get_instances(cls):
+        return list(cls._instances)
 
 
 class AsyncCaller(ABC):
@@ -558,15 +563,11 @@ class _ActiveAsyncRequest(NamedTuple):
     async_request: AsyncRequest
 
 
-class AsyncCallsQueue(metaclass=Singleton):
+class AsyncCallsQueue(metaclass=ObjectTracker):
     """Manages a queue of async calls.
 
     Allows adding a new async call with `schedule_async_request` and finalizing
     active calls with `maybe_finalize_async_calls`.
-
-    This class is a Singleton implying there will be only one instance of AsyncCallsQueue per rank.
-    Making this object a singleton avoids mis-use from users where they could potentially spin multiple async CP workers.
-    Making this object a singleton also enables simplification of process life-cycle management during CP aborts.
     """
 
     def __init__(self, persistent: bool = True):
@@ -667,8 +668,7 @@ class AsyncCallsQueue(metaclass=Singleton):
 
 def abort_nvrx_checkpoint():
     """Abort NVRx Checkpoint Utility. This will close the AsyncCallsQueue that manages async checkpoints"""
-    # we have a singleton persistent worker in our async calls queue
     # close the async calls queue which will ensure a clean restart
     # of the CP async process in subsequent async save requests.
-    async_queue_singleton = AsyncCallsQueue(persistent=True)
-    async_queue_singleton.close(abort=True)
+    for async_queue in AsyncCallsQueue.get_instances():
+        async_queue.close(abort=True)
