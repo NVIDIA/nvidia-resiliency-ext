@@ -327,7 +327,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # Record failure detection event
                 record_profiling_event(
                     ProfilingEvent.FAILURE_DETECTED,
-                    node_id=self._node_id,
+                    node_id=self._rdzv_handler._this_node,
                     rank=self._worker_group.group_rank,
                 )
 
@@ -359,7 +359,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
-                        node_id=self._node_id,
+                        node_id=self._rdzv_handler._this_node,
                         rank=self._worker_group.group_rank,
                     )
 
@@ -606,7 +606,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
-            node_id=self._node_id,
+            node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
         )
 
@@ -622,7 +622,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Record worker start start event
         record_profiling_event(
             ProfilingEvent.WORKER_START_STARTED,
-            node_id=self._node_id,
+            node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
         )
 
@@ -700,7 +700,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Record worker start completion event
         record_profiling_event(
             ProfilingEvent.WORKER_START_COMPLETED,
-            node_id=self._node_id,
+            node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
         )
 

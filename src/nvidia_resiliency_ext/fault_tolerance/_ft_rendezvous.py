@@ -1326,7 +1326,7 @@ class FtRendezvousHandler(RendezvousHandler):
         # Record rendezvous start event
         rendezvous_start_event_id = record_profiling_event(
             ProfilingEvent.RENDEZVOUS_STARTED,
-            node_id=self._this_node.addr,
+            node_id=self._this_node,
         )
 
         try:
@@ -1372,7 +1372,7 @@ class FtRendezvousHandler(RendezvousHandler):
         # Record rendezvous completion event
         rendezvous_completion_event_id = record_profiling_event(
             ProfilingEvent.RENDEZVOUS_COMPLETED,
-            node_id=self._this_node.addr,
+            node_id=self._this_node,
         )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
