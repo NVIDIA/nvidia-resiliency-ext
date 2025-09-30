@@ -38,6 +38,7 @@ from .ipc_connector import IpcConnector
 from .timeouts_calc import TimeoutsCalc
 from .utils import read_obj_from_ipc_socket, write_object_to_ipc_socket
 
+
 class RankMonitorClientError(Exception):
     pass
 
