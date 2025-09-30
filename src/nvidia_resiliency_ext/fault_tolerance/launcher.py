@@ -76,6 +76,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -101,6 +102,10 @@ def _register_ft_rdzv_handler():
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
     from ._ft_rendezvous import FtRendezvousHandler, create_handler
+    from .c10d_monkey_patch import apply_c10d_patch
+
+    # Apply monkey patch to add use_libuv support to c10d backend
+    apply_c10d_patch()
 
     def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousHandler:
         backend, store = create_backend(params)
@@ -138,7 +143,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     python multiprocessing compatible. To pass multiprocessing data structures
     to the workers you may create the data structure in the same multiprocessing
     context as the specified ``start_method`` and pass it as a function argument.
-    
+
     Note: If your training script uses the nvrx logger, make sure to call
     ``setup_logger()`` at the beginning of your training function to ensure
     the logger is properly set up in each subprocess.
@@ -179,12 +184,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             # Ensure nvrx logger is set up in this subprocess
             from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
             setup_logger()
-            
+
             # Use the nvrx logger
             import logging
             logger = logging.getLogger(LogConfig.name)
             logger.info("Training started")
-            
+
             return "do train"
 
         def main():
@@ -251,6 +256,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._ft_cfg = fault_tol_cfg
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
+        self._node_id = self._get_fq_hostname()
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -322,6 +328,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._exit_barrier()
                 return run_result
             elif state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                # Record failure detection event
+                record_profiling_event(
+                    ProfilingEvent.FAILURE_DETECTED,
+                    node_id=self._rdzv_handler._this_node,
+                    rank=self._worker_group.group_rank,
+                )
+
                 if self._remaining_restarts > 0:
                     logger.info(
                         "[%s] Worker group %s. "
@@ -347,6 +360,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 group_rank = self._worker_group.group_rank
                 if num_nodes_waiting > 0:
+                    # Record failure detection event
+                    record_profiling_event(
+                        ProfilingEvent.FAILURE_DETECTED,
+                        node_id=self._rdzv_handler._this_node,
+                        rank=self._worker_group.group_rank,
+                    )
+
                     logger.info(
                         "[%s] Detected %s "
                         "new nodes from group_rank=%s; "
@@ -587,6 +607,13 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._shutdown(timeout=self._workers_stop_timeout)
 
+        # Record worker termination event after shutdown is complete
+        record_profiling_event(
+            ProfilingEvent.WORKER_TERMINATED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -595,6 +622,13 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
         restart_count = spec.max_restarts - self._remaining_restarts
+
+        # Record worker start start event
+        record_profiling_event(
+            ProfilingEvent.WORKER_START_STARTED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
 
         use_agent_store = spec.rdzv_handler.use_agent_store
 
@@ -667,7 +701,15 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
+        # Record worker start completion event
+        record_profiling_event(
+            ProfilingEvent.WORKER_START_COMPLETED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
+
         return self._pcontext.pids()
+
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
         if self._worker_watchdog is not None:
@@ -1054,6 +1096,7 @@ def launch_agent(
             )
 
         logger.info(f"Agent .run() is OK. No failures in the result. {result=}")
+
         return result.return_values
     except UnhealthyNodeException as e:
         # do not shutdown rendezvous when an unhealthy node is leaving
@@ -1986,6 +2029,10 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     log_line_prefix_template = os.getenv("TORCHELASTIC_LOG_LINE_PREFIX_TEMPLATE")
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
+
+    # Add use_libuv=False for c10d backend
+    if args.rdzv_backend == 'c10d':
+        rdzv_configs['use_libuv'] = False
 
     if args.rdzv_backend == "static":
         rdzv_configs["rank"] = args.node_rank
