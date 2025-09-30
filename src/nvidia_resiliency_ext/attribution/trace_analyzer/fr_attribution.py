@@ -415,10 +415,14 @@ class CollectiveAnalyzer(NVRxAttribution):
                     group_by_seq_id = defaultdict(list)
                     max_completed_collective_seq_id = -1
                     max_enqueued_collective_seq_id = -1
-
+                    local_pg_map = dict()
                     for c in collectives:
                         rank_id = c.file_id
-                        pg_status = self.pg_status[rank_id][process_group]
+                        pg_status = self.pg_status[rank_id][str(c.pg_id)]
+                        logger.debug(
+                            f"rank_id: {rank_id}, c.pg_id: {c.pg_id}, c.file_id: {c.file_id}, c.collective_seq_id: {c.collective_seq_id}, process_group: {process_group}"
+                        )
+                        local_pg_map[rank_id] = c.pg_id
                         if (
                             pg_status['last_completed_collective']
                             >= max_completed_collective_seq_id
@@ -433,7 +437,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                     logger.debug(
                         f"max_enqueued_collective_seq_id: {max_enqueued_collective_seq_id}"
                     )
-
+                    local_pg_id = local_pg_map[rank_id]
                     # Ranks holding entries earlier than max_completed_collective_seq_id -> ranks failing to complete expected collectives
                     rank_counts = defaultdict(list)
                     for c in collectives:
@@ -441,12 +445,17 @@ class CollectiveAnalyzer(NVRxAttribution):
                         if get_correct_seq_id(c) <= max_completed_collective_seq_id:
                             rank_counts['mismatched'].append(c.file_id)
                     appeared_rank_counts = Counter(rank_counts['appeared'])
-
                     # Ranks with less number of enqueued collectives than max_enqueued_collective_seq_id -> host not making expected progress
                     for rank_id in self.pg_configs[process_group]['ranks']:
                         rank_id = str(rank_id)
                         if (
-                            self.pg_status[str(rank_id)][process_group]['last_enqueued_collective']
+                            rank_id not in self.pg_status
+                            or str(local_pg_id) not in self.pg_status[rank_id]
+                        ):
+                            continue
+
+                        if (
+                            self.pg_status[rank_id][str(local_pg_id)]['last_enqueued_collective']
                             < max_enqueued_collective_seq_id
                         ):
                             rank_counts['mismatched'].append(rank_id)
