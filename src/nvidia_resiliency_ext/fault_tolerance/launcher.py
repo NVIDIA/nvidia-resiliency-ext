@@ -102,6 +102,10 @@ def _register_ft_rdzv_handler():
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
     from ._ft_rendezvous import FtRendezvousHandler, create_handler
+    from .c10d_monkey_patch import apply_c10d_patch
+
+    # Apply monkey patch to add use_libuv support to c10d backend
+    apply_c10d_patch()
 
     def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousHandler:
         backend, store = create_backend(params)
@@ -2025,6 +2029,10 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     log_line_prefix_template = os.getenv("TORCHELASTIC_LOG_LINE_PREFIX_TEMPLATE")
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
+
+    # Add use_libuv=False for c10d backend
+    if args.rdzv_backend == 'c10d':
+        rdzv_configs['use_libuv'] = False
 
     if args.rdzv_backend == "static":
         rdzv_configs["rank"] = args.node_rank
