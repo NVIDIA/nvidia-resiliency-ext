@@ -48,17 +48,20 @@ class TestRankMonitorServer(unittest.TestCase):
         )
 
         # Wait for the server to start and create its launcher socket
-        # The launcher socket path is constructed as: f"{tempfile.gettempdir()}/_ft_launcher{pid}_to_rmon.socket"
+        # The launcher socket path is constructed as: f"{tempfile.gettempdir()}/_ft_launcher{server_pid}_to_rmon.socket"
+        server_pid = self.server_process.pid
+        expected_socket_name = f"_ft_launcher{server_pid}_to_rmon.socket"
+        self.launcher_socket_path = os.path.join(tempfile.gettempdir(), expected_socket_name)
+
         max_wait = 5  # seconds
         start_time = time.time()
         while time.time() - start_time < max_wait:
-            # Try to find the launcher socket file
-            for file in os.listdir(tempfile.gettempdir()):
-                if file.startswith("_ft_launcher") and file.endswith("_to_rmon.socket"):
-                    self.launcher_socket_path = os.path.join(tempfile.gettempdir(), file)
-                    return
+            if os.path.exists(self.launcher_socket_path):
+                return
             time.sleep(0.1)
-        raise RuntimeError("Could not find launcher socket file after waiting")
+        raise RuntimeError(
+            f"Could not find launcher socket file {expected_socket_name} after waiting {max_wait} seconds"
+        )
 
     def tearDown(self):
         # Clean up the server process
