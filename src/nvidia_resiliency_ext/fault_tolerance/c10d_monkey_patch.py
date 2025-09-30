@@ -47,11 +47,12 @@ def _patched_create_tcp_store(params: "RendezvousParameters") -> "TCPStore":  # 
     from torch.distributed.elastic.events import NodeState, construct_and_record_rdzv_event
     from torch.distributed.elastic.rendezvous.api import RendezvousConnectionError
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import (
-        DEFAULT_PORT,
         _matches_machine_hostname,
         parse_rendezvous_endpoint,
     )
 
+    # Default port for TCP store (29400) - defined locally for PyTorch 2.3.1 compatibility
+    DEFAULT_PORT = 29400
     host, port = parse_rendezvous_endpoint(params.endpoint, default_port=DEFAULT_PORT)
 
     cfg_is_host = params.get_as_bool("is_host")
