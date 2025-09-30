@@ -19,8 +19,6 @@ import os
 import socket
 from typing import Any, Collection, Mapping, Optional
 
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
-
 from .data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -39,10 +37,6 @@ from .data import (
 from .ipc_connector import IpcConnector
 from .timeouts_calc import TimeoutsCalc
 from .utils import read_obj_from_ipc_socket, write_object_to_ipc_socket
-
-# Get the nvrx logger
-logger = logging.getLogger(LogConfig.name)
-
 
 class RankMonitorClientError(Exception):
     pass
@@ -104,12 +98,13 @@ class RankMonitorClient:
         self.chkpt_manager = None
         self.iter_idx = 0
         self.cfg = None
+        self.logger = logging.getLogger(__name__)
         self.launcher_connector = None
         launcher_ipc_socket_path = os.getenv(FT_LAUNCHER_IPC_SOCKET_ENV_VAR, None)
         if launcher_ipc_socket_path is not None:
             self.launcher_connector = IpcConnector(launcher_ipc_socket_path)
         else:
-            logger.info(
+            self.logger.info(
                 f"{FT_LAUNCHER_IPC_SOCKET_ENV_VAR} env varialble is not set. "
                 "`.send_workload_control_request` wont work. This is normal if "
                 "this rank was not started with ft_launcher"
@@ -291,7 +286,7 @@ class RankMonitorClient:
         if self.is_initialized:
             raise RankMonitorClientError("RankMonitorClient is already initialized")
 
-        logger.info(f"Initializing fault detection. Rank process PID={os.getpid()}")
+        self.logger.debug(f"Initializing fault detection. Rank process PID={os.getpid()}")
 
         self.rank_info = RankInfo.get_for_current_rank()
 
