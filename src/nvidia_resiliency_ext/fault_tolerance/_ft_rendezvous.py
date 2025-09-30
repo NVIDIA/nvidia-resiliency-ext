@@ -60,6 +60,7 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
@@ -1322,6 +1323,12 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg)
         log.info(msg)
 
+        # Record rendezvous start event
+        rendezvous_start_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_STARTED,
+            node_id=self._this_node,
+        )
+
         try:
             self._stop_heartbeats()
 
@@ -1361,6 +1368,12 @@ class FtRendezvousHandler(RendezvousHandler):
         )
         self._record(message=msg, rank=rank)
         log.info(msg)
+
+        # Record rendezvous completion event
+        rendezvous_completion_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_COMPLETED,
+            node_id=self._this_node,
+        )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
         # Fall back to tuple format if RendezvousInfo is not supported
