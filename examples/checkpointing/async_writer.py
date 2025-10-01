@@ -117,7 +117,9 @@ def get_save_and_finalize_callbacks(writer, save_state_dict_ret) -> AsyncRequest
         save_state_dict_async_finalize(*save_state_dict_ret)
         dist.barrier()
 
-    return AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
+    return AsyncRequest(
+        save_fn, save_args, [finalize_fn], async_fn_kwargs={}, preload_fn=preload_fn
+    )
 
 
 def save_checkpoint(checkpoint_dir, async_queue, model, thread_count, enable_msc):
