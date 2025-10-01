@@ -877,7 +877,7 @@ class LaunchConfig:
     max_restarts: int = 3
     restart_policy: str = "any-failed"
     term_timeout: float = 1800
-    workers_stop_timeout: float = 30
+    workers_stop_timeout: float = 15
     monitor_interval: float = 30
     start_method: str = "spawn"
     log_line_prefix_template: Optional[str] = None
@@ -1592,7 +1592,7 @@ def get_args_parser() -> ArgumentParser:
         "--workers_stop_timeout",
         action=env,
         type=float,
-        default=30,
+        default=15,
         help="Interval, in seconds, between initial SIGTERM and rank termination with SIGKILL, when the launcher stops its ranks in order to restart them.",
     )
     parser.add_argument(
