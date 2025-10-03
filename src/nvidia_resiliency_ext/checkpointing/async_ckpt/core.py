@@ -55,7 +55,7 @@ class AsyncRequest(NamedTuple):
     async_fn: Optional[Callable]
     async_fn_args: Tuple
     finalize_fns: List[Callable]
-    async_fn_kwargs: Dict = {}
+    async_fn_kwargs: Optional[Dict] = None
     preload_fn: Callable = None
     is_frozen: bool = False
     call_idx: int = 0
@@ -86,7 +86,8 @@ class AsyncRequest(NamedTuple):
             async_fn_args[1] = self.preload_fn()
         # persist the state
         if self.async_fn is not None:
-            self.async_fn(*async_fn_args, **self.async_fn_kwargs)
+            async_fn_kwargs = dict(self.async_fn_kwargs or {})
+            self.async_fn(*async_fn_args, **async_fn_kwargs)
         # This utility implements a sync cp save. Hence the barrier.
         torch.distributed.barrier()
         # Finalize the CP state
@@ -262,8 +263,9 @@ class TemporalAsyncCaller(AsyncCaller):
 
         ctx = mp.get_context('fork')
         self.start_time = time()
+        async_fn_kwargs = dict(async_req.async_fn_kwargs or {})
         self.process = ctx.Process(
-            target=async_req.async_fn, args=async_fn_args, kwargs=async_req.async_fn_kwargs
+            target=async_req.async_fn, args=async_fn_args, kwargs=async_fn_kwargs
         )
         self.process.start()
         init_time = time()
@@ -540,7 +542,8 @@ class PersistentAsyncCaller(AsyncCaller):
                     async_fn_args[1] = item.preload_fn()
                     logger.debug(f"{rank} has completed D2H of {call_idx}")
                     preload_q.task_done()
-                item.async_fn(*async_fn_args, **item.async_fn_kwargs)
+                async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                item.async_fn(*async_fn_args, **async_fn_kwargs)
                 logger.debug(f"{rank} has completed saving {item.call_idx}")
                 comp_q.put(item.call_idx)
                 queue.task_done()
