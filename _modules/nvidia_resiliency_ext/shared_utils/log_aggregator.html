@@ -149,6 +149,7 @@
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">LogConfig</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_node_local_tmp</span><span class="w"> </span><span class="kn">import</span> <span class="n">NodeLogAggregator</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.os_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">validate_directory</span>
 
 
 <div class="viewcode-block" id="main">
@@ -184,6 +185,9 @@
         <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Log directory must be set for log aggregator service&quot;</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">node_local_tmp_dir</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Distributed Log directory must be set for log aggregator service&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Validate directory security before proceeding</span>
+    <span class="nb">list</span><span class="p">(</span><span class="nb">map</span><span class="p">(</span><span class="n">validate_directory</span><span class="p">,</span> <span class="p">[</span><span class="n">log_dir</span><span class="p">,</span> <span class="n">node_local_tmp_dir</span><span class="p">]))</span>
 
     <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Starting NVRx Log Aggregator Service&quot;</span><span class="p">)</span>
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Log Path: </span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">log_dir</span><span class="p">,</span><span class="w"> </span><span class="n">log_file</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
