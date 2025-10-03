@@ -1540,7 +1540,7 @@ def get_args_parser() -> ArgumentParser:
         action=env,
         type=str,
         default="",
-        help="Rendezvous backend endpoint; usually in form <host>:<port>.",
+        help="Rendezvous backend endpoint; usually in form <host>:<port>. Required for c10d backend.",
     )
     parser.add_argument(
         "--rdzv-id",
@@ -2042,6 +2042,13 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     if args.rdzv_backend.lower() != 'c10d':
         raise ValueError(
             f"Current ft_launcher version supports only rdzv_backend=c10d. Got {args.rdzv_backend}"
+        )
+
+    # For c10d backend, rdzv_endpoint is required
+    if args.rdzv_backend == 'c10d' and not rdzv_endpoint:
+        raise ValueError(
+            "For c10d rendezvous backend, --rdzv-endpoint must be specified. "
+            "Example: --rdzv-endpoint=master_node:29400"
         )
 
 
