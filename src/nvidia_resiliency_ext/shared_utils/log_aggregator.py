@@ -70,6 +70,7 @@ import time
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.log_node_local_tmp import NodeLogAggregator
+from nvidia_resiliency_ext.shared_utils.os_utils import validate_directory
 
 
 def main():
@@ -103,6 +104,9 @@ def main():
         raise RuntimeError("Log directory must be set for log aggregator service")
     if node_local_tmp_dir is None:
         raise RuntimeError("Distributed Log directory must be set for log aggregator service")
+
+    # Validate directory security before proceeding
+    list(map(validate_directory, [log_dir, node_local_tmp_dir]))
 
     print("Starting NVRx Log Aggregator Service")
     print(f"  Log Path: {os.path.join(log_dir, log_file)}")
