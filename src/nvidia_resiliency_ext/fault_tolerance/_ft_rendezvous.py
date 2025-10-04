@@ -17,6 +17,7 @@
 import inspect
 import logging
 import os
+import random
 
 # Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
 # Severity: Low   Confidence: High
@@ -878,10 +879,10 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
     ) -> Dict[_NodeDesc, int]:
         # Assign ranks. Re-use assigment from the previous round as much as possible
         world_size = len(participants)
-        sorted_keys = sorted(participants.keys())
+        randomized_keys = random.sample(list(participants.keys()), len(participants))
         free_ranks = set(range(world_size))
         res = {}
-        for p in sorted_keys:
+        for p in randomized_keys:
             prev_rank = prev.get(p, -1)
             if prev_rank >= 0 and prev_rank < world_size:
                 # if this node can have the same rank, use it
@@ -891,7 +892,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
                 res[p] = -1
         # Fill the gaps with the remaining free rank ids
         free_ranks = sorted(free_ranks)
-        for p in sorted_keys:
+        for p in randomized_keys:
             if res[p] < 0:
                 res[p] = free_ranks.pop(0)
         assert not free_ranks
