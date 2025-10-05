@@ -222,6 +222,9 @@ class RankMonitorClient:
         """
         Implementation of heartbeat sending.
 
+        If skip_section_response is enabled (default), messages are sent without waiting
+        for server response (unidirectional communication), reducing latency significantly.
+
         Args:
             state (Mapping): The state information to be included in the heartbeat message.
         """
@@ -229,7 +232,12 @@ class RankMonitorClient:
         try:
             hb_msg = HeartbeatMsg(self.rank_info.global_rank, state)
             write_object_to_ipc_socket(hb_msg, self.rank_monitor_socket)
-            self._ensure_response_is_ok(self.rank_monitor_socket)
+
+            # Only wait for response if skip_section_response is disabled
+            # When enabled, server doesn't send responses (true unidirectional)
+            if not self.cfg.skip_section_response:
+                self._ensure_response_is_ok(self.rank_monitor_socket)
+
             self.timeouts_calc.update_on_heartbeat()
         except Exception as e:
             raise RankMonitorClientError(
