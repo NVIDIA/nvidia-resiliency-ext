@@ -1752,46 +1752,46 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-workload-check-interval",
         "--ft-workload_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_workload_check_interval",
-        help="Part of Fault Tolerance pkg config (workload_check_interval).",
+        help="Part of Fault Tolerance pkg config (workload_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-initial-rank-heartbeat-timeout",
         "--ft-initial_rank_heartbeat_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_initial_rank_heartbeat_timeout",
-        help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout).",
+        help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-rank-heartbeat-timeout",
         "--ft-rank_heartbeat_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_rank_heartbeat_timeout",
-        help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout).",
+        help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-node-health-check-interval",
         "--ft-node_health_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_node_health_check_interval",
-        help="Part of Fault Tolerance pkg config (node_health_check_interval).",
+        help="Part of Fault Tolerance pkg config (node_health_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-safety-factor",
         "--ft-safety_factor",
-        type=float,
+        type=str,
         default=None,
         dest="ft_safety_factor",
-        help="Part of Fault Tolerance pkg config (safety_factor).",
+        help="Part of Fault Tolerance pkg config (safety_factor). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1815,10 +1815,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-rank-out-of-section-timeout",
         "--ft-rank_out_of_section_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_rank_out_of_section_timeout",
-        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout).",
+        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1834,10 +1834,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-restart-check-interval",
         "--ft-restart_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_restart_check_interval",
-        help="Part of Fault Tolerance pkg config (restart_check_interval).",
+        help="Part of Fault Tolerance pkg config (restart_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(

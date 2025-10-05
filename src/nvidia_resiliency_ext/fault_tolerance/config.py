@@ -122,10 +122,36 @@ class FaultToleranceConfig:
                 raise ValueError(f"'fault_tolerance' section not found in config file {cfg_path}")
 
     @staticmethod
+    def _parse_timeout_arg(timeout_arg: str) -> Optional[float]:
+        """
+        Parse a timeout CLI argument.
+        Timeout can be a float or 'None'/'null'/'' to represent None.
+
+        Args:
+            timeout_arg (str): The timeout value as a string
+
+        Returns:
+            Optional[float]: The parsed timeout value or None
+        """
+        timeout_arg = timeout_arg.strip()
+        if timeout_arg.lower() in ['none', 'null', '']:
+            return None
+        else:
+            return float(timeout_arg)
+
+    @staticmethod
     def _parse_section_timeouts_arg(section_timeouts_arg: str) -> Mapping[str, Optional[float]]:
-        # Parse section timeouts CLI argument, expected format is:
-        # "section1:timeout1,section2:timeout2,..."
-        # Timeout can be float or 'None'/'null'/'' to represent None.
+        """
+        Parse section timeouts CLI argument.
+        Expected format: "section1:timeout1,section2:timeout2,..."
+        Timeout can be a float or 'None'/'null'/'' to represent None.
+
+        Args:
+            section_timeouts_arg (str): The section timeouts string
+
+        Returns:
+            Mapping[str, Optional[float]]: Dictionary mapping section names to timeout values
+        """
         section_timeouts_arg = section_timeouts_arg.strip()
         if not section_timeouts_arg:
             return {}
@@ -135,10 +161,7 @@ class FaultToleranceConfig:
             section, timeout = st.split(":")
             section = section.strip()
             timeout = timeout.strip()
-            if timeout.lower() in ['none', 'null', '']:
-                res[section] = None
-            else:
-                res[section] = float(timeout)
+            res[section] = FaultToleranceConfig._parse_timeout_arg(timeout)
         return res
 
     @staticmethod
@@ -167,12 +190,23 @@ class FaultToleranceConfig:
 
         # Extract FT args from CLI
         cli_ft_args = {}
+        timeout_fields = [
+            'initial_rank_heartbeat_timeout',
+            'rank_heartbeat_timeout',
+            'rank_out_of_section_timeout',
+            'workload_check_interval',
+            'node_health_check_interval',
+            'safety_factor',
+            'restart_check_interval',
+        ]
         for field in fields(FaultToleranceConfig):
             cli_field_name = f"ft_{field.name}"
             val = getattr(args, cli_field_name, None)
             if val is not None:
                 if field.name == "rank_section_timeouts" and isinstance(val, str):
                     val = FaultToleranceConfig._parse_section_timeouts_arg(val)
+                elif field.name in timeout_fields and isinstance(val, str):
+                    val = FaultToleranceConfig._parse_timeout_arg(val)
                 cli_ft_args[field.name] = val
 
         # Update config with CLI args
