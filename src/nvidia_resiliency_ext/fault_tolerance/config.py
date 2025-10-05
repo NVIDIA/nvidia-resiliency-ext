@@ -44,6 +44,8 @@ class FaultToleranceConfig:
     * `rank_termination_signal` signal used to terminate the rank when failure is detected.
     * `log_level` log level of fault tolerance components
     * `rank_section_timeouts` Mapping[str,float|None] timeouts for specific sections in user code.
+      Only sections listed here will send IPC messages to the monitor server and collect timing data.
+      Sections not in this mapping will have near-zero overhead (no IPC, no timing collection).
     * `rank_out_of_section_timeout` [float|None] the timeout used for implicit/default section,
       that spans code not wrapped in any other section.
     * `restart_check_interval` - interval between checks if restart is in progress, needed for layered restart protocol
@@ -51,6 +53,14 @@ class FaultToleranceConfig:
     * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
     * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
       placeholder which will be replaced with actual NIC device name.
+    * `skip_section_response` - If True, section and heartbeat messages are sent without waiting
+      for server response (unidirectional communication). This significantly reduces latency for
+      high-frequency operations. Server logs errors instead of sending them back.
+      Default: True (recommended for production). Set to False during development to catch errors immediately.
+    * `use_infra_group_rank` - If True, use infrastructure group rank for rank assignment instead
+      of the sorted participant-based assignment. Reads from SLURM_PROCID (in SLURM environments)
+      or GROUP_RANK (set by launcher). This ensures compatibility with static deployment where
+      ranks are assigned directly by the infrastructure. Default: False (use sorted participant-based assignment).
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -69,6 +79,8 @@ class FaultToleranceConfig:
     enable_nic_monitor: bool = True
     pci_topo_file: Optional[str] = None
     link_down_path_template: Optional[str] = None
+    skip_section_response: bool = True
+    use_infra_group_rank: bool = False
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':

@@ -277,7 +277,11 @@ class RankMonitorServer:
         self.state_machine.handle_heartbeat_msg()
         self.last_hb_time = time.monotonic()
         assert not msg.state, "state in heartbeat is not supported in this version"
-        await write_obj_to_ipc_stream(OkMsg(), writer)
+
+        # Only send response if skip_section_response is disabled
+        # When enabled, client doesn't expect response (unidirectional)
+        if not self.cfg.skip_section_response:
+            await write_obj_to_ipc_stream(OkMsg(), writer)
 
     async def _handle_section_msg(self, msg: SectionMsg, writer):
         if self._periodic_restart_task is not None:
@@ -291,7 +295,12 @@ class RankMonitorServer:
                 self.out_of_section_time = None
                 resp = OkMsg()
             else:
-                resp = ErrorMsg(cause=f"Section '{msg.section}' is already open.")
+                # Log error but don't send response when skip_section_response is enabled
+                error_msg = f"Section '{msg.section}' is already open."
+                if self.cfg.skip_section_response:
+                    self.logger.error(f"Section error (not sent to client): {error_msg}")
+                else:
+                    resp = ErrorMsg(cause=error_msg)
         elif msg.action is SectionAction.CLOSE:
             if msg.section in self.open_sections:
                 del self.open_sections[msg.section]
@@ -299,14 +308,23 @@ class RankMonitorServer:
                     self.out_of_section_time = current_time
                 resp = OkMsg()
             else:
-                resp = ErrorMsg(cause=f"Section '{msg.section}' is not open.")
+                # Log error but don't send response when skip_section_response is enabled
+                error_msg = f"Section '{msg.section}' is not open."
+                if self.cfg.skip_section_response:
+                    self.logger.error(f"Section error (not sent to client): {error_msg}")
+                else:
+                    resp = ErrorMsg(cause=error_msg)
         elif msg.action is SectionAction.CLOSE_ALL:
             self.open_sections.clear()
             self.out_of_section_time = current_time
             resp = OkMsg()
         else:
             raise AssertionError(f"Unknown SectionAction: {msg.action}")
-        await write_obj_to_ipc_stream(resp, writer)
+
+        # Only send response if skip_section_response is disabled
+        # When enabled, client doesn't expect ANY response (true unidirectional)
+        if not self.cfg.skip_section_response:
+            await write_obj_to_ipc_stream(resp, writer)
 
     def _handle_ipc_connection_lost(self):
         self.state_machine.handle_ipc_connection_lost()

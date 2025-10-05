@@ -1881,6 +1881,30 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-skip-section-response",
+        "--ft-skip_section_response",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+        default=True,
+        dest="ft_skip_section_response",
+        help="Part of Fault Tolerance pkg config (skip_section_response). "
+        "If enabled (default), section and heartbeat messages are sent without waiting "
+        "for server response, significantly reducing latency. "
+        "Set to false during development to catch programming errors immediately.",
+    )
+
+    parser.add_argument(
+        "--ft-use-infra-group-rank",
+        "--ft-use_infra_group_rank",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+        default=False,
+        dest="ft_use_infra_group_rank",
+        help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
+        "If enabled, use infrastructure group rank for rank assignment instead of sorted "
+        "participant-based assignment. Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). "
+        "This ensures rank consistency with static deployments. Default: False.",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
@@ -2046,6 +2070,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
+
+    # Pass use_infra_group_rank from fault tolerance config to rendezvous config
+    rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
