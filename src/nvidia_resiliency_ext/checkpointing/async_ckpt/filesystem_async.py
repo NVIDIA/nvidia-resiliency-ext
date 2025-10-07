@@ -344,7 +344,9 @@ class FileSystemWriterAsync(FileSystemWriter):
         global_results_queue.put(write_results_or_exc)
 
         w_end = time()
-        logger.debug(f"Async CP Save background write time: {w_end - w_start} s for rank: {rank}")
+        logger.error(
+            f"MultiProc Background Async worker time to persist: {w_end - w_start} s for rank={rank}"
+        )
 
     @staticmethod
     @_disable_gc()

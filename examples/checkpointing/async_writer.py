@@ -3,6 +3,7 @@ import logging
 import shutil
 
 import multistorageclient as msc
+import time
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -24,11 +25,11 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 # Try setting `DEBUG` to see detailed steps of NVRx checkpointing
 logging.basicConfig(level=logging.INFO)
 
-FEAT_SIZE = 4096
+FEAT_SIZE = 8192
 DNN_OUT_SIZE = 128
 BATCH_SIZE = 100
 NUM_EPOCHS = 10
-DATASET_LEN = 100000
+DATASET_LEN = 10000000
 CKPT_INTERVAL = 100
 
 
@@ -86,12 +87,50 @@ class SimpleModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.fc1 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
-        self.fc2 = nn.Linear(FEAT_SIZE, DNN_OUT_SIZE)
+        self.fc2 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc3 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc4 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+
+        self.fc5 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc6 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc7 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc8 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+
+        self.fc9 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc10 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc11 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc12 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+
+        self.fc13 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc14 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc15 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc16 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+
+        self.fc17 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc18 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc19 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc20 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+
+        self.fc21 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc22 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc23 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc24 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+
+        self.fc24 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc26 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc27 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc28 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+
+        self.fc29 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc30 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc31 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc32 = nn.Linear(FEAT_SIZE, FEAT_SIZE)
+        self.fc_last = nn.Linear(FEAT_SIZE, DNN_OUT_SIZE)
 
     def forward(self, x):
         x = self.fc1(x)
         x = nn.functional.relu(x)
-        x = self.fc2(x)
+        x = self.fc_last(x)
         return x
 
 
@@ -174,12 +213,13 @@ def main():
     num_iters_in_epoch = len(dataloader)
     print_on_rank0(f"num_iters_in_epoch: {num_iters_in_epoch}")
 
-    num_iters_for_10pct = num_iters_in_epoch // 10  # iters for 1/10 of epoch
+    num_iters_for_10pct = 200  # num_iters_in_epoch // 10  # iters for 1/10 of epoch
     checkpoint_dir = None
     sampler.set_epoch(0)
 
     init_checkpoint_metadata_cache()
 
+    start_time = time.time()
     for batch_idx, (data, target) in enumerate(dataloader):
         async_queue.maybe_finalize_async_calls(blocking=False, no_dist=False)
         if (batch_idx % num_iters_for_10pct) == 0 and rank == 0:
@@ -193,10 +233,18 @@ def main():
             iteration = batch_idx
             checkpoint_dir = f"{args.ckpt_dir}/iter_{iteration:07d}"
             # Save the model asynchronously
+            cp_start_time = time.time()
             save_checkpoint(
                 checkpoint_dir, async_queue, fsdp_model, args.thread_count, args.enable_msc
             )
-            print_on_rank0(f"Checkpoint Save triggered: {checkpoint_dir}, iteration: {iteration}")
+            snapshot_time = time.time()
+            average_iteration_time = (snapshot_time - start_time) / num_iters_for_10pct
+            # reset start_time so we can correctly track average iteration time
+            start_time = snapshot_time
+            async_cp_time = snapshot_time - cp_start_time
+            print_on_rank0(
+                f"Checkpoint Save triggered: {checkpoint_dir}, iteration: {iteration} avg_iter_time = {average_iteration_time} async_cp_time={async_cp_time}"
+            )
             iteration += batch_idx
     print_on_rank0(f"Epoch 0 complete. Loss: {loss.item()}")
 
@@ -214,12 +262,12 @@ def main():
     dist.barrier()
 
     # Clean up checkpoint directory (only on rank 0)
-    if dist.get_rank() == 0:
-        logging.info(f"Cleaning up checkpoint directory: {args.ckpt_dir}")
-        if args.enable_msc:
-            msc.delete(args.ckpt_dir, recursive=True)
-        else:
-            shutil.rmtree(args.ckpt_dir)
+    # if dist.get_rank() == 0:
+    #     logging.info(f"Cleaning up checkpoint directory: {args.ckpt_dir}")
+    #     if args.enable_msc:
+    #         msc.delete(args.ckpt_dir, recursive=True)
+    #     else:
+    #         shutil.rmtree(args.ckpt_dir)
 
     # Ensure NCCL process group is properly destroyed
     if dist.is_initialized():
