@@ -17,7 +17,7 @@
 This module provides an async utilities which allow to start
 a checkpoint save process in the background.
 """
-
+import gc
 import logging
 import weakref
 from abc import ABC, abstractmethod
@@ -392,6 +392,7 @@ class PersistentAsyncCaller(AsyncCaller):
                     self.comp_q,
                     logger.getEffectiveLevel(),
                 ),
+                daemon=True,
             )
             self.process.start()
             logger.debug(f"PersistentAsyncCaller: {self.rank}, Started Async Caller {self.process}")
@@ -494,7 +495,6 @@ class PersistentAsyncCaller(AsyncCaller):
         return self.process.is_alive()
 
     @staticmethod
-    @_disable_gc()
     def async_loop(
         rank: int,
         queue: mp.JoinableQueue,
@@ -544,7 +544,9 @@ class PersistentAsyncCaller(AsyncCaller):
                 logger.debug(f"{rank} has completed saving {item.call_idx}")
                 comp_q.put(item.call_idx)
                 queue.task_done()
-
+                del async_fn_args
+            del item
+            gc.collect()
         logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank}  has terminated")
 
 
