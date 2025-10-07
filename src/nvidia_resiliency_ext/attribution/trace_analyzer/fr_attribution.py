@@ -48,6 +48,7 @@ class Collective:
     pg_id: int
     op_id: int
     profiling_name: str
+    state: str
     time_created_ns: int
     time_discovered_started_ns: int
     time_discovered_completed_ns: int
@@ -416,12 +417,14 @@ class CollectiveAnalyzer(NVRxAttribution):
                     max_completed_collective_seq_id = -1
                     max_enqueued_collective_seq_id = -1
                     local_pg_map = dict()
+                    rank_id = None
                     for c in collectives:
                         rank_id = c.file_id
-                        pg_status = self.pg_status[rank_id][str(c.pg_id)]
                         logger.debug(
-                            f"rank_id: {rank_id}, c.pg_id: {c.pg_id}, c.file_id: {c.file_id}, c.collective_seq_id: {c.collective_seq_id}, process_group: {process_group}"
+                            f"rank_id: {rank_id}, c.pg_id: {c.pg_id}, c.file_id: {c.file_id}, c.collective_seq_id: {c.collective_seq_id}, process_group: {process_group},"
+                            f"c.state: {c.state}"
                         )
+                        pg_status = self.pg_status[rank_id][str(c.pg_id)]
                         local_pg_map[rank_id] = c.pg_id
                         if (
                             pg_status['last_completed_collective']
@@ -441,6 +444,8 @@ class CollectiveAnalyzer(NVRxAttribution):
                     # Ranks holding entries earlier than max_completed_collective_seq_id -> ranks failing to complete expected collectives
                     rank_counts = defaultdict(list)
                     for c in collectives:
+                        if c.state != 'scheduled':
+                            continue
                         rank_counts['appeared'].append(c.file_id)
                         if get_correct_seq_id(c) <= max_completed_collective_seq_id:
                             rank_counts['mismatched'].append(c.file_id)
@@ -526,6 +531,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                         missing_ranks = set(global_ranks) - set(unique_ranks)
                         missing_ranks = missing_ranks | set(map(int, mismatched_rank_counts.keys()))
 
+                    correct_unique_ranks = set(unique_ranks) - missing_ranks
                     logger.debug(f"missing_ranks: {missing_ranks}")
                     process_group_str = process_group
 
@@ -544,7 +550,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                         (size_str, 15, ''),
                         (dtype, 10, ''),
                         (total_unique_ranks, 10, 'd'),
-                        (','.join(map(str, unique_ranks)), 40, ''),
+                        (','.join(map(str, correct_unique_ranks)), 40, ''),
                         (','.join(map(str, sorted(missing_ranks))), 40, ''),
                     ]
 
@@ -827,7 +833,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             """
             collectives = []
             for entry in data['entries']:
-                if 'collective_seq_id' in entry:
+                if 'collective_seq_id' in entry and entry['state'] == 'scheduled':
                     collective = Collective(
                         file_id=file_id,
                         collective_seq_id=entry['collective_seq_id'],
@@ -843,6 +849,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                             'time_discovered_completed_ns', entry['time_created_ns']
                         ),
                         process_group=entry['process_group'],
+                        state=entry['state'],
                         input_sizes=entry['input_sizes'],
                         output_sizes=entry['output_sizes'],
                         input_dtypes=entry['input_dtypes'],
