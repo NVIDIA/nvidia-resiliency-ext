@@ -25,6 +25,7 @@ import os
 # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
 import pickle  # nosec
 import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from heapq import heappop, heappush
 from itertools import chain
@@ -88,7 +89,12 @@ class FileSystemWriterAsync(FileSystemWriter):
     """
 
     def __init__(
-        self, path: Union[str, os.PathLike], *args, separation_hint: Optional[str] = None, **kwargs
+        self,
+        path: Union[str, os.PathLike],
+        *args,
+        separation_hint: Optional[str] = None,
+        is_multiproc_io: bool = True,
+        **kwargs,
     ):
         self.checkpoint_dir = path
         self.use_msc = kwargs.pop("use_msc", False)
@@ -106,6 +112,10 @@ class FileSystemWriterAsync(FileSystemWriter):
         self.write_buckets: Optional[List[WriteBucket]] = None
         self.results_queue: Optional[mp.Queue] = None
         self.separation_hint = separation_hint
+        # When this flag is True, the FileWriter can create multiple child processes
+        # to parallelize File IO in the background async checkpoint process.
+        # Setting this flag to False implies we resort to multi-threading to parallelize File IO.
+        self.is_multi_proc_io = is_multiproc_io
 
     def prepare_write_data(self, plan: SavePlan, planner: SavePlanner) -> None:
         """
@@ -214,8 +224,16 @@ class FileSystemWriterAsync(FileSystemWriter):
         else:
             open_file = self.open_file
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
+
+        # Select the appropriate write function based on IO mode
+        write_func = (
+            self.write_preloaded_data_multiproc
+            if self.is_multi_proc_io
+            else self.write_preloaded_data_multithread_launcher
+        )
+
         return (
-            partial(self.write_preloaded_data_multiproc, transform_list, self.use_msc, open_file),
+            partial(write_func, transform_list, self.use_msc, open_file),
             partial(self.preload_tensors, self.write_buckets, True),
             [torch.distributed.get_rank(), self.write_buckets, self.results_queue],
         )
@@ -240,6 +258,76 @@ class FileSystemWriterAsync(FileSystemWriter):
         if non_blocking:
             torch.cuda.synchronize()
         return result
+
+    @staticmethod
+    def _initialize_write_execution(rank: int) -> Tuple[logging.Logger, float, dict]:
+        """
+        Common initialization for write execution.
+
+        Args:
+            rank (int): training rank
+
+        Returns:
+            Tuple[logging.Logger, float, dict]: logger, start time, and initialized results dict
+        """
+        logger = logging.getLogger(__name__)
+        w_start = time()
+        write_results_or_exc: Union[dict, Exception] = dict()
+        return logger, w_start, write_results_or_exc
+
+    @staticmethod
+    def _build_worker_kwargs(
+        worker_idx: int, write_bucket: WriteBucket, use_msc: bool, worker_type: str, **extra_kwargs
+    ) -> dict:
+        """
+        Build kwargs for worker (thread or process).
+
+        Args:
+            worker_idx (int): index of the worker
+            write_bucket (WriteBucket): data to write
+            use_msc (bool): flag to indicate use of multi storage client
+            worker_type (str): 'thread' or 'proc'
+            **extra_kwargs: additional worker-specific kwargs
+
+        Returns:
+            dict: kwargs for the worker
+        """
+        idx_key = f'local_{worker_type}_idx'
+        kwargs = {
+            idx_key: worker_idx,
+            'write_bucket': write_bucket,
+            'use_fsync': True,
+        }
+        if use_msc:
+            kwargs['use_msc'] = use_msc
+        kwargs.update(extra_kwargs)
+        return kwargs
+
+    @staticmethod
+    def _finalize_write_execution(
+        global_results_queue: mp.Queue,
+        write_results_or_exc: Union[dict, Exception],
+        rank: int,
+        w_start: float,
+        worker_type: str,
+        logger: logging.Logger,
+    ) -> None:
+        """
+        Common finalization for write execution.
+
+        Args:
+            global_results_queue (mp.Queue): queue to put results
+            write_results_or_exc (Union[dict, Exception]): results or exception
+            rank (int): training rank
+            w_start (float): start time
+            worker_type (str): 'MultiProc' or 'MultiThread'
+            logger (logging.Logger): logger instance
+        """
+        global_results_queue.put(write_results_or_exc)
+        w_end = time()
+        logger.debug(
+            f"{worker_type} Background Async worker time to persist: {w_end - w_start} s for rank={rank}"
+        )
 
     @staticmethod
     @_disable_gc()
@@ -272,27 +360,31 @@ class FileSystemWriterAsync(FileSystemWriter):
                 (or an Exception) from parallel write processes to the main training process
         Returns: None
         """
-        logger = logging.getLogger(__name__)
-        w_start = time()
-        write_results_or_exc: Union[dict, Exception] = dict()
+        logger, w_start, write_results_or_exc = FileSystemWriterAsync._initialize_write_execution(
+            rank
+        )
+
         ctx = mp.get_context('fork')
         local_results_queue = ctx.Queue()
         count_queue = ctx.JoinableQueue()
         p_list = []
         for i, write_bucket in enumerate(write_buckets):
             try:
+                current_process = mp.current_process()
+                if current_process.daemon:
+                    err_msg = "Invalid Setup! User cannot establish a daemon Async worker and then use Multi-Proc File IO."
+                    logger.error(err_msg)
+                    raise RuntimeError(err_msg)
+
                 count_queue.put(i)
-
-                kwargs = {
-                    'local_proc_idx': i,
-                    'write_bucket': write_bucket,
-                    'results_queue': local_results_queue,
-                    'count_queue': count_queue,
-                    'use_fsync': True,
-                }
-
-                if use_msc:
-                    kwargs['use_msc'] = use_msc
+                kwargs = FileSystemWriterAsync._build_worker_kwargs(
+                    worker_idx=i,
+                    write_bucket=write_bucket,
+                    use_msc=use_msc,
+                    worker_type='proc',
+                    results_queue=local_results_queue,
+                    count_queue=count_queue,
+                )
 
                 p_list.append(
                     ctx.Process(
@@ -341,10 +433,63 @@ class FileSystemWriterAsync(FileSystemWriter):
 
             logger.debug('FileSystemWriterAsync: collected worker results successfully')
 
-        global_results_queue.put(write_results_or_exc)
+        FileSystemWriterAsync._finalize_write_execution(
+            global_results_queue, write_results_or_exc, rank, w_start, "MultiProc", logger
+        )
 
-        w_end = time()
-        logger.debug(f"Async CP Save background write time: {w_end - w_start} s for rank: {rank}")
+    @staticmethod
+    def _write_bucket_to_storage(
+        transform_list: List[_StorageWriterTransforms],
+        open_file: Callable,
+        write_bucket: WriteBucket,
+        use_fsync: bool,
+        use_msc: bool,
+    ) -> List[WriteResult]:
+        """
+        Core logic for writing a bucket to storage.
+
+        Args:
+            transform_list (List[_StorageWriterTransforms]): streaming transforms list
+            open_file (Callable): file open callable
+            write_bucket (WriteBucket): data to write to storage
+            use_fsync (bool): if True, calls os.fsync at the end of saving
+            use_msc (bool): flag to indicate use of multi storage client
+
+        Returns:
+            List[WriteResult]: list of write results
+        """
+        file_name, storage_key, (bytes_data, tensor_data) = write_bucket
+        extra_kwargs = {}
+        write_fn = _write_item
+        if "serialization_format" in inspect.signature(_write_item).parameters:
+            from torch.distributed.checkpoint.filesystem import SerializationFormat
+
+            extra_kwargs['serialization_format'] = SerializationFormat.TORCH_SAVE
+
+        if "transforms" in inspect.signature(_write_item).parameters:
+            assert len(transform_list) <= 1
+            write_fn = partial(_write_item, *transform_list)
+
+        local_results = []
+        with open_file(file_name, "wb") as stream:
+            for write_item, data in bytes_data:
+                local_results.append(
+                    write_fn(stream, data, write_item, storage_key, **extra_kwargs)
+                )
+
+            for write_item, tensor in tensor_data:
+                assert tensor.is_cpu
+                local_results.append(
+                    write_fn(stream, tensor, write_item, storage_key, **extra_kwargs)
+                )
+
+            if use_fsync:
+                if use_msc:
+                    stream.fsync()
+                else:
+                    os.fsync(stream.fileno())
+
+        return local_results
 
     @staticmethod
     @_disable_gc()
@@ -376,37 +521,10 @@ class FileSystemWriterAsync(FileSystemWriter):
         mem_before = _process_memory()
         use_msc = kwargs.get('use_msc', False)
 
-        local_results = []
         try:
-            file_name, storage_key, (bytes_data, tensor_data) = write_bucket
-            extra_kwargs = {}
-            write_fn = _write_item
-            if "serialization_format" in inspect.signature(_write_item).parameters:
-                from torch.distributed.checkpoint.filesystem import SerializationFormat
-
-                extra_kwargs['serialization_format'] = SerializationFormat.TORCH_SAVE
-
-            if "transforms" in inspect.signature(_write_item).parameters:
-                assert len(transform_list) <= 1
-                write_fn = partial(_write_item, *transform_list)
-
-            with open_file(file_name, "wb") as stream:
-                for write_item, data in bytes_data:
-                    local_results.append(
-                        write_fn(stream, data, write_item, storage_key, **extra_kwargs)
-                    )
-
-                for write_item, tensor in tensor_data:
-                    assert tensor.is_cpu
-                    local_results.append(
-                        write_fn(stream, tensor, write_item, storage_key, **extra_kwargs)
-                    )
-
-                if use_fsync:
-                    if use_msc:
-                        stream.fsync()
-                    else:
-                        os.fsync(stream.fileno())
+            local_results = FileSystemWriterAsync._write_bucket_to_storage(
+                transform_list, open_file, write_bucket, use_fsync, use_msc
+            )
             local_output = (local_proc_idx, local_results)
         except Exception as e:
             logger.debug(f'{local_proc_idx} failed')
@@ -422,6 +540,142 @@ class FileSystemWriterAsync(FileSystemWriter):
             f"{local_proc_idx} consumed: {mem_after - mem_before},"
             f" before: {mem_before}, after: {mem_after}"
         )
+
+    @staticmethod
+    def write_preloaded_data_multithread_launcher(
+        transform_list: List[_StorageWriterTransforms],
+        use_msc: bool,
+        open_file: Callable,
+        rank: int,
+        write_buckets: List[WriteBucket],
+        global_results_queue: mp.Queue,
+    ) -> None:
+        """
+        Performs saving data to storage with multiple threads.
+        Args:
+            transform_list (List[_StorageWriterTransforms]): streaming transforms list
+            use_msc (bool): flag to indicate use of multi storage client for storage access
+            open_file (Callable): file open callable
+            rank: training rank
+            write_buckets (List[WriteBucket]): write plan
+            global_results_queue (mp.Queue): mp.Queue to collect Dict[List[WriteResults]]
+                (or an Exception) from parallel write processes to the main training process
+        Returns: None
+        """
+        logger, w_start, write_results_or_exc = FileSystemWriterAsync._initialize_write_execution(
+            rank
+        )
+
+        # Use ThreadPoolExecutor for efficient thread management
+        with ThreadPoolExecutor(max_workers=len(write_buckets)) as executor:
+            # submite write requests to thread executor
+            future_to_bucket = {}
+            for i, write_bucket in enumerate(write_buckets):
+                try:
+                    kwargs = FileSystemWriterAsync._build_worker_kwargs(
+                        worker_idx=i,
+                        write_bucket=write_bucket,
+                        use_msc=use_msc,
+                        worker_type='thread',
+                    )
+                    # Submit the task to the thread pool
+                    future = executor.submit(
+                        FileSystemWriterAsync.write_preloaded_data_thread,
+                        transform_list,
+                        open_file,
+                        **kwargs,
+                    )
+                    future_to_bucket[future] = i
+                except Exception as e:
+                    err_msg = f"An error is caught while a thread {i} is created, error: {e}"
+                    logger.error(err_msg)
+                    write_results_or_exc = RuntimeError(err_msg)
+
+            if not isinstance(write_results_or_exc, Exception):
+                logger.debug('FileSystemWriterAsync: collecting worker results...')
+                try:
+                    for future in as_completed(future_to_bucket):
+                        bucket_idx = future_to_bucket[future]
+                        local_results = future.result()
+                        if not local_results:
+                            # The write results list is empty. This is unexpected behavior
+                            # as we expect every thread to have some write work
+                            err_msg = (
+                                "Unexpected empty `local_results`"
+                                f"thread-id {bucket_idx} among {len(write_buckets)} "
+                                "did not have any items to write. Check split write buckets logic"
+                            )
+                            logger.error(err_msg)
+                            write_results_or_exc = RuntimeError(err_msg)
+                            break
+                        if isinstance(local_results, Exception):
+                            err_msg = (
+                                f"Thread-ID {bucket_idx} encountered an error: {local_results}"
+                            )
+                            logger.error(err_msg)
+                            write_results_or_exc = local_results
+                            break
+                        assert isinstance(local_results, list), type(local_results)
+                        write_results_or_exc[bucket_idx] = local_results
+                except Exception as e:
+                    err_msg = f"During async write, encountered an error: {e}"
+                    logger.error(err_msg)
+                    write_results_or_exc = e
+                finally:
+                    # Cancel any futures that are still running
+                    # In case of errors or exception, we may have running futures due to early break
+                    for f in future_to_bucket:
+                        if not f.done():
+                            f.cancel()
+                    # Shutdown the thread pool executor
+                    executor.shutdown(cancel_futures=True)
+
+            logger.debug("FileSystemWriterAsync: collected worker results successfully")
+
+        FileSystemWriterAsync._finalize_write_execution(
+            global_results_queue, write_results_or_exc, rank, w_start, "MultiThread", logger
+        )
+
+    @staticmethod
+    def write_preloaded_data_thread(
+        transform_list: List[_StorageWriterTransforms],
+        open_file: Callable,
+        local_thread_idx: int,
+        write_bucket: WriteBucket,
+        use_fsync: bool,
+        **kwargs,
+    ) -> Union[List[WriteResult], Exception]:
+        """
+        Performs actual data saving to storage.
+
+        Args:
+            transform_list (List[_StorageWriterTransforms]): streaming transforms list
+            open_file (Callable): file open callable
+            local_thread_idx (int): index of a local thread that performs writing
+            write_bucket (WriteBucket): data to write to storage
+            use_fsync (bool): if True, calls os.fsync at the end of saving
+
+        Returns: None, the write result are put into the `queue`
+        """
+        logger = logging.getLogger(__name__)
+        logger.debug(f'{local_thread_idx} started')
+        mem_before = _process_memory()
+        use_msc = kwargs.get('use_msc', False)
+
+        try:
+            local_results = FileSystemWriterAsync._write_bucket_to_storage(
+                transform_list, open_file, write_bucket, use_fsync, use_msc
+            )
+        except Exception as e:
+            logger.debug(f'{local_thread_idx} failed with exception {e}')
+            local_results = e
+
+        mem_after = _process_memory()
+        logger.debug(
+            f"{local_thread_idx} consumed: {mem_after - mem_before},"
+            f" before: {mem_before}, after: {mem_after}"
+        )
+        return local_results
 
     def write_data(self, plan: SavePlan, planner: SavePlanner) -> Future[List[WriteResult]]:
         """Write all items from ``plan``."""
