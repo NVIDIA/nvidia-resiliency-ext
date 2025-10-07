@@ -1855,10 +1855,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-enable-nic-monitor",
         "--ft-enable_nic_monitor",
-        type=lambda x: str(x).lower() in ["true", "1", "yes"],
-        default=True,
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
         dest="ft_enable_nic_monitor",
-        help="Enable or Disable NIC health monitoring in training.",
+        help="Enable or Disable NIC health monitoring in training. Default: False.",
     )
 
     parser.add_argument(
@@ -1884,7 +1884,7 @@ def get_args_parser() -> ArgumentParser:
         "--ft-skip-section-response",
         "--ft-skip_section_response",
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
-        default=True,
+        default=None,
         dest="ft_skip_section_response",
         help="Part of Fault Tolerance pkg config (skip_section_response). "
         "If enabled (default), section and heartbeat messages are sent without waiting "
@@ -1895,13 +1895,13 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-use-infra-group-rank",
         "--ft-use_infra_group_rank",
-        type=lambda x: str(x).lower() in ["true", "1", "yes"],
-        default=False,
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
         dest="ft_use_infra_group_rank",
         help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
         "If enabled, use infrastructure group rank for rank assignment instead of sorted "
         "participant-based assignment. Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). "
-        "This ensures rank consistency with static deployments. Default: False.",
+        "This ensures rank consistency with static deployments. Default: True.",
     )
 
     parser.add_argument(

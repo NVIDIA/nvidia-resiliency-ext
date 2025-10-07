@@ -896,8 +896,8 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         prev: Dict[_NodeDesc, int],
         use_infra_group_rank: bool = False,
     ) -> Dict[_NodeDesc, int]:
-        # If use_infra_group_rank is enabled, use the infrastructure ranks directly
-        if use_infra_group_rank:
+        # If use_infra_group_rank is enabled and prev is empty, use the infrastructure ranks directly
+        if use_infra_group_rank and not prev:
             # Validate that all participants have valid infrastructure ranks
             for node, rank in participants.items():
                 if rank < 0 or rank >= len(participants):
@@ -921,7 +921,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         res = {}
         for p in sorted_keys:
             prev_rank = prev.get(p, -1)
-            if prev_rank >= 0 and prev_rank < world_size:
+            if prev_rank >= 0 and prev_rank < world_size and prev_rank in free_ranks:
                 # if this node can have the same rank, use it
                 res[p] = prev_rank
                 free_ranks.remove(prev_rank)
