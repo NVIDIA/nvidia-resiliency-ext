@@ -1726,8 +1726,9 @@ def create_handler(
     |                   | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
     |                   | 30 seconds.                                          |
     +-------------------+------------------------------------------------------+
-    | use_infra_group_rank | Whether to use infrastructure group rank for rank |
-    |                   | assignment. Defaults to True.                        |
+    | use_infra_group_  | Whether to use infrastructure group rank for rank    |
+    | rank              | assignment on first rendezvous. Subsequent rendezvous|
+    |                   | preserve previous assignments. Defaults to True.     |
     +-------------------+------------------------------------------------------+
     """
     try:
