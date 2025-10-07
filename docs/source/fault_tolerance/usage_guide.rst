@@ -63,6 +63,34 @@ The restart behavior depends on the ``--ft-restart-policy`` parameter, which sup
   falls below the minimum specified in ``--nnodes``. This allows for some worker failures to be handled 
   without restarting remaining workers, e.g., with the :doc:`../inprocess/index`.
   For details on how ``min-healthy`` policy interacts with :doc:`../inprocess/index` see :doc:`integration/inprocess`.
+
+Rank assignment
+^^^^^^^^^^^^^^^
+
+The ``ft_launcher`` assigns ranks to workers during the rendezvous process.
+
+**Initial rendezvous (first launch):**
+
+By default (``--ft-use-infra-group-rank=True``), rank assignments come from the infrastructure:
+
+* The launcher first checks ``SLURM_PROCID`` (automatically set in SLURM environments)
+* If not available, it falls back to ``GROUP_RANK`` (set by ``ft_launcher`` itself)
+
+This ensures that ranks match what the underlying infrastructure expects, which is critical for 
+static deployments and proper resource allocation.
+
+**Subsequent rendezvous (after failures/restarts):**
+
+Previous rank assignments are **always preserved**, regardless of infrastructure ranks. This means:
+
+* Workers that rejoin keep their original ranks
+* New workers fill gaps left by failed workers
+* Training can resume correctly without rank conflicts
+
+**To disable infrastructure-based assignment:**
+
+Set ``--ft-use-infra-group-rank=False`` (or ``use_infra_group_rank: false`` in config) to use 
+deterministic sorted assignment based on node descriptors instead.
   
 
 Hang detection

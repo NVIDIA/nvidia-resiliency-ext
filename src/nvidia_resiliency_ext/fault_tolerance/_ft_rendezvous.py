@@ -246,7 +246,7 @@ class RendezvousSettings:
     keep_alive_interval: timedelta
     keep_alive_max_attempt: int
     upscaling_enabled: bool = True
-    use_infra_group_rank: bool = False
+    use_infra_group_rank: bool = True
 
 
 @dataclass(eq=True, order=True, frozen=True)
@@ -896,6 +896,31 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         prev: Dict[_NodeDesc, int],
         use_infra_group_rank: bool = False,
     ) -> Dict[_NodeDesc, int]:
+        """
+        Assign ranks to participants in the rendezvous.
+
+        Behavior depends on use_infra_group_rank and previous assignments:
+
+        1. If use_infra_group_rank=True AND prev is empty (first rendezvous):
+           - Use infrastructure ranks directly from SLURM_PROCID or GROUP_RANK
+           - Validates that all ranks are in range [0, world_size) and unique
+
+        2. If prev is not empty (subsequent rendezvous, including after failures):
+           - ALWAYS preserve previous rank assignments for existing participants
+           - Fill gaps (from failed/removed nodes) with new participants
+           - Infrastructure ranks are IGNORED in this case
+
+        3. If use_infra_group_rank=False:
+           - Use deterministic sorted assignment based on node descriptors
+
+        Args:
+            participants: Dict mapping node descriptors to infrastructure ranks
+            prev: Dict of previous rank assignments (empty on first rendezvous)
+            use_infra_group_rank: If True, use infrastructure ranks on first rendezvous only
+
+        Returns:
+            Dict mapping node descriptors to assigned ranks
+        """
         # If use_infra_group_rank is enabled and prev is empty, use the infrastructure ranks directly
         if use_infra_group_rank and not prev:
             # Validate that all participants have valid infrastructure ranks
@@ -1702,7 +1727,7 @@ def create_handler(
     |                   | 30 seconds.                                          |
     +-------------------+------------------------------------------------------+
     | use_infra_group_rank | Whether to use infrastructure group rank for rank |
-    |                   | assignment. Defaults to False.                       |
+    |                   | assignment. Defaults to True.                        |
     +-------------------+------------------------------------------------------+
     """
     try:
@@ -1714,7 +1739,7 @@ def create_handler(
 
         # torchrun default behaviour if not specified otherwise
         upscale_completed = params.config.get('upscaling_enabled', True)
-        use_infra_group_rank = params.config.get('use_infra_group_rank', False)
+        use_infra_group_rank = params.config.get('use_infra_group_rank', True)
 
         return FtRendezvousHandler.from_backend(
             params.run_id,

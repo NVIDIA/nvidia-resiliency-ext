@@ -1899,8 +1899,9 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_use_infra_group_rank",
         help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
-        "If enabled, use infrastructure group rank for rank assignment instead of sorted "
-        "participant-based assignment. Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). "
+        "If enabled, use infrastructure group rank for rank assignment on the first rendezvous. "
+        "Subsequent rendezvous preserve previous rank assignments (e.g., after failures). "
+        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). "
         "This ensures rank consistency with static deployments. Default: True.",
     )
 

@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import nvrx_cupti_module as cupti_module  # type: ignore
 import pytest
 import torch
 import torch.nn as nn
+
+import nvrx_cupti_module as cupti_module  # type: ignore
 
 
 def test_basic_kernel_tracking():

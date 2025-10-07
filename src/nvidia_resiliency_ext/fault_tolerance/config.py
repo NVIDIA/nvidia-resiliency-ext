@@ -57,10 +57,11 @@ class FaultToleranceConfig:
       for server response (unidirectional communication). This significantly reduces latency for
       high-frequency operations. Server logs errors instead of sending them back.
       Default: True (recommended for production). Set to False during development to catch errors immediately.
-    * `use_infra_group_rank` - If True, use infrastructure group rank for rank assignment instead
-      of the sorted participant-based assignment. Reads from SLURM_PROCID (in SLURM environments)
-      or GROUP_RANK (set by launcher). This ensures compatibility with static deployment where
-      ranks are assigned directly by the infrastructure. Default: True (use infrastructure group rank).
+    * `use_infra_group_rank` - If True, use infrastructure group rank for rank assignment on the
+      first rendezvous (when no previous assignments exist). Subsequent rendezvous will preserve
+      previous rank assignments regardless of this setting. Reads from SLURM_PROCID (in SLURM
+      environments) or GROUP_RANK (set by launcher). This ensures compatibility with static
+      deployments where ranks are assigned directly by the infrastructure. Default: True.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
