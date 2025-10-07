@@ -795,7 +795,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
 
         # The ranks of the participants will be set once the rendezvous is
         # complete. If use_infra_group_rank is enabled, store the infrastructure
-        # rank (SLURM_PROCID or GROUP_RANK) here; otherwise, use placeholder 0.
+        # rank (SLURM_PROCID or GROUP_RANK) here; otherwise, use placeholder -1.
         if self._settings.use_infra_group_rank:
             # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
             infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', '-1'))
