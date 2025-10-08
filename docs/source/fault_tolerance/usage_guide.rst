@@ -69,28 +69,29 @@ Rank assignment
 
 The ``ft_launcher`` assigns ranks to workers during the rendezvous process.
 
-**Initial rendezvous (first launch):**
+**Infrastructure-based assignment (default):**
 
-By default (``--ft-use-infra-group-rank=True``), rank assignments come from the infrastructure:
+By default (``--ft-use-infra-group-rank=True``), rank assignments **always** come from the infrastructure:
 
 * The launcher first checks ``SLURM_PROCID`` (automatically set in SLURM environments)
 * If not available, it falls back to ``GROUP_RANK`` (set by ``ft_launcher`` itself)
 
-This ensures that ranks match what the underlying infrastructure expects, which is critical for 
-static deployments and proper resource allocation.
+Infrastructure ranks are used for **every rendezvous**, including after failures/restarts. Previous 
+rank assignments are ignored. This ensures consistency with the infrastructure's rank assignment,
+which is important for static deployments and proper resource allocation.
 
-**Subsequent rendezvous (after failures/restarts):**
+.. note::
+   Hot spare/redundancy is **NOT supported** with ``use_infra_group_rank=True`` because dynamic 
+   rendezvous cannot guarantee that lower infrastructure ranks will join as participants first.
 
-Previous rank assignments are **always preserved**, regardless of infrastructure ranks. This means:
-
-* Workers that rejoin keep their original ranks
-* New workers fill gaps left by failed workers
-* Training can resume correctly without rank conflicts
-
-**To disable infrastructure-based assignment:**
+**Deterministic assignment (alternative):**
 
 Set ``--ft-use-infra-group-rank=False`` (or ``use_infra_group_rank: false`` in config) to use 
-deterministic sorted assignment based on node descriptors instead.
+deterministic sorted assignment based on node descriptors. In this mode:
+
+* Previous rank assignments are preserved when possible
+* New workers fill gaps left by failed workers
+* Ranks are reassigned based on sorted node descriptors
   
 
 Hang detection

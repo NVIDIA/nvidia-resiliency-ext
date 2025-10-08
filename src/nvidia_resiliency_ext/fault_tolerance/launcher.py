@@ -1899,10 +1899,10 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_use_infra_group_rank",
         help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
-        "If enabled, use infrastructure group rank for rank assignment on the first rendezvous. "
-        "Subsequent rendezvous preserve previous rank assignments (e.g., after failures). "
-        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). "
-        "This ensures rank consistency with static deployments. Default: True.",
+        "If enabled, always use infrastructure group rank for rank assignment. "
+        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). Previous assignments "
+        "are ignored to ensure consistency with infrastructure rank assignment. "
+        "Note: Hot spare/redundancy NOT supported. Default: True.",
     )
 
     parser.add_argument(

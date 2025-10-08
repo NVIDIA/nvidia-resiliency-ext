@@ -92,8 +92,8 @@ class CustomAssertMixin:
 class AssignRanksTest(TestCase):
     """Test the _assign_ranks static method which handles rank assignment logic."""
 
-    def test_assign_ranks_with_infra_rank_and_empty_prev(self) -> None:
-        """Test that infrastructure ranks are used when prev is empty."""
+    def test_assign_ranks_with_infra_rank_always_uses_infra(self) -> None:
+        """Test that infrastructure ranks are always used when use_infra_group_rank=True."""
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
@@ -115,8 +115,8 @@ class AssignRanksTest(TestCase):
         self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
         self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
 
-    def test_assign_ranks_with_infra_rank_and_nonempty_prev(self) -> None:
-        """Test that previous assignments are honored even when use_infra_group_rank=True."""
+    def test_assign_ranks_ignores_prev_when_use_infra_group_rank(self) -> None:
+        """Test that previous assignments are IGNORED when use_infra_group_rank=True."""
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
@@ -139,13 +139,13 @@ class AssignRanksTest(TestCase):
             participants, prev, use_infra_group_rank=True
         )
 
-        # Should reuse previous assignments, NOT infrastructure ranks
-        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 2)
-        self.assertEqual(result[_NodeDesc("node1", 1, 1)], 0)
-        self.assertEqual(result[_NodeDesc("node2", 1, 1)], 1)
+        # Should use infrastructure ranks, NOT previous assignments
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
+        self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
+        self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
 
     def test_assign_ranks_fills_gaps_after_node_failure(self) -> None:
-        """Test that gaps are filled when a node leaves and a new node joins."""
+        """Test that gaps are filled when a node leaves and a new node joins (use_infra_group_rank=False)."""
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
@@ -156,9 +156,9 @@ class AssignRanksTest(TestCase):
         # New setup should be: node0 (rank 0), node2 (rank 2), node3 (rank 1 - fills gap)
 
         participants = {
-            _NodeDesc("node0", 1, 1): 10,  # Infrastructure rank (not used)
-            _NodeDesc("node2", 1, 1): 12,  # Infrastructure rank (not used)
-            _NodeDesc("node3", 1, 1): 13,  # Infrastructure rank (not used) - new node
+            _NodeDesc("node0", 1, 1): 10,  # Infrastructure rank (not used when False)
+            _NodeDesc("node2", 1, 1): 12,  # Infrastructure rank (not used when False)
+            _NodeDesc("node3", 1, 1): 13,  # Infrastructure rank (not used when False) - new node
         }
 
         # Previous assignment (node1 is gone)
@@ -169,7 +169,7 @@ class AssignRanksTest(TestCase):
         }
 
         result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=True
+            participants, prev, use_infra_group_rank=False
         )
 
         # Should preserve existing assignments and fill gap
@@ -178,7 +178,7 @@ class AssignRanksTest(TestCase):
         self.assertEqual(result[_NodeDesc("node3", 1, 1)], 1)  # Fills the gap left by node1
 
     def test_assign_ranks_sort_order_does_not_affect_prev_reuse(self) -> None:
-        """Test that sort order doesn't prevent participants from reusing previous ranks.
+        """Test that sort order doesn't prevent participants from reusing previous ranks (use_infra_group_rank=False).
 
         This test uses node descriptors that will sort in a different order than
         their previous rank assignment, to verify that each participant can still
@@ -206,13 +206,13 @@ class AssignRanksTest(TestCase):
         }
 
         participants = {
-            node_aaa: 100,  # Infrastructure ranks (not used when prev exists)
+            node_aaa: 100,  # Infrastructure ranks (not used when False)
             node_bbb: 101,
             node_zzz: 102,
         }
 
         result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=True
+            participants, prev, use_infra_group_rank=False
         )
 
         # Each node should reclaim their previous rank, regardless of sort order
@@ -1288,11 +1288,11 @@ class IntegrationTest(TestCase):
             use_infra_group_rank=True,
         )
 
-        # Should raise ValueError due to invalid infrastructure rank
+        # Should raise ValueError due to missing environment variables
         with self.assertRaises(ValueError) as cm:
             handler.next_rendezvous()
 
-        self.assertIn("Invalid infrastructure rank", str(cm.exception))
+        self.assertIn("neither SLURM_PROCID nor GROUP_RANK", str(cm.exception))
 
     def test_worker_states_invalid_transitions(self) -> None:
         # one final state should not be changed into another final state

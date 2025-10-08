@@ -801,9 +801,10 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', '-1'))
             infra_rank = int(infra_rank_str)
             if infra_rank < 0:
-                log.warning(
-                    f"use_infra_group_rank is enabled but neither SLURM_PROCID nor GROUP_RANK "
-                    f"env var is set or valid. Node {self._node} will use placeholder rank."
+                raise ValueError(
+                    "use_infra_group_rank is enabled but neither SLURM_PROCID nor GROUP_RANK "
+                    "environment variable is set. Please set one of these environment variables "
+                    "or disable use_infra_group_rank."
                 )
             state.participants[self._node] = infra_rank
             log.debug(f"Node {self._node} stored infrastructure rank {infra_rank} from environment")
@@ -899,30 +900,30 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         """
         Assign ranks to participants in the rendezvous.
 
-        Behavior depends on use_infra_group_rank and previous assignments:
+        Behavior depends on use_infra_group_rank:
 
-        1. If use_infra_group_rank=True AND prev is empty (first rendezvous):
-           - Use infrastructure ranks directly from SLURM_PROCID or GROUP_RANK
+        1. If use_infra_group_rank=True:
+           - ALWAYS use infrastructure ranks directly from SLURM_PROCID or GROUP_RANK
+           - Previous assignments are ignored
            - Validates that all ranks are in range [0, world_size) and unique
+           - Ensures consistency with infrastructure's rank assignment
+           - Note: Hot spare/redundancy is NOT supported in this mode as dynamic
+             rendezvous cannot guarantee lower ranks join as participants first
 
-        2. If prev is not empty (subsequent rendezvous, including after failures):
-           - ALWAYS preserve previous rank assignments for existing participants
-           - Fill gaps (from failed/removed nodes) with new participants
-           - Infrastructure ranks are IGNORED in this case
-
-        3. If use_infra_group_rank=False:
-           - Use deterministic sorted assignment based on node descriptors
+        2. If use_infra_group_rank=False:
+           - Use deterministic assignment, preserving previous ranks when possible
+           - Fill gaps left by failed nodes with new participants
 
         Args:
             participants: Dict mapping node descriptors to infrastructure ranks
             prev: Dict of previous rank assignments (empty on first rendezvous)
-            use_infra_group_rank: If True, use infrastructure ranks on first rendezvous only
+            use_infra_group_rank: If True, always use infrastructure ranks
 
         Returns:
             Dict mapping node descriptors to assigned ranks
         """
-        # If use_infra_group_rank is enabled and prev is empty, use the infrastructure ranks directly
-        if use_infra_group_rank and not prev:
+        # If use_infra_group_rank is enabled, use the infrastructure ranks directly
+        if use_infra_group_rank:
             # Validate that all participants have valid infrastructure ranks
             for node, rank in participants.items():
                 if rank < 0 or rank >= len(participants):
@@ -1726,9 +1727,9 @@ def create_handler(
     |                   | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
     |                   | 30 seconds.                                          |
     +-------------------+------------------------------------------------------+
-    | use_infra_group_  | Whether to use infrastructure group rank for rank    |
-    | rank              | assignment on first rendezvous. Subsequent rendezvous|
-    |                   | preserve previous assignments. Defaults to True.     |
+    | use_infra_group_  | Whether to always use infrastructure group rank for  |
+    | rank              | rank assignment. Previous assignments are ignored.   |
+    |                   | Hot spare/redundancy NOT supported. Defaults to True.|
     +-------------------+------------------------------------------------------+
     """
     try:
