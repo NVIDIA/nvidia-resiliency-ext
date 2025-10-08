@@ -44,15 +44,25 @@ class FaultToleranceConfig:
     * `rank_termination_signal` signal used to terminate the rank when failure is detected.
     * `log_level` log level of fault tolerance components
     * `rank_section_timeouts` Mapping[str,float|None] timeouts for specific sections in user code.
+      Only sections listed here will send IPC messages to the monitor server and collect timing data.
+      Sections not in this mapping will have near-zero overhead (no IPC, no timing collection).
     * `rank_out_of_section_timeout` [float|None] the timeout used for implicit/default section,
       that spans code not wrapped in any other section.
     * `restart_check_interval` - interval between checks if restart is in progress, needed for layered restart protocol
-    * `enable_nic_monitor` - Enable NIC health monitoring in training.
+    * `enable_nic_monitor` - Enable NIC health monitoring in training. Default: False.
     * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
     * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
       placeholder which will be replaced with actual NIC device name.
     * `enable_rank_monitors` - Enable or disable rank monitor setup. When disabled, rank monitors
       will not be started, which is useful for simulation environments.
+    * `skip_section_response` - If True, section and heartbeat messages are sent without waiting
+      for server response (unidirectional communication). This significantly reduces latency for
+      high-frequency operations. Server logs errors instead of sending them back.
+      Default: True (recommended for production). Set to False during development to catch errors immediately.
+    * `use_infra_group_rank` - If True, always use infrastructure group rank for rank assignment.
+      Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
+      rank assignments are ignored to ensure consistency with infrastructure's rank assignment.
+      Note: Hot spare/redundancy is NOT supported with this setting. Default: True.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -68,10 +78,12 @@ class FaultToleranceConfig:
     rank_termination_signal: signal.Signals = signal.SIGKILL
     log_level: int = logging.INFO
     restart_check_interval: float = 60.0
-    enable_nic_monitor: bool = True
+    enable_nic_monitor: bool = False
     pci_topo_file: Optional[str] = None
     link_down_path_template: Optional[str] = None
     enable_rank_monitors: bool = True
+    skip_section_response: bool = True
+    use_infra_group_rank: bool = True
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
@@ -125,10 +137,36 @@ class FaultToleranceConfig:
                 raise ValueError(f"'fault_tolerance' section not found in config file {cfg_path}")
 
     @staticmethod
+    def _parse_timeout_arg(timeout_arg: str) -> Optional[float]:
+        """
+        Parse a timeout CLI argument.
+        Timeout can be a float or 'None'/'null'/'' to represent None.
+
+        Args:
+            timeout_arg (str): The timeout value as a string
+
+        Returns:
+            Optional[float]: The parsed timeout value or None
+        """
+        timeout_arg = timeout_arg.strip()
+        if timeout_arg.lower() in ['none', 'null', '']:
+            return None
+        else:
+            return float(timeout_arg)
+
+    @staticmethod
     def _parse_section_timeouts_arg(section_timeouts_arg: str) -> Mapping[str, Optional[float]]:
-        # Parse section timeouts CLI argument, expected format is:
-        # "section1:timeout1,section2:timeout2,..."
-        # Timeout can be float or 'None'/'null'/'' to represent None.
+        """
+        Parse section timeouts CLI argument.
+        Expected format: "section1:timeout1,section2:timeout2,..."
+        Timeout can be a float or 'None'/'null'/'' to represent None.
+
+        Args:
+            section_timeouts_arg (str): The section timeouts string
+
+        Returns:
+            Mapping[str, Optional[float]]: Dictionary mapping section names to timeout values
+        """
         section_timeouts_arg = section_timeouts_arg.strip()
         if not section_timeouts_arg:
             return {}
@@ -138,10 +176,7 @@ class FaultToleranceConfig:
             section, timeout = st.split(":")
             section = section.strip()
             timeout = timeout.strip()
-            if timeout.lower() in ['none', 'null', '']:
-                res[section] = None
-            else:
-                res[section] = float(timeout)
+            res[section] = FaultToleranceConfig._parse_timeout_arg(timeout)
         return res
 
     @staticmethod
@@ -170,12 +205,23 @@ class FaultToleranceConfig:
 
         # Extract FT args from CLI
         cli_ft_args = {}
+        timeout_fields = [
+            'initial_rank_heartbeat_timeout',
+            'rank_heartbeat_timeout',
+            'rank_out_of_section_timeout',
+            'workload_check_interval',
+            'node_health_check_interval',
+            'safety_factor',
+            'restart_check_interval',
+        ]
         for field in fields(FaultToleranceConfig):
             cli_field_name = f"ft_{field.name}"
             val = getattr(args, cli_field_name, None)
             if val is not None:
                 if field.name == "rank_section_timeouts" and isinstance(val, str):
                     val = FaultToleranceConfig._parse_section_timeouts_arg(val)
+                elif field.name in timeout_fields and isinstance(val, str):
+                    val = FaultToleranceConfig._parse_timeout_arg(val)
                 cli_ft_args[field.name] = val
 
         # Update config with CLI args

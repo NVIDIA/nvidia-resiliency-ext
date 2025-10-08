@@ -33,8 +33,12 @@ class TestRankMonitorServer(unittest.TestCase):
             tempfile.gettempdir(), "test_rank_monitor_worker.socket"
         )
 
-        # Create a basic config
-        self.config = FaultToleranceConfig()
+        # Create a basic config with skip_section_response=False for testing
+        # (tests expect to receive responses)
+        # Also add test_section to rank_section_timeouts to avoid KeyError
+        self.config = FaultToleranceConfig(
+            skip_section_response=False, rank_section_timeouts={"test_section": 60.0}
+        )
 
         # Create a mock logger
         self.logger = MagicMock()
@@ -48,17 +52,20 @@ class TestRankMonitorServer(unittest.TestCase):
         )
 
         # Wait for the server to start and create its launcher socket
-        # The launcher socket path is constructed as: f"{tempfile.gettempdir()}/_ft_launcher{pid}_to_rmon.socket"
+        # The launcher socket path is constructed as: f"{tempfile.gettempdir()}/_ft_launcher{server_pid}_to_rmon.socket"
+        server_pid = self.server_process.pid
+        expected_socket_name = f"_ft_launcher{server_pid}_to_rmon.socket"
+        self.launcher_socket_path = os.path.join(tempfile.gettempdir(), expected_socket_name)
+
         max_wait = 5  # seconds
         start_time = time.time()
         while time.time() - start_time < max_wait:
-            # Try to find the launcher socket file
-            for file in os.listdir(tempfile.gettempdir()):
-                if file.startswith("_ft_launcher") and file.endswith("_to_rmon.socket"):
-                    self.launcher_socket_path = os.path.join(tempfile.gettempdir(), file)
-                    return
+            if os.path.exists(self.launcher_socket_path):
+                return
             time.sleep(0.1)
-        raise RuntimeError("Could not find launcher socket file after waiting")
+        raise RuntimeError(
+            f"Could not find launcher socket file {expected_socket_name} after waiting {max_wait} seconds"
+        )
 
     def tearDown(self):
         # Clean up the server process
@@ -297,6 +304,88 @@ class TestRankMonitorServer(unittest.TestCase):
             await writer.wait_closed()
 
         asyncio.run(run_test())
+
+    def test_skip_section_response_enabled(self):
+        """Test unidirectional communication when skip_section_response=True"""
+        # Create a new server with skip_section_response=True (default behavior)
+        config_unidirectional = FaultToleranceConfig(
+            skip_section_response=True, rank_section_timeouts={"test_section": 60.0}
+        )
+
+        worker_socket_path_unidirectional = os.path.join(
+            tempfile.gettempdir(), "test_rank_monitor_worker_unidirectional.socket"
+        )
+
+        server_process = RankMonitorServer.run_in_subprocess(
+            cfg=config_unidirectional,
+            ipc_socket_path=worker_socket_path_unidirectional,
+            is_restarter_logger=False,
+            mp_ctx=torch.multiprocessing,
+        )
+
+        try:
+            # Wait for server to start
+            time.sleep(0.5)
+
+            async def run_test():
+                reader, writer = await asyncio.open_unix_connection(
+                    worker_socket_path_unidirectional
+                )
+
+                # Send authkey first
+                await self._send_authkey_msg(writer)
+                await read_obj_from_ipc_stream(reader)  # Authkey still gets response
+
+                # Send init message
+                rank_info = RankInfo(
+                    global_rank=0, local_rank=0, host=socket.gethostname(), pid=os.getpid()
+                )
+                await self._send_init_msg(writer, rank_info)
+                response = await read_obj_from_ipc_stream(reader)  # Init still gets response
+                self.assertIsInstance(response, OkMsg)
+
+                # Send heartbeat - should NOT receive response when skip_section_response=True
+                await self._send_heartbeat_msg(writer)
+
+                # Try to read with a timeout - should timeout since no response is sent
+                try:
+                    response = await asyncio.wait_for(read_obj_from_ipc_stream(reader), timeout=0.5)
+                    # If we get here, the test should fail because we shouldn't receive a response
+                    self.fail("Expected no response for heartbeat when skip_section_response=True")
+                except asyncio.TimeoutError:
+                    # This is expected - no response sent
+                    pass
+
+                # Send section message - should also NOT receive response
+                await self._send_section_msg(writer, "test_section", SectionAction.OPEN)
+
+                try:
+                    response = await asyncio.wait_for(read_obj_from_ipc_stream(reader), timeout=0.5)
+                    self.fail(
+                        "Expected no response for section message when skip_section_response=True"
+                    )
+                except asyncio.TimeoutError:
+                    # This is expected - no response sent
+                    pass
+
+                # Send another heartbeat to verify server is still processing messages
+                await self._send_heartbeat_msg(writer)
+
+                # Close section
+                await self._send_section_msg(writer, "test_section", SectionAction.CLOSE)
+
+                # Clean up
+                writer.close()
+                await writer.wait_closed()
+
+            asyncio.run(run_test())
+
+        finally:
+            # Clean up
+            server_process.terminate()
+            server_process.join(timeout=5)
+            if os.path.exists(worker_socket_path_unidirectional):
+                os.unlink(worker_socket_path_unidirectional)
 
 
 if __name__ == '__main__':
