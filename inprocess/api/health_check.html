@@ -125,7 +125,7 @@ destroyed, and after the user-provided
 to corrupted CUDA context). The execution should be local to a given rank,
 other ranks may have already been terminated, lost or still executing the
 wrapped function.</p>
-<p>Unhealthy state is reported by raising an <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a>. The
+<p>Unhealthy state is reported by raising an <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a>. The
 exception is reraised by the <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>, and should lead
 to termination of the main Python interpreter process.</p>
 <p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.health_check.HealthCheck" title="nvidia_resiliency_ext.inprocess.health_check.HealthCheck"><code class="xref py py-class docutils literal notranslate"><span class="pre">HealthCheck</span></code></a> could be composed with

@@ -109,10 +109,10 @@ like SSDs or RAM disks.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>root_local_ckpt_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>Path</em>) – root checkpoint directory on local storage.
+<li><p><strong>root_local_ckpt_dir</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><em>Path</em>) – root checkpoint directory on local storage.
 Checkpoints from different iterations can be saved within the same root directory,
 as each will have a unique name</p></li>
-<li><p><strong>session_id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><em>optional</em>) – adds additional identification opportunity for local
+<li><p><strong>session_id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><em>optional</em>) – adds additional identification opportunity for local
 checkpoints used in different training workloads. An example use case
 is the <cite>root_local_ckpt_dir</cite> being configured by the cluster administrator
 (e.g. /tmp/…) and <cite>session_id</cite> configured by the end user for

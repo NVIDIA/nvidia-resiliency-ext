@@ -165,7 +165,7 @@ train_step()</p>
 
 <dl class="py property">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.inprocess.CallWrapper.iteration">
-<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">iteration</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><span class="pre">int</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.CallWrapper.iteration" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">iteration</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><a class="headerlink" href="#nvidia_resiliency_ext.inprocess.CallWrapper.iteration" title="Link to this definition"></a></dt>
 <dd><p>Returns integer index of the current restart iteration.</p>
 </dd></dl>
 
@@ -207,9 +207,9 @@ condition is met.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>store_factory</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#type" title="(in Python v3.13)"><em>type</em></a><em>[</em><em>StoreMixin</em><em>]</em>) – Factory to construct the internal distributed store for
+<li><p><strong>store_factory</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#type" title="(in Python v3.14)"><em>type</em></a><em>[</em><em>StoreMixin</em><em>]</em>) – Factory to construct the internal distributed store for
 communication between ranks.</p></li>
-<li><p><strong>store_kwargs</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.13)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Dictionary of keyword arguments to construct the internal
+<li><p><strong>store_kwargs</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Dictionary of keyword arguments to construct the internal
 store with <code class="docutils literal notranslate"><span class="pre">store_factory(**store_kwargs)</span></code>.</p></li>
 <li><p><strong>initialize</strong> (<a class="reference internal" href="initialize.html#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><em>Initialize</em></a><em> | </em><em>None</em>) – Rank-local initialize.</p></li>
 <li><p><strong>abort</strong> (<a class="reference internal" href="abort.html#nvidia_resiliency_ext.inprocess.abort.Abort" title="nvidia_resiliency_ext.inprocess.abort.Abort"><em>Abort</em></a><em> | </em><em>None</em>) – Asynchronously aborts execution.</p></li>
@@ -219,29 +219,29 @@ automatically enhanced with GPU and NVL health validation to ensure comprehensiv
 system health before restart.</p></li>
 <li><p><strong>rank_assignment</strong> (<a class="reference internal" href="rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><em>RankAssignment</em></a>) – Reassigns ranks, computes the new world size and
 specifies which ranks are calling the wrapped function.</p></li>
-<li><p><strong>monitor_thread_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Monitoring interval for the monitor thread.</p></li>
-<li><p><strong>monitor_process_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Monitoring interval for the monitor process.</p></li>
-<li><p><strong>heartbeat_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Monitoring interval for detecting unresponsive
+<li><p><strong>monitor_thread_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Monitoring interval for the monitor thread.</p></li>
+<li><p><strong>monitor_process_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Monitoring interval for the monitor process.</p></li>
+<li><p><strong>heartbeat_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Monitoring interval for detecting unresponsive
 ranks.</p></li>
-<li><p><strong>progress_watchdog_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Interval for automatic progress watchdog
+<li><p><strong>progress_watchdog_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Interval for automatic progress watchdog
 timestamp updates.</p></li>
-<li><p><strong>soft_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Soft progress timeout. Timed-out rank executes
+<li><p><strong>soft_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Soft progress timeout. Timed-out rank executes
 asynchronous abort, and participates in the restart if healthy.</p></li>
-<li><p><strong>hard_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Hard progress timeout. Timed-out rank is terminated.</p></li>
-<li><p><strong>heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Timeout for a missing rank detection heartbeat.</p></li>
-<li><p><strong>barrier_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Barrier timeout.</p></li>
-<li><p><strong>completion_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Completion barrier timeout.</p></li>
-<li><p><strong>last_call_wait</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Time interval for other ranks to report concurrent
+<li><p><strong>hard_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Hard progress timeout. Timed-out rank is terminated.</p></li>
+<li><p><strong>heartbeat_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Timeout for a missing rank detection heartbeat.</p></li>
+<li><p><strong>barrier_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Barrier timeout.</p></li>
+<li><p><strong>completion_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Completion barrier timeout.</p></li>
+<li><p><strong>last_call_wait</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Time interval for other ranks to report concurrent
 terminal failures.</p></li>
-<li><p><strong>termination_grace_time</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.13)"><em>timedelta</em></a>) – Interval between <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> and <code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code>
+<li><p><strong>termination_grace_time</strong> (<a class="reference external" href="https://docs.python.org/3/library/datetime.html#datetime.timedelta" title="(in Python v3.14)"><em>timedelta</em></a>) – Interval between <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code> and <code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code>
 signals issued by the hard timeout mechanism.</p></li>
-<li><p><strong>monitor_process_logfile</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>) – Absolute filepath for the monitor process
+<li><p><strong>monitor_process_logfile</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Absolute filepath for the monitor process
 logfile. It may contain “{rank}” placeholder, to be filled with
 initial integer rank id.</p></li>
-<li><p><strong>monitor_process_pidfile</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em> | </em><em>None</em>) – Absolute filepath for the monitor process
+<li><p><strong>monitor_process_pidfile</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Absolute filepath for the monitor process
 pidfile. It may contain “{rank}” placeholder, to be filled with
 initial integer rank id.</p></li>
-<li><p><strong>enabled</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Enables the wrapper.</p></li>
+<li><p><strong>enabled</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Enables the wrapper.</p></li>
 <li><p><strong>completion</strong> (<em>Completion</em><em> | </em><em>None</em>)</p></li>
 <li><p><strong>terminate</strong> (<em>Terminate</em><em> | </em><em>None</em>)</p></li>
 </ul>
@@ -249,7 +249,7 @@ initial integer rank id.</p></li>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
 <dd class="field-even"><p>Returns the value of the wrapped function if all ranks successfully
 completed execution.
-Inactive ranks return <a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">None</span></code></a>.</p>
+Inactive ranks return <a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">None</span></code></a>.</p>
 </dd>
 </dl>
 </dd></dl>

@@ -143,9 +143,9 @@ the replication groups (cliques) are:</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>J</cite> in the formula above. Represents the gap between
+<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>J</cite> in the formula above. Represents the gap between
 successive ranks storing replicas of a given rank’s data.</p></li>
-<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>F</cite> in the formula above. Denotes the number of
+<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>F</cite> in the formula above. Denotes the number of
 ranks storing replicas of a given rank’s data.</p></li>
 </ul>
 </dd>
@@ -165,8 +165,8 @@ gathers replicated copies from other ranks, and reconstructs the state dictionar
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>local_ckpt</strong> (<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>) – The local checkpoint to replicate.</p></li>
-<li><p><strong>id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – Identifier for the state dict.</p></li>
-<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Identifier for the state dict.</p></li>
+<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
@@ -177,7 +177,7 @@ gathers replicated copies from other ranks, and reconstructs the state dictionar
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>Tuple[List[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict">TensorAwareStateDict</a>], List[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a>]]</p>
+<dd class="field-odd"><p>Tuple[List[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict">TensorAwareStateDict</a>], List[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)">str</a>]]</p>
 </dd>
 </dl>
 </dd></dl>
@@ -200,8 +200,8 @@ gathers replicated copies from other ranks, and reconstructs the state dictionar
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>globally_available_ids</strong> (<em>Mapping</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>List</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>]</em>) – Mapping of ranks to available IDs.</p></li>
-<li><p><strong>wanted</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>) – List of IDs to retrieve.</p></li>
+<li><p><strong>globally_available_ids</strong> (<em>Mapping</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>List</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em><em>]</em>) – Mapping of ranks to available IDs.</p></li>
+<li><p><strong>wanted</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em>) – List of IDs to retrieve.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
@@ -247,9 +247,9 @@ the replication groups (cliques) are:</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>J</cite> in the formula above. Represents the gap between
+<li><p><strong>replication_jump</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>J</cite> in the formula above. Represents the gap between
 successive ranks storing replicas of a given rank’s data.</p></li>
-<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>F</cite> in the formula above. Denotes the number of
+<li><p><strong>replication_factor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>optional</em>) – <cite>F</cite> in the formula above. Denotes the number of
 ranks storing replicas of a given rank’s data.</p></li>
 </ul>
 </dd>
@@ -259,7 +259,7 @@ ranks storing replicas of a given rank’s data.</p></li>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">LazyReplicationStrategyBuilder</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#LazyReplicationStrategyBuilder"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.LazyReplicationStrategyBuilder" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy"><code class="xref py py-class docutils literal notranslate"><span class="pre">ReplicationStrategy</span></code></a>, <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a>, <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Generic" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Generic</span></code></a>[<code class="xref py py-obj docutils literal notranslate"><span class="pre">EagerT</span></code>]</p>
+<dd><p>Bases: <a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy" title="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy"><code class="xref py py-class docutils literal notranslate"><span class="pre">ReplicationStrategy</span></code></a>, <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a>, <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Generic" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Generic</span></code></a>[<code class="xref py py-obj docutils literal notranslate"><span class="pre">EagerT</span></code>]</p>
 <p>Represents an uninitialized replication strategy.</p>
 <p>Replication strategy needs process groups which can be impossible to initialize
 and the time of instantiation of the ReplicationStrategy class.</p>
@@ -276,11 +276,11 @@ and the time of instantiation of the ReplicationStrategy class.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>local_ckpt</strong> (<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>)</p></li>
-<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.13)"><em>Tuple</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>], <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a>]]</p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.14)"><em>Tuple</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>], <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)">str</a>]]</p>
 </dd>
 </dl>
 </dd></dl>
@@ -304,8 +304,8 @@ and the time of instantiation of the ReplicationStrategy class.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>globally_available_ids</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Mapping" title="(in Python v3.13)"><em>Mapping</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>]</em>)</p></li>
-<li><p><strong>wanted</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Sequence" title="(in Python v3.13)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>)</p></li>
+<li><p><strong>globally_available_ids</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Mapping" title="(in Python v3.14)"><em>Mapping</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em><em>]</em>)</p></li>
+<li><p><strong>wanted</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Sequence" title="(in Python v3.14)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
@@ -319,14 +319,14 @@ and the time of instantiation of the ReplicationStrategy class.</p>
 <dl class="py exception">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError">
 <em class="property"><span class="pre">exception</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">NoReplicasAvailableError</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#NoReplicasAvailableError"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.NoReplicasAvailableError" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Exception</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Exception</span></code></a></p>
 <p>Exception raised when no replicas are available for a requested ID.</p>
 </dd></dl>
 
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.local.replication.strategies.</span></span><span class="sig-name descname"><span class="pre">ReplicationStrategy</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/local/replication/strategies.html#ReplicationStrategy"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a></p>
 <p>Abstract base class defining the interface for replication strategies.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy.replicate">
@@ -336,15 +336,15 @@ and the time of instantiation of the ReplicationStrategy class.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>local_ckpt</strong> (<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>) – The local checkpoint to be replicated.</p></li>
-<li><p><strong>id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>) – Identifier for the checkpoint.</p></li>
-<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a>)</p></li>
+<li><p><strong>id</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Identifier for the checkpoint.</p></li>
+<li><p><strong>id_</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
 <dd class="field-even"><p>A list of replicated checkpoints together with correspinding IDs</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.13)"><em>Tuple</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>], <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)">str</a>]]</p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.14)"><em>Tuple</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<a class="reference internal" href="base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict" title="nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict"><em>TensorAwareStateDict</em></a>], <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)">str</a>]]</p>
 </dd>
 </dl>
 </dd></dl>
@@ -362,8 +362,8 @@ and the time of instantiation of the ReplicationStrategy class.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>globally_available_ids</strong> (<em>Mapping</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>List</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>]</em>) – Mapping of ranks to available IDs.</p></li>
-<li><p><strong>wanted</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em>) – List of IDs to retrieve.</p></li>
+<li><p><strong>globally_available_ids</strong> (<em>Mapping</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>List</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em><em>]</em>) – Mapping of ranks to available IDs.</p></li>
+<li><p><strong>wanted</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em>) – List of IDs to retrieve.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>

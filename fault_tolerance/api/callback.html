@@ -110,17 +110,17 @@ Training should be run with ‘ft_launcher’ for the callback to work.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>autoresume</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to <cite>True</cite> if the FT auto-resume feature is used (e.g., there are multiple training jobs to be run).</p></li>
-<li><p><strong>calculate_timeouts</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to <cite>True</cite> if FT timeouts should be calculated based on observed heartbeat intervals.
+<li><p><strong>autoresume</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Set to <cite>True</cite> if the FT auto-resume feature is used (e.g., there are multiple training jobs to be run).</p></li>
+<li><p><strong>calculate_timeouts</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Set to <cite>True</cite> if FT timeouts should be calculated based on observed heartbeat intervals.
 Calculated timeouts overwrite the timeouts from the FT config.
 Timeouts are computed at the end of a training job, if there was checkpoint loading and saving.
 For example, for training started from scratch, the timeouts are computed at the end of the second job.</p></li>
-<li><p><strong>simulated_fault_params</strong> (<em>SimulatedFaultParams</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.13)"><em>dict</em></a><em>, </em><em>DictConfig</em><em>, </em><em>None</em>) – Simulated fault spec. It’s for debugging only. Defaults to None.
+<li><p><strong>simulated_fault_params</strong> (<em>SimulatedFaultParams</em><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a><em>, </em><em>DictConfig</em><em>, </em><em>None</em>) – Simulated fault spec. It’s for debugging only. Defaults to None.
 Should be a <cite>SimulatedFaultParams</cite> instance or any object that can be used for SimulatedFaultParams initialization with <cite>SimulatedFaultParams(**obj)</cite>.</p></li>
-<li><p><strong>exp_dir</strong> (<em>Union</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.13)"><em>pathlib.Path</em></a><em>, </em><em>None</em><em>]</em><em>, </em><em>optional</em>) – Directory where the FT state should be saved.
+<li><p><strong>exp_dir</strong> (<em>Union</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><em>pathlib.Path</em></a><em>, </em><em>None</em><em>]</em><em>, </em><em>optional</em>) – Directory where the FT state should be saved.
 Must be available for all training jobs. NOTE: Beware that PTL can move files written to its <cite>trainer.log_dir</cite>.
 Defaults to None, in which case it defaults to <cite>trainer.log_dir/ft_state</cite>.</p></li>
-<li><p><strong>logger_name</strong> (<em>Optional</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>, </em><em>optional</em>) – Logger name to be used.
+<li><p><strong>logger_name</strong> (<em>Optional</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em><em>, </em><em>optional</em>) – Logger name to be used.
 Defaults to “nemo_logger.FaultToleranceCallback”.</p></li>
 </ul>
 </dd>

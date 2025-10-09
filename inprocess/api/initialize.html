@@ -112,8 +112,8 @@
 <p><a class="reference internal" href="#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code></a> is executed at the start of every restart iteration,
 including the first one. <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code></a> can raise exceptions (e.g.,
 if specific preconditions are not met). Raising a standard Python
-<a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a> triggers another restart, while raising a
-<a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a> terminates the wrapper.</p>
+<a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a> triggers another restart, while raising a
+<a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a> terminates the wrapper.</p>
 <p>Multiple instances of <a class="reference internal" href="#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code></a> could be composed with
 <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired behavior.</p>
 <dl class="py method">
@@ -146,11 +146,11 @@ when the conditions are not met.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>max_iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em> | </em><em>None</em>) – the maximum number of iterations allowed before
-aborting retries. If <a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.13)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">None</span></code></a>, there is no iteration limit</p></li>
-<li><p><strong>min_world_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – The minimum required world size to proceed with
+<li><p><strong>max_iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – the maximum number of iterations allowed before
+aborting retries. If <a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">None</span></code></a>, there is no iteration limit</p></li>
+<li><p><strong>min_world_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The minimum required world size to proceed with
 execution</p></li>
-<li><p><strong>min_active_world_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – The minimum required active world size to
+<li><p><strong>min_active_world_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The minimum required active world size to
 proceed with execution</p></li>
 </ul>
 </dd>

@@ -105,20 +105,20 @@
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>report_time_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Interval [seconds] of the straggler check</p></li>
-<li><p><strong>calc_relative_gpu_perf</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Calculate relative GPU performance</p></li>
-<li><p><strong>calc_individual_gpu_perf</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Calculate individual GPU performance</p></li>
-<li><p><strong>num_gpu_perf_scores_to_print</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – How many best and worst perf scores to print (0 - does not print periodically, but only if stragglers are detected)</p></li>
-<li><p><strong>gpu_relative_perf_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Threshold for relative GPU performance scores</p></li>
-<li><p><strong>gpu_individual_perf_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.13)"><em>float</em></a>) – Threshold for individual GPU performance scores</p></li>
-<li><p><strong>stop_if_detected</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to True, to terminate the workload if stragglers are detected</p></li>
-<li><p><strong>enable_ptl_logging</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Set to True, to log GPU performance scores to all PTL loggers enabled through trainer</p></li>
-<li><p><strong>profiling_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – <cite>profiling_interval</cite> passed to <cite>straggler.Detector.initialize</cite>. Defaults to 1.</p></li>
-<li><p><strong>logger_name</strong> (<em>Optional</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.13)"><em>str</em></a><em>]</em><em>, </em><em>optional</em>) – Defaults to “nemo_logger.StragglerDetectionCallback”.</p></li>
+<li><p><strong>report_time_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Interval [seconds] of the straggler check</p></li>
+<li><p><strong>calc_relative_gpu_perf</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Calculate relative GPU performance</p></li>
+<li><p><strong>calc_individual_gpu_perf</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Calculate individual GPU performance</p></li>
+<li><p><strong>num_gpu_perf_scores_to_print</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – How many best and worst perf scores to print (0 - does not print periodically, but only if stragglers are detected)</p></li>
+<li><p><strong>gpu_relative_perf_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Threshold for relative GPU performance scores</p></li>
+<li><p><strong>gpu_individual_perf_threshold</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Threshold for individual GPU performance scores</p></li>
+<li><p><strong>stop_if_detected</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Set to True, to terminate the workload if stragglers are detected</p></li>
+<li><p><strong>enable_ptl_logging</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Set to True, to log GPU performance scores to all PTL loggers enabled through trainer</p></li>
+<li><p><strong>profiling_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – <cite>profiling_interval</cite> passed to <cite>straggler.Detector.initialize</cite>. Defaults to 1.</p></li>
+<li><p><strong>logger_name</strong> (<em>Optional</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em><em>, </em><em>optional</em>) – Defaults to “nemo_logger.StragglerDetectionCallback”.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Raises<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.13)"><strong>ValueError</strong></a> – If invalid config was provided.</p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><strong>ValueError</strong></a> – If invalid config was provided.</p>
 </dd>
 </dl>
 <dl class="py method">

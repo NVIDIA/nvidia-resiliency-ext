@@ -143,7 +143,7 @@ issues</span></a> section.</p>
 <li><p>The wrapped function should be designed to support restarts, meaning it
 should carefully manage any external (e.g., global) state and resources,
 avoid using functions that can only be called once per process, such as
-<a class="reference external" href="https://docs.python.org/3/library/multiprocessing.html#multiprocessing.set_start_method" title="(in Python v3.13)"><code class="xref py py-func docutils literal notranslate"><span class="pre">multiprocessing.set_start_method()</span></code></a> or <code class="docutils literal notranslate"><span class="pre">MPI_Init</span></code>, to ensure that
+<a class="reference external" href="https://docs.python.org/3/library/multiprocessing.html#multiprocessing.set_start_method" title="(in Python v3.14)"><code class="xref py py-func docutils literal notranslate"><span class="pre">multiprocessing.set_start_method()</span></code></a> or <code class="docutils literal notranslate"><span class="pre">MPI_Init</span></code>, to ensure that
 the function can be executed multiple times in the same process without
 issues.</p>
 <blockquote>
@@ -169,8 +169,8 @@ terminated ranks will not rejoin the distributed job upon restart.</p></li>
 </ul>
 </div></blockquote>
 </li>
-<li><p>The function does not suppress <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a>. If the wrapped
-function catches a <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a>, it must re-raise it to ensure it
+<li><p>The function does not suppress <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a>. If the wrapped
+function catches a <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a>, it must re-raise it to ensure it
 propagates to the outer scope.</p></li>
 <li><p>The function is responsible for initialization of PyTorch distributed backend
 (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.html#torch.distributed.init_process_group" title="(in PyTorch v2.8)"><code class="xref py py-func docutils literal notranslate"><span class="pre">torch.distributed.init_process_group()</span></code></a>); the initialization needs
@@ -415,8 +415,8 @@ healthy ranks would be inactive and serve as a reserve.</p>
 <a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.Initialize" title="nvidia_resiliency_ext.inprocess.initialize.Initialize"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.Initialize</span></code></a> class, which is executed at the
 start of every restart iteration, including the first one.
 <code class="xref py py-class docutils literal notranslate"><span class="pre">Initialize</span></code> can raise exceptions (e.g., if specific preconditions
-are not met). Raising a standard Python <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a> triggers another
-restart of the wrapped function, while raising a <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a>
+are not met). Raising a standard Python <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">Exception</span></code></a> triggers another
+restart of the wrapped function, while raising a <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a>
 terminates the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>. The included
 <a class="reference internal" href="api/initialize.html#nvidia_resiliency_ext.inprocess.initialize.RetryController" title="nvidia_resiliency_ext.inprocess.initialize.RetryController"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess.initialize.RetryController</span></code></a> can be used to limit the
 number of restart attempts or to halt execution if the number of healthy
@@ -450,7 +450,7 @@ handles the restart process</p></li>
 and gives the wrapped function an opportunity to properly clean up resources by
 calling all encountered exception handlers, context managers’ <code class="docutils literal notranslate"><span class="pre">__exit__</span></code>
 methods etc. The restart exception raised by the <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> is a
-direct subclass of Python <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a> and it is required that the
+direct subclass of Python <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a> and it is required that the
 wrapped function propagates this exception to the outer function scope.</p>
 <p>The termination procedure runs in a separate Python thread. In some cases, the
 main thread - unblocked by the destruction of the distributed process group -
@@ -641,7 +641,7 @@ workload’s progress and enable rapid restart capabilities in the event of a
 fault.</p>
 <section id="monitor-thread">
 <span id="id4"></span><h4>Monitor Thread<a class="headerlink" href="#monitor-thread" title="Link to this heading"></a></h4>
-<p>The Monitor Thread runs as a separate <a class="reference external" href="https://docs.python.org/3/library/threading.html#threading.Thread" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">threading.Thread</span></code></a> and is
+<p>The Monitor Thread runs as a separate <a class="reference external" href="https://docs.python.org/3/library/threading.html#threading.Thread" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">threading.Thread</span></code></a> and is
 tasked with periodically checking the distributed store for any faults reported
 by other distributed ranks. It also ensures that the local rank is
 <a class="reference internal" href="#reporting-progress"><span class="std std-ref">reporting progress</span></a>. If a fault or a lack of
@@ -676,7 +676,7 @@ distributed workers to avoid creating a communication bottleneck.</p>
 </section>
 <section id="progress-watchdog">
 <h4>Progress Watchdog<a class="headerlink" href="#progress-watchdog" title="Link to this heading"></a></h4>
-<p>The Progress Watchdog runs as a separate <a class="reference external" href="https://docs.python.org/3/library/threading.html#threading.Thread" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">threading.Thread</span></code></a> and is
+<p>The Progress Watchdog runs as a separate <a class="reference external" href="https://docs.python.org/3/library/threading.html#threading.Thread" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">threading.Thread</span></code></a> and is
 responsible for issuing automatic heartbeats to check if the main thread of the
 Python interpreter keeps executing new bytecode instructions and receiving,
 optional, manual heartbeats from the workload to track its progress. Refer to
@@ -693,13 +693,13 @@ scaled with the number of distributed workers.</p>
 <p>The <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> leverages the Python logging module to output messages.
 It does not adhere to the conventional methods of fully integrating with an
 application’s root logger. Instead, logging from <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> within the
-main process is managed through a <a class="reference external" href="https://docs.python.org/3/library/logging.handlers.html#logging.StreamHandler" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">logging.StreamHandler</span></code></a>, which is
+main process is managed through a <a class="reference external" href="https://docs.python.org/3/library/logging.handlers.html#logging.StreamHandler" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">logging.StreamHandler</span></code></a>, which is
 defined by the first ancestor in the logger hierarchy. Notably, the logging in
 <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code> is configured to not store logs in files, and to not
 <a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.Logger.propagate">propagate</a>
 logging messages to the ancestor loggers’ handlers.</p>
-<p>Logging with <a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.DEBUG" title="(in Python v3.13)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">logging.DEBUG</span></code></a> level shows the location where the wrapped
-function suppressed the <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.13)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a> raised asynchronously by the
+<p>Logging with <a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.DEBUG" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">logging.DEBUG</span></code></a> level shows the location where the wrapped
+function suppressed the <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#BaseException" title="(in Python v3.14)"><code class="xref py py-exc docutils literal notranslate"><span class="pre">BaseException</span></code></a> raised asynchronously by the
 <code class="xref py py-class docutils literal notranslate"><span class="pre">Wrapper</span></code>. The restart logic requires that BaseExceptions are
 propagated from the wrapped function to the outer scope. This feature helps to
 find locations where this assumption is not met, and the restart flow is

@@ -106,7 +106,7 @@
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">CheckpointMetadataCache</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#CheckpointMetadataCache"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.13)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Cache of metadata for checkpoint saving.</p>
 <p>This class maintains a cache of metadata used during distributed checkpoint saving operations.
 It stores various components of the save plan and metadata to optimize subsequent checkpoint
@@ -122,8 +122,8 @@ remains consistent across iterations.</p>
 <li><p><strong>cached_central_plan</strong> (<em>SavePlan</em>) – The aggregated global save plan from all ranks</p></li>
 <li><p><strong>cached_local_plan</strong> (<em>SavePlan</em>) – The local save plan describing how the local state_dict is written</p></li>
 <li><p><strong>cached_global_metadata</strong> (<em>Metadata</em>) – The global metadata (only held by the coordinator rank)</p></li>
-<li><p><strong>validated_cache_reuse</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Flag indicating if checkpoint structures are consistent</p></li>
-<li><p><strong>validated_loaded_metadata_reuse</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Flag indicating the metadata loaded from the prev checkpoint
+<li><p><strong>validated_cache_reuse</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Flag indicating if checkpoint structures are consistent</p></li>
+<li><p><strong>validated_loaded_metadata_reuse</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Flag indicating the metadata loaded from the prev checkpoint
 is validated to reuse, which skips all metadata communications</p></li>
 <li><p><strong>loaded_all_plans</strong> (<em>List</em><em>[</em><em>SavePlan</em><em>]</em>) – Cached local plans from the previous checkpoint’s metadata file</p></li>
 </ul>
@@ -137,7 +137,7 @@ is validated to reuse, which skips all metadata communications</p></li>
 validation, and all local plans from the previous checkpoint’s metadata file.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.13)"><em>Tuple</em></a>[<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>, <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>, <a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a>, <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a>[<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>]] | None</p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.14)"><em>Tuple</em></a>[<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>, <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>, <a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)">bool</a>, <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>]] | None</p>
 </dd>
 </dl>
 </dd></dl>
@@ -158,8 +158,8 @@ If so, it updates the save state dict return value with the cached global metada
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – The rank of the current process</p></li>
-<li><p><strong>coordinator</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – The coordinator rank</p></li>
+<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The rank of the current process</p></li>
+<li><p><strong>coordinator</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The coordinator rank</p></li>
 <li><p><strong>save_state_dict_ret</strong> (<em>Tuple</em><em>[</em><a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><em>FileSystemWriterAsync</em></a><em>, </em><em>Union</em><em>[</em><em>Metadata</em><em>, </em><em>None</em><em>]</em><em>]</em>) – The return value of the save state dict</p></li>
 </ul>
 </dd>
@@ -184,7 +184,7 @@ validation results. It also checks if the central plan is consistent with the ca
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>central_plan</strong> (<em>SavePlan</em>) – The latest central plan</p></li>
 <li><p><strong>local_plan</strong> (<em>SavePlan</em>) – The latest local plan</p></li>
-<li><p><strong>global_md_verify_reuse</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a>) – Flag indicating if global metadata reuse is valid</p></li>
+<li><p><strong>global_md_verify_reuse</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Flag indicating if global metadata reuse is valid</p></li>
 </ul>
 </dd>
 </dl>
@@ -273,16 +273,16 @@ The first step is realized with this function.</p>
 <li><p><strong>storage_writer</strong> (<a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><em>FileSystemWriterAsync</em></a>) – in current version only an instance of
 FileSystemWriterAsync</p></li>
 <li><p><strong>process_group</strong> (<em>dist.ProcessGroup</em><em>, </em><em>optional</em>) – process group used for save planning</p></li>
-<li><p><strong>coordinator_rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a><em>, </em><em>optional</em>) – coordinator rank for planning. Defaults to 0.</p></li>
+<li><p><strong>coordinator_rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>optional</em>) – coordinator rank for planning. Defaults to 0.</p></li>
 <li><p><strong>planner</strong> (<em>SavePlanner</em><em>, </em><em>optional</em>) – save planner for torch.distributed.checkpoint format</p></li>
-<li><p><strong>enable_cache</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)"><em>bool</em></a><em>, </em><em>optional</em>) – Flag to enable caching of checkpoint metadata. When True,
+<li><p><strong>enable_cache</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – Flag to enable caching of checkpoint metadata. When True,
 previously saved metadata can be reused to speed up subsequent saves.</p></li>
 <li><p><strong>metadata_cache</strong> (<a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache"><em>CheckpointMetadataCache</em></a><em>, </em><em>optional</em>) – Custom metadata cache instance to use
 for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.13)"><em>Tuple</em></a>[<a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync">FileSystemWriterAsync</a>, <em>Metadata</em> | None, <em>_DistWrapper</em>]</p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.14)"><em>Tuple</em></a>[<a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync">FileSystemWriterAsync</a>, <em>Metadata</em> | None, <em>_DistWrapper</em>]</p>
 </dd>
 </dl>
 <dl class="simple">
@@ -307,15 +307,15 @@ for storing and retrieving checkpoint metadata. If not provided, the global cach
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>loaded_all_plans</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.13)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a><em>]</em>) – List[SavePlan], The loaded plans from the checkpoint
+<li><p><strong>loaded_all_plans</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a><em>]</em>) – List[SavePlan], The loaded plans from the checkpoint
 (stored in checkpoint metadata).</p></li>
 <li><p><strong>local_plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>) – SavePlan, The local save plan.</p></li>
-<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.13)"><em>int</em></a>) – Current process rank.</p></li>
+<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Current process rank.</p></li>
 <li><p><strong>dist_wrapper</strong> (<em>_DistWrapper</em>) – distributed wrapper created during planning</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.13)">bool</a></p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)">bool</a></p>
 </dd>
 </dl>
 <p>Returns: True iff the global metadata reuse is possible.</p>
