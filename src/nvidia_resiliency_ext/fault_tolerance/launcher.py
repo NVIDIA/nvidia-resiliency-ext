@@ -1700,10 +1700,10 @@ def get_args_parser() -> ArgumentParser:
         default="127.0.0.1",
         type=str,
         action=env,
-        help="Address of the master node (rank 0) that only used for static rendezvous. It should "
-        "be either the IP address or the hostname of rank 0. For single node multi-proc training "
-        "the --master-addr can simply be 127.0.0.1; IPv6 should have the pattern "
-        "`[0:0:0:0:0:0:0:1]`.",
+        help="Address of the master node (rank 0) that is used for static and c10d rendezvous backends "
+        "when rdzv_endpoint is not specified. It should be either the IP address or the hostname of rank 0. "
+        "For single node multi-proc training the --master-addr can simply be 127.0.0.1; "
+        "IPv6 should have the pattern `[0:0:0:0:0:0:0:1]`.",
     )
     parser.add_argument(
         "--master-port",
@@ -1712,7 +1712,7 @@ def get_args_parser() -> ArgumentParser:
         type=int,
         action=env,
         help="Port on the master node (rank 0) to be used for communication during distributed "
-        "training. It is only used for static rendezvous.",
+        "training. It is used for static and c10d rendezvous backends when rdzv_endpoint is not specified.",
     )
     parser.add_argument(
         "--local-addr",
@@ -1974,7 +1974,7 @@ def determine_local_world_size(nproc_per_node: str):
 
 
 def get_rdzv_endpoint(args):
-    if args.rdzv_backend == "static" and not args.rdzv_endpoint:
+    if (args.rdzv_backend in ["static", "c10d"]) and not args.rdzv_endpoint:
         return f"{args.master_addr}:{args.master_port}"  # noqa: E231
     return args.rdzv_endpoint
 
@@ -2030,9 +2030,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
 
-    if hasattr(args, "master_addr") and args.rdzv_backend != "static" and not args.rdzv_endpoint:
+    if hasattr(args, "master_addr") and args.rdzv_backend not in ["static", "c10d"] and not args.rdzv_endpoint:
         logger.warning(
-            "master_addr is only used for static rdzv_backend and when rdzv_endpoint "
+            "master_addr is only used for static and c10d rdzv_backend when rdzv_endpoint "
             "is not specified."
         )
 
