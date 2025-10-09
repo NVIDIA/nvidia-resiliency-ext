@@ -233,12 +233,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             if head_nodes_completed:
                 print_ranks_in_pgs(head_nodes_completed, completed_pg, "Completed")
         analysis_output = output.getvalue()
-        attribution_kwargs = {
-            "model": self.args.model,
-            "scheduling_order": self.args.scheduling_order_file,
-            "verbose": self.args.verbose,
-        }
-        return analysis_output, attribution_kwargs
+        return analysis_output
 
     async def collective_analysis(self, analysis_output: str, **kwargs):
         """
@@ -258,7 +253,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         Note:
             Requires the NVIDIA_API_KEY environment variable to be set
         """
-        result = analysis_output[0]
+        result = analysis_output
         if self.args.llm_analyze:
             model = kwargs["model"]
             verbose = kwargs["verbose"]
@@ -331,14 +326,14 @@ class CollectiveAnalyzer(NVRxAttribution):
         Args:
             verbose (bool): Whether to include more detailed analysis in the output
         """
-        print("\n=== Collective Operations Analysis ===\n")
+        logger.info("\n=== Collective Operations Analysis ===\n")
 
         if verbose:
-            print("Files processed:")
+            logger.info("Files processed:")
             for rank_id in sorted(self.collectives_by_file.keys()):
                 count = len(self.collectives_by_file[rank_id])
-                print(f"  {rank_id}: {count} collectives")
-        print()
+                logger.info(f"  {rank_id}: {count} collectives")
+        logger.info("")
 
         # Extract unique sub-group types from the data
         group_types = set()
@@ -356,9 +351,9 @@ class CollectiveAnalyzer(NVRxAttribution):
         # If no group types were found, use default ones
         if not group_types:
             group_types = ["TENSOR_MODEL", "PIPELINE_MODEL", "DATA_PARALLEL"]
-            print("No sub-group types found in data. Using default group types.")
+            logger.info("No sub-group types found in data. Using default group types.")
         else:
-            print(f"Found group types: {', '.join(group_types)}")
+            logger.info(f"Found group types: {', '.join(group_types)}")
 
         # Categorize collective groups by type
         categorized_groups = {group_type: [] for group_type in group_types}
@@ -381,7 +376,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         missing_pg = defaultdict(list)
         for group_type in group_types:
             if categorized_groups[group_type]:
-                print(f"\n=== {group_type} Collectives ===\n")
+                logger.info(f"=== {group_type} Collectives ===")
 
                 # Headers for this section
                 headers = [
@@ -396,8 +391,8 @@ class CollectiveAnalyzer(NVRxAttribution):
                 ]
 
                 header_line = " ".join(f"{name:>{width}}" for name, width in headers)
-                print(header_line)
-                print("-" * len(header_line))
+                logger.info(header_line)
+                logger.info("-" * len(header_line))
 
                 def get_correct_seq_id(collective):
                     if (
@@ -562,18 +557,18 @@ class CollectiveAnalyzer(NVRxAttribution):
                         continue
                     else:
                         missing_pg[(int)(parsed_row[0])].append(parsed_row)
-                        print(row)
+                        logger.info(row)
 
                     # Print detailed rank count distribution
                     if verbose:
-                        print(f"  Rank count distribution for {process_group_str}:")
+                        logger.info(f"  Rank count distribution for {process_group_str}:")
                         for rank, count in sorted(appeared_rank_counts.items()):
-                            print(f"    Rank {rank}: {count} occurrences")
+                            logger.info(f"    Rank {rank}: {count} occurrences")
 
                     # Print operation type distribution with paired send/recv analysis
-                    print("  Operation type distribution:")
+                    logger.info("  Operation type distribution:")
                     # Print paired send/recv operations
-                    print("    Send/Receive pairs (src->dst):")
+                    logger.info("    Send/Receive pairs (src->dst):")
 
                     # Print each pair with send and recv counts
                     for src, dst in all_pairs:
@@ -586,17 +581,16 @@ class CollectiveAnalyzer(NVRxAttribution):
                         else:
                             imbalance = ""
 
-                        print(
+                        logger.info(
                             f"      {global_ranks[int(src)]}->{global_ranks[int(dst)]}: {send_count} sends, {recv_count} recvs{imbalance}"
                         )
 
                     # Print other operations
                     if other_ops:
-                        print("    Other operations:")
+                        logger.info("    Other operations:")
                         for op, count in sorted(other_ops.items(), key=lambda x: (-x[1], x[0])):
-                            print(f"      {op}: {count}")
+                            logger.info(f"      {op}: {count}")
 
-                    print()  # Add an empty line for better readability
         return completed_pg, missing_pg
 
     def group_pgs(self, pgs: Dict[str, List[str]]) -> Dict[int, List[int]]:
