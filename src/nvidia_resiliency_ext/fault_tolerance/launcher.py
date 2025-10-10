@@ -96,16 +96,37 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 setup_logger(node_local_tmp_prefix="ftlauncher")
 logger = logging.getLogger(LogConfig.name)
 
-def _register_ft_rdzv_handler():
-
+def _register_ft_rdzv_handler(impl_type: str = "barrier"):
+    """Register the fault-tolerant rendezvous handler.
+    
+    Args:
+        impl_type: FT rendezvous implementation to use.
+                  "barrier" - New atomic barrier-based algorithm (default)
+                  "legacy" - Original compare-and-set algorithm
+    """
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
-    from .ft_rendezvous_barrier import FtRendezvousBarrierHandler, create_handler
-
-    def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousBarrierHandler:
-        backend, store = create_backend(params)
-        return create_handler(store, backend, params)
+    if impl_type == "barrier":
+        from .ft_rendezvous_barrier import create_handler as create_barrier_handler
+        
+        def _create_ft_rdzv_handler(params: RendezvousParameters):
+            backend, store = create_backend(params)
+            return create_barrier_handler(store, backend, params)
+        
+        logger.info("Using barrier-based FT rendezvous implementation (ft_rendezvous_barrier.py)")
+    
+    elif impl_type == "legacy":
+        from ._ft_rendezvous import create_handler as create_legacy_handler
+        
+        def _create_ft_rdzv_handler(params: RendezvousParameters):
+            backend, store = create_backend(params)
+            return create_legacy_handler(store, backend, params)
+        
+        logger.info("Using legacy FT rendezvous implementation (_ft_rendezvous.py)")
+    
+    else:
+        raise ValueError(f"Unknown FT rendezvous implementation: {impl_type}. Must be 'barrier' or 'legacy'.")
 
     del rendezvous_handler_registry._registry['c10d']  # FIXME: ugly hack to swap the c10d handler
     rendezvous_handler_registry.register("c10d", _create_ft_rdzv_handler)
@@ -1906,6 +1927,20 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-rdzv-impl",
+        "--ft-rdzv_impl",
+        type=str,
+        choices=["barrier", "legacy"],
+        default="barrier",
+        dest="ft_rdzv_impl",
+        help="FT rendezvous implementation to use. "
+        "'barrier' uses the new atomic barrier-based algorithm (ft_rendezvous_barrier.py), "
+        "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
+        "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
+        "the coordination backend like c10d or etcd).",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
@@ -2172,7 +2207,9 @@ def run(args):
             args.rdzv_id,
         )
 
-    _register_ft_rdzv_handler()
+    # Register the selected FT rendezvous implementation
+    impl_type = getattr(args, 'ft_rdzv_impl', 'barrier')
+    _register_ft_rdzv_handler(impl_type)
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(
         config=config,

@@ -152,6 +152,10 @@ class RendezvousSettings:
         keep_alive_max_attempt:
             The maximum number of failed heartbeat attempts after which a node
             is considered dead.
+        use_infra_group_rank:
+            Whether to use infrastructure group rank for rank assignment instead of
+            arrival-based assignment. If True, ranks are read from SLURM_PROCID (in SLURM
+            environments) or GROUP_RANK (set by launcher) environment variables.
     """
 
     run_id: str
@@ -160,6 +164,7 @@ class RendezvousSettings:
     timeout: RendezvousTimeout
     keep_alive_interval: timedelta
     keep_alive_max_attempt: int
+    use_infra_group_rank: bool = True
 
 
 @dataclass(eq=True, order=True, frozen=True)
@@ -210,13 +215,6 @@ class _NodeDescGenerator:
         return _NodeDesc(local_addr or socket.getfqdn(), os.getpid(), local_id)
 
 
-class ParticipantStatus(Enum):
-    """Participant status in the rendezvous."""
-
-    ACTIVE = "Active"
-    STANDBY = "Standby"
-
-
 class GroupRankStatus(Enum):
     """Group rank status for participants."""
 
@@ -229,31 +227,36 @@ class RendezvousParticipantInfo:
     A rendezvous participant can be a physical node or a process in a physical node
     in the simulation case. This class provides a JSON-based format that can store:
     - NodeDesc (addr, pid, local_id)
-    - Participant status (Active or Standby)
+    - Infrastructure rank (optional, used when use_infra_group_rank is enabled)
 
     The format is designed to support up to 4K participants efficiently.
     In future, this can be changed to Protobuf for better efficiency and performance.
     """
 
     @staticmethod
-    def pack(node_desc: _NodeDesc, status: ParticipantStatus) -> str:
+    def pack(node_desc: _NodeDesc, infra_rank: int = -1) -> str:
         """Pack participant information into JSON format."""
         data = {
             "addr": node_desc.addr,
             "pid": node_desc.pid,
             "local_id": node_desc.local_id,
-            "status": status.value,
+            "infra_rank": infra_rank,
         }
         return json.dumps(data)
 
     @staticmethod
-    def unpack(data: str) -> Tuple[_NodeDesc, ParticipantStatus]:
-        """Unpack participant information from JSON format."""
+    def unpack(data: str) -> Tuple[_NodeDesc, int]:
+        """Unpack participant information from JSON format.
+        
+        Returns:
+            Tuple of (node_desc, infra_rank)
+        """
         try:
             info = json.loads(data)
             node_desc = _NodeDesc(addr=info["addr"], pid=info["pid"], local_id=info["local_id"])
-            status = ParticipantStatus(info["status"])
-            return node_desc, status
+            # Support old format without infra_rank field
+            infra_rank = info.get("infra_rank", -1)
+            return node_desc, infra_rank
         except (json.JSONDecodeError, KeyError) as e:
             raise ValueError(f"Invalid participant info data: {e}")
 
@@ -290,11 +293,13 @@ class _RendezvousBarrierState:
         run_id: str,
         is_store_host: bool = False,
         join_timeout_seconds: float = 600.0,
+        use_infra_group_rank: bool = True,
     ):
         self.store = store
         self.run_id = run_id
         self.is_store_host = is_store_host
         self.join_timeout_seconds = join_timeout_seconds
+        self.use_infra_group_rank = use_infra_group_rank
         self._rendezvous_start_time = None
         self._prev_participants = {}  # Store previous round's participants and their ranks
 
@@ -305,76 +310,162 @@ class _RendezvousBarrierState:
         self.ack_count_key = f"{self.prefix}:ack_count"
         self.closed_key = f"{self.prefix}:closed"
 
-    @staticmethod
-    def _assign_group_ranks_preserving_previous(
-        participants: List[Tuple[_NodeDesc, ParticipantStatus]],
+    def _assign_group_ranks(
+        self,
+        participants: List[Tuple[_NodeDesc, int]],
         prev_participants: Dict[_NodeDesc, int],
+        min_nodes: int,
     ) -> Dict[_NodeDesc, int]:
-        """Assign group ranks while preserving previous group rank assignments as much as possible.
+        """Assign group ranks to participants, preserving previous assignments when possible.
 
         Args:
-            participants: List of (node_desc, status) tuples
+            participants: List of (node_desc, infra_rank) tuples
             prev_participants: Dictionary of previous round's node_desc -> group_rank mapping
+            min_nodes: Minimum number of active nodes
 
         Returns:
             Dictionary of node_desc -> assigned_group_rank
         """
-        # Separate active and standby participants
-        active_participants = [
-            (node_desc, status)
-            for node_desc, status in participants
-            if status == ParticipantStatus.ACTIVE
-        ]
+        if self.use_infra_group_rank:
+            return self._assign_group_ranks_with_infra_rank(participants, min_nodes)
 
-        standby_participants = [
-            (node_desc, status)
-            for node_desc, status in participants
-            if status == ParticipantStatus.STANDBY
-        ]
-
-        active_world_size = len(active_participants)
-        total_participants = len(participants)
+        # Original logic for non-infrastructure rank mode (arrival-based assignment)
+        # First min_nodes arrivals are active (ranks 0 to min_nodes-1)
+        # Later arrivals are standby (sequential ranks starting from min_nodes)
+        # Note: len(participants) >= min_nodes is guaranteed by rendezvous completion logic
+        
         result = {}
-
-        # Assign group ranks to active participants (0 to active_world_size-1)
-        sorted_active_participants = sorted(
-            active_participants, key=lambda x: x[0]
-        )  # Sort by node_desc
-        free_group_ranks = set(range(active_world_size))
-
-        # First pass: try to reuse previous group rank assignments for active participants
-        for node_desc, status in sorted_active_participants:
-            prev_group_rank = prev_participants.get(node_desc, -1)
-            if (
-                prev_group_rank >= 0
-                and prev_group_rank < active_world_size
-                and prev_group_rank in free_group_ranks
-            ):
-                # This node can have the same group rank as before
-                result[node_desc] = prev_group_rank
-                free_group_ranks.remove(prev_group_rank)
+        active_count = min_nodes
+        
+        # Sort all participants by node_desc for deterministic assignment
+        sorted_participants = sorted(participants, key=lambda x: x[0])
+        
+        # Pass 1: Try to preserve previous ranks for active participants (first min_nodes)
+        free_ranks = set(range(active_count))
+        for idx, (node_desc, _) in enumerate(sorted_participants):
+            if idx < active_count:
+                # Active participant - try to reuse previous rank
+                prev_rank = prev_participants.get(node_desc, -1)
+                if 0 <= prev_rank < active_count and prev_rank in free_ranks:
+                    result[node_desc] = prev_rank
+                    free_ranks.remove(prev_rank)
+                else:
+                    result[node_desc] = -1  # Assign later
             else:
-                # Mark as unassigned for now
-                result[node_desc] = -1
+                # Standby participant - sequential assignment
+                result[node_desc] = idx
+        
+        # Pass 2: Assign free ranks to unassigned active participants
+        if free_ranks:
+            free_ranks = sorted(free_ranks)
+            for idx, (node_desc, _) in enumerate(sorted_participants[:active_count]):
+                if result[node_desc] == -1:
+                    result[node_desc] = free_ranks.pop(0)
+        
+        standby_count = len(sorted_participants) - active_count
+        log.debug(
+            f"Assigned group_ranks by arrival order: "
+            f"{active_count} active, {standby_count} standby"
+        )
+        
+        return result
 
-        # Second pass: fill gaps with remaining free group ranks for active participants
-        free_group_ranks = sorted(free_group_ranks)
-        for node_desc, status in sorted_active_participants:
-            if result[node_desc] < 0:
-                result[node_desc] = free_group_ranks.pop(0)
+    def _assign_group_ranks_with_infra_rank(
+        self,
+        participants: List[Tuple[_NodeDesc, int]],
+        min_nodes: int,
+    ) -> Dict[_NodeDesc, int]:
+        """Assign group ranks using infrastructure ranks with hardware failure resilience.
 
-        # Assign group ranks to standby participants (active_world_size to total_participants-1)
-        sorted_standby_participants = sorted(
-            standby_participants, key=lambda x: x[0]
-        )  # Sort by node_desc
-        standby_group_rank = active_world_size
-        for node_desc, status in sorted_standby_participants:
-            result[node_desc] = standby_group_rank
-            standby_group_rank += 1
+        Core principle: group_rank = infra_rank (strict deterministic mapping)
+        Exception: Fill gaps in [0, min_nodes) caused by HW failures using spare nodes
 
-        assert (
-            not free_group_ranks
-        ), f"Should have assigned all active group ranks, but {free_group_ranks} remain"
+        Example with HW failure:
+            min_nodes=5, arrivals: infra_ranks [0, 1, 3, 4, 10, 11]  (rank 2 missing due to HW failure)
+            - Node(infra=0) → group_rank=0  (direct mapping, primary active)
+            - Node(infra=1) → group_rank=1  (direct mapping, primary active)
+            - Node(infra=3) → group_rank=3  (direct mapping, primary active)
+            - Node(infra=4) → group_rank=4  (direct mapping, primary active)
+            - Node(infra=10) → group_rank=2 (promoted to fill gap at rank 2)
+            - Node(infra=11) → group_rank=11 (direct mapping, unpromoted spare)
+
+        Args:
+            participants: List of (node_desc, infra_rank) tuples
+            min_nodes: Minimum number of active nodes
+
+        Returns:
+            Dictionary of node_desc -> assigned_group_rank
+
+        Raises:
+            RuntimeError: If insufficient spare nodes to fill gaps in [0, min_nodes)
+            ValueError: If duplicate infra_ranks detected
+        """
+        result = {}
+        infra_ranks_seen = set()
+        gaps = set(range(min_nodes))  # Start with all primary ranks as potential gaps
+        spare_nodes = []  # Collect spare nodes during iteration
+        
+        # Single pass: Assign ranks, detect duplicates, collect spares, build gaps
+        for node_desc, infra_rank in participants:
+            # Validate infrastructure rank
+            if infra_rank < 0:
+                raise ValueError(
+                    f"Invalid infrastructure rank {infra_rank} for participant {node_desc}. "
+                    f"Expected non-negative integer from SLURM_PROCID or GROUP_RANK."
+                )
+            
+            # Check for duplicate infra_ranks (deployment error)
+            if infra_rank in infra_ranks_seen:
+                raise RuntimeError(
+                    f"Duplicate infrastructure rank {infra_rank} detected. "
+                    f"This indicates a deployment error - each node must have a unique "
+                    f"SLURM_PROCID or GROUP_RANK value."
+                )
+            infra_ranks_seen.add(infra_rank)
+            
+            # Default assignment: group_rank = infra_rank (direct mapping)
+            result[node_desc] = infra_rank
+            
+            if infra_rank < min_nodes:
+                gaps.discard(infra_rank)  # Remove from gaps as we see primary ranks
+            else:
+                spare_nodes.append((node_desc, infra_rank))
+        
+        # Log summary instead of per-participant logs to avoid spam with large participant counts
+        primary_count = min_nodes - len(gaps)
+        log.debug(
+            f"Assigned group_ranks using infra_rank: "
+            f"{primary_count} primary active, {len(spare_nodes)} spare, {len(gaps)} gaps"
+        )
+        
+        # Handle spare nodes: fill gaps (if any) and ensure contiguous group_rank assignment
+        if spare_nodes:
+            # Sort spare nodes by infra_rank for deterministic promotion
+            spare_nodes.sort(key=lambda x: x[1])
+            
+            # Sort gaps for deterministic processing
+            gaps = sorted(gaps)
+            
+            if gaps:
+                # Defensive check: This should never happen because rendezvous guarantees
+                # total_participants >= min_nodes, which means spare_nodes >= gaps
+                # Proof: P + S >= min_nodes => S >= min_nodes - P => S >= gaps
+                assert len(gaps) <= len(spare_nodes), (
+                    f"INTERNAL ERROR: Insufficient spare nodes to fill gaps. "
+                    f"gaps={len(gaps)} at ranks {gaps}, spare_nodes={len(spare_nodes)}. "
+                    f"This should never happen if rendezvous guarantees total_participants >= min_nodes."
+                )
+                
+                # Promote spare nodes to fill gaps
+                for gap_rank, (node_desc, original_infra_rank) in zip(gaps, spare_nodes):
+                    result[node_desc] = gap_rank
+                    log.warning(
+                        f"PROMOTED spare node {node_desc} (infra_rank={original_infra_rank}) to "
+                        f"group_rank={gap_rank} to fill gap caused by hardware failure"
+                    )
+                # Note: Unpromoted spare nodes keep their original infra_rank as group_rank
+                # They were already assigned result[node_desc] = infra_rank in the first pass
+        
         return result
 
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
@@ -458,13 +549,25 @@ class _RendezvousBarrierState:
                 f"This is likely a configuration error - please check max_nodes setting."
             )
 
+        # Determine infrastructure rank
+        infra_rank = -1
+        if self.use_infra_group_rank:
+            # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
+            infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', '-1'))
+            infra_rank = int(infra_rank_str)
+            if infra_rank < 0:
+                raise ValueError(
+                    "use_infra_group_rank is enabled but neither SLURM_PROCID nor GROUP_RANK "
+                    "environment variable is set. Please set one of these environment variables "
+                    "or disable use_infra_group_rank."
+                )
+            log.debug(
+                f"[{node_desc}] Using infrastructure rank {infra_rank} from environment"
+            )
+
         # Store participant information in arrived_<count> key using the unique identifier
         arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
-        # Participants 1 to min_nodes are active, participants min_nodes+1 to max_nodes are standby
-        # Note: _arrived_count starts at 1 (not 0) due to store.add() atomic increment
-        is_active = self._arrived_count <= min_nodes
-        status = ParticipantStatus.ACTIVE if is_active else ParticipantStatus.STANDBY
-        participant_data = RendezvousParticipantInfo.pack(node_desc, status)
+        participant_data = RendezvousParticipantInfo.pack(node_desc, infra_rank)
         self.store.set(arrived_key, participant_data)
 
         # Set initial group rank (unassigned)
@@ -473,7 +576,7 @@ class _RendezvousBarrierState:
         self.store.set(rank_key, f"{GroupRankStatus.UNASSIGNED.value},0".encode('utf-8'))
 
         log.debug(
-            f"[{node_desc}] [Step 1] Joined rendezvous with arrived_count={self._arrived_count}, status={status.value}"
+            f"[{node_desc}] [Step 1] Joined rendezvous with arrived_count={self._arrived_count}"
         )
 
         # Step 2: Wait for rendezvous completion
@@ -589,14 +692,14 @@ class _RendezvousBarrierState:
 
     def get_all_participants(
         self, total_participants: int
-    ) -> List[Tuple[_NodeDesc, ParticipantStatus]]:
+    ) -> List[Tuple[_NodeDesc, int]]:
         """Get all participants that have arrived using multi_get.
 
         Args:
             total_participants: Total number of participants
 
         Returns:
-            List of tuples: (node_desc, status)
+            List of tuples: (node_desc, infra_rank)
         """
         arrived_count = total_participants
 
@@ -613,8 +716,8 @@ class _RendezvousBarrierState:
                 try:
                     # Handle bytes to string conversion
                     participant_data = participant_data_list[i].decode('utf-8')
-                    node_desc, status = RendezvousParticipantInfo.unpack(participant_data)
-                    participants.append((node_desc, status))
+                    node_desc, infra_rank = RendezvousParticipantInfo.unpack(participant_data)
+                    participants.append((node_desc, infra_rank))
                 except Exception as e:
                     log.warning(f"Failed to unpack participant data for arrived_{i+1}: {e}")
 
@@ -661,30 +764,30 @@ class _RendezvousBarrierState:
 
         # Ensure we don't exceed max_nodes
         if total_participants > max_nodes:
-            # This should be rare in practice - likely a user configuration error
-            # We'll process only the first max_nodes participants
-            log.warning(
+            # This indicates a deployment error - fail fast with clear message
+            raise RuntimeError(
                 f"Total participants ({total_participants}) exceeds max_nodes ({max_nodes}). "
-                f"Processing only first {max_nodes} participants. "
-                f"Please check your max_nodes configuration."
+                f"This indicates a deployment/configuration error. Common causes:\n"
+                f"  - SLURM is launching more instances than configured (check SLURM job configuration)\n"
+                f"  - Multiple ft_launcher processes running on the same node\n"
+                f"  - Mismatch between --max-nodes setting and actual node count\n"
+                f"Please verify your deployment configuration and ensure max_nodes matches "
+                f"the actual number of nodes being launched."
             )
-            # Limit to max_nodes participants
-            total_participants = max_nodes
-            all_participants = all_participants[:max_nodes]
 
-        assigned_group_ranks = self._assign_group_ranks_preserving_previous(
-            all_participants, self._prev_participants
+        assigned_group_ranks = self._assign_group_ranks(
+            all_participants, self._prev_participants, min_nodes
         )
 
         # Store the assigned ranks and total participants in the store
-        for i, (node_desc, status) in enumerate(all_participants):
+        for i, (node_desc_item, infra_rank) in enumerate(all_participants):
             rank_key = f"{self.prefix}:arrived_{i+1}_group_rank"
-            assigned_group_rank = assigned_group_ranks.get(node_desc, -1)
+            assigned_group_rank = assigned_group_ranks.get(node_desc_item, -1)
 
             # Ensure every participant gets a valid rank assignment
             if assigned_group_rank == -1:
                 raise RuntimeError(
-                    f"Failed to assign group rank to participant {node_desc}. "
+                    f"Failed to assign group rank to participant {node_desc_item}. "
                     f"This should never happen - all participants should be assigned ranks."
                 )
 
@@ -693,7 +796,7 @@ class _RendezvousBarrierState:
             rank_value = f"{assigned_group_rank},{total_participants}"
             self.store.set(rank_key, rank_value.encode('utf-8'))
 
-        # Save current participants for next round (similar to _ft_rendezvous.py)
+        # Save current participants for next round
         self._prev_participants = assigned_group_ranks.copy()
 
         log.debug(
@@ -739,6 +842,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         local_addr: Optional[str] = None,
         timeout: Optional[RendezvousTimeout] = None,
         is_store_host: bool = False,
+        use_infra_group_rank: bool = True,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -757,6 +861,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 The local node address.
             timeout:
                 The timeout configuration of the rendezvous.
+            is_store_host:
+                Whether this node is the TCPStore host.
+            use_infra_group_rank:
+                Whether to use infrastructure group rank for rank assignment.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -768,6 +876,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             timeout or RendezvousTimeout(),
             keep_alive_interval=timedelta(seconds=5),
             keep_alive_max_attempt=3,
+            use_infra_group_rank=use_infra_group_rank,
         )
 
         return cls(node, settings, "c10d", store, is_store_host)
@@ -799,7 +908,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._backend_name = backend_name
         self._store = store
         self._barrier_state = _RendezvousBarrierState(
-            store, settings.run_id, is_store_host, settings.timeout.join.total_seconds()
+            store,
+            settings.run_id,
+            is_store_host,
+            settings.timeout.join.total_seconds(),
+            settings.use_infra_group_rank,
         )
         self._assigned_rank = None
         self._world_size = None
@@ -1105,6 +1218,9 @@ def create_handler(
     |                   | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
     |                   | 30 seconds.                                          |
     +-------------------+------------------------------------------------------+
+    | use_infra_group_  | Whether to use infrastructure group rank for rank    |
+    | rank              | assignment. Defaults to True.                        |
+    +-------------------+------------------------------------------------------+
     """
     try:
         timeout = RendezvousTimeout(
@@ -1115,6 +1231,7 @@ def create_handler(
 
         # Get is_store_host from parameters
         is_store_host = params.config.get('is_store_host', False)
+        use_infra_group_rank = params.config.get('use_infra_group_rank', True)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -1125,6 +1242,7 @@ def create_handler(
             params.local_addr,
             timeout,
             is_store_host=is_store_host,
+            use_infra_group_rank=use_infra_group_rank,
         )
     except Exception as e:
         construct_and_record_rdzv_event(
