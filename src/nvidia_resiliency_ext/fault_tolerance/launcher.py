@@ -1700,10 +1700,10 @@ def get_args_parser() -> ArgumentParser:
         default="127.0.0.1",
         type=str,
         action=env,
-        help="Address of the master node (rank 0) that only used for static rendezvous. It should "
-        "be either the IP address or the hostname of rank 0. For single node multi-proc training "
-        "the --master-addr can simply be 127.0.0.1; IPv6 should have the pattern "
-        "`[0:0:0:0:0:0:0:1]`.",
+        help="Address of the master node (rank 0) that is used for static and c10d rendezvous backends "
+        "when rdzv_endpoint is not specified. It should be either the IP address or the hostname of rank 0. "
+        "For single node multi-proc training the --master-addr can simply be 127.0.0.1; "
+        "IPv6 should have the pattern `[0:0:0:0:0:0:0:1]`.",
     )
     parser.add_argument(
         "--master-port",
@@ -1712,7 +1712,7 @@ def get_args_parser() -> ArgumentParser:
         type=int,
         action=env,
         help="Port on the master node (rank 0) to be used for communication during distributed "
-        "training. It is only used for static rendezvous.",
+        "training. It is used for static and c10d rendezvous backends when rdzv_endpoint is not specified.",
     )
     parser.add_argument(
         "--local-addr",
@@ -1752,46 +1752,46 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-workload-check-interval",
         "--ft-workload_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_workload_check_interval",
-        help="Part of Fault Tolerance pkg config (workload_check_interval).",
+        help="Part of Fault Tolerance pkg config (workload_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-initial-rank-heartbeat-timeout",
         "--ft-initial_rank_heartbeat_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_initial_rank_heartbeat_timeout",
-        help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout).",
+        help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-rank-heartbeat-timeout",
         "--ft-rank_heartbeat_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_rank_heartbeat_timeout",
-        help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout).",
+        help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-node-health-check-interval",
         "--ft-node_health_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_node_health_check_interval",
-        help="Part of Fault Tolerance pkg config (node_health_check_interval).",
+        help="Part of Fault Tolerance pkg config (node_health_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-safety-factor",
         "--ft-safety_factor",
-        type=float,
+        type=str,
         default=None,
         dest="ft_safety_factor",
-        help="Part of Fault Tolerance pkg config (safety_factor).",
+        help="Part of Fault Tolerance pkg config (safety_factor). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1815,10 +1815,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-rank-out-of-section-timeout",
         "--ft-rank_out_of_section_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_rank_out_of_section_timeout",
-        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout).",
+        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1834,10 +1834,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-restart-check-interval",
         "--ft-restart_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_restart_check_interval",
-        help="Part of Fault Tolerance pkg config (restart_check_interval).",
+        help="Part of Fault Tolerance pkg config (restart_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1855,10 +1855,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-enable-nic-monitor",
         "--ft-enable_nic_monitor",
-        type=lambda x: str(x).lower() in ["true", "1", "yes"],
-        default=True,
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
         dest="ft_enable_nic_monitor",
-        help="Enable or Disable NIC health monitoring in training.",
+        help="Enable or Disable NIC health monitoring in training. Default: False.",
     )
 
     parser.add_argument(
@@ -1878,6 +1878,31 @@ def get_args_parser() -> ArgumentParser:
         dest="ft_link_down_path_template",
         help="Part of Fault Tolerance pkg config (link_down_path_template). "
         "Template path to check if a NIC link is down.",
+    )
+
+    parser.add_argument(
+        "--ft-skip-section-response",
+        "--ft-skip_section_response",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+        default=None,
+        dest="ft_skip_section_response",
+        help="Part of Fault Tolerance pkg config (skip_section_response). "
+        "If enabled (default), section and heartbeat messages are sent without waiting "
+        "for server response, significantly reducing latency. "
+        "Set to false during development to catch programming errors immediately.",
+    )
+
+    parser.add_argument(
+        "--ft-use-infra-group-rank",
+        "--ft-use_infra_group_rank",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_use_infra_group_rank",
+        help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
+        "If enabled, always use infrastructure group rank for rank assignment. "
+        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). Previous assignments "
+        "are ignored to ensure consistency with infrastructure rank assignment. "
+        "Note: Hot spare/redundancy NOT supported. Default: True.",
     )
 
     parser.add_argument(
@@ -1949,7 +1974,7 @@ def determine_local_world_size(nproc_per_node: str):
 
 
 def get_rdzv_endpoint(args):
-    if args.rdzv_backend == "static" and not args.rdzv_endpoint:
+    if (args.rdzv_backend in ["static", "c10d"]) and not args.rdzv_endpoint:
         return f"{args.master_addr}:{args.master_port}"  # noqa: E231
     return args.rdzv_endpoint
 
@@ -2005,9 +2030,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
 
-    if hasattr(args, "master_addr") and args.rdzv_backend != "static" and not args.rdzv_endpoint:
+    if hasattr(args, "master_addr") and args.rdzv_backend not in ["static", "c10d"] and not args.rdzv_endpoint:
         logger.warning(
-            "master_addr is only used for static rdzv_backend and when rdzv_endpoint "
+            "master_addr is only used for static and c10d rdzv_backend when rdzv_endpoint "
             "is not specified."
         )
 
@@ -2046,6 +2071,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
+
+    # Pass use_infra_group_rank from fault tolerance config to rendezvous config
+    rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
