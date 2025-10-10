@@ -364,7 +364,11 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">handle_heartbeat_msg</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">last_hb_time</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
         <span class="k">assert</span> <span class="ow">not</span> <span class="n">msg</span><span class="o">.</span><span class="n">state</span><span class="p">,</span> <span class="s2">&quot;state in heartbeat is not supported in this version&quot;</span>
-        <span class="k">await</span> <span class="n">write_obj_to_ipc_stream</span><span class="p">(</span><span class="n">OkMsg</span><span class="p">(),</span> <span class="n">writer</span><span class="p">)</span>
+
+        <span class="c1"># Only send response if skip_section_response is disabled</span>
+        <span class="c1"># When enabled, client doesn&#39;t expect response (unidirectional)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">skip_section_response</span><span class="p">:</span>
+            <span class="k">await</span> <span class="n">write_obj_to_ipc_stream</span><span class="p">(</span><span class="n">OkMsg</span><span class="p">(),</span> <span class="n">writer</span><span class="p">)</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_section_msg</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">:</span> <span class="n">SectionMsg</span><span class="p">,</span> <span class="n">writer</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
@@ -378,7 +382,12 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">out_of_section_time</span> <span class="o">=</span> <span class="kc">None</span>
                 <span class="n">resp</span> <span class="o">=</span> <span class="n">OkMsg</span><span class="p">()</span>
             <span class="k">else</span><span class="p">:</span>
-                <span class="n">resp</span> <span class="o">=</span> <span class="n">ErrorMsg</span><span class="p">(</span><span class="n">cause</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;Section &#39;</span><span class="si">{</span><span class="n">msg</span><span class="o">.</span><span class="n">section</span><span class="si">}</span><span class="s2">&#39; is already open.&quot;</span><span class="p">)</span>
+                <span class="c1"># Log error but don&#39;t send response when skip_section_response is enabled</span>
+                <span class="n">error_msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;Section &#39;</span><span class="si">{</span><span class="n">msg</span><span class="o">.</span><span class="n">section</span><span class="si">}</span><span class="s2">&#39; is already open.&quot;</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">skip_section_response</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Section error (not sent to client): </span><span class="si">{</span><span class="n">error_msg</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">resp</span> <span class="o">=</span> <span class="n">ErrorMsg</span><span class="p">(</span><span class="n">cause</span><span class="o">=</span><span class="n">error_msg</span><span class="p">)</span>
         <span class="k">elif</span> <span class="n">msg</span><span class="o">.</span><span class="n">action</span> <span class="ow">is</span> <span class="n">SectionAction</span><span class="o">.</span><span class="n">CLOSE</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">section</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="p">:</span>
                 <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="p">[</span><span class="n">msg</span><span class="o">.</span><span class="n">section</span><span class="p">]</span>
@@ -386,14 +395,23 @@
                     <span class="bp">self</span><span class="o">.</span><span class="n">out_of_section_time</span> <span class="o">=</span> <span class="n">current_time</span>
                 <span class="n">resp</span> <span class="o">=</span> <span class="n">OkMsg</span><span class="p">()</span>
             <span class="k">else</span><span class="p">:</span>
-                <span class="n">resp</span> <span class="o">=</span> <span class="n">ErrorMsg</span><span class="p">(</span><span class="n">cause</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;Section &#39;</span><span class="si">{</span><span class="n">msg</span><span class="o">.</span><span class="n">section</span><span class="si">}</span><span class="s2">&#39; is not open.&quot;</span><span class="p">)</span>
+                <span class="c1"># Log error but don&#39;t send response when skip_section_response is enabled</span>
+                <span class="n">error_msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;Section &#39;</span><span class="si">{</span><span class="n">msg</span><span class="o">.</span><span class="n">section</span><span class="si">}</span><span class="s2">&#39; is not open.&quot;</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">skip_section_response</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Section error (not sent to client): </span><span class="si">{</span><span class="n">error_msg</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">resp</span> <span class="o">=</span> <span class="n">ErrorMsg</span><span class="p">(</span><span class="n">cause</span><span class="o">=</span><span class="n">error_msg</span><span class="p">)</span>
         <span class="k">elif</span> <span class="n">msg</span><span class="o">.</span><span class="n">action</span> <span class="ow">is</span> <span class="n">SectionAction</span><span class="o">.</span><span class="n">CLOSE_ALL</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">out_of_section_time</span> <span class="o">=</span> <span class="n">current_time</span>
             <span class="n">resp</span> <span class="o">=</span> <span class="n">OkMsg</span><span class="p">()</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">AssertionError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unknown SectionAction: </span><span class="si">{</span><span class="n">msg</span><span class="o">.</span><span class="n">action</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-        <span class="k">await</span> <span class="n">write_obj_to_ipc_stream</span><span class="p">(</span><span class="n">resp</span><span class="p">,</span> <span class="n">writer</span><span class="p">)</span>
+
+        <span class="c1"># Only send response if skip_section_response is disabled</span>
+        <span class="c1"># When enabled, client doesn&#39;t expect ANY response (true unidirectional)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">skip_section_response</span><span class="p">:</span>
+            <span class="k">await</span> <span class="n">write_obj_to_ipc_stream</span><span class="p">(</span><span class="n">resp</span><span class="p">,</span> <span class="n">writer</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_handle_ipc_connection_lost</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">handle_ipc_connection_lost</span><span class="p">()</span>

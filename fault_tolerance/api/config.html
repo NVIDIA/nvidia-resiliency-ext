@@ -100,7 +100,7 @@
 <span id="config"></span><h1>Config<a class="headerlink" href="#module-nvidia_resiliency_ext.fault_tolerance.config" title="Link to this heading"></a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout=3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout=2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_section_timeouts=&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_out_of_section_timeout=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_health_check_interval=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal=Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level=20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">restart_check_interval=60.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_nic_monitor=True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pci_topo_file=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">link_down_path_template=None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="Link to this definition"></a></dt>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.</span></span><span class="sig-name descname"><span class="pre">FaultToleranceConfig</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">workload_check_interval=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">initial_rank_heartbeat_timeout=3600.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_heartbeat_timeout=2700.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_section_timeouts=&lt;factory&gt;</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_out_of_section_timeout=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">node_health_check_interval=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">safety_factor=5.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_termination_signal=Signals.SIGKILL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">log_level=20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">restart_check_interval=60.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_nic_monitor=False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pci_topo_file=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">link_down_path_template=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_section_response=True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_infra_group_rank=True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/config.html#FaultToleranceConfig"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="Link to this definition"></a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Configuration of the fault tolerance</p>
 <ul class="simple">
@@ -118,14 +118,24 @@ If rank does not send the first heartbeat within <cite>initial_rank_heartbeat_ti
 multiplied by this factor to obtain the timeouts.</p></li>
 <li><p><cite>rank_termination_signal</cite> signal used to terminate the rank when failure is detected.</p></li>
 <li><p><cite>log_level</cite> log level of fault tolerance components</p></li>
-<li><p><cite>rank_section_timeouts</cite> Mapping[str,float|None] timeouts for specific sections in user code.</p></li>
+<li><p><cite>rank_section_timeouts</cite> Mapping[str,float|None] timeouts for specific sections in user code.
+Only sections listed here will send IPC messages to the monitor server and collect timing data.
+Sections not in this mapping will have near-zero overhead (no IPC, no timing collection).</p></li>
 <li><p><cite>rank_out_of_section_timeout</cite> [float|None] the timeout used for implicit/default section,
 that spans code not wrapped in any other section.</p></li>
 <li><p><cite>restart_check_interval</cite> - interval between checks if restart is in progress, needed for layered restart protocol</p></li>
-<li><p><cite>enable_nic_monitor</cite> - Enable NIC health monitoring in training.</p></li>
+<li><p><cite>enable_nic_monitor</cite> - Enable NIC health monitoring in training. Default: False.</p></li>
 <li><p><cite>pci_topo_file</cite> - PCI topo file that describes GPU and NIC topology.</p></li>
 <li><p><cite>link_down_path_template</cite> - Template path for NIC link down files. Should contain ‘{dev_name}’
 placeholder which will be replaced with actual NIC device name.</p></li>
+<li><p><cite>skip_section_response</cite> - If True, section and heartbeat messages are sent without waiting
+for server response (unidirectional communication). This significantly reduces latency for
+high-frequency operations. Server logs errors instead of sending them back.
+Default: True (recommended for production). Set to False during development to catch errors immediately.</p></li>
+<li><p><cite>use_infra_group_rank</cite> - If True, always use infrastructure group rank for rank assignment.
+Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
+rank assignments are ignored to ensure consistency with infrastructure’s rank assignment.
+Note: Hot spare/redundancy is NOT supported with this setting. Default: True.</p></li>
 </ul>
 <p>If any timeout is None, it has no effect (as if it was +INF).
 All timeouts can be deduced and set during runtime.</p>
@@ -145,6 +155,8 @@ All timeouts can be deduced and set during runtime.</p>
 <li><p><strong>enable_nic_monitor</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
 <li><p><strong>pci_topo_file</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
 <li><p><strong>link_down_path_template</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>skip_section_response</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
+<li><p><strong>use_infra_group_rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
 </ul>
 </dd>
 </dl>

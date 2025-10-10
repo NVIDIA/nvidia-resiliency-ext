@@ -125,13 +125,23 @@
 <span class="sd">    * `rank_termination_signal` signal used to terminate the rank when failure is detected.</span>
 <span class="sd">    * `log_level` log level of fault tolerance components</span>
 <span class="sd">    * `rank_section_timeouts` Mapping[str,float|None] timeouts for specific sections in user code.</span>
+<span class="sd">      Only sections listed here will send IPC messages to the monitor server and collect timing data.</span>
+<span class="sd">      Sections not in this mapping will have near-zero overhead (no IPC, no timing collection).</span>
 <span class="sd">    * `rank_out_of_section_timeout` [float|None] the timeout used for implicit/default section,</span>
 <span class="sd">      that spans code not wrapped in any other section.</span>
 <span class="sd">    * `restart_check_interval` - interval between checks if restart is in progress, needed for layered restart protocol</span>
-<span class="sd">    * `enable_nic_monitor` - Enable NIC health monitoring in training.</span>
+<span class="sd">    * `enable_nic_monitor` - Enable NIC health monitoring in training. Default: False.</span>
 <span class="sd">    * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.</span>
 <span class="sd">    * `link_down_path_template` - Template path for NIC link down files. Should contain &#39;{dev_name}&#39;</span>
 <span class="sd">      placeholder which will be replaced with actual NIC device name.</span>
+<span class="sd">    * `skip_section_response` - If True, section and heartbeat messages are sent without waiting</span>
+<span class="sd">      for server response (unidirectional communication). This significantly reduces latency for</span>
+<span class="sd">      high-frequency operations. Server logs errors instead of sending them back.</span>
+<span class="sd">      Default: True (recommended for production). Set to False during development to catch errors immediately.</span>
+<span class="sd">    * `use_infra_group_rank` - If True, always use infrastructure group rank for rank assignment.</span>
+<span class="sd">      Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous</span>
+<span class="sd">      rank assignments are ignored to ensure consistency with infrastructure&#39;s rank assignment.</span>
+<span class="sd">      Note: Hot spare/redundancy is NOT supported with this setting. Default: True.</span>
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
@@ -147,9 +157,11 @@
     <span class="n">rank_termination_signal</span><span class="p">:</span> <span class="n">signal</span><span class="o">.</span><span class="n">Signals</span> <span class="o">=</span> <span class="n">signal</span><span class="o">.</span><span class="n">SIGKILL</span>
     <span class="n">log_level</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">INFO</span>
     <span class="n">restart_check_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">60.0</span>
-    <span class="n">enable_nic_monitor</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">enable_nic_monitor</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="n">pci_topo_file</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">link_down_path_template</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">skip_section_response</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">use_infra_group_rank</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 
 <div class="viewcode-block" id="FaultToleranceConfig.from_kwargs">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs">[docs]</a>
@@ -209,10 +221,36 @@
 
 
     <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_parse_timeout_arg</span><span class="p">(</span><span class="n">timeout_arg</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Parse a timeout CLI argument.</span>
+<span class="sd">        Timeout can be a float or &#39;None&#39;/&#39;null&#39;/&#39;&#39; to represent None.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            timeout_arg (str): The timeout value as a string</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Optional[float]: The parsed timeout value or None</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">timeout_arg</span> <span class="o">=</span> <span class="n">timeout_arg</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">timeout_arg</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;none&#39;</span><span class="p">,</span> <span class="s1">&#39;null&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">]:</span>
+            <span class="k">return</span> <span class="kc">None</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">timeout_arg</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_parse_section_timeouts_arg</span><span class="p">(</span><span class="n">section_timeouts_arg</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]]:</span>
-        <span class="c1"># Parse section timeouts CLI argument, expected format is:</span>
-        <span class="c1"># &quot;section1:timeout1,section2:timeout2,...&quot;</span>
-        <span class="c1"># Timeout can be float or &#39;None&#39;/&#39;null&#39;/&#39;&#39; to represent None.</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Parse section timeouts CLI argument.</span>
+<span class="sd">        Expected format: &quot;section1:timeout1,section2:timeout2,...&quot;</span>
+<span class="sd">        Timeout can be a float or &#39;None&#39;/&#39;null&#39;/&#39;&#39; to represent None.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            section_timeouts_arg (str): The section timeouts string</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Mapping[str, Optional[float]]: Dictionary mapping section names to timeout values</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="n">section_timeouts_arg</span> <span class="o">=</span> <span class="n">section_timeouts_arg</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">section_timeouts_arg</span><span class="p">:</span>
             <span class="k">return</span> <span class="p">{}</span>
@@ -222,10 +260,7 @@
             <span class="n">section</span><span class="p">,</span> <span class="n">timeout</span> <span class="o">=</span> <span class="n">st</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;:&quot;</span><span class="p">)</span>
             <span class="n">section</span> <span class="o">=</span> <span class="n">section</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
             <span class="n">timeout</span> <span class="o">=</span> <span class="n">timeout</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
-            <span class="k">if</span> <span class="n">timeout</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;none&#39;</span><span class="p">,</span> <span class="s1">&#39;null&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">]:</span>
-                <span class="n">res</span><span class="p">[</span><span class="n">section</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-            <span class="k">else</span><span class="p">:</span>
-                <span class="n">res</span><span class="p">[</span><span class="n">section</span><span class="p">]</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
+            <span class="n">res</span><span class="p">[</span><span class="n">section</span><span class="p">]</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_parse_timeout_arg</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">res</span>
 
 <div class="viewcode-block" id="FaultToleranceConfig.from_args">
@@ -256,12 +291,23 @@
 
         <span class="c1"># Extract FT args from CLI</span>
         <span class="n">cli_ft_args</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">timeout_fields</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s1">&#39;initial_rank_heartbeat_timeout&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;rank_heartbeat_timeout&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;rank_out_of_section_timeout&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;workload_check_interval&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;node_health_check_interval&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;safety_factor&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;restart_check_interval&#39;</span><span class="p">,</span>
+        <span class="p">]</span>
         <span class="k">for</span> <span class="n">field</span> <span class="ow">in</span> <span class="n">fields</span><span class="p">(</span><span class="n">FaultToleranceConfig</span><span class="p">):</span>
             <span class="n">cli_field_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;ft_</span><span class="si">{</span><span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span>
             <span class="n">val</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">cli_field_name</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">val</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;rank_section_timeouts&quot;</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">val</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
                     <span class="n">val</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_parse_section_timeouts_arg</span><span class="p">(</span><span class="n">val</span><span class="p">)</span>
+                <span class="k">elif</span> <span class="n">field</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="n">timeout_fields</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">val</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+                    <span class="n">val</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_parse_timeout_arg</span><span class="p">(</span><span class="n">val</span><span class="p">)</span>
                 <span class="n">cli_ft_args</span><span class="p">[</span><span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">val</span>
 
         <span class="c1"># Update config with CLI args</span>

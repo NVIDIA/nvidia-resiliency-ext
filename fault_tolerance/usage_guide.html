@@ -158,6 +158,32 @@ falls below the minimum specified in <code class="docutils literal notranslate">
 without restarting remaining workers, e.g., with the <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a>.
 For details on how <code class="docutils literal notranslate"><span class="pre">min-healthy</span></code> policy interacts with <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a> see <a class="reference internal" href="integration/inprocess.html"><span class="doc">FT Launcher &amp; Inprocess integration</span></a>.</p></li>
 </ul>
+<section id="rank-assignment">
+<h4>Rank assignment<a class="headerlink" href="#rank-assignment" title="Link to this heading"></a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> assigns ranks to workers during the rendezvous process.</p>
+<p><strong>Infrastructure-based assignment (default):</strong></p>
+<p>By default (<code class="docutils literal notranslate"><span class="pre">--ft-use-infra-group-rank=True</span></code>), rank assignments <strong>always</strong> come from the infrastructure:</p>
+<ul class="simple">
+<li><p>The launcher first checks <code class="docutils literal notranslate"><span class="pre">SLURM_PROCID</span></code> (automatically set in SLURM environments)</p></li>
+<li><p>If not available, it falls back to <code class="docutils literal notranslate"><span class="pre">GROUP_RANK</span></code> (set by <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> itself)</p></li>
+</ul>
+<p>Infrastructure ranks are used for <strong>every rendezvous</strong>, including after failures/restarts. Previous
+rank assignments are ignored. This ensures consistency with the infrastructure’s rank assignment,
+which is important for static deployments and proper resource allocation.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Hot spare/redundancy is <strong>NOT supported</strong> with <code class="docutils literal notranslate"><span class="pre">use_infra_group_rank=True</span></code> because dynamic
+rendezvous cannot guarantee that lower infrastructure ranks will join as participants first.</p>
+</div>
+<p><strong>Deterministic assignment (alternative):</strong></p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">--ft-use-infra-group-rank=False</span></code> (or <code class="docutils literal notranslate"><span class="pre">use_infra_group_rank:</span> <span class="pre">false</span></code> in config) to use
+deterministic sorted assignment based on node descriptors. In this mode:</p>
+<ul class="simple">
+<li><p>Previous rank assignments are preserved when possible</p></li>
+<li><p>New workers fill gaps left by failed workers</p></li>
+<li><p>Ranks are reassigned based on sorted node descriptors</p></li>
+</ul>
+</section>
 </section>
 <section id="hang-detection">
 <h3>Hang detection<a class="headerlink" href="#hang-detection" title="Link to this heading"></a></h3>

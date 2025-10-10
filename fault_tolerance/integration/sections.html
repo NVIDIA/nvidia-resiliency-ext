@@ -133,15 +133,16 @@ If needed, consider merging sections (e.g., moving ‘init’ into ‘out-of-sec
 <p>Fixed timeout values can be used throughout the training runs, or timeouts can be calculated based on observed intervals.
 <cite>null</cite> timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.</p>
 <p>Config file example:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="linenos">1</span><span class="nt">fault_tolerance</span><span class="p">:</span>
-<span class="linenos">2</span><span class="w">    </span><span class="nt">initial_rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="linenos">3</span><span class="w">    </span><span class="nt">rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="linenos">4</span><span class="w">    </span><span class="nt">rank_section_timeouts</span><span class="p">:</span>
-<span class="linenos">5</span><span class="w">        </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20</span>
-<span class="linenos">6</span><span class="w">        </span><span class="nt">step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
-<span class="linenos">7</span><span class="w">        </span><span class="nt">checkpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
-<span class="linenos">8</span><span class="w">    </span><span class="nt">rank_out_of_section_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
-<span class="linenos">9</span><span class="w">    </span><span class="nt">log_level</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;DEBUG&quot;</span>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="linenos"> 1</span><span class="nt">fault_tolerance</span><span class="p">:</span>
+<span class="linenos"> 2</span><span class="w">    </span><span class="nt">initial_rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<span class="linenos"> 3</span><span class="w">    </span><span class="nt">rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<span class="linenos"> 4</span><span class="w">    </span><span class="nt">rank_section_timeouts</span><span class="p">:</span>
+<span class="linenos"> 5</span><span class="w">        </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20</span>
+<span class="linenos"> 6</span><span class="w">        </span><span class="nt">step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<span class="linenos"> 7</span><span class="w">        </span><span class="nt">checkpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
+<span class="linenos"> 8</span><span class="w">    </span><span class="nt">rank_out_of_section_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
+<span class="linenos"> 9</span><span class="w">    </span><span class="nt">log_level</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;DEBUG&quot;</span>
+<span class="linenos">10</span><span class="w">    </span><span class="c1"># use_infra_group_rank: true  # Default: Use infrastructure ranks (SLURM_PROCID/GROUP_RANK) on initial rendezvous</span>
 </pre></div>
 </div>
 <p>A summary of all FT configuration items can be found in <a class="reference internal" href="../api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig</span></code></a></p>

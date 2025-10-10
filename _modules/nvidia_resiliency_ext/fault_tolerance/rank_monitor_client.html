@@ -312,6 +312,9 @@
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Implementation of heartbeat sending.</span>
 
+<span class="sd">        If skip_section_response is enabled (default), messages are sent without waiting</span>
+<span class="sd">        for server response (unidirectional communication), reducing latency significantly.</span>
+
 <span class="sd">        Args:</span>
 <span class="sd">            state (Mapping): The state information to be included in the heartbeat message.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
@@ -319,26 +322,67 @@
         <span class="k">try</span><span class="p">:</span>
             <span class="n">hb_msg</span> <span class="o">=</span> <span class="n">HeartbeatMsg</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
             <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">hb_msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
+
+            <span class="c1"># Only wait for response if skip_section_response is disabled</span>
+            <span class="c1"># When enabled, server doesn&#39;t send responses (true unidirectional)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">skip_section_response</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
+
             <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">update_on_heartbeat</span><span class="p">()</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span>
                 <span class="sa">f</span><span class="s2">&quot;RankMonitorClient could not send the heartbeat. Exception: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span>
             <span class="p">)</span>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">_should_monitor_section</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">section</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Check if a section should be monitored (i.e., IPC messages should be sent).</span>
+
+<span class="sd">        A section is monitored if it has a timeout configured in rank_section_timeouts.</span>
+<span class="sd">        Sections without a timeout (not in the config) don&#39;t need IPC overhead.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            section (str): Section name</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if section should be monitored, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># If section is not in config, don&#39;t monitor it</span>
+        <span class="k">if</span> <span class="n">section</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_section_timeouts</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+
+        <span class="k">return</span> <span class="kc">True</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">_send_section_msg_impl</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">section</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">action</span><span class="p">:</span> <span class="n">SectionAction</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Implementation of section related update sending.</span>
+
+<span class="sd">        If a section is not configured for monitoring (not in rank_section_timeouts),</span>
+<span class="sd">        IPC is skipped and local timing data collection is also skipped for minimal overhead.</span>
+
+<span class="sd">        If skip_section_response is enabled (default), messages are sent without waiting</span>
+<span class="sd">        for server response (unidirectional communication), reducing latency significantly.</span>
+<span class="sd">        The server processes messages but doesn&#39;t send responses back.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            section (str): Section name</span>
 <span class="sd">            action (SectionAction): Section related action</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_is_ready</span><span class="p">()</span>
+
+        <span class="c1"># Skip both IPC and timing collection if section is not being monitored</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_should_monitor_section</span><span class="p">(</span><span class="n">section</span><span class="p">):</span>
+            <span class="k">return</span>
+
         <span class="k">try</span><span class="p">:</span>
             <span class="n">msg</span> <span class="o">=</span> <span class="n">SectionMsg</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span> <span class="n">section</span><span class="o">=</span><span class="n">section</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="n">action</span><span class="p">)</span>
             <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
+
+            <span class="c1"># Only wait for response if skip_section_response is disabled</span>
+            <span class="c1"># When enabled, server doesn&#39;t send responses (true unidirectional)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">skip_section_response</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
+
             <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span><span class="o">.</span><span class="n">update_on_section_event</span><span class="p">(</span><span class="n">section</span><span class="o">=</span><span class="n">section</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="n">action</span><span class="p">)</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span>
