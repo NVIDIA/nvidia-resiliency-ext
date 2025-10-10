@@ -118,7 +118,11 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
     
     elif impl_type == "legacy":
         from ._ft_rendezvous import create_handler as create_legacy_handler
+        from .c10d_monkey_patch import apply_c10d_patch
         
+        # Apply monkey patch to add use_libuv support to c10d backend
+        apply_c10d_patch()
+
         def _create_ft_rdzv_handler(params: RendezvousParameters):
             backend, store = create_backend(params)
             return create_legacy_handler(store, backend, params)
