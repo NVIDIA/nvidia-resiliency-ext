@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
-from nvidia_resiliency_ext.attribution.base import NVRxAttribution
+from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
 from nvidia_resiliency_ext.attribution.utils import capture_stdout
 
 logging.basicConfig(level=logging.INFO)
@@ -119,21 +119,25 @@ class CollectiveAnalyzer(NVRxAttribution):
 
     # output handler to print the attribution results
     async def print_output(self, attribution_result: str):
-        # print(attribution_result)
-        for line in attribution_result.split('\n'):
-            logger.info(line)
         hanging_ranks_list = []
-        # If LLM is used, we assume the following format of the output
         if self.llm and self.args.llm_analyze:
+            logger.info(attribution_result)
             hanging_ranks = re.search(r'.*hanging ranks: \{([^}]*)\}', attribution_result)
             if hanging_ranks is not None:
                 # Parse the hanging ranks from the analysis output
                 hanging_ranks_str = hanging_ranks.group(1).strip()
                 hanging_ranks_list = list(map(int, hanging_ranks_str.split(',')))
-        return hanging_ranks_list
+        else:
+            for idx, line in enumerate(attribution_result.split('\n')):
+                line_list = line.split('|')
+                if len(line_list) >= 5:
+                    logger.info(line)
+                    if idx >= 1:
+                        hanging_ranks_list.append(line_list[5])
+        return f"hanging ranks: {hanging_ranks_list}", AttributionState.CONTINUE
 
     # preprocess input to analyze the collective operations
-    async def preprocess_FR_dumps(self, input_data: List[str]):
+    async def preprocess_FR_dumps(self, input_data: List[str]) -> str:
         """
         Analyzes the collective operations across multiple JSON files.
 
@@ -235,7 +239,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         analysis_output = output.getvalue()
         return analysis_output
 
-    async def collective_analysis(self, analysis_output: str, **kwargs):
+    async def collective_analysis(self, analysis_output: str, **kwargs) -> str:
         """
         Analyze the collective operations using a Large Language Model (LLM).
 
