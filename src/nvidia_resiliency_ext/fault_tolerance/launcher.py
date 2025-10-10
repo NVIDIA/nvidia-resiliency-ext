@@ -1752,46 +1752,46 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-workload-check-interval",
         "--ft-workload_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_workload_check_interval",
-        help="Part of Fault Tolerance pkg config (workload_check_interval).",
+        help="Part of Fault Tolerance pkg config (workload_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-initial-rank-heartbeat-timeout",
         "--ft-initial_rank_heartbeat_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_initial_rank_heartbeat_timeout",
-        help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout).",
+        help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-rank-heartbeat-timeout",
         "--ft-rank_heartbeat_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_rank_heartbeat_timeout",
-        help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout).",
+        help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-node-health-check-interval",
         "--ft-node_health_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_node_health_check_interval",
-        help="Part of Fault Tolerance pkg config (node_health_check_interval).",
+        help="Part of Fault Tolerance pkg config (node_health_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-safety-factor",
         "--ft-safety_factor",
-        type=float,
+        type=str,
         default=None,
         dest="ft_safety_factor",
-        help="Part of Fault Tolerance pkg config (safety_factor).",
+        help="Part of Fault Tolerance pkg config (safety_factor). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1815,10 +1815,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-rank-out-of-section-timeout",
         "--ft-rank_out_of_section_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_rank_out_of_section_timeout",
-        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout).",
+        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1834,10 +1834,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-restart-check-interval",
         "--ft-restart_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_restart_check_interval",
-        help="Part of Fault Tolerance pkg config (restart_check_interval).",
+        help="Part of Fault Tolerance pkg config (restart_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1855,10 +1855,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-enable-nic-monitor",
         "--ft-enable_nic_monitor",
-        type=lambda x: str(x).lower() in ["true", "1", "yes"],
-        default=True,
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
         dest="ft_enable_nic_monitor",
-        help="Enable or Disable NIC health monitoring in training.",
+        help="Enable or Disable NIC health monitoring in training. Default: False.",
     )
 
     parser.add_argument(
@@ -1878,6 +1878,31 @@ def get_args_parser() -> ArgumentParser:
         dest="ft_link_down_path_template",
         help="Part of Fault Tolerance pkg config (link_down_path_template). "
         "Template path to check if a NIC link is down.",
+    )
+
+    parser.add_argument(
+        "--ft-skip-section-response",
+        "--ft-skip_section_response",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+        default=None,
+        dest="ft_skip_section_response",
+        help="Part of Fault Tolerance pkg config (skip_section_response). "
+        "If enabled (default), section and heartbeat messages are sent without waiting "
+        "for server response, significantly reducing latency. "
+        "Set to false during development to catch programming errors immediately.",
+    )
+
+    parser.add_argument(
+        "--ft-use-infra-group-rank",
+        "--ft-use_infra_group_rank",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_use_infra_group_rank",
+        help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
+        "If enabled, always use infrastructure group rank for rank assignment. "
+        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). Previous assignments "
+        "are ignored to ensure consistency with infrastructure rank assignment. "
+        "Note: Hot spare/redundancy NOT supported. Default: True.",
     )
 
     parser.add_argument(
@@ -2046,6 +2071,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
+
+    # Pass use_infra_group_rank from fault tolerance config to rendezvous config
+    rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
