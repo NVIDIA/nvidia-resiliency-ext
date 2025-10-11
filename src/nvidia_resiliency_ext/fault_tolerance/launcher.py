@@ -822,7 +822,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Set worker group reference in the rendezvous handler
         # Since we only support c10d backend and replace it with our custom handler,
-        # this will always be FtRendezvousBarrierHandler
+        # this will always be FtRendezvousBarrierHandler or FtRendezvousHandler (legacy)
         spec.rdzv_handler.set_worker_group(worker_group)
 
         # Call the parent class _rendezvous method
