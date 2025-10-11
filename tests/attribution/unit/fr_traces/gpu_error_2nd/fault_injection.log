@@ -1,0 +1,4 @@
+Fault ranks: [9, 14]
+Fault delay: 180.0
+Rank 9, fault_type: GPU_ERROR
+Rank 14, fault_type: GPU_ERROR
