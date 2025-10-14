@@ -7,7 +7,16 @@ TCPStore creates non-daemon background threads that don't terminate properly,
 causing pytest to hang after all tests complete. This hook ensures clean exit.
 """
 
+import logging
 import os
+
+
+def pytest_configure():
+    logging.basicConfig(
+        level=os.getenv('FT_UNIT_TEST_LOGLEVEL', 'DEBUG'),
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 def pytest_sessionfinish(session, exitstatus):

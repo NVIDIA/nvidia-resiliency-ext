@@ -30,17 +30,13 @@ import os
 import threading
 import time
 from datetime import timedelta
-from typing import List, Optional, Tuple
 from unittest import TestCase
-from unittest.mock import MagicMock, Mock, patch
 
 from torch.distributed import TCPStore
 
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     FtRendezvousBarrierHandler,
-    GroupRankStatus,
     RendezvousClosedError,
-    RendezvousSettings,
     RendezvousTimeout,
     RendezvousTimeoutError,
     _NodeDesc,
@@ -52,6 +48,7 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
 TEST_LAST_CALL_TIMEOUT_SECS = 0.2  # seconds - for last_call_timeout (reduced from 0.5)
 TEST_JOIN_TIMEOUT_SECS = 2.0  # seconds - for join timeout (reduced from 5.0)
 TEST_THREAD_JOIN_TIMEOUT_SECS = 5.0  # seconds - for thread.join() timeout (reduced from 10.0)
+
 
 # Helper to create timedelta for tests (named with _ prefix to avoid pytest detection)
 def _test_timeout(seconds=TEST_LAST_CALL_TIMEOUT_SECS):
@@ -75,6 +72,7 @@ class BarrierStateBasicTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         # Reuse the shared store
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
@@ -162,6 +160,7 @@ class Step2CompletionTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_step2_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -261,7 +260,7 @@ class Step2CompletionTest(TestCase):
         # Check that all threads completed successfully
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(len(results), min_nodes)
-        
+
         # Note: We don't check elapsed >= 1.0 because when all min_nodes
         # join simultaneously, any of them might set the completion key
         # immediately after their own deadline expires, making the wait
@@ -339,6 +338,7 @@ class RaceConditionTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_race_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -430,28 +430,29 @@ class RaceConditionTest(TestCase):
 
     def test_late_arrival_after_ack_check_before_key_clear(self):
         """Test late arrival in the critical window: after ack check, before key clearing.
-        
+
         This tests the race condition where:
         1. Store host checks ack_count >= arrived_count (condition satisfied)
         2. Late arrival joins and increments arrived_count
         3. Late arrival acknowledges, incrementing ack_count
         4. Store host clears keys and assigns ranks (may miss the late arrival)
-        
+
         The current design handles this by having store host snapshot the arrived_count
         at the time it checks acknowledgments, ensuring consistent rank assignment.
         """
         min_nodes = 2
         max_nodes = 4
         last_call_timeout = _test_timeout()  # Short timeout for testing
-        
+
         results = []
         errors = []
-        
+
         # Create a synchronization event to control timing
         import threading as th
+
         ack_check_event = th.Event()
         late_arrival_done = th.Event()
-        
+
         def store_host_thread():
             """Store host that signals when it's checking acknowledgments."""
             state = _RendezvousBarrierState(
@@ -462,24 +463,26 @@ class RaceConditionTest(TestCase):
             )
             try:
                 node = self.node_desc_gen.generate()
-                
+
                 # Monkey-patch to inject synchronization point
                 original_assign = state.assign_group_ranks
+
                 def instrumented_assign(*args, **kwargs):
                     # Signal that we're about to check/assign (after ack check)
                     ack_check_event.set()
                     # Give late arrival a chance to join in the critical window
                     time.sleep(0.02)  # Minimal delay to test race condition
                     return original_assign(*args, **kwargs)
+
                 state.assign_group_ranks = instrumented_assign
-                
+
                 rank, total = state.perform_rendezvous(
                     node, min_nodes, max_nodes, last_call_timeout
                 )
                 results.append(('host', rank, total))
             except Exception as e:
                 errors.append(('host', e))
-        
+
         def regular_participant_thread():
             """Regular participant."""
             state = _RendezvousBarrierState(
@@ -496,12 +499,12 @@ class RaceConditionTest(TestCase):
                 results.append(('regular', rank, total))
             except Exception as e:
                 errors.append(('regular', e))
-        
+
         def late_arrival_thread():
             """Late arrival that joins after ack check but before key clear."""
             # Wait for the ack check to happen
             ack_check_event.wait(timeout=10)
-            
+
             state = _RendezvousBarrierState(
                 store=self.store,
                 run_id=self.run_id,
@@ -519,37 +522,38 @@ class RaceConditionTest(TestCase):
                 errors.append(('late', e))
             finally:
                 late_arrival_done.set()
-        
+
         # Start regular participants
         t_host = th.Thread(target=store_host_thread)
         t_regular = th.Thread(target=regular_participant_thread)
         t_late = th.Thread(target=late_arrival_thread)
-        
+
         t_host.start()
         t_regular.start()
         t_late.start()
-        
+
         t_host.join(timeout=15)
         t_regular.join(timeout=15)
         t_late.join(timeout=15)
-        
+
         # Check results
         # The late arrival should either:
         # 1. Be included in the current round if it joined before snapshot, OR
         # 2. Timeout/restart if it missed the window
         # Both behaviors are acceptable as long as no deadlock occurs
-        
+
         # At minimum, the first 2 participants should complete
         successful_results = [r for r in results if r is not None]
-        self.assertGreaterEqual(len(successful_results), min_nodes,
-                               "At least min_nodes should complete successfully")
-        
+        self.assertGreaterEqual(
+            len(successful_results), min_nodes, "At least min_nodes should complete successfully"
+        )
+
         # If late arrival completed, verify it got a valid rank
         late_results = [r for r in results if r[0] == 'late']
         if late_results:
             _, late_rank, late_total = late_results[0]
             self.assertGreaterEqual(late_rank, 0, "Late arrival should get valid rank if included")
-    
+
     def test_multiple_completion_signals(self):
         """Test that multiple participants can try to set completion key (idempotent)."""
         state = _RendezvousBarrierState(
@@ -592,6 +596,7 @@ class StoreHostBehaviorTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_host_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -619,9 +624,7 @@ class StoreHostBehaviorTest(TestCase):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             node = self.node_desc_gen.generate()
-            rank, total = state.perform_rendezvous(
-                node, min_nodes, max_nodes, last_call_timeout
-            )
+            rank, total = state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
             results.append((participant_id, rank, total))
 
         threads = []
@@ -715,6 +718,7 @@ class GroupRankAssignmentTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_rank_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -846,6 +850,7 @@ class ErrorCaseTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_error_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -995,6 +1000,7 @@ class AcknowledgmentPhaseTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_ack_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -1100,6 +1106,7 @@ class HandlerIntegrationTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_handler_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -1138,7 +1145,7 @@ class HandlerIntegrationTest(TestCase):
         # - Error cases (ErrorCaseTest)
         # - Acknowledgment phase (AcknowledgmentPhaseTest)
         # - Infrastructure rank handling (InfrastructureRankTest)
-        
+
         # This test verifies the components work together, which is already covered above
         self.assertTrue(True, "Core functionality tested by other test classes")
 
@@ -1159,6 +1166,7 @@ class InfrastructureRankTest(TestCase):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_infra_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -1173,7 +1181,7 @@ class InfrastructureRankTest(TestCase):
         # Note: This is a simplified test of infra rank assignment logic
         # Testing with actual environment variables in threads is complex due to
         # shared environment. The actual behavior is tested in functional tests.
-        
+
         # Test the assignment logic directly with simulated participants
         state = _RendezvousBarrierState(
             store=self.store,
@@ -1227,5 +1235,5 @@ class InfrastructureRankTest(TestCase):
 
 if __name__ == '__main__':
     import unittest
-    unittest.main()
 
+    unittest.main()

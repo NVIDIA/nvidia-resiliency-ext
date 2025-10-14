@@ -53,8 +53,6 @@ class FaultToleranceConfig:
     * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
     * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
       placeholder which will be replaced with actual NIC device name.
-    * `enable_rank_monitors` - Enable or disable rank monitor setup. When disabled, rank monitors
-      will not be started, which is useful for simulation environments.
     * `skip_section_response` - If True, section and heartbeat messages are sent without waiting
       for server response (unidirectional communication). This significantly reduces latency for
       high-frequency operations. Server logs errors instead of sending them back.
@@ -81,7 +79,6 @@ class FaultToleranceConfig:
     enable_nic_monitor: bool = False
     pci_topo_file: Optional[str] = None
     link_down_path_template: Optional[str] = None
-    enable_rank_monitors: bool = True
     skip_section_response: bool = True
     use_infra_group_rank: bool = True
 

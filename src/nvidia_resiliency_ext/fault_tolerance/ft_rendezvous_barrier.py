@@ -247,7 +247,7 @@ class RendezvousParticipantInfo:
     @staticmethod
     def unpack(data: str) -> Tuple[_NodeDesc, int]:
         """Unpack participant information from JSON format.
-        
+
         Returns:
             Tuple of (node_desc, infra_rank)
         """
@@ -302,6 +302,7 @@ class _RendezvousBarrierState:
         self.use_infra_group_rank = use_infra_group_rank
         self._rendezvous_start_time = None
         self._prev_participants = {}  # Store previous round's participants and their ranks
+        self._attempted_open = False  # Track if this node tried to open rendezvous
 
         # Key prefixes for the barrier
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
@@ -309,6 +310,13 @@ class _RendezvousBarrierState:
         self.last_participant_arrived_key = f"{self.prefix}:last_participant_arrived"
         self.ack_count_key = f"{self.prefix}:ack_count"
         self.closed_key = f"{self.prefix}:closed"
+
+        # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist
+        # This key is always present and serves as the open/close indicator:
+        #   0 = rendezvous is OPEN (accepting new participants)
+        #   1 = rendezvous is CLOSED (training in progress, hot spares should wait)
+        if not self.store.check([self.last_participant_arrived_key]):
+            self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
 
     def _assign_group_ranks(
         self,
@@ -333,13 +341,13 @@ class _RendezvousBarrierState:
         # First min_nodes arrivals are active (ranks 0 to min_nodes-1)
         # Later arrivals are standby (sequential ranks starting from min_nodes)
         # Note: len(participants) >= min_nodes is guaranteed by rendezvous completion logic
-        
+
         result = {}
         active_count = min_nodes
-        
+
         # Sort all participants by node_desc for deterministic assignment
         sorted_participants = sorted(participants, key=lambda x: x[0])
-        
+
         # Pass 1: Try to preserve previous ranks for active participants (first min_nodes)
         free_ranks = set(range(active_count))
         for idx, (node_desc, _) in enumerate(sorted_participants):
@@ -354,20 +362,20 @@ class _RendezvousBarrierState:
             else:
                 # Standby participant - sequential assignment
                 result[node_desc] = idx
-        
+
         # Pass 2: Assign free ranks to unassigned active participants
         if free_ranks:
             free_ranks = sorted(free_ranks)
             for idx, (node_desc, _) in enumerate(sorted_participants[:active_count]):
                 if result[node_desc] == -1:
                     result[node_desc] = free_ranks.pop(0)
-        
+
         standby_count = len(sorted_participants) - active_count
         log.debug(
             f"Assigned group_ranks by arrival order: "
             f"{active_count} active, {standby_count} standby"
         )
-        
+
         return result
 
     def _assign_group_ranks_with_infra_rank(
@@ -404,7 +412,7 @@ class _RendezvousBarrierState:
         infra_ranks_seen = set()
         gaps = set(range(min_nodes))  # Start with all primary ranks as potential gaps
         spare_nodes = []  # Collect spare nodes during iteration
-        
+
         # Single pass: Assign ranks, detect duplicates, collect spares, build gaps
         for node_desc, infra_rank in participants:
             # Validate infrastructure rank
@@ -413,7 +421,7 @@ class _RendezvousBarrierState:
                     f"Invalid infrastructure rank {infra_rank} for participant {node_desc}. "
                     f"Expected non-negative integer from SLURM_PROCID or GROUP_RANK."
                 )
-            
+
             # Check for duplicate infra_ranks (deployment error)
             if infra_rank in infra_ranks_seen:
                 raise RuntimeError(
@@ -422,30 +430,30 @@ class _RendezvousBarrierState:
                     f"SLURM_PROCID or GROUP_RANK value."
                 )
             infra_ranks_seen.add(infra_rank)
-            
+
             # Default assignment: group_rank = infra_rank (direct mapping)
             result[node_desc] = infra_rank
-            
+
             if infra_rank < min_nodes:
                 gaps.discard(infra_rank)  # Remove from gaps as we see primary ranks
             else:
                 spare_nodes.append((node_desc, infra_rank))
-        
+
         # Log summary instead of per-participant logs to avoid spam with large participant counts
         primary_count = min_nodes - len(gaps)
         log.debug(
             f"Assigned group_ranks using infra_rank: "
             f"{primary_count} primary active, {len(spare_nodes)} spare, {len(gaps)} gaps"
         )
-        
+
         # Handle spare nodes: fill gaps (if any) and ensure contiguous group_rank assignment
         if spare_nodes:
             # Sort spare nodes by infra_rank for deterministic promotion
             spare_nodes.sort(key=lambda x: x[1])
-            
+
             # Sort gaps for deterministic processing
             gaps = sorted(gaps)
-            
+
             if gaps:
                 # Defensive check: This should never happen because rendezvous guarantees
                 # total_participants >= min_nodes, which means spare_nodes >= gaps
@@ -455,7 +463,7 @@ class _RendezvousBarrierState:
                     f"gaps={len(gaps)} at ranks {gaps}, spare_nodes={len(spare_nodes)}. "
                     f"This should never happen if rendezvous guarantees total_participants >= min_nodes."
                 )
-                
+
                 # Promote spare nodes to fill gaps
                 for gap_rank, (node_desc, original_infra_rank) in zip(gaps, spare_nodes):
                     result[node_desc] = gap_rank
@@ -465,7 +473,7 @@ class _RendezvousBarrierState:
                     )
                 # Note: Unpromoted spare nodes keep their original infra_rank as group_rank
                 # They were already assigned result[node_desc] = infra_rank in the first pass
-        
+
         return result
 
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
@@ -493,6 +501,84 @@ class _RendezvousBarrierState:
             )
             log.error(msg)
             raise RendezvousTimeoutError(msg)
+
+    def _wait_for_rendezvous_open(self, node_desc: _NodeDesc) -> None:
+        """Step 0: Wait if rendezvous is closed. Hot spares will wait here.
+
+        This prevents hot spares that arrive late from disrupting ongoing training.
+        The rendezvous is considered:
+        - OPEN (value=0): Accepting new participants for a new rendezvous round
+        - CLOSED (value=1): Training in progress, wait for next round
+
+        Args:
+            node_desc: Node descriptor for logging
+
+        Raises:
+            RendezvousClosedError: If rendezvous is explicitly closed (not just waiting)
+
+        Note:
+            This wait does NOT timeout unless the rendezvous is explicitly closed.
+            Hot spares can wait indefinitely until a failure opens a new round.
+
+            DEADLOCK PREVENTION:
+            If this node previously tried to open but was deferred (because arrived_count_key
+            existed), it will retry opening periodically. This prevents deadlock where:
+            1. Node fails after training starts
+            2. Tries to open but defers (Step 3b in progress)
+            3. Store host clears keys (slow)
+            4. Node stuck waiting, but arrived_count_key now gone
+            Without retry, no one would know to open for this node.
+        """
+        wait_count = 0
+        logged_waiting = False  # Track if we've logged the waiting message
+
+        while True:
+            # Check for explicit closure (permanent shutdown)
+            if self.is_closed():
+                msg = f"The node '{node_desc}' detected that rendezvous was closed"
+                log.info(msg)
+                raise RendezvousClosedError(msg)
+
+            # Read the open/close indicator
+            # The key is always present (initialized in __init__)
+            value_bytes = self.store.get(self.last_participant_arrived_key)
+            value = int(value_bytes.decode('utf-8'))
+
+            if value == 0:
+                # Rendezvous is open, can proceed
+                log.debug(
+                    f"[{node_desc}] [Step 0] Rendezvous is open (value=0), proceeding to join"
+                )
+                break
+
+            # value == 1: Rendezvous is closed (training in progress)
+            # Log once when we first start waiting, then every 60 seconds
+            if not logged_waiting:
+                log.info(
+                    f"[{node_desc}] [Step 0] Rendezvous closed (training in progress), waiting..."
+                )
+                logged_waiting = True
+            elif wait_count % 60 == 0:  # Log every 60 seconds
+                log.debug(
+                    f"[{node_desc}] [Step 0] Still waiting for rendezvous to open "
+                    f"(waited {wait_count} seconds)"
+                )
+
+            # Retry opening every 10 seconds ONLY if we previously attempted to open
+            # This distinguishes between:
+            # - Failed nodes that tried to open but were deferred → SHOULD retry
+            # - Hot spares that never tried to open → SHOULD NOT retry (would disrupt training!)
+            wait_count += 1
+            if self._attempted_open and wait_count % 10 == 0:  # Every 10 seconds
+                log.debug(
+                    f"[{node_desc}] [Step 0] Retrying open_rendezvous() "
+                    f"(this node previously attempted to open and was deferred)"
+                )
+                self.open_rendezvous()
+                # If open succeeds, value will be 0 on next iteration and we'll break
+                # If still deferred, we keep waiting
+
+            time.sleep(1.0)  # Poll every 1 second
 
     def perform_rendezvous(
         self, node_desc: _NodeDesc, min_nodes: int, max_nodes: int, last_call_timeout: timedelta
@@ -522,6 +608,11 @@ class _RendezvousBarrierState:
            - This prevents premature completion when nodes are in the process of joining
            - The timeout balances responsiveness with inclusion of restarting nodes
 
+        5. HOT SPARE HANDLING (Step 0):
+           - Hot spares arriving after training starts will wait at Step 0
+           - They wait until a failure opens the rendezvous (value=0)
+           - This prevents disruption of ongoing training
+
         Args:
             node_desc: Node descriptor for this participant
             min_nodes: Minimum number of nodes required for training to proceed
@@ -531,11 +622,13 @@ class _RendezvousBarrierState:
         Returns:
             Tuple of (group_rank, total_participants)
         """
-        # Check if rendezvous is closed
-        if self.is_closed():
-            raise RendezvousClosedError()
+        # Step 0: Wait if rendezvous is closed (training in progress)
+        # Hot spares arriving late will wait here until a failure opens a new round
+        # Note: This also checks for explicit closure (is_closed()), no need to check again
+        self._wait_for_rendezvous_open(node_desc)
 
         # Record start time for timeout monitoring
+        # Start timing AFTER Step 0 completes, since hot spares may wait indefinitely at Step 0
         self._rendezvous_start_time = time.monotonic()
 
         # Step 1: Join the rendezvous and get unique identifier
@@ -561,9 +654,7 @@ class _RendezvousBarrierState:
                     "environment variable is set. Please set one of these environment variables "
                     "or disable use_infra_group_rank."
                 )
-            log.debug(
-                f"[{node_desc}] Using infrastructure rank {infra_rank} from environment"
-            )
+            log.debug(f"[{node_desc}] Using infrastructure rank {infra_rank} from environment")
 
         # Store participant information in arrived_<count> key using the unique identifier
         arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
@@ -589,7 +680,14 @@ class _RendezvousBarrierState:
             self._check_timeout_and_closure(node_desc)
 
             # Check if rendezvous is already complete
-            if self.store.check([self.last_participant_arrived_key]):
+            # IMPORTANT: We check the VALUE, not just existence, since the key is always present
+            # Value "1" means complete, value "0" means open/in-progress
+            value_bytes = self.store.get(self.last_participant_arrived_key)
+            value = int(value_bytes.decode('utf-8'))
+            if value == 1:
+                log.debug(
+                    f"[{node_desc}] [Step 2] Detected rendezvous completion (last_participant_arrived_key=1)"
+                )
                 break
 
             # Check if we should mark completion now
@@ -629,9 +727,6 @@ class _RendezvousBarrierState:
 
         # Step 3b: TCPStore host participant waits for all acknowledgments, assigns ranks, and clears keys
         if self.is_store_host:
-            log.debug(
-                f"[{node_desc}] [Step 3b] Store host waiting for acknowledgments and assigning ranks"
-            )
             while True:
                 # Check for early closure and timeout
                 self._check_timeout_and_closure(node_desc)
@@ -641,17 +736,17 @@ class _RendezvousBarrierState:
                 total_participants = int(self.store.get(self.arrived_count_key))
                 if current_count >= total_participants:
                     log.debug(
-                        f"[{node_desc}] [Step 3b] All {total_participants} participants acknowledged (ack_count={current_count}), proceeding to rank assignment"
+                        f"[{node_desc}] [Step 3b] All {total_participants} participants acknowledged (ack_count={current_count}), proceeding to clear keys and assign ranks"
                     )
 
-                    # Clear barrier keys before group rank assignments. So other
-                    # launchers would not think new participants are joining during rank assignment.
-                    log.debug(
-                        f"[{node_desc}] [Step 3b] Clearing barrier keys before rank assignment to prevent race conditions"
-                    )
+                    # Clear barrier keys first to prevent false positives in launcher's
+                    # num_nodes_waiting() detection. If arrived_count_key persists after
+                    # participants return to training, launcher may incorrectly detect a
+                    # new rendezvous and trigger unnecessary restarts.
                     self._clear_barrier_keys(node_desc)
 
-                    # Assign group ranks to all participants
+                    # Assign group ranks after clearing keys
+                    # New comers are blocked at Step 0 by closed rendezvous, so no race condition
                     self.assign_group_ranks(min_nodes, max_nodes, total_participants, node_desc)
                     break
 
@@ -685,14 +780,16 @@ class _RendezvousBarrierState:
                 log.debug(
                     f"[{node_desc}] [Step 4] Received group rank {rank}, total participants {total_participants}"
                 )
+                # Reset the attempted_open flag after successful rendezvous completion
+                # This ensures the flag only applies to the current rendezvous attempt
+                # On the next rendezvous, if this node is late, it should behave like a hot spare
+                self._attempted_open = False
                 return rank, total_participants
 
             # Delay before next check
             time.sleep(1)
 
-    def get_all_participants(
-        self, total_participants: int
-    ) -> List[Tuple[_NodeDesc, int]]:
+    def get_all_participants(self, total_participants: int) -> List[Tuple[_NodeDesc, int]]:
         """Get all participants that have arrived using multi_get.
 
         Args:
@@ -724,10 +821,15 @@ class _RendezvousBarrierState:
         return participants
 
     def _clear_barrier_keys(self, node_desc: _NodeDesc):
-        """Clear main barrier keys."""
+        """Clear main barrier keys to prepare for next rendezvous round.
+
+        Note: We do NOT clear last_participant_arrived_key because it serves as the
+        open/close indicator for the rendezvous. It remains set to 1 (closed) during
+        training and is reset to 0 (open) by the launcher when a failure is detected.
+        """
         # Clear main keys - individual arrived_<count> keys don't need clearing
+        # DO NOT clear last_participant_arrived_key - it indicates open/close state
         keys_to_clear = [
-            self.last_participant_arrived_key,
             self.arrived_count_key,
             self.ack_count_key,
         ]
@@ -738,10 +840,6 @@ class _RendezvousBarrierState:
                 self.store.delete_key(key)
             except Exception as e:
                 log.debug(f"[{node_desc}] Failed to delete key {key}: {e}")
-
-        log.debug(
-            f"[{node_desc}] [Step 3b] Cleared {len(keys_to_clear)} barrier keys: {keys_to_clear}"
-        )
 
     def assign_group_ranks(
         self, min_nodes: int, max_nodes: int, total_participants: int, node_desc: _NodeDesc
@@ -816,6 +914,50 @@ class _RendezvousBarrierState:
             self.store.set(self.closed_key, "1".encode('utf-8'))
         except Exception as e:
             log.error(f"Failed to set closed: {e}")
+
+    def open_rendezvous(self):
+        """Open rendezvous for new participants to join (typically after failure detection).
+
+        This is called by the launcher when it detects a worker failure and needs to
+        restart. Setting last_participant_arrived_key to 0 signals to all participants
+        (including hot spares waiting at Step 0) that a new rendezvous round can begin.
+
+        RACE CONDITION PROTECTION:
+        We check if a rendezvous is currently in progress or being finalized.
+        If arrived_count_key exists, it means:
+        - Either a rendezvous is actively in progress (Step 1-2), OR
+        - Step 3b is in progress but hasn't cleared the keys yet
+        In this case, we DO NOT modify last_participant_arrived_key to avoid
+        racing with the active rendezvous.
+
+        BEHAVIOR AFTER DEFER:
+        The calling node will proceed to Step 0 and check last_participant_arrived_key:
+        - If value=0 (rendezvous still open/joining), node can join the current rendezvous
+        - If value=1 (rendezvous complete):
+          * If this node called open_rendezvous() → will retry opening every 10 seconds
+          * If this node never called open_rendezvous() (hot spare) → will wait passively
+        """
+        # Mark that this node attempted to open (for retry logic in Step 0)
+        self._attempted_open = True
+
+        # Check if a rendezvous is in progress or being finalized
+        # If arrived_count_key exists, it means participants are joining (Step 1) or
+        # finalizing (Step 3b before clearing). The key only exists with value >= 1.
+        if self.store.check([self.arrived_count_key]):
+            log.debug(
+                "open_rendezvous() deferred - rendezvous in progress. "
+                "Not modifying last_participant_arrived_key to avoid race with active rendezvous. "
+                "The node may still join the current rendezvous if it's still open (value=0)."
+            )
+            # Don't modify last_participant_arrived_key - let the current rendezvous manage it
+            # The calling node will check the value at Step 0:
+            # - If value=0 (still joining), the node can join the current rendezvous
+            # - If value=1 (completed), the node will wait for the next round
+            return
+
+        # Safe to open - no rendezvous in progress
+        self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
+        log.info(f"Opened rendezvous for new round (set {self.last_participant_arrived_key}=0)")
 
 
 class FtRendezvousBarrierHandler(RendezvousHandler):

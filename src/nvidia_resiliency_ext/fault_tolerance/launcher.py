@@ -98,7 +98,7 @@ logger = logging.getLogger(LogConfig.name)
 
 def _register_ft_rdzv_handler(impl_type: str = "barrier"):
     """Register the fault-tolerant rendezvous handler.
-    
+
     Args:
         impl_type: FT rendezvous implementation to use.
                   "barrier" - New atomic barrier-based algorithm (default)
@@ -109,26 +109,26 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
 
     if impl_type == "barrier":
         from .ft_rendezvous_barrier import create_handler as create_barrier_handler
-        
+
         def _create_ft_rdzv_handler(params: RendezvousParameters):
             backend, store = create_backend(params)
             return create_barrier_handler(store, backend, params)
-        
+
         logger.info("Using barrier-based FT rendezvous implementation (ft_rendezvous_barrier.py)")
-    
+
     elif impl_type == "legacy":
         from ._ft_rendezvous import create_handler as create_legacy_handler
         from .c10d_monkey_patch import apply_c10d_patch
-        
+
         # Apply monkey patch to add use_libuv support to c10d backend
         apply_c10d_patch()
 
         def _create_ft_rdzv_handler(params: RendezvousParameters):
             backend, store = create_backend(params)
             return create_legacy_handler(store, backend, params)
-        
+
         logger.info("Using legacy FT rendezvous implementation (_ft_rendezvous.py)")
-    
+
     else:
         raise ValueError(f"Unknown FT rendezvous implementation: {impl_type}. Must be 'barrier' or 'legacy'.")
 
@@ -306,6 +306,26 @@ class LocalElasticAgent(SimpleElasticAgent):
             # record the execution time in case there were any exceptions during run.
             self._total_execution_time = int(time.monotonic() - start_time)
 
+    def _open_rendezvous_for_restart(self):
+        """Open rendezvous for restart when using barrier-based rendezvous.
+
+        This method is called when a failure is detected and we need to restart workers.
+        For barrier-based rendezvous, it sets last_participant_arrived_key=0 to signal
+        that a new rendezvous round can begin, allowing hot spares and restarting nodes
+        to join.
+        """
+        # Only applies to barrier-based rendezvous implementation
+        if hasattr(self._rdzv_handler, '_barrier_state'):
+            try:
+                self._rdzv_handler._barrier_state.open_rendezvous()
+                logger.info(
+                    "[group_rank=%s] Opened rendezvous for restart (barrier-based rendezvous)",
+                    self._worker_group.group_rank if self._worker_group else "N/A"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to open rendezvous: {e}")
+        # For legacy rendezvous, no action needed - it uses different mechanism
+
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         if self._restart_policy == 'any-failed':
             return self._invoke_run_with_any_failed_policy(role)
@@ -367,6 +387,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                         spec.max_restarts,
                     )
                     self._remaining_restarts -= 1
+                    # Open rendezvous before restarting (for barrier-based rendezvous)
+                    self._open_rendezvous_for_restart()
                     self._restart_workers(self._worker_group)
                 else:
                     self._stop_workers(self._worker_group)
@@ -396,6 +418,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                         num_nodes_waiting,
                         group_rank,
                     )
+                    # Note: For barrier-based rendezvous, the detected node already opened
+                    # the rendezvous (set last_participant_arrived_key=0) before incrementing
+                    # arrived_count_key, so we don't need to open it again here.
                     self._restart_workers(self._worker_group)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
@@ -493,6 +518,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                         f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
                     )
                     self._remaining_restarts -= 1
+                    # Open rendezvous before restarting (for barrier-based rendezvous)
+                    self._open_rendezvous_for_restart()
                     self._restart_workers(self._worker_group)
                 else:
                     # try to stop the workers and return the updated run result
@@ -505,10 +532,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
-        # Skip rank monitor setup if disabled in configuration
-        if not self._ft_cfg.enable_rank_monitors:
-            return
-
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
         for worker_env in envs.values():
             # Start rank monitors if not already started
@@ -1875,15 +1898,6 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_enable_nic_monitor",
         help="Enable or Disable NIC health monitoring in training. Default: False.",
-    )
-
-    parser.add_argument(
-        "--ft-enable-rank-monitors",
-        "--ft-enable_rank_monitors",
-        type=lambda x: str(x).lower() in ["true", "1", "yes"],
-        default=True,
-        dest="ft_enable_rank_monitors",
-        help="Enable or disable rank monitor setup. When disabled, rank monitors will not be started, which is useful for simulation environments.",
     )
 
     parser.add_argument(
