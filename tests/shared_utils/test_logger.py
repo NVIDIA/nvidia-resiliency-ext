@@ -246,9 +246,6 @@ class TestLogger(unittest.TestCase):
     def test_traceback_msg(self):
         self.check_msg(2, 1024, 1, True, "error", "0")
 
-    def test_traceback_msg(self):
-        self.check_msg(2, 1024, 1, True, "error", "0")
-
     def test_single_dbg_msg(self):
         self.check_msg(
             num_msg=1, file_size_kb=1024, pm_files=1, is_agg=True, log_type="debug", dbg_on="1"
