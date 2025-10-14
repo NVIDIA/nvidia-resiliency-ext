@@ -810,7 +810,9 @@
 <span class="sd">            abort (bool, optional): Default to False. Needs to be manually set to true when</span>
 <span class="sd">                the checkpoint async process needs to be aborted.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="n">abort</span><span class="p">:</span>
+        <span class="c1"># For a clean shut down scenario with valid async processes running,</span>
+        <span class="c1"># finalize all pending async calls</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">abort</span> <span class="ow">and</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">persistent</span> <span class="ow">is</span> <span class="kc">False</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">):</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="n">abort</span><span class="o">=</span><span class="n">abort</span><span class="p">)</span>
