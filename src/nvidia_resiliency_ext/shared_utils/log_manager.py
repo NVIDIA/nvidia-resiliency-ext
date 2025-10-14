@@ -99,6 +99,7 @@ from nvidia_resiliency_ext.shared_utils.log_node_local_tmp import (
     DynamicLogFormatter,
     NodeLocalTmpLogHandler,
 )
+from nvidia_resiliency_ext.shared_utils.os_utils import validate_directory
 
 
 class LogConfig:
@@ -242,6 +243,7 @@ class LogManager:
 
         if self.node_local_tmp_logging_enabled:
             os.makedirs(self._node_local_tmp_dir, exist_ok=True)
+            validate_directory(self._node_local_tmp_dir)
             handler = NodeLocalTmpLogHandler(
                 self.workload_local_rank,
                 self._node_local_tmp_dir,

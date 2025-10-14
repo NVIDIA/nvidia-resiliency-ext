@@ -12,36 +12,18 @@ jobs:
   build_wheels:
     runs-on: ubuntu-24.04
     container:
-      image: 'nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04'
+      image: 'ghcr.io/nvidia/nvidia-resiliency-ext/builder_amd64:cuda-12.4.1-cudnn-devel-ubuntu20.04'
     steps:
-      - name: Update GCC
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          apt update && apt install -y build-essential gcc-10 g++-10
-      - name: Install Python versions and pips
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          apt update && apt install -y software-properties-common curl
-          add-apt-repository ppa:deadsnakes/ppa
-          apt-get install -y python3.10 python3.10-dev
-          apt-get install -y python3.11 python3.11-dev
-          apt-get install -y python3.12 python3.12-dev
-          curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
-          curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
-          curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Build wheel with Python 3.10
         run: |
-          python3.10 -m pip install -U setuptools poetry build six pybind11
           python3.10 -m poetry build -f wheel
       - name: Build wheel with Python 3.11
         run: |
-          python3.11 -m pip install -U setuptools poetry build six pybind11
           python3.11 -m poetry build -f wheel
       - name: Build wheel with Python 3.12
         run: |
-          python3.12 -m pip install -U setuptools poetry build six pybind11
           python3.12 -m poetry build -f wheel
       - name: Upload the wheel artifact
         uses: actions/upload-artifact@v4

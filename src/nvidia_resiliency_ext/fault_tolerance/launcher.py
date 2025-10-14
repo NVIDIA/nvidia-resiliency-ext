@@ -76,6 +76,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -101,6 +102,10 @@ def _register_ft_rdzv_handler():
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
     from ._ft_rendezvous import FtRendezvousHandler, create_handler
+    from .c10d_monkey_patch import apply_c10d_patch
+
+    # Apply monkey patch to add use_libuv support to c10d backend
+    apply_c10d_patch()
 
     def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousHandler:
         backend, store = create_backend(params)
@@ -138,7 +143,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     python multiprocessing compatible. To pass multiprocessing data structures
     to the workers you may create the data structure in the same multiprocessing
     context as the specified ``start_method`` and pass it as a function argument.
-    
+
     Note: If your training script uses the nvrx logger, make sure to call
     ``setup_logger()`` at the beginning of your training function to ensure
     the logger is properly set up in each subprocess.
@@ -179,12 +184,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             # Ensure nvrx logger is set up in this subprocess
             from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
             setup_logger()
-            
+
             # Use the nvrx logger
             import logging
             logger = logging.getLogger(LogConfig.name)
             logger.info("Training started")
-            
+
             return "do train"
 
         def main():
@@ -251,6 +256,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._ft_cfg = fault_tol_cfg
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
+        self._node_id = self._get_fq_hostname()
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -322,6 +328,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._exit_barrier()
                 return run_result
             elif state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                # Record failure detection event
+                record_profiling_event(
+                    ProfilingEvent.FAILURE_DETECTED,
+                    node_id=self._rdzv_handler._this_node,
+                    rank=self._worker_group.group_rank,
+                )
+
                 if self._remaining_restarts > 0:
                     logger.info(
                         "[%s] Worker group %s. "
@@ -347,6 +360,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 group_rank = self._worker_group.group_rank
                 if num_nodes_waiting > 0:
+                    # Record failure detection event
+                    record_profiling_event(
+                        ProfilingEvent.FAILURE_DETECTED,
+                        node_id=self._rdzv_handler._this_node,
+                        rank=self._worker_group.group_rank,
+                    )
+
                     logger.info(
                         "[%s] Detected %s "
                         "new nodes from group_rank=%s; "
@@ -587,6 +607,13 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._shutdown(timeout=self._workers_stop_timeout)
 
+        # Record worker termination event after shutdown is complete
+        record_profiling_event(
+            ProfilingEvent.WORKER_TERMINATED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -595,6 +622,13 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
         restart_count = spec.max_restarts - self._remaining_restarts
+
+        # Record worker start start event
+        record_profiling_event(
+            ProfilingEvent.WORKER_START_STARTED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
 
         use_agent_store = spec.rdzv_handler.use_agent_store
 
@@ -667,7 +701,15 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
+        # Record worker start completion event
+        record_profiling_event(
+            ProfilingEvent.WORKER_START_COMPLETED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
+
         return self._pcontext.pids()
+
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
         if self._worker_watchdog is not None:
@@ -835,7 +877,7 @@ class LaunchConfig:
     max_restarts: int = 3
     restart_policy: str = "any-failed"
     term_timeout: float = 1800
-    workers_stop_timeout: float = 30
+    workers_stop_timeout: float = 15
     monitor_interval: float = 30
     start_method: str = "spawn"
     log_line_prefix_template: Optional[str] = None
@@ -1054,6 +1096,7 @@ def launch_agent(
             )
 
         logger.info(f"Agent .run() is OK. No failures in the result. {result=}")
+
         return result.return_values
     except UnhealthyNodeException as e:
         # do not shutdown rendezvous when an unhealthy node is leaving
@@ -1549,7 +1592,7 @@ def get_args_parser() -> ArgumentParser:
         "--workers_stop_timeout",
         action=env,
         type=float,
-        default=30,
+        default=15,
         help="Interval, in seconds, between initial SIGTERM and rank termination with SIGKILL, when the launcher stops its ranks in order to restart them.",
     )
     parser.add_argument(
@@ -1657,10 +1700,10 @@ def get_args_parser() -> ArgumentParser:
         default="127.0.0.1",
         type=str,
         action=env,
-        help="Address of the master node (rank 0) that only used for static rendezvous. It should "
-        "be either the IP address or the hostname of rank 0. For single node multi-proc training "
-        "the --master-addr can simply be 127.0.0.1; IPv6 should have the pattern "
-        "`[0:0:0:0:0:0:0:1]`.",
+        help="Address of the master node (rank 0) that is used for static and c10d rendezvous backends "
+        "when rdzv_endpoint is not specified. It should be either the IP address or the hostname of rank 0. "
+        "For single node multi-proc training the --master-addr can simply be 127.0.0.1; "
+        "IPv6 should have the pattern `[0:0:0:0:0:0:0:1]`.",
     )
     parser.add_argument(
         "--master-port",
@@ -1669,7 +1712,7 @@ def get_args_parser() -> ArgumentParser:
         type=int,
         action=env,
         help="Port on the master node (rank 0) to be used for communication during distributed "
-        "training. It is only used for static rendezvous.",
+        "training. It is used for static and c10d rendezvous backends when rdzv_endpoint is not specified.",
     )
     parser.add_argument(
         "--local-addr",
@@ -1709,46 +1752,46 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-workload-check-interval",
         "--ft-workload_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_workload_check_interval",
-        help="Part of Fault Tolerance pkg config (workload_check_interval).",
+        help="Part of Fault Tolerance pkg config (workload_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-initial-rank-heartbeat-timeout",
         "--ft-initial_rank_heartbeat_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_initial_rank_heartbeat_timeout",
-        help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout).",
+        help="Part of Fault Tolerance pkg config (initial_rank_heartbeat_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-rank-heartbeat-timeout",
         "--ft-rank_heartbeat_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_rank_heartbeat_timeout",
-        help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout).",
+        help="Part of Fault Tolerance pkg config (rank_heartbeat_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-node-health-check-interval",
         "--ft-node_health_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_node_health_check_interval",
-        help="Part of Fault Tolerance pkg config (node_health_check_interval).",
+        help="Part of Fault Tolerance pkg config (node_health_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
         "--ft-safety-factor",
         "--ft-safety_factor",
-        type=float,
+        type=str,
         default=None,
         dest="ft_safety_factor",
-        help="Part of Fault Tolerance pkg config (safety_factor).",
+        help="Part of Fault Tolerance pkg config (safety_factor). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1772,10 +1815,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-rank-out-of-section-timeout",
         "--ft-rank_out_of_section_timeout",
-        type=float,
+        type=str,
         default=None,
         dest="ft_rank_out_of_section_timeout",
-        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout).",
+        help="Part of Fault Tolerance pkg config (rank_out_of_section_timeout). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1791,10 +1834,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-restart-check-interval",
         "--ft-restart_check_interval",
-        type=float,
+        type=str,
         default=None,
         dest="ft_restart_check_interval",
-        help="Part of Fault Tolerance pkg config (restart_check_interval).",
+        help="Part of Fault Tolerance pkg config (restart_check_interval). Use 'null'|'none'|'' for None.",
     )
 
     parser.add_argument(
@@ -1812,10 +1855,10 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-enable-nic-monitor",
         "--ft-enable_nic_monitor",
-        type=lambda x: str(x).lower() in ["true", "1", "yes"],
-        default=True,
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
         dest="ft_enable_nic_monitor",
-        help="Enable or Disable NIC health monitoring in training.",
+        help="Enable or Disable NIC health monitoring in training. Default: False.",
     )
 
     parser.add_argument(
@@ -1835,6 +1878,31 @@ def get_args_parser() -> ArgumentParser:
         dest="ft_link_down_path_template",
         help="Part of Fault Tolerance pkg config (link_down_path_template). "
         "Template path to check if a NIC link is down.",
+    )
+
+    parser.add_argument(
+        "--ft-skip-section-response",
+        "--ft-skip_section_response",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+        default=None,
+        dest="ft_skip_section_response",
+        help="Part of Fault Tolerance pkg config (skip_section_response). "
+        "If enabled (default), section and heartbeat messages are sent without waiting "
+        "for server response, significantly reducing latency. "
+        "Set to false during development to catch programming errors immediately.",
+    )
+
+    parser.add_argument(
+        "--ft-use-infra-group-rank",
+        "--ft-use_infra_group_rank",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_use_infra_group_rank",
+        help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
+        "If enabled, always use infrastructure group rank for rank assignment. "
+        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). Previous assignments "
+        "are ignored to ensure consistency with infrastructure rank assignment. "
+        "Note: Hot spare/redundancy NOT supported. Default: True.",
     )
 
     parser.add_argument(
@@ -1906,7 +1974,7 @@ def determine_local_world_size(nproc_per_node: str):
 
 
 def get_rdzv_endpoint(args):
-    if args.rdzv_backend == "static" and not args.rdzv_endpoint:
+    if (args.rdzv_backend in ["static", "c10d"]) and not args.rdzv_endpoint:
         return f"{args.master_addr}:{args.master_port}"  # noqa: E231
     return args.rdzv_endpoint
 
@@ -1962,9 +2030,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
 
-    if hasattr(args, "master_addr") and args.rdzv_backend != "static" and not args.rdzv_endpoint:
+    if hasattr(args, "master_addr") and args.rdzv_backend not in ["static", "c10d"] and not args.rdzv_endpoint:
         logger.warning(
-            "master_addr is only used for static rdzv_backend and when rdzv_endpoint "
+            "master_addr is only used for static and c10d rdzv_backend when rdzv_endpoint "
             "is not specified."
         )
 
@@ -1987,6 +2055,10 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
 
+    # Add use_libuv=False for c10d backend
+    if args.rdzv_backend == 'c10d':
+        rdzv_configs['use_libuv'] = False
+
     if args.rdzv_backend == "static":
         rdzv_configs["rank"] = args.node_rank
 
@@ -1999,6 +2071,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
+
+    # Pass use_infra_group_rank from fault tolerance config to rendezvous config
+    rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
