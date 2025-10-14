@@ -655,7 +655,9 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             abort (bool, optional): Default to False. Needs to be manually set to true when
                 the checkpoint async process needs to be aborted.
         """
-        if not abort:
+        # For a clean shut down scenario with valid async processes running,
+        # finalize all pending async calls
+        if not abort and (self.persistent is False or self.persistent_caller is not None):
             self.maybe_finalize_async_calls(blocking=True)
         if self.persistent and self.persistent_caller:
             self.persistent_caller.close(abort=abort)
