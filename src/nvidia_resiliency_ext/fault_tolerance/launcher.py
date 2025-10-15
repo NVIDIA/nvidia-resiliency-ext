@@ -1138,6 +1138,9 @@ def launch_agent(
         return result.return_values
     except UnhealthyNodeException as e:
         # do not shutdown rendezvous when an unhealthy node is leaving
+        # NOTE: This only prevents calling shutdown() to set closed_key.
+        # If this is the store host, the TCPStore will die when this process exits,
+        # effectively terminating the rendezvous regardless of this flag.
         shutdown_rdzv = False
         logger.error(f"Agent .run() raised UnhealthyNodeException: {e}")
         events.record(agent.get_event_failed())
@@ -1160,6 +1163,24 @@ def launch_agent(
         events.record(agent.get_event_failed())
         raise
     finally:
+        # Store host grace period: The TCPStore is hosted in this process and will be
+        # destroyed when the process exits. To prevent race conditions where other nodes
+        # try to read final state (e.g., closed_key, unhealthy_count) from a destroyed
+        # store, the store host waits briefly before exiting to give other nodes time
+        # to detect the final state.
+        #
+        # IMPORTANT CONSTRAINT: When the store host process exits for any reason, the
+        # TCPStore dies with it, effectively terminating the rendezvous. The shutdown_rdzv
+        # flag only controls whether we explicitly signal closure via closed_key; it cannot
+        # keep the store alive if the store host process exits.
+        if is_store_host:
+            grace_period = 3.0  # seconds
+            logger.info(
+                f"Store host waiting {grace_period} seconds before exit "
+                f"to allow other nodes to read final TCPStore state..."
+            )
+            time.sleep(grace_period)
+
         if shutdown_rdzv:
             agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()

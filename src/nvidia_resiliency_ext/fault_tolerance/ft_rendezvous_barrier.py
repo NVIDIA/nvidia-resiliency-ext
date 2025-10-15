@@ -310,6 +310,7 @@ class _RendezvousBarrierState:
         self.last_participant_arrived_key = f"{self.prefix}:last_participant_arrived"
         self.ack_count_key = f"{self.prefix}:ack_count"
         self.closed_key = f"{self.prefix}:closed"
+        self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
 
         # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist
         # This key is always present and serves as the open/close indicator:
@@ -476,6 +477,18 @@ class _RendezvousBarrierState:
 
         return result
 
+    def _get_unhealthy_count(self) -> int:
+        """Get the current unhealthy node count.
+
+        Returns:
+            The number of unhealthy nodes reported so far, or 0 if the key doesn't exist
+        """
+        if not self.store.check([self.unhealthy_count_key]):
+            return 0
+
+        unhealthy_count_bytes = self.store.get(self.unhealthy_count_key)
+        return int(unhealthy_count_bytes.decode('utf-8'))
+
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
         """Check for early closure and timeout, raising appropriate exceptions if detected.
 
@@ -636,11 +649,15 @@ class _RendezvousBarrierState:
 
         # Check if we exceed max_nodes (can happen due to race conditions or user misconfiguration)
         if self._arrived_count > max_nodes:
-            raise RendezvousClosedError(
+            msg = (
                 f"Maximum number of nodes ({max_nodes}) exceeded. "
                 f"Participant count: {self._arrived_count}. "
                 f"This is likely a configuration error - please check max_nodes setting."
             )
+            log.error(f"[{node_desc}] {msg}")
+            # Set closed to notify other nodes before exiting
+            self.set_closed()
+            raise RendezvousClosedError(msg)
 
         # Determine infrastructure rank
         infra_rank = -1
@@ -678,6 +695,22 @@ class _RendezvousBarrierState:
         while True:
             # Check for early closure and timeout
             self._check_timeout_and_closure(node_desc)
+
+            # STORE HOST: Check if too many nodes are unhealthy (early termination condition)
+            # If unhealthy_count > max_nodes - min_nodes, then it's mathematically impossible
+            # to complete the rendezvous with min_nodes participants
+            if self.is_store_host:
+                unhealthy_count = self._get_unhealthy_count()
+                if unhealthy_count > (max_nodes - min_nodes):
+                    msg = (
+                        f"Rendezvous cannot complete: {unhealthy_count} unhealthy nodes detected, "
+                        f"max possible healthy nodes = {max_nodes - unhealthy_count} < {min_nodes} required. "
+                        f"Closing rendezvous to terminate the job."
+                    )
+                    log.error(msg)
+                    self.set_closed()
+                    # Continue to next iteration to detect closure immediately.
+                    continue
 
             # Check if rendezvous is already complete
             # IMPORTANT: We check the VALUE, not just existence, since the key is always present
@@ -832,6 +865,7 @@ class _RendezvousBarrierState:
         keys_to_clear = [
             self.arrived_count_key,
             self.ack_count_key,
+            self.unhealthy_count_key,  # Clear unhealthy counter for next round
         ]
 
         # Delete main keys
@@ -1102,20 +1136,22 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
+
         # Perform GPU health check
         health_checker = GPUHealthCheck()
         try:
             health_status = health_checker()
-            if not health_status:
-                raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
-        except UnhealthyNodeException as e:
-            # Log specific health check failure
-            log.error(f"Health check failed for node {self._this_node}: {str(e)}")
-            raise
         except Exception as e:
-            # General exception for unexpected issues during health check
+            # Unexpected error during health check
+            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
             log.error(f"Unexpected error during health check for node {self._this_node}: {str(e)}")
-            raise UnhealthyNodeException(str(e))
+            raise UnhealthyNodeException(str(e)) from e
+
+        if not health_status:
+            # Health check failed
+            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+            log.error(f"Health check failed for node {self._this_node}: Node has an unhealthy GPU.")
+            raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
 
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
@@ -1131,6 +1167,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         if shutdown_workload:
             self._close()
         if excl_this_node:
+            # Report unhealthy to the store before raising exception
+            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
             raise UnhealthyNodeException(
                 f"Node {self._this_node} is excluded from the training due to an user request."
             )
