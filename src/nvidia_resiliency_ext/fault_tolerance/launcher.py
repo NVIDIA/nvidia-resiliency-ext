@@ -114,8 +114,6 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
             backend, store = create_backend(params)
             return create_barrier_handler(store, backend, params)
 
-        logger.info("Using barrier-based FT rendezvous implementation (ft_rendezvous_barrier.py)")
-
     elif impl_type == "legacy":
         from ._ft_rendezvous import create_handler as create_legacy_handler
         from .c10d_monkey_patch import apply_c10d_patch
@@ -126,8 +124,6 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
         def _create_ft_rdzv_handler(params: RendezvousParameters):
             backend, store = create_backend(params)
             return create_legacy_handler(store, backend, params)
-
-        logger.info("Using legacy FT rendezvous implementation (_ft_rendezvous.py)")
 
     else:
         raise ValueError(f"Unknown FT rendezvous implementation: {impl_type}. Must be 'barrier' or 'legacy'.")
