@@ -2108,8 +2108,8 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
 
-    # Add use_libuv=False for c10d backend
-    if args.rdzv_backend == 'c10d':
+    # Add use_libuv=False for c10d backend with legacy rendezvous only
+    if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'barrier') == 'legacy':
         rdzv_configs['use_libuv'] = False
 
     if args.rdzv_backend == "static":
