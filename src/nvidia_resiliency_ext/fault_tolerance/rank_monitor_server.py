@@ -184,7 +184,9 @@ class RankMonitorServer:
         self._periodic_restart_task = asyncio.get_running_loop().create_task(
             self._periodic_restart_check()
         )
-        self.logger.info("Started periodic restart check.")
+        # Only log for local rank 0 to reduce log spam
+        if self.rank_info is None or self.rank_info.local_rank == 0:
+            self.logger.info("Started periodic restart check.")
 
     async def stop_periodic_restart_check(self):
         if self._periodic_restart_task:
@@ -192,7 +194,7 @@ class RankMonitorServer:
             try:
                 await self._periodic_restart_task
             except asyncio.CancelledError:
-                self.logger.info("Periodic restart check task cancelled.")
+                self.logger.debug("Periodic restart check task cancelled.")
             self._periodic_restart_task = None
 
     def _shutdown_rank(self):
@@ -352,7 +354,7 @@ class RankMonitorServer:
             while True:
                 msg = await read_obj_from_ipc_stream(reader)
                 if msg == "close_worker_ipc_connection":
-                    self.logger.info(
+                    self.logger.debug(
                         "Received request from launcher to close worker IPC connection"
                     )
                     await self.close_current_connection()

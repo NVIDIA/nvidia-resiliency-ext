@@ -991,7 +991,7 @@ class _RendezvousBarrierState:
 
         # Safe to open - no rendezvous in progress
         self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
-        log.info(f"Opened rendezvous for new round (set {self.last_participant_arrived_key}=0)")
+        log.debug(f"Opened rendezvous for new round (set {self.last_participant_arrived_key}=0)")
 
 
 class FtRendezvousBarrierHandler(RendezvousHandler):

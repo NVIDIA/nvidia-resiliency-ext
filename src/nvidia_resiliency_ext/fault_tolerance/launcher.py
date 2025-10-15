@@ -318,7 +318,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         if hasattr(self._rdzv_handler, '_barrier_state'):
             try:
                 self._rdzv_handler._barrier_state.open_rendezvous()
-                logger.info(
+                logger.debug(
                     "[group_rank=%s] Opened rendezvous for restart (barrier-based rendezvous)",
                     self._worker_group.group_rank if self._worker_group else "N/A"
                 )
