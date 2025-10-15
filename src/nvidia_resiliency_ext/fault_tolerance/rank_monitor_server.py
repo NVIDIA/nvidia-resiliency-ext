@@ -471,7 +471,6 @@ class RankMonitorServer:
                 hb_timed_out = self._is_hb_timeout_elapsed(curr_time)
                 section_timed_out = self._is_section_timeout_elapsed(curr_time)
                 if hb_timed_out or section_timed_out:
-                    self.logger.warning('FT timeout elapsed.')
                     await self._handle_timeout()
             await asyncio.sleep(self.cfg.workload_check_interval)
 
