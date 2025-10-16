@@ -100,8 +100,8 @@
 <p>Storage writer for PyT Distributed format allowing asynchronous save.</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.</span></span><span class="sig-name descname"><span class="pre">FileSystemWriterAsync</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">path</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">separation_hint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.FileSystemWriter" title="(in PyTorch v2.8)"><code class="xref py py-class docutils literal notranslate"><span class="pre">FileSystemWriter</span></code></a></p>
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.</span></span><span class="sig-name descname"><span class="pre">FileSystemWriterAsync</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">path</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">separation_hint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_multiproc_io</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.FileSystemWriter" title="(in PyTorch v2.9)"><code class="xref py py-class docutils literal notranslate"><span class="pre">FileSystemWriter</span></code></a></p>
 <p>Async-enabled implementation of FileSystemWriter using file I/O.</p>
 <p>This class does not spawn the async process itself but relies on an external async mechanism.</p>
 <p><strong>Flow:</strong></p>
@@ -129,6 +129,7 @@ that the stager is maintained and reused for multiple dcp.async_save calls. Defa
 <li><p><strong>overwrite</strong> – Whether to allow overwriting existing checkpoints. Defaults to True.</p></li>
 <li><p><strong>_extensions</strong> – Extensions to apply to output streams (EXPERIMENTAL)</p></li>
 <li><p><strong>separation_hint</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>is_multiproc_io</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
 </ul>
 </dd>
 </dl>
@@ -216,7 +217,7 @@ This function should be self-contained.</p></li>
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a></p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.9)"><em>SavePlan</em></a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -227,10 +228,10 @@ This function should be self-contained.</p></li>
 <dd><p>Prepare the local plan for the checkpointing process.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>)</p>
+<dd class="field-odd"><p><strong>plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.9)"><em>SavePlan</em></a>)</p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a></p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.9)"><em>SavePlan</em></a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -292,12 +293,12 @@ us to enable automatic storage selection.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.8)"><em>SavePlan</em></a>)</p></li>
-<li><p><strong>planner</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner" title="(in PyTorch v2.8)"><em>SavePlanner</em></a>)</p></li>
+<li><p><strong>plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.9)"><em>SavePlan</em></a>)</p></li>
+<li><p><strong>planner</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner" title="(in PyTorch v2.9)"><em>SavePlanner</em></a>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/futures.html#torch.futures.Future" title="(in PyTorch v2.8)"><em>Future</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<em>WriteResult</em>]]</p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/futures.html#torch.futures.Future" title="(in PyTorch v2.9)"><em>Future</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<em>WriteResult</em>]]</p>
 </dd>
 </dl>
 </dd></dl>
@@ -356,6 +357,62 @@ To prevent this, we disable the GC explicitly for this function with _disable_gc
 </dd>
 </dl>
 <p>Returns: None</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multithread_launcher">
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">write_preloaded_data_multithread_launcher</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_msc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">open_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_buckets</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_results_queue</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data_multithread_launcher"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multithread_launcher" title="Link to this definition"></a></dt>
+<dd><p>Performs saving data to storage with multiple threads.
+:param transform_list: streaming transforms list
+:type transform_list: List[_StorageWriterTransforms]
+:param use_msc: flag to indicate use of multi storage client for storage access
+:type use_msc: bool
+:param open_file: file open callable
+:type open_file: Callable
+:param rank: training rank
+:param write_buckets: write plan
+:type write_buckets: List[WriteBucket]
+:param global_results_queue: mp.Queue to collect Dict[List[WriteResults]]</p>
+<blockquote>
+<div><p>(or an Exception) from parallel write processes to the main training process</p>
+</div></blockquote>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>transform_list</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a><em>[</em><em>_StorageWriterTransforms</em><em>]</em>)</p></li>
+<li><p><strong>use_msc</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
+<li><p><strong>open_file</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.14)"><em>Callable</em></a>)</p></li>
+<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>)</p></li>
+<li><p><strong>write_buckets</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.14)"><em>Tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/pathlib.html#pathlib.Path" title="(in Python v3.14)"><em>Path</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.14)"><em>Tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>]</em><em>]</em><em>]</em>)</p></li>
+<li><p><strong>global_results_queue</strong> (<em>mp.Queue</em>)</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>None</p>
+</dd>
+</dl>
+<p>Returns: None</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_thread">
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">write_preloaded_data_thread</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">open_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">local_thread_idx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_bucket</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_fsync</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data_thread"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_thread" title="Link to this definition"></a></dt>
+<dd><p>Performs actual data saving to storage.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>transform_list</strong> (<em>List</em><em>[</em><em>_StorageWriterTransforms</em><em>]</em>) – streaming transforms list</p></li>
+<li><p><strong>open_file</strong> (<em>Callable</em>) – file open callable</p></li>
+<li><p><strong>local_thread_idx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – index of a local thread that performs writing</p></li>
+<li><p><strong>write_bucket</strong> (<em>WriteBucket</em>) – data to write to storage</p></li>
+<li><p><strong>use_fsync</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – if True, calls os.fsync at the end of saving</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<em>WriteResult</em>] | <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#Exception" title="(in Python v3.14)">Exception</a></p>
+</dd>
+</dl>
+<p>Returns: None, the write result are put into the <cite>queue</cite></p>
 </dd></dl>
 
 </dd></dl>
