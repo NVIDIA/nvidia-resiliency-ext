@@ -1,8 +1,13 @@
 import asyncio
+import inspect
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum, auto
 from functools import partial
 from typing import Any, Awaitable, Callable, Dict, Generic, List, Optional, TypeVar, Union
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 T = TypeVar('T')  # Input type
 R = TypeVar('R')  # Attribution result type
@@ -43,6 +48,7 @@ class NVRxAttribution(Generic[T, R]):
         output_handler: Callable[[R], None],
         attribution_kwargs: Optional[Dict[str, Any]] = None,
         thread_pool: Optional[ThreadPoolExecutor] = None,
+        stop_on_stop: bool = False,
     ):
         """Initialize the attribution module.
 
@@ -52,16 +58,53 @@ class NVRxAttribution(Generic[T, R]):
             output_handler: Function to handle the attribution results
             attribution_kwargs: Optional keyword arguments to pass to the attribution function
             thread_pool: Optional thread pool for running sync functions
+            stop_on_stop: Whether to stop the attribution pipeline if the output handler returns STOP state
         """
-        self._preprocess_input = preprocess_input
-        self._attribution = attribution
-        self._output_handler = output_handler
+        self.register_attr_pipeline(
+            {
+                'preprocess_input': preprocess_input,
+                'attribution': attribution,
+                'output_handler': output_handler,
+            }
+        )
         self.attribution_kwargs = attribution_kwargs or {}
         self._thread_pool = thread_pool or ThreadPoolExecutor(max_workers=2)
-
+        self._stop_on_stop = stop_on_stop
         # Get the shared loop and set the thread pool
         self._loop = self.get_shared_loop()
         self._loop.set_default_executor(self._thread_pool)
+
+    def inspect_type_consistency(self, attr_pipeline: Dict[str, Callable]):
+        """Inspect the type consistency of the attribution pipeline."""
+        # Check if the output handler returns a tuple of (result, AttributionState)
+        prev_step = attr_pipeline['preprocess_input']
+        for step in [attr_pipeline['attribution'], attr_pipeline['output_handler']]:
+            if not isinstance(step, Callable):
+                return False
+            prev_step_sig = inspect.signature(prev_step)
+            prev_step_params = list(prev_step_sig.parameters.values())
+            prev_step_output_type = prev_step_sig.return_annotation
+
+            step_sig = inspect.signature(step)
+            step_params = list(step_sig.parameters.values())
+            step_input = step_params[0].annotation if step_params else inspect.Parameter.empty
+
+            if prev_step_output_type != step_input:
+                raise ValueError(
+                    f"The attribution pipeline is not type consistent. prev_step_output_type: {prev_step_output_type}, step_input: {step_input}"
+                )
+            prev_step = step
+
+    def register_attr_pipeline(self, attr_pipeline: Dict[str, Callable]):
+        """Register the attribution routines."""
+        try:
+            self.inspect_type_consistency(attr_pipeline)
+        except ValueError as e:
+            logger.error(f"The attribution pipeline is not type consistent. {e}")
+        finally:
+            self._preprocess_input = attr_pipeline['preprocess_input']
+            self._attribution = attr_pipeline['attribution']
+            self._output_handler = attr_pipeline['output_handler']
 
     async def _run_sync_in_thread(self, func: Callable, *args, **kwargs) -> Any:
         """Run a synchronous function in a thread pool.
@@ -105,8 +148,9 @@ class NVRxAttribution(Generic[T, R]):
                 awaited_item = None
                 if isinstance(item, Awaitable):
                     awaited_item = await item
-                    if awaited_item[1] == AttributionState.STOP:
-                        return awaited_item[0], awaited_item[1]
+                    logger.debug(f"awaited_item: {awaited_item}")
+                    if awaited_item[1] == AttributionState.STOP and self._stop_on_stop:
+                        return awaited_item
                     else:
                         awaited_input_data.append(awaited_item[0])
                 else:
@@ -140,7 +184,7 @@ class NVRxAttribution(Generic[T, R]):
                 self._attribution, preprocessed_data, **self.attribution_kwargs
             )
 
-    async def output_handler(self, attribution_result: R) -> R:
+    async def output_handler(self, attribution_result: R) -> tuple[R, AttributionState]:
         """Handle the attribution results.
 
         Args:
