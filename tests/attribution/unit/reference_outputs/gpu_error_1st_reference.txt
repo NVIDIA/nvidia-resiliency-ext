@@ -1,0 +1,89 @@
+INFO:__main__:['tests/attribution/unit/fr_traces/gpu_error_1st']
+INFO:__main__:
+Successfully processed 16 files.
+INFO:__main__:Using scheduling order: {'EXPERT_': 0, 'MODEL_': 0, 'TENSOR_': 0, 'PIPELINE_': 0, 'TENSOR_AND_CONTEXT_': 1, 'DATA_PARALLEL': 3, 'TENSOR_AND_DATA_PARALLEL_': 3, 'INTRA_DISTRIBUTED': 4, 'default_pg': 5}
+INFO:__main__:PGID   | Process Group Desc        | Op Type    | Size                             | Dtype    | {missing_or_completed} Ranks
+INFO:__main__:74     | EXPERT_MODEL_PARALLEL_GROUP | nccl:all_to_all | 4096x5120                             | BFloat16 | 12,14
+INFO:__main__:42     | TENSOR_MODEL_PARALLEL_GROUP | nccl:_all_gather_base | 4096x1x5120                             | BFloat16 | 14
+INFO:__main__:
+
+=== Collective Operations Analysis ===
+
+
+Found group types: EXPERT_MODEL_PARALLEL_GROUP, EXPERT_TENSOR_AND_MODEL_PARALLEL_GROUP, PIPELINE_MODEL_PARALLEL_GROUP, TENSOR_AND_CONTEXT_PARALLEL_GROUP, TENSOR_AND_DATA_PARALLEL_GROUP_WITH_CP, TENSOR_MODEL_PARALLEL_GROUP
+
+=== EXPERT_MODEL_PARALLEL_GROUP Collectives ===
+
+  Process Group                        PG Desc              Op Type            Size      Dtype         Total NRanks                         Identified Ranks                            Missing Ranks
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+             74    EXPERT_MODEL_PARALLEL_GROUP      nccl:all_to_all       4096x5120   BFloat16          4                              12,13,14,15                                    12,14
+  Operation type distribution:
+    Send/Receive pairs (src->dst):
+    Other operations:
+      nccl:all_to_all: 6
+
+
+=== EXPERT_TENSOR_AND_MODEL_PARALLEL_GROUP Collectives ===
+
+  Process Group                        PG Desc              Op Type            Size      Dtype         Total NRanks                         Identified Ranks                            Missing Ranks
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+             94 EXPERT_TENSOR_AND_MODEL_PARALLEL_GROUP nccl:_all_gather_base              16       Long          4                              12,13,14,15                                    12,14
+  Operation type distribution:
+    Send/Receive pairs (src->dst):
+    Other operations:
+      nccl:_all_gather_base: 3
+
+
+=== PIPELINE_MODEL_PARALLEL_GROUP Collectives ===
+
+  Process Group                        PG Desc              Op Type            Size      Dtype         Total NRanks                         Identified Ranks                            Missing Ranks
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+=== TENSOR_AND_CONTEXT_PARALLEL_GROUP Collectives ===
+
+  Process Group                        PG Desc              Op Type            Size      Dtype         Total NRanks                         Identified Ranks                            Missing Ranks
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+             69 TENSOR_AND_CONTEXT_PARALLEL_GROUP      nccl:all_reduce              16       Long          2                                    12,13                                       12
+  Operation type distribution:
+    Send/Receive pairs (src->dst):
+    Other operations:
+      nccl:all_reduce: 1
+
+             70 TENSOR_AND_CONTEXT_PARALLEL_GROUP      nccl:all_reduce              16       Long          2                                    14,15                                       14
+  Operation type distribution:
+    Send/Receive pairs (src->dst):
+    Other operations:
+      nccl:all_reduce: 2
+
+
+=== TENSOR_AND_DATA_PARALLEL_GROUP_WITH_CP Collectives ===
+
+  Process Group                        PG Desc              Op Type            Size      Dtype         Total NRanks                         Identified Ranks                            Missing Ranks
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+             58 TENSOR_AND_DATA_PARALLEL_GROUP_WITH_CP      nccl:all_reduce             120      Float          4                              12,13,14,15                                    12,14
+  Operation type distribution:
+    Send/Receive pairs (src->dst):
+    Other operations:
+      nccl:all_reduce: 3
+
+
+=== TENSOR_MODEL_PARALLEL_GROUP Collectives ===
+
+  Process Group                        PG Desc              Op Type            Size      Dtype         Total NRanks                         Identified Ranks                            Missing Ranks
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+             41    TENSOR_MODEL_PARALLEL_GROUP nccl:_all_gather_base     4096x1x5120   BFloat16          2                                    12,13                                       12
+  Operation type distribution:
+    Send/Receive pairs (src->dst):
+    Other operations:
+      nccl:_all_gather_base: 4
+      nccl:_reduce_scatter_base: 3
+      nccl:broadcast: 2
+
+             42    TENSOR_MODEL_PARALLEL_GROUP nccl:_all_gather_base     4096x1x5120   BFloat16          2                                    14,15                                       14
+  Operation type distribution:
+    Send/Receive pairs (src->dst):
+    Other operations:
+      nccl:_all_gather_base: 8
+      nccl:_reduce_scatter_base: 4
+      nccl:broadcast: 4
+

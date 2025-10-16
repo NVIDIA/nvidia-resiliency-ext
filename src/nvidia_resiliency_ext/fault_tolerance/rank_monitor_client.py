@@ -19,8 +19,6 @@ import os
 import socket
 from typing import Any, Collection, Mapping, Optional
 
-from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
-
 from .data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -39,9 +37,6 @@ from .data import (
 from .ipc_connector import IpcConnector
 from .timeouts_calc import TimeoutsCalc
 from .utils import read_obj_from_ipc_socket, write_object_to_ipc_socket
-
-# Get the nvrx logger
-logger = logging.getLogger(LogConfig.name)
 
 
 class RankMonitorClientError(Exception):
@@ -104,12 +99,13 @@ class RankMonitorClient:
         self.chkpt_manager = None
         self.iter_idx = 0
         self.cfg = None
+        self.logger = logging.getLogger(__name__)
         self.launcher_connector = None
         launcher_ipc_socket_path = os.getenv(FT_LAUNCHER_IPC_SOCKET_ENV_VAR, None)
         if launcher_ipc_socket_path is not None:
             self.launcher_connector = IpcConnector(launcher_ipc_socket_path)
         else:
-            logger.info(
+            self.logger.info(
                 f"{FT_LAUNCHER_IPC_SOCKET_ENV_VAR} env varialble is not set. "
                 "`.send_workload_control_request` wont work. This is normal if "
                 "this rank was not started with ft_launcher"
@@ -226,6 +222,9 @@ class RankMonitorClient:
         """
         Implementation of heartbeat sending.
 
+        If skip_section_response is enabled (default), messages are sent without waiting
+        for server response (unidirectional communication), reducing latency significantly.
+
         Args:
             state (Mapping): The state information to be included in the heartbeat message.
         """
@@ -233,26 +232,67 @@ class RankMonitorClient:
         try:
             hb_msg = HeartbeatMsg(self.rank_info.global_rank, state)
             write_object_to_ipc_socket(hb_msg, self.rank_monitor_socket)
-            self._ensure_response_is_ok(self.rank_monitor_socket)
+
+            # Only wait for response if skip_section_response is disabled
+            # When enabled, server doesn't send responses (true unidirectional)
+            if not self.cfg.skip_section_response:
+                self._ensure_response_is_ok(self.rank_monitor_socket)
+
             self.timeouts_calc.update_on_heartbeat()
         except Exception as e:
             raise RankMonitorClientError(
                 f"RankMonitorClient could not send the heartbeat. Exception: {e}"
             )
 
+    def _should_monitor_section(self, section: str) -> bool:
+        """
+        Check if a section should be monitored (i.e., IPC messages should be sent).
+
+        A section is monitored if it has a timeout configured in rank_section_timeouts.
+        Sections without a timeout (not in the config) don't need IPC overhead.
+
+        Args:
+            section (str): Section name
+
+        Returns:
+            bool: True if section should be monitored, False otherwise
+        """
+        # If section is not in config, don't monitor it
+        if section not in self.cfg.rank_section_timeouts:
+            return False
+
+        return True
+
     def _send_section_msg_impl(self, section: str, action: SectionAction) -> None:
         """
         Implementation of section related update sending.
+
+        If a section is not configured for monitoring (not in rank_section_timeouts),
+        IPC is skipped and local timing data collection is also skipped for minimal overhead.
+
+        If skip_section_response is enabled (default), messages are sent without waiting
+        for server response (unidirectional communication), reducing latency significantly.
+        The server processes messages but doesn't send responses back.
 
         Args:
             section (str): Section name
             action (SectionAction): Section related action
         """
         self._ensure_is_ready()
+
+        # Skip both IPC and timing collection if section is not being monitored
+        if not self._should_monitor_section(section):
+            return
+
         try:
             msg = SectionMsg(rank=self.rank_info.global_rank, section=section, action=action)
             write_object_to_ipc_socket(msg, self.rank_monitor_socket)
-            self._ensure_response_is_ok(self.rank_monitor_socket)
+
+            # Only wait for response if skip_section_response is disabled
+            # When enabled, server doesn't send responses (true unidirectional)
+            if not self.cfg.skip_section_response:
+                self._ensure_response_is_ok(self.rank_monitor_socket)
+
             self.timeouts_calc.update_on_section_event(section=section, action=action)
         except Exception as e:
             raise RankMonitorClientError(
@@ -291,7 +331,7 @@ class RankMonitorClient:
         if self.is_initialized:
             raise RankMonitorClientError("RankMonitorClient is already initialized")
 
-        logger.info(f"Initializing fault detection. Rank process PID={os.getpid()}")
+        self.logger.debug(f"Initializing fault detection. Rank process PID={os.getpid()}")
 
         self.rank_info = RankInfo.get_for_current_rank()
 

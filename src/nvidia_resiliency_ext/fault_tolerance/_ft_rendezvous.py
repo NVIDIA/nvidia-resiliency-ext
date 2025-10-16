@@ -60,6 +60,7 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
@@ -232,6 +233,10 @@ class RendezvousSettings:
             If set to True (default), nodes from the redundancy list and new arrivals are migrated
             to the wait list. If set to False, new arrivals will be moved to the redundancy list
             and will wait there until the next rendezvous round.
+        use_infra_group_rank:
+            Whether to use infrastructure group rank for rank assignment instead of sorted
+            participant-based assignment. If True, ranks are read from SLURM_PROCID (in SLURM
+            environments) or GROUP_RANK (set by launcher) environment variables.
     """
 
     run_id: str
@@ -241,6 +246,7 @@ class RendezvousSettings:
     keep_alive_interval: timedelta
     keep_alive_max_attempt: int
     upscaling_enabled: bool = True
+    use_infra_group_rank: bool = True
 
 
 @dataclass(eq=True, order=True, frozen=True)
@@ -788,8 +794,22 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             log.debug(f"Node {self._node} was not in the wait list.")
 
         # The ranks of the participants will be set once the rendezvous is
-        # complete.
-        state.participants[self._node] = 0
+        # complete. If use_infra_group_rank is enabled, store the infrastructure
+        # rank (SLURM_PROCID or GROUP_RANK) here; otherwise, use placeholder -1.
+        if self._settings.use_infra_group_rank:
+            # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
+            infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', '-1'))
+            infra_rank = int(infra_rank_str)
+            if infra_rank < 0:
+                raise ValueError(
+                    "use_infra_group_rank is enabled but neither SLURM_PROCID nor GROUP_RANK "
+                    "environment variable is set. Please set one of these environment variables "
+                    "or disable use_infra_group_rank."
+                )
+            state.participants[self._node] = infra_rank
+            log.debug(f"Node {self._node} stored infrastructure rank {infra_rank} from environment")
+        else:
+            state.participants[self._node] = 0
 
         self._keep_alive()
 
@@ -873,16 +893,61 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
 
     @staticmethod
     def _assign_ranks(
-        participants: Dict[_NodeDesc, int], prev: Dict[_NodeDesc, int]
+        participants: Dict[_NodeDesc, int],
+        prev: Dict[_NodeDesc, int],
+        use_infra_group_rank: bool = False,
     ) -> Dict[_NodeDesc, int]:
-        # Assign ranks. Re-use assigment from the previous round as much as possible
+        """
+        Assign ranks to participants in the rendezvous.
+
+        Behavior depends on use_infra_group_rank:
+
+        1. If use_infra_group_rank=True:
+           - ALWAYS use infrastructure ranks directly from SLURM_PROCID or GROUP_RANK
+           - Previous assignments are ignored
+           - Validates that all ranks are in range [0, world_size) and unique
+           - Ensures consistency with infrastructure's rank assignment
+           - Note: Hot spare/redundancy is NOT supported in this mode as dynamic
+             rendezvous cannot guarantee lower ranks join as participants first
+
+        2. If use_infra_group_rank=False:
+           - Use deterministic assignment, preserving previous ranks when possible
+           - Fill gaps left by failed nodes with new participants
+
+        Args:
+            participants: Dict mapping node descriptors to infrastructure ranks
+            prev: Dict of previous rank assignments (empty on first rendezvous)
+            use_infra_group_rank: If True, always use infrastructure ranks
+
+        Returns:
+            Dict mapping node descriptors to assigned ranks
+        """
+        # If use_infra_group_rank is enabled, use the infrastructure ranks directly
+        if use_infra_group_rank:
+            # Validate that all participants have valid infrastructure ranks
+            for node, rank in participants.items():
+                if rank < 0 or rank >= len(participants):
+                    raise ValueError(
+                        f"Invalid infrastructure rank {rank} for node {node}. "
+                        f"Expected rank in range [0, {len(participants)})"
+                    )
+            # Check for duplicate ranks
+            ranks_set = set(participants.values())
+            if len(ranks_set) != len(participants):
+                raise ValueError(
+                    f"Duplicate infrastructure ranks detected in participants: {participants}"
+                )
+            log.debug(f"Using infrastructure ranks directly: {participants}")
+            return dict(participants)
+
+        # Default behavior: Assign ranks. Re-use assignment from the previous round as much as possible
         world_size = len(participants)
         sorted_keys = sorted(participants.keys())
         free_ranks = set(range(world_size))
         res = {}
         for p in sorted_keys:
             prev_rank = prev.get(p, -1)
-            if prev_rank >= 0 and prev_rank < world_size:
+            if prev_rank >= 0 and prev_rank < world_size and prev_rank in free_ranks:
                 # if this node can have the same rank, use it
                 res[p] = prev_rank
                 free_ranks.remove(prev_rank)
@@ -919,7 +984,9 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             state.wait_list.clear()
 
         # Will try to preserve node<->rank mapping
-        state.participants = self._assign_ranks(state.participants, self._prev_participants)
+        state.participants = self._assign_ranks(
+            state.participants, self._prev_participants, self._settings.use_infra_group_rank
+        )
 
         # Set initial worker states, assume all workers are healthy at the beginning
         state.worker_states = {n: WorkerState.HEALTHY for n in state.participants}
@@ -1155,6 +1222,7 @@ class FtRendezvousHandler(RendezvousHandler):
         local_addr: Optional[str] = None,
         timeout: Optional[RendezvousTimeout] = None,
         upscaling_enabled: bool = True,
+        use_infra_group_rank: bool = False,
     ):
         """Create a new :py:class:`FtRendezvousHandler`.
 
@@ -1175,6 +1243,8 @@ class FtRendezvousHandler(RendezvousHandler):
                 The timeout configuration of the rendezvous.
             upscaling_enabled:
                 Whether to enable upscaling of a completed rendezvous with redundant or new nodes.
+            use_infra_group_rank:
+                Whether to use infrastructure group rank for rank assignment.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1187,6 +1257,7 @@ class FtRendezvousHandler(RendezvousHandler):
             keep_alive_interval=timedelta(seconds=5),
             keep_alive_max_attempt=3,
             upscaling_enabled=upscaling_enabled,
+            use_infra_group_rank=use_infra_group_rank,
         )
 
         state_holder = _BackendRendezvousStateHolder(backend, settings)
@@ -1322,6 +1393,12 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg)
         log.info(msg)
 
+        # Record rendezvous start event
+        rendezvous_start_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_STARTED,
+            node_id=self._this_node,
+        )
+
         try:
             self._stop_heartbeats()
 
@@ -1361,6 +1438,12 @@ class FtRendezvousHandler(RendezvousHandler):
         )
         self._record(message=msg, rank=rank)
         log.info(msg)
+
+        # Record rendezvous completion event
+        rendezvous_completion_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_COMPLETED,
+            node_id=self._this_node,
+        )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
         # Fall back to tuple format if RendezvousInfo is not supported
@@ -1644,6 +1727,10 @@ def create_handler(
     |                   | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
     |                   | 30 seconds.                                          |
     +-------------------+------------------------------------------------------+
+    | use_infra_group_  | Whether to always use infrastructure group rank for  |
+    | rank              | rank assignment. Previous assignments are ignored.   |
+    |                   | Hot spare/redundancy NOT supported. Defaults to True.|
+    +-------------------+------------------------------------------------------+
     """
     try:
         timeout = RendezvousTimeout(
@@ -1654,6 +1741,7 @@ def create_handler(
 
         # torchrun default behaviour if not specified otherwise
         upscale_completed = params.config.get('upscaling_enabled', True)
+        use_infra_group_rank = params.config.get('use_infra_group_rank', True)
 
         return FtRendezvousHandler.from_backend(
             params.run_id,
@@ -1664,6 +1752,7 @@ def create_handler(
             params.local_addr,
             timeout,
             upscaling_enabled=upscale_completed,
+            use_infra_group_rank=use_infra_group_rank,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

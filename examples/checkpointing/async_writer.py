@@ -2,6 +2,7 @@ import argparse
 import logging
 import shutil
 
+import multistorageclient as msc
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -59,6 +60,11 @@ def parse_args():
             "Effective only when --async_save is set."
         ),
     )
+    parser.add_argument(
+        '--enable_msc',
+        action='store_true',
+        help="Enables MSC for checkpoint saving and loading. See Usage Guide in Async Checkpointing documentation for detailed instructions.",
+    )
 
     return parser.parse_args()
 
@@ -94,7 +100,7 @@ def init_distributed_backend(backend="nccl"):
     try:
         dist.init_process_group(backend=backend, init_method="env://")
         rank = dist.get_rank()
-        torch.cuda.set_device(rank)
+        torch.cuda.set_device(dist.get_node_local_rank())
         logging.info(f"Process {rank} initialized with {backend} backend.")
         return rank, torch.distributed.get_world_size()
     except Exception as e:
@@ -111,14 +117,16 @@ def get_save_and_finalize_callbacks(writer, save_state_dict_ret) -> AsyncRequest
         save_state_dict_async_finalize(*save_state_dict_ret)
         dist.barrier()
 
-    return AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
+    return AsyncRequest(
+        save_fn, save_args, [finalize_fn], async_fn_kwargs={}, preload_fn=preload_fn
+    )
 
 
-def save_checkpoint(checkpoint_dir, async_queue, model, thread_count):
+def save_checkpoint(checkpoint_dir, async_queue, model, thread_count, enable_msc):
     """Asynchronously saves a model checkpoint."""
     state_dict = model.state_dict()
     planner = DefaultSavePlanner()
-    writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count)
+    writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count, use_msc=enable_msc)
     coordinator_rank = 0
 
     save_state_dict_ret = save_state_dict_async_plan(
@@ -128,12 +136,16 @@ def save_checkpoint(checkpoint_dir, async_queue, model, thread_count):
     async_queue.schedule_async_request(save_request)
 
 
-def load_checkpoint(checkpoint_dir, model):
+def load_checkpoint(checkpoint_dir, model, thread_count, enable_msc):
     """Loads a model checkpoint synchronously."""
     state_dict = model.state_dict()
+    if enable_msc:
+        reader = msc.torch.MultiStorageFileSystemReader(checkpoint_dir, thread_count=thread_count)
+    else:
+        reader = FileSystemReader(checkpoint_dir)
     checkpoint.load(
         state_dict=state_dict,
-        storage_reader=FileSystemReader(checkpoint_dir),
+        storage_reader=reader,
         planner=DefaultLoadPlanner(),
     )
     return state_dict
@@ -183,7 +195,9 @@ def main():
             iteration = batch_idx
             checkpoint_dir = f"{args.ckpt_dir}/iter_{iteration:07d}"
             # Save the model asynchronously
-            save_checkpoint(checkpoint_dir, async_queue, fsdp_model, args.thread_count)
+            save_checkpoint(
+                checkpoint_dir, async_queue, fsdp_model, args.thread_count, args.enable_msc
+            )
             print_on_rank0(f"Checkpoint Save triggered: {checkpoint_dir}, iteration: {iteration}")
             iteration += batch_idx
     print_on_rank0(f"Epoch 0 complete. Loss: {loss.item()}")
@@ -196,7 +210,7 @@ def main():
     dist.barrier()
     print_on_rank0(f"loading from {checkpoint_dir}")
     # Load the checkpoint
-    loaded_sd = load_checkpoint(checkpoint_dir, fsdp_model)
+    loaded_sd = load_checkpoint(checkpoint_dir, fsdp_model, args.thread_count, args.enable_msc)
 
     # Synchronize again to ensure all ranks have completed loading
     dist.barrier()
@@ -204,7 +218,10 @@ def main():
     # Clean up checkpoint directory (only on rank 0)
     if dist.get_rank() == 0:
         logging.info(f"Cleaning up checkpoint directory: {args.ckpt_dir}")
-        shutil.rmtree(args.ckpt_dir)
+        if args.enable_msc:
+            msc.delete(args.ckpt_dir, recursive=True)
+        else:
+            shutil.rmtree(args.ckpt_dir)
 
     # Ensure NCCL process group is properly destroyed
     if dist.is_initialized():

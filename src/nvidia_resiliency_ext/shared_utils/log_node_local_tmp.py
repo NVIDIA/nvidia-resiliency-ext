@@ -25,6 +25,8 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from nvidia_resiliency_ext.shared_utils.os_utils import validate_filepath
+
 
 class NodeLocalTmpLogHandler(logging.Handler):
     """Custom log handler that logs messages to temporary files on local node storage."""
@@ -103,7 +105,8 @@ class NodeLocalTmpLogHandler(logging.Handler):
                     sys.stderr.write(f"File rotation error for {self.fname}: {e}\n")
                     sys.stderr.flush()
 
-            # Append message to the rank's message file
+            # Validate file path before opening
+            validate_filepath(self.fname)
             with open(self.fname, 'a') as f:
                 f.write(f"{message}\n")
                 f.flush()  # Ensure message is written immediately
@@ -273,11 +276,11 @@ class NodeLogAggregator:
         keep_processing = 50
         msg_dict = {}
         heap = []
-
         while keep_processing:
             if self._stop_event.is_set():
                 # Gives room for aggregator to catch up with writes
-                keep_processing -= 1
+                if len(heap) == 0:
+                    keep_processing -= 1
             # Check for pending messages from other ranks
             self._check_pending_messages()
 
@@ -301,6 +304,7 @@ class NodeLogAggregator:
         """Main loop for the log aggregator."""
         # Setup per-node log file
         log_file = os.path.join(self._log_dir, self._log_file)
+        validate_filepath(log_file)
         output = open(log_file, 'a', buffering=1)  # Line buffered
         try:
             self._process_messages(output)
@@ -368,6 +372,9 @@ class NodeLogAggregator:
             return
 
         # Process each line
+        # Multi-line logs (e.g., tracebacks) have a single header line (matches log_pattern)
+        # followed by one or more continuation lines. A non-header line is treated as a
+        # continuation of the previous record, and the entire block is collapsed into a log message.
         log_msg_q = queue.SimpleQueue()
         old_log_msg: LogMessage = None
         for line in lines:

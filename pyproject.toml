@@ -38,12 +38,12 @@ script = "cupti_build.py"
 generate-setup-file = true
 
 [tool.poetry.dependencies]
+nv-one-logger-core = ">=2.1.0"
 torch = ">=2.3.0"
 packaging = "*"
 python = ">=3.10"
 psutil = ">=6.0.0"
 pyyaml = "*"
-pynvml = ">=12.0.0"
 nvidia-ml-py = ">=12.570.86"
 defusedxml = "*"
 
