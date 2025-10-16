@@ -17,7 +17,7 @@
 This module provides an async utilities which allow to start
 a checkpoint save process in the background.
 """
-
+import gc
 import logging
 import weakref
 from abc import ABC, abstractmethod
@@ -345,7 +345,7 @@ class PersistentAsyncCaller(AsyncCaller):
     Starts process asynchronously and allows checking if all processes on all ranks are done.
     """
 
-    def __init__(self):
+    def __init__(self, is_daemon: bool = False):
         self.process: mp.Process = None
         self.start_time: Optional[float] = None
         ctx = mp.get_context('spawn')
@@ -359,6 +359,12 @@ class PersistentAsyncCaller(AsyncCaller):
         self.cur_item: int = None
         self.cur_idx: int = -1
         self.rank: int = None
+        # When background_worker_is_daemon flag is True, the async background
+        # worker is spawned as a daemon making async worker shutdown cleaner.
+        # The restriction of spawning the async worker as a daemon is that
+        # the FileWriter performing the FileIO in the background process cannot
+        # be parallelized with multi-processing.
+        self.background_worker_is_daemon = is_daemon
 
     def schedule_async_call(self, async_req: AsyncRequest) -> None:
         """Put `AsyncRequest` to the Persistent Async Caller
@@ -385,8 +391,13 @@ class PersistentAsyncCaller(AsyncCaller):
         if self.process is None:
             ctx = mp.get_context('spawn')
             logger.info(f"PersistentAsyncCaller: {self.rank}, Starting Async Caller")
+            if self.background_worker_is_daemon:
+                async_loop_target = PersistentAsyncCaller.async_loop_for_daemon_worker
+            else:
+                async_loop_target = PersistentAsyncCaller.async_loop
+
             self.process: mp.Process = ctx.Process(
-                target=PersistentAsyncCaller.async_loop,
+                target=async_loop_target,
                 args=(
                     self.rank,
                     self.queue,
@@ -394,6 +405,7 @@ class PersistentAsyncCaller(AsyncCaller):
                     self.comp_q,
                     logger.getEffectiveLevel(),
                 ),
+                daemon=self.background_worker_is_daemon,
             )
             self.process.start()
             logger.debug(f"PersistentAsyncCaller: {self.rank}, Started Async Caller {self.process}")
@@ -496,8 +508,7 @@ class PersistentAsyncCaller(AsyncCaller):
         return self.process.is_alive()
 
     @staticmethod
-    @_disable_gc()
-    def async_loop(
+    def async_process_target(
         rank: int,
         queue: mp.JoinableQueue,
         preload_q: mp.JoinableQueue,
@@ -547,8 +558,38 @@ class PersistentAsyncCaller(AsyncCaller):
                 logger.debug(f"{rank} has completed saving {item.call_idx}")
                 comp_q.put(item.call_idx)
                 queue.task_done()
-
+                del async_fn_args
+            del item
+            gc.collect()
         logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank}  has terminated")
+
+    @staticmethod
+    @_disable_gc()
+    def async_loop(
+        rank: int,
+        queue: mp.JoinableQueue,
+        preload_q: mp.JoinableQueue,
+        comp_q: mp.Queue,
+        log_level: int = logging.INFO,
+    ):
+        """
+        Main function for the persistent checkpoint worker called by a non daemon async process.
+        In this loop, child processes may be created (For example: to parallelize File IO)
+        """
+        PersistentAsyncCaller.async_process_target(rank, queue, preload_q, comp_q, log_level)
+
+    @staticmethod
+    def async_loop_for_daemon_worker(
+        rank: int,
+        queue: mp.JoinableQueue,
+        preload_q: mp.JoinableQueue,
+        comp_q: mp.Queue,
+        log_level: int = logging.INFO,
+    ):
+        """
+        Main function for the persistent checkpoint worker called by a daemon async process
+        """
+        PersistentAsyncCaller.async_process_target(rank, queue, preload_q, comp_q, log_level)
 
 
 class _ActiveAsyncRequest(NamedTuple):
@@ -573,10 +614,11 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
     active calls with `maybe_finalize_async_calls`.
     """
 
-    def __init__(self, persistent: bool = True):
+    def __init__(self, persistent: bool = True, is_daemon: bool = False):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
         self.persistent: bool = persistent
+        self.is_daemon: bool = is_daemon
         self.persistent_caller: AsyncCaller = None
 
     def _get_async_caller(self):
@@ -584,7 +626,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             logger.warning("The TemporalAsyncCaller will be deprecated soon. ")
             return TemporalAsyncCaller()
         if self.persistent_caller is None:
-            self.persistent_caller = PersistentAsyncCaller()
+            self.persistent_caller = PersistentAsyncCaller(is_daemon=self.is_daemon)
         return self.persistent_caller
 
     def schedule_async_request(self, async_request: AsyncRequest) -> int:
