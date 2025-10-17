@@ -96,13 +96,13 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 setup_logger(node_local_tmp_prefix="ftlauncher")
 logger = logging.getLogger(LogConfig.name)
 
-def _register_ft_rdzv_handler(impl_type: str = "barrier"):
+def _register_ft_rdzv_handler(impl_type: str = "legacy"):
     """Register the fault-tolerant rendezvous handler.
 
     Args:
         impl_type: FT rendezvous implementation to use.
-                  "barrier" - New atomic barrier-based algorithm (default)
-                  "legacy" - Original compare-and-set algorithm
+                  "barrier" - New atomic barrier-based algorithm
+                  "legacy" - Original compare-and-set algorithm (default)
     """
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
@@ -1983,12 +1983,12 @@ def get_args_parser() -> ArgumentParser:
         "--ft-rdzv_impl",
         type=str,
         choices=["barrier", "legacy"],
-        default="barrier",
+        default="legacy",
         dest="ft_rdzv_impl",
         help="FT rendezvous implementation to use. "
         "'barrier' uses the new atomic barrier-based algorithm (ft_rendezvous_barrier.py), "
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
-        "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
+        "Default: legacy. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
     )
 
@@ -2143,7 +2143,7 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
 
     # Add use_libuv=False for c10d backend with legacy rendezvous only
-    if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'barrier') == 'legacy':
+    if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'legacy') == 'legacy':
         rdzv_configs['use_libuv'] = False
 
     if args.rdzv_backend == "static":
@@ -2260,7 +2260,7 @@ def run(args):
         )
 
     # Register the selected FT rendezvous implementation
-    impl_type = getattr(args, 'ft_rdzv_impl', 'barrier')
+    impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
     _register_ft_rdzv_handler(impl_type)
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(
