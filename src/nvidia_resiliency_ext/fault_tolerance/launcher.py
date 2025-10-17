@@ -395,10 +395,12 @@ class LocalElasticAgent(SimpleElasticAgent):
                     run_result = self._monitor_workers(self._worker_group)
                     return run_result
             elif state == WorkerState.HEALTHY:
-                # membership changes do not count as retries
+                # Check for cluster-wide issues: unhealthy nodes or new nodes waiting
+                unhealthy_count = self._check_cluster_unhealthy_count()
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 group_rank = self._worker_group.group_rank
-                if num_nodes_waiting > 0:
+
+                if unhealthy_count > 0 or num_nodes_waiting > 0:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -407,16 +409,16 @@ class LocalElasticAgent(SimpleElasticAgent):
                     )
 
                     logger.info(
-                        "[%s] Detected %s "
-                        "new nodes from group_rank=%s; "
-                        "will restart worker group",
+                        "[%s] Detected cluster changes from group_rank=%s "
+                        "(unhealthy_nodes=%s, nodes_waiting=%s); will restart worker group",
                         role,
-                        num_nodes_waiting,
                         group_rank,
+                        unhealthy_count,
+                        num_nodes_waiting,
                     )
-                    # Note: For barrier-based rendezvous, the detected node already opened
-                    # the rendezvous (set last_participant_arrived_key=0) before incrementing
-                    # arrived_count_key, so we don't need to open it again here.
+
+                    # Note: The node that triggered the change (unhealthy or new) already opened
+                    # the rendezvous, so we don't need to open it again here.
                     self._restart_workers(self._worker_group)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
@@ -835,6 +837,21 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
+    def _check_cluster_unhealthy_count(self) -> int:
+        """Check the cluster-wide unhealthy count from the rendezvous store.
+
+        Only supported for barrier-based rendezvous. Returns 0 for legacy rendezvous.
+
+        Returns:
+            The number of unhealthy nodes reported in the cluster, or 0 if not available.
+        """
+        # Only barrier-based rendezvous supports unhealthy_count
+        if hasattr(self._rdzv_handler, '_barrier_state'):
+            return self._rdzv_handler._barrier_state._get_unhealthy_count()
+
+        # Legacy rendezvous does not support unhealthy tracking
+        return 0
+
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
         spec = worker_group.spec
@@ -922,11 +939,11 @@ class LaunchConfig:
             self.rdzv_configs["timeout"] = default_timeout
         # bump Torch Elastic default timeouts, so it will work with large scale workloads
         if "join_timeout" not in self.rdzv_configs:
-            self.rdzv_configs["join_timeout"] = 900  # default is 600 seconds
+            self.rdzv_configs["join_timeout"] = 300
         if "close_timeout" not in self.rdzv_configs:
-            self.rdzv_configs["close_timeout"] = 600  # default is 30 seconds
+            self.rdzv_configs["close_timeout"] = 30
         if "read_timeout" not in self.rdzv_configs:
-            self.rdzv_configs["read_timeout"] = 600  # default is 60 seconds
+            self.rdzv_configs["read_timeout"] = 60
 
         # Post-processing to enable refactoring to introduce logs_specs due to non-torchrun API usage
         if self.logs_specs is None:
@@ -1656,7 +1673,7 @@ def get_args_parser() -> ArgumentParser:
         "--monitor_interval",
         action=env,
         type=float,
-        default=0.1,
+        default=0.3,
         help="Interval, in seconds, to monitor the state of workers.",
     )
     parser.add_argument(
