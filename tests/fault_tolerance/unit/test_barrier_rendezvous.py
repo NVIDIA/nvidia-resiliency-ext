@@ -1046,7 +1046,12 @@ class AcknowledgmentPhaseTest(TestCase):
         self.assertEqual(len(ack_counts), min_nodes)
 
     def test_barrier_keys_cleared_after_acknowledgment(self):
-        """Test that barrier keys are cleared after all acknowledgments."""
+        """Test that barrier keys are cleared after all acknowledgments.
+
+        Note: last_participant_arrived_key is NOT cleared as it serves as the
+        open/close indicator for the rendezvous. It remains set to 1 (closed)
+        during training and is reset to 0 (open) by the launcher when needed.
+        """
         min_nodes = 2
         max_nodes = 2
         last_call_timeout = _test_timeout()
@@ -1085,7 +1090,8 @@ class AcknowledgmentPhaseTest(TestCase):
         time.sleep(0.05)  # Minimal delay for key cleanup
 
         # Barrier keys should be cleared by store host
-        self.assertFalse(self.store.check([check_state.last_participant_arrived_key]))
+        # Note: last_participant_arrived_key is intentionally NOT cleared as it
+        # serves as the open/close indicator for the rendezvous
         self.assertFalse(self.store.check([check_state.arrived_count_key]))
         self.assertFalse(self.store.check([check_state.ack_count_key]))
 
