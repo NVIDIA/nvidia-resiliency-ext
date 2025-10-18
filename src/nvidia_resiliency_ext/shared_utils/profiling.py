@@ -16,14 +16,30 @@
 # This file adds time profiling capabilities using nv one logger
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
-from nv_one_logger.api.one_logger_provider import OneLoggerProvider
+from nv_one_logger.api.config import LoggerConfig, OneLoggerConfig
 from nv_one_logger.core.attributes import Attributes
 from nv_one_logger.core.event import Event
+from nv_one_logger.core.span import StandardSpanName
+from nv_one_logger.exporter.file_exporter import FileExporter
+from nv_one_logger.training_telemetry.api.training_telemetry_provider import (
+    TrainingTelemetryProvider,
+)
+
+# WandB exporter is an optional dependency
+try:
+    from nv_one_logger.wandb.exporter.wandb_exporter import Config as WandBConfig
+    from nv_one_logger.wandb.exporter.wandb_exporter import WandBExporterAsync
+
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 from ..shared_utils.log_manager import LogConfig
 
@@ -46,6 +62,96 @@ class FaultToleranceProfiler:
         self._current_cycle = 0
         # Initialize logger as a member to avoid module-level logger issues
         self._logger = logging.getLogger(LogConfig.name)
+        self._app_span = None  # Will hold the application span for attaching events
+
+        # Initialize TrainingTelemetryProvider singleton if not already configured
+        if not TrainingTelemetryProvider.instance().one_logger_ready:
+
+            # Configure with minimal required settings for fault tolerance profiling
+            # Use Slurm JobID as session tag for grouping related jobs (e.g., across restarts)
+            base_config = OneLoggerConfig(
+                application_name="nvrx",
+                world_size_or_fn=1,
+                session_tag_or_fn=lambda: os.environ.get("SLURM_JOB_ID", "local_run"),
+                custom_metadata=(
+                    {
+                        "slurm_job_name": os.environ.get("SLURM_JOB_NAME"),
+                        "slurm_cluster": os.environ.get("SLURM_CLUSTER_NAME"),
+                    }
+                    if os.environ.get("SLURM_JOB_ID")
+                    else None
+                ),
+                # Disable OneLogger's internal log files by redirecting to /dev/null
+                logger_config=LoggerConfig(
+                    log_file_path_for_info="/dev/null",
+                    log_file_path_for_err="/dev/null",
+                ),
+            )
+
+            # Configure exporters based on environment variable
+            # Options: None (default, no exporter), "file", or "wandb"
+            exporter_type = os.environ.get("NVRX_TELEMETRY_EXPORTER", "").lower()
+
+            provider = TrainingTelemetryProvider.instance().with_base_config(base_config)
+
+            # Add FileExporter if requested
+            if exporter_type == "file":
+                file_path = os.environ.get("NVRX_TELEMETRY_FILE", "nvrx_telemetry.json")
+                file_exporter = FileExporter(file_path=Path(file_path))
+                provider.with_exporter(file_exporter)
+
+            # Add WandB exporter if requested and available
+            elif exporter_type == "wandb":
+                if not WANDB_AVAILABLE:
+                    self._logger.warning(
+                        "WandB exporter requested but nv_one_logger.wandb package not available. "
+                        "Install with: pip install nv-one-logger-wandb"
+                    )
+                else:
+                    # WandB entity is required; if not set, skip WandB exporter
+                    wandb_entity = os.environ.get("WANDB_ENTITY")
+                    if wandb_entity:
+                        wandb_config = WandBConfig(
+                            entity=wandb_entity,
+                            project=os.environ.get("WANDB_PROJECT", "nvrx-telemetry"),
+                            run_name=os.environ.get(
+                                "WANDB_RUN_NAME", f"nvrx_{os.environ.get('SLURM_JOB_ID', 'local')}"
+                            ),
+                            api_key=os.environ.get(
+                                "WANDB_API_KEY", ""
+                            ),  # Falls back to .netrc or WANDB_API_KEY env
+                            tags=["nvrx", "fault_tolerance"],
+                        )
+                        wandb_exporter = WandBExporterAsync(config=wandb_config)
+                        provider.with_exporter(wandb_exporter)
+                    else:
+                        self._logger.warning("WandB exporter requested but WANDB_ENTITY not set")
+
+            elif exporter_type:
+                self._logger.warning(
+                    f"Unknown exporter type: '{exporter_type}'. Valid options: 'file', 'wandb'"
+                )
+
+            provider.configure_provider()
+
+        # Create application span for attaching events (if provider is ready)
+        if TrainingTelemetryProvider.instance().one_logger_ready:
+            # Add session and metadata attributes to the application span
+            span_attributes = Attributes()
+
+            # Add session tag (e.g., Slurm Job ID)
+            config = TrainingTelemetryProvider.instance().config
+            span_attributes.add("session_tag", config.session_tag)
+            span_attributes.add("application_name", config.application_name)
+
+            # Add custom metadata (Slurm job info)
+            if config.custom_metadata:
+                for key, value in config.custom_metadata.items():
+                    span_attributes.add(key, value)
+
+            self._app_span = TrainingTelemetryProvider.instance().recorder.start(
+                span_name=StandardSpanName.APPLICATION, span_attributes=span_attributes
+            )
 
     def _timestamp_to_utc_datetime(self, timestamp: float) -> str:
         """Convert timestamp to UTC datetime string."""
@@ -55,25 +161,32 @@ class FaultToleranceProfiler:
         ]  # Remove last 3 digits for milliseconds
 
     def _publish_metrics(
-        self, event: ProfilingEvent, timestamp: float, node_id: Optional[str], rank: Optional[int]
+        self, event: ProfilingEvent, timestamp: float, node_id: Optional[Any], rank: Optional[int]
     ) -> None:
-        """Publish metrics using nv one logger."""
-        try:
-            # Check if nv one logger is available and enabled
-            if OneLoggerProvider.instance().one_logger_enabled:
-                # Create attributes for the event
-                attributes = Attributes()
-                attributes.add("event_type", event.value)
-                attributes.add("timestamp_ms", int(timestamp * 1000))
-                attributes.add("cycle", self._current_cycle)
-                if node_id:
-                    attributes.add("node_id", node_id)
-                if rank is not None:
-                    attributes.add("rank", rank)
+        """Publish metrics using TrainingTelemetryProvider.
 
-                # Create and record the event
-                event_obj = Event.create(f"ft.{event.value}", attributes)
-                OneLoggerProvider.instance().recorder.event(None, event_obj)
+        Note: This method is defensive and will not raise exceptions, only log warnings.
+        We don't want telemetry failures to disrupt fault tolerance operations.
+        """
+        # Check if training telemetry is configured and ready
+        if not TrainingTelemetryProvider.instance().one_logger_ready:
+            return
+
+        try:
+            # Create attributes for the event
+            attributes = Attributes()
+            attributes.add("event_type", event.value)
+            attributes.add("timestamp_ms", int(timestamp * 1000))
+            attributes.add("cycle", self._current_cycle)
+            if node_id:
+                # Convert node_id to string to ensure JSON serializability
+                attributes.add("node_id", str(node_id))
+            if rank is not None:
+                attributes.add("rank", rank)
+
+            # Create and record the event (synchronous operation)
+            event_obj = Event.create(f"ft.{event.value}", attributes)
+            TrainingTelemetryProvider.instance().recorder.event(self._app_span, event_obj)
         except Exception as e:
             # If nv one logger fails, just log a warning and continue
             self._logger.warning(f"Failed to publish metrics to nv one logger: {e}")
@@ -81,12 +194,14 @@ class FaultToleranceProfiler:
     def record_event(
         self,
         event: ProfilingEvent,
-        node_id: Optional[str] = None,
+        node_id: Optional[Any] = None,
         rank: Optional[int] = None,
     ) -> str:
         """Record a profiling event and return a unique event ID."""
         timestamp = time.time()
-        event_id = f"{event.value}_{timestamp}_{node_id or 'unknown'}_{rank or 'unknown'}"
+        # Convert node_id to string for event ID and logging
+        node_id_str = str(node_id) if node_id is not None else 'unknown'
+        event_id = f"{event.value}_{timestamp}_{node_id_str}_{rank or 'unknown'}"
 
         # Increment cycle count for failure detection events
         if event == ProfilingEvent.FAILURE_DETECTED:
@@ -98,7 +213,7 @@ class FaultToleranceProfiler:
         # Format log message with cycle count and UTC time
         utc_time = self._timestamp_to_utc_datetime(timestamp)
         self._logger.info(
-            f"  - Cycle: {self._current_cycle} Event: {event.value} Node: {node_id} Rank: {rank} "
+            f"  - Cycle: {self._current_cycle} Event: {event.value} Node: {node_id_str} Rank: {rank} "
             f"Time: {utc_time} UTC"
         )
         return event_id
@@ -110,8 +225,17 @@ _global_profiler = FaultToleranceProfiler()
 
 def record_profiling_event(
     event: ProfilingEvent,
-    node_id: Optional[str] = None,
+    node_id: Optional[Any] = None,
     rank: Optional[int] = None,
 ) -> str:
-    """Convenience function to record a profiling event."""
+    """Convenience function to record a profiling event.
+
+    Args:
+        event: The profiling event to record
+        node_id: Node identifier (can be any type, will be converted to string)
+        rank: Rank identifier
+
+    Returns:
+        Event ID string
+    """
     return _global_profiler.record_event(event, node_id, rank)
