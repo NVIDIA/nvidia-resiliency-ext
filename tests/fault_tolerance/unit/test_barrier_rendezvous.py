@@ -867,6 +867,9 @@ class ErrorCaseTest(TestCase):
         last_call_timeout = _test_timeout()
 
         errors = []
+        # Use barrier to synchronize thread starts - ensures all threads
+        # attempt to join before any complete the rendezvous
+        start_barrier = threading.Barrier(3)
 
         def participant_thread(participant_id, is_host):
             # Each participant needs its own state instance
@@ -878,6 +881,8 @@ class ErrorCaseTest(TestCase):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
+                # Wait for all threads to be ready before proceeding
+                start_barrier.wait()
                 node = self.node_desc_gen.generate()
                 state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
             except Exception as e:
