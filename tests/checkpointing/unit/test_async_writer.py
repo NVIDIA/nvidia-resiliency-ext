@@ -76,10 +76,14 @@ class TestAsyncSave:
         thread_count=1,
         caching=False,
         open_file=open,
+        is_multiproc_io=True,
     ):
         """Performs an asynchronous model checkpoint save."""
         writer = FileSystemWriterAsync(
-            checkpoint_dir, thread_count=thread_count, open_file=open_file
+            checkpoint_dir,
+            thread_count=thread_count,
+            open_file=open_file,
+            is_multiproc_io=is_multiproc_io,
         )
         coordinator_rank = 0
 
@@ -110,9 +114,16 @@ class TestAsyncSave:
         )
         return state_dict
 
-    def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt, async_queue):
+    @pytest.mark.parametrize(
+        ('persistent_is_daemon', 'is_multiproc_io'),
+        [(True, False), (False, True), (False, False)],
+    )
+    def test_async_is_equivalent_to_sync(
+        self, tmp_path_dist_ckpt, persistent_is_daemon, is_multiproc_io
+    ):
         """Verifies that async checkpointing produces the same results as sync checkpointing."""
         Utils.initialize_distributed()
+        async_queue = AsyncCallsQueue(is_daemon=persistent_is_daemon)
         model = FSDP(Model((1024, 1024), 8))
         with (
             TempNamedDir(tmp_path_dist_ckpt / 'async_checkpoint', sync=True) as async_ckpt_dir,
@@ -122,7 +133,9 @@ class TestAsyncSave:
             planner = DefaultSavePlanner()
 
             # Perform async and sync saves
-            self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
+            self.async_save_checkpoint(
+                async_ckpt_dir, state_dict, planner, async_queue, is_multiproc_io=is_multiproc_io
+            )
             self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
 
             # Finalize async saves
@@ -154,7 +167,35 @@ class TestAsyncSave:
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
 
-    def test_errors_are_reported(self, tmp_path_dist_ckpt, async_queue):
+    @pytest.mark.parametrize(
+        ('persistent_is_daemon', 'is_multiproc_io'),
+        [(True, True)],
+    )
+    def test_invalid_async_setup(self, tmp_path_dist_ckpt, persistent_is_daemon, is_multiproc_io):
+        """
+        Verifies a clear error message when users incorrectly setup a daemon async worker
+        and configure FileWriter to perform multiprocessing.
+        """
+        Utils.initialize_distributed()
+        async_queue = AsyncCallsQueue(is_daemon=persistent_is_daemon)
+        model = FSDP(Model((1024, 1024), 8))
+        with (TempNamedDir(tmp_path_dist_ckpt / 'async_checkpoint', sync=True) as async_ckpt_dir,):
+            state_dict = model.state_dict()
+            planner = DefaultSavePlanner()
+            # Perform async and sync saves
+            self.async_save_checkpoint(
+                async_ckpt_dir, state_dict, planner, async_queue, is_multiproc_io=is_multiproc_io
+            )
+            with pytest.raises(CheckpointException) as exc_info:
+                # Finalize async saves
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            rank = torch.distributed.get_rank()
+            if rank == 0:
+                assert 'Invalid Setup!' in str(exc_info.value)
+            async_queue.close()
+
+    @pytest.mark.parametrize('is_multiproc_io', [True, False])
+    def test_errors_are_reported(self, tmp_path_dist_ckpt, async_queue, is_multiproc_io):
         Utils.initialize_distributed()
         rank = torch.distributed.get_rank()
         model = FSDP(Model((1024, 1024), 8))
@@ -168,7 +209,12 @@ class TestAsyncSave:
 
         with TempNamedDir(tmp_path_dist_ckpt / 'test_errors_are_reported', sync=True) as ckpt_dir:
             self.async_save_checkpoint(
-                ckpt_dir, state_dict, planner, async_queue, open_file=open_file
+                ckpt_dir,
+                state_dict,
+                planner,
+                async_queue,
+                open_file=open_file,
+                is_multiproc_io=is_multiproc_io,
             )
             with pytest.raises(CheckpointException) as exc_info:
                 async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
@@ -229,7 +275,12 @@ class TestAsyncSave:
         ckpt_dir.cleanup()
         async_queue.close()
 
-    def test_async_cp_with_multiple_queue_and_abort(self, tmp_path_dist_ckpt):
+    @pytest.mark.parametrize(
+        ('persistent_is_daemon', 'is_multiproc_io'), [(True, False), (False, True), (False, False)]
+    )
+    def test_async_cp_with_multiple_queue_and_abort(
+        self, tmp_path_dist_ckpt, persistent_is_daemon, is_multiproc_io
+    ):
         """
         Verifies that async checkpointing backend can be used with multiple async queues.
         For example, user may want to save 2 checkpoints i.e. one sharded state and one only on rank-0.
@@ -237,7 +288,7 @@ class TestAsyncSave:
         """
         Utils.initialize_distributed()
         model = FSDP(Model((1024, 1024), 8))
-        async_queue_dist = AsyncCallsQueue()
+        async_queue_dist = AsyncCallsQueue(is_daemon=persistent_is_daemon)
         ckpt_impl = TorchAsyncCheckpoint(persistent_queue=True)
         with (
             TempNamedDir(
@@ -251,7 +302,13 @@ class TestAsyncSave:
             planner = DefaultSavePlanner()
 
             # Perform async saves for both dist CP and non-dict CP use cases.
-            self.async_save_checkpoint(async_ckpt_dir_dist, state_dict, planner, async_queue_dist)
+            self.async_save_checkpoint(
+                async_ckpt_dir_dist,
+                state_dict,
+                planner,
+                async_queue_dist,
+                is_multiproc_io=is_multiproc_io,
+            )
             self.async_save_checkpoint_on_rank0(async_ckpt_dir_no_dist, state_dict, ckpt_impl)
             async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
             ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
@@ -278,7 +335,13 @@ class TestAsyncSave:
 
             # Perform async saves for both dist CP and non-dist CP use cases.
             # Validate that operations seamlessly resume after an abort operation
-            self.async_save_checkpoint(async_ckpt_dir_dist, state_dict, planner, async_queue_dist)
+            self.async_save_checkpoint(
+                async_ckpt_dir_dist,
+                state_dict,
+                planner,
+                async_queue_dist,
+                is_multiproc_io=is_multiproc_io,
+            )
             self.async_save_checkpoint_on_rank0(async_ckpt_dir_no_dist, state_dict, ckpt_impl)
             async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
             ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
@@ -308,3 +371,34 @@ class TestAsyncSave:
 
             async_queue_dist.close()
             ckpt_impl.close()
+
+    def test_async_cp_with_multiple_queue_and_abort_followed_by_delete(self, tmp_path_dist_ckpt):
+        """
+        Test that persistent async CP worker shuts down cleanly after an abort operation.
+        This test mocks the behavior of training exiting after an abort triggered by an inprocess restart.
+        """
+        Utils.initialize_distributed()
+        model = FSDP(Model((1024, 1024), 8))
+        async_queue_dist = AsyncCallsQueue(persistent=True)
+        with (
+            TempNamedDir(
+                tmp_path_dist_ckpt / 'async_checkpoint_dist', sync=True
+            ) as async_ckpt_dir_dist,
+        ):
+            state_dict = model.state_dict()
+            planner = DefaultSavePlanner()
+
+            try:
+                # Raise an exception in training process right after async CP request is submitted
+                with pytest.raises(RuntimeError) as exc_info:
+                    self.async_save_checkpoint(
+                        async_ckpt_dir_dist, state_dict, planner, async_queue_dist
+                    )
+                    raise RuntimeError("Fake exception to mock training process exception")
+                    async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            finally:
+                # Mock behavior of an abort operation triggered by inprocess restart when exception occurs.
+                # Abort the CP workers to mock the action of inprocess restarts
+                abort_nvrx_checkpoint()
+        # Mock training loop exit which would invoke a __del__ on async queue object
+        async_queue_dist.__del__()
