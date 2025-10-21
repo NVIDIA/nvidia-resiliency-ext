@@ -64,6 +64,29 @@ The restart behavior depends on the ``--ft-restart-policy`` parameter, which sup
   without restarting remaining workers, e.g., with the :doc:`../inprocess/index`.
   For details on how ``min-healthy`` policy interacts with :doc:`../inprocess/index` see :doc:`integration/inprocess`.
 
+GPU Memory Reclaim
+^^^^^^^^^^^^^^^^^^
+
+When ``--max-restarts`` is specified, ``ft_launcher`` can optionally wait for GPU memory to be
+released before starting new workers after a restart. This helps ensure that GPU memory from
+terminated workers has been fully reclaimed before starting new processes.
+
+This feature is controlled by three parameters:
+
+* ``--ft-gpu-memory-reclaim-timeout`` (default: 50.0 seconds)
+  Timeout for waiting for GPU memory to drop below the tolerance threshold. Set to 0 to disable the feature.
+
+* ``--ft-gpu-memory-tolerance-mb`` (default: 512.0 MB)
+  Maximum allowed GPU memory usage. The launcher waits until GPU memory drops below this threshold.
+
+* ``--ft-gpu-memory-poll-interval`` (default: 2.0 seconds)
+  Poll interval for checking GPU memory usage during the reclaim process.
+
+On restarts, the launcher periodically checks GPU memory usage and waits until it drops below
+the tolerance threshold or the timeout is reached. Memory statistics for each GPU are collected
+and logged after the reclaim process completes. If the timeout is reached, an error is logged but the
+restart proceeds as a best effort.
+
 Rank assignment
 ^^^^^^^^^^^^^^^
 

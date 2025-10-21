@@ -16,6 +16,7 @@
 import asyncio
 import contextlib
 import ctypes
+import logging
 import multiprocessing
 import os
 import socket
@@ -25,6 +26,10 @@ import time
 
 import psutil
 import torch
+
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+logger = logging.getLogger(LogConfig.name)
 
 _IPC_PICKLER = multiprocessing.reduction.ForkingPickler(open(os.devnull, mode='wb'))
 
@@ -198,6 +203,49 @@ def reduce_cuda_ctx_size():
     except Exception as _:
         # ignore exception, can continue if this fails
         pass
+
+
+def get_processes_by_pgids(pgids, exclude_launcher=True):
+    """
+    Find all processes belonging to specific process groups.
+    This catches workers and ALL their descendants (including checkpoint writers, etc.).
+
+    Args:
+        pgids: Set or list of process group IDs to find
+        exclude_launcher: If True, exclude the launcher process itself
+
+    Returns:
+        List of dicts containing process info (pid, ppid, pgid, name, cmdline, status)
+    """
+    try:
+        launcher_pid = os.getpid()
+        processes = []
+
+        for proc in psutil.process_iter(attrs=['pid', 'ppid', 'name', 'cmdline', 'status']):
+            try:
+                pid = proc.info['pid']
+
+                # Skip launcher itself
+                if exclude_launcher and pid == launcher_pid:
+                    continue
+
+                # Skip zombie processes (normal during cleanup)
+                if proc.info['status'] == psutil.STATUS_ZOMBIE:
+                    continue
+
+                # Get process group ID
+                proc_pgid = os.getpgid(pid)
+
+                if proc_pgid in pgids:
+                    proc_info = proc.info.copy()
+                    proc_info['pgid'] = proc_pgid
+                    processes.append(proc_info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                pass
+
+        return processes
+    except Exception:
+        return []
 
 
 @contextlib.contextmanager

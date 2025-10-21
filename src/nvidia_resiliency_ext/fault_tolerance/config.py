@@ -64,6 +64,14 @@ class FaultToleranceConfig:
     * `numa_bind_strict` - If True, use strict NUMA binding with both CPU and memory bound to the
       same NUMA node (--cpunodebind=N --membind=N). If False (default), only bind CPU to NUMA node
       and allow local memory allocation (--cpunodebind=N --localalloc). Default: False.
+    * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed
+      after worker shutdown before starting new workers. Default: 50.0.
+    * `gpu_memory_tolerance_mb` [float] maximum allowed GPU memory usage (in MB) when checking if
+      memory has been reclaimed. Default: 512.0.
+    * `gpu_memory_poll_interval` [float] poll interval (in seconds) for checking GPU memory during
+      reclaim process. Default: 2.0.
+    * `check_remaining_processes` [bool] if True, check for and log any remaining worker processes
+      after termination. Useful for debugging process cleanup issues. Default: False.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -94,6 +102,10 @@ class FaultToleranceConfig:
     def is_progress_tracking_enabled(self) -> bool:
         """Check if progress tracking is enabled (controlled by max_no_progress_restarts > 0)."""
         return self.max_no_progress_restarts > 0
+    gpu_memory_reclaim_timeout: float = 50.0
+    gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
+    gpu_memory_poll_interval: float = 2.0  # Poll interval for GPU memory check (in seconds)
+    check_remaining_processes: bool = False
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
@@ -223,6 +235,9 @@ class FaultToleranceConfig:
             'node_health_check_interval',
             'safety_factor',
             'restart_check_interval',
+            'gpu_memory_reclaim_timeout',
+            'gpu_memory_tolerance_mb',
+            'gpu_memory_poll_interval',
         ]
         for field in fields(FaultToleranceConfig):
             cli_field_name = f"ft_{field.name}"
