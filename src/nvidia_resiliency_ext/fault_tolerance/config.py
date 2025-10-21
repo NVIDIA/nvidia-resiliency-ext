@@ -64,6 +64,12 @@ class FaultToleranceConfig:
     * `numa_bind_strict` - If True, use strict NUMA binding with both CPU and memory bound to the
       same NUMA node (--cpunodebind=N --membind=N). If False (default), only bind CPU to NUMA node
       and allow local memory allocation (--cpunodebind=N --localalloc). Default: False.
+    * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed
+      after worker shutdown before starting new workers. Default: 15.0.
+    * `gpu_memory_tolerance_mb` [float] tolerance (in MB) for GPU memory comparison when checking if
+      memory has been reclaimed to baseline. Default: 50.0.
+    * `check_remaining_processes` [bool] if True, check for and log any remaining worker processes
+      after termination. Useful for debugging process cleanup issues. Default: False.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -89,6 +95,11 @@ class FaultToleranceConfig:
     max_no_progress_restarts: int = 3
     min_progress_iterations: int = 200
     progress_update_interval: float = 30.0  # Seconds between sending progress updates to launcher
+    gpu_memory_reclaim_timeout: float = 15.0
+    gpu_memory_tolerance_mb: float = (
+        700.0  # Accounts for CUDA context initialization (~600MB) + overhead
+    )
+    check_remaining_processes: bool = False
 
     @property
     def is_progress_tracking_enabled(self) -> bool:
@@ -223,6 +234,8 @@ class FaultToleranceConfig:
             'node_health_check_interval',
             'safety_factor',
             'restart_check_interval',
+            'gpu_memory_reclaim_timeout',
+            'gpu_memory_tolerance_mb',
         ]
         for field in fields(FaultToleranceConfig):
             cli_field_name = f"ft_{field.name}"

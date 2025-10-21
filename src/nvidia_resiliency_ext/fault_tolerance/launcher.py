@@ -73,11 +73,13 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
+    get_processes_by_pgids,
     patched_method,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
@@ -340,6 +342,9 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        # Baseline GPU memory usage per device (captured on initial start)
+        # Dict[device_idx, used_mb]
+        self._baseline_gpu_memory: Dict[int, float] = {}
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -823,6 +828,25 @@ class LocalElasticAgent(SimpleElasticAgent):
             rank=worker_group.group_rank,
         )
 
+        # Check for remaining processes if configured
+        if self._ft_cfg.check_remaining_processes and self._children_pgids:
+            remaining = get_processes_by_pgids(self._children_pgids)
+
+            if remaining:
+                logger.warning(
+                    f"Found {len(remaining)} remaining processes in worker PGIDs after termination:"
+                )
+                for proc_info in remaining[:20]:  # Limit output to first 20
+                    logger.warning(
+                        f"  PID={proc_info['pid']}, PPID={proc_info['ppid']}, "
+                        f"PGID={proc_info['pgid']}, name={proc_info['name']}, "
+                        f"status={proc_info['status']}, cmdline={proc_info['cmdline'][:100] if proc_info['cmdline'] else 'N/A'}"
+                    )
+                if len(remaining) > 20:
+                    logger.warning(f"  ... and {len(remaining) - 20} more")
+            else:
+                logger.debug("All worker processes and descendants terminated successfully")
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -831,6 +855,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
         restart_count = spec.max_restarts - self._remaining_restarts
+
+        # On restarts (excluding initial start), wait for GPU memory to be reclaimed
+        if restart_count > 0 and self._ft_cfg.gpu_memory_reclaim_timeout > 0:
+            self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
 
         # Record worker start start event
         record_profiling_event(
@@ -926,6 +954,10 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
+        # Capture baseline GPU memory on initial start (cycle 0)
+        if restart_count == 0 and self._ft_cfg.gpu_memory_reclaim_timeout > 0:
+            self._capture_baseline_gpu_memory(worker_group.spec.local_world_size)
+
         # Record worker start completion event
         record_profiling_event(
             ProfilingEvent.WORKER_START_COMPLETED,
@@ -934,6 +966,87 @@ class LocalElasticAgent(SimpleElasticAgent):
         )
 
         return self._pcontext.pids()
+
+    def _capture_baseline_gpu_memory(self, num_gpus: int) -> None:
+        """
+        Capture baseline GPU memory usage for all devices on this node.
+        This is called on initial start (cycle 0) to establish the baseline memory.
+
+        Args:
+            num_gpus: Number of GPUs on this node
+        """
+        memory_logger = GPUMemoryLogger()
+
+        for device_idx in range(num_gpus):
+            mem_info = memory_logger.get_gpu_memory(device_index=device_idx)
+            if mem_info is not None:
+                self._baseline_gpu_memory[device_idx] = mem_info['used_mb']
+                logger.debug(
+                    "Baseline GPU %d memory: %.2f MB",
+                    device_idx,
+                    mem_info['used_mb'],
+                )
+
+    def _wait_for_gpu_memory_reclaim(self, num_gpus: int) -> None:
+        """
+        Wait for GPU memory to be reclaimed to baseline levels before starting new workers.
+        This is called on restarts (not on initial start) to ensure memory has been cleaned up.
+
+        Polls GPU memory usage and waits until it returns to baseline (within tolerance) or timeout.
+
+        Args:
+            num_gpus: Number of GPUs on this node
+        """
+        if not self._baseline_gpu_memory:
+            # Baseline was not captured (already logged during initial capture attempt)
+            return
+
+        memory_logger = GPUMemoryLogger()
+        timeout = self._ft_cfg.gpu_memory_reclaim_timeout
+        tolerance_mb = self._ft_cfg.gpu_memory_tolerance_mb
+        poll_interval = 0.5  # Poll every 500ms
+
+        start_time = time.time()
+        all_devices_ok = False
+
+        while time.time() - start_time < timeout:
+            all_devices_ok = True
+
+            for device_idx in range(num_gpus):
+                if device_idx not in self._baseline_gpu_memory:
+                    continue
+
+                mem_info = memory_logger.get_gpu_memory(device_index=device_idx)
+                if mem_info is None:
+                    # Error already logged by get_gpu_memory()
+                    continue
+
+                baseline_mb = self._baseline_gpu_memory[device_idx]
+                current_mb = mem_info['used_mb']
+                diff_mb = current_mb - baseline_mb
+
+                # Only care if current memory is higher than baseline
+                # (lower is fine - it means even less memory is being used)
+                if diff_mb > tolerance_mb:
+                    all_devices_ok = False
+                    break
+
+            if all_devices_ok:
+                elapsed_time = time.time() - start_time
+                logger.info(
+                    "GPU memory reclaimed to baseline levels (took %.2fs)",
+                    elapsed_time,
+                )
+                return
+
+            time.sleep(poll_interval)
+
+        # Timeout reached
+        logger.error(
+            "Timeout waiting for GPU memory to be reclaimed after %.1fs. "
+            "Memory may not have been fully cleaned up. Proceeding anyway as best effort.",
+            timeout,
+        )
 
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
@@ -2181,6 +2294,46 @@ def get_args_parser() -> ArgumentParser:
         "(--cpunodebind=N --membind=N). By default, only CPU is bound to NUMA node with local "
         "memory allocation (--cpunodebind=N --localalloc). This option only affects behavior when "
         "NVRX_GPUS_PER_NUMA environment variable is set. Default: False.",
+    )
+
+    parser.add_argument(
+        "--ft-enable-gpu-memory-check",
+        "--ft-enable_gpu_memory_check",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+    )
+
+    parser.add_argument(
+        "--ft-gpu-memory-reclaim-timeout",
+        "--ft-gpu_memory_reclaim_timeout",
+        type=str,
+        default=None,
+        dest="ft_gpu_memory_reclaim_timeout",
+        help="Part of Fault Tolerance pkg config (gpu_memory_reclaim_timeout). "
+        "Timeout (in seconds) to wait for GPU memory to be reclaimed after worker shutdown "
+        "before starting new workers. Default: 15.0. Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-gpu-memory-tolerance-mb",
+        "--ft-gpu_memory_tolerance_mb",
+        type=str,
+        default=None,
+        dest="ft_gpu_memory_tolerance_mb",
+        help="Part of Fault Tolerance pkg config (gpu_memory_tolerance_mb). "
+        "Tolerance (in MB) for GPU memory comparison when checking if memory has been "
+        "reclaimed to baseline. Accounts for CUDA context initialization (~600MB) and overhead. "
+        "Default: 700.0. Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-check-remaining-processes",
+        "--ft-check_remaining_processes",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_check_remaining_processes",
+        help="Part of Fault Tolerance pkg config (check_remaining_processes). "
+        "If enabled, check for and log any remaining worker processes after termination. "
+        "Useful for debugging process cleanup issues. Default: False.",
     )
 
     parser.add_argument(
