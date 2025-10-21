@@ -71,11 +71,13 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
 )
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
+    get_processes_by_pgids,
     patched_method,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
@@ -657,12 +659,43 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._shutdown(timeout=self._workers_stop_timeout)
 
+        # Check for remaining processes if configured
+        if self._ft_cfg.check_remaining_processes and self._children_pgids:
+            remaining = get_processes_by_pgids(self._children_pgids)
+
+            if remaining:
+                logger.warning(
+                    f"Found {len(remaining)} remaining processes in worker PGIDs after termination:"
+                )
+                for proc_info in remaining[:20]:  # Limit output to first 20
+                    logger.warning(
+                        f"  PID={proc_info['pid']}, PPID={proc_info['ppid']}, "
+                        f"PGID={proc_info['pgid']}, name={proc_info['name']}, "
+                        f"status={proc_info['status']}, cmdline={proc_info['cmdline'][:100] if proc_info['cmdline'] else 'N/A'}"
+                    )
+                if len(remaining) > 20:
+                    logger.warning(f"  ... and {len(remaining) - 20} more")
+            else:
+                logger.debug("All worker processes and descendants terminated successfully")
+
+        # Wait for GPU memory to be reclaimed BEFORE returning control
+        # This ensures the node doesn't proceed to the next rendezvous cycle while memory is still tied up
+        if self._ft_cfg.gpu_memory_reclaim_timeout > 0:
+            logger.debug(
+                "Waiting for GPU memory to be reclaimed (timeout: %ds, tolerance: %d MB, poll interval: %ds)...",
+                int(self._ft_cfg.gpu_memory_reclaim_timeout),
+                int(self._ft_cfg.gpu_memory_tolerance_mb),
+                int(self._ft_cfg.gpu_memory_poll_interval),
+            )
+            self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
+
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
             node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
         )
+
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -759,6 +792,90 @@ class LocalElasticAgent(SimpleElasticAgent):
         )
 
         return self._pcontext.pids()
+
+    def _wait_for_gpu_memory_reclaim(self, num_gpus: int) -> None:
+        """
+        Wait for GPU memory to be reclaimed below the tolerance threshold before starting new workers.
+        This is called on restarts (not on initial start) to ensure memory has been cleaned up.
+
+        Polls GPU memory usage and waits until it drops below the tolerance threshold or timeout.
+
+        Args:
+            num_gpus: Number of GPUs on this node
+        """
+        memory_logger = GPUMemoryLogger()
+        timeout = self._ft_cfg.gpu_memory_reclaim_timeout
+        tolerance_mb = self._ft_cfg.gpu_memory_tolerance_mb
+        poll_interval = self._ft_cfg.gpu_memory_poll_interval
+
+        start_time = time.time()
+        all_devices_ok = False
+
+        # Store memory stats per GPU per poll for logging
+        memory_stats = {device_idx: [] for device_idx in range(num_gpus)}
+
+        while time.time() - start_time < timeout:
+            all_devices_ok = True
+
+            for device_idx in range(num_gpus):
+                mem_info = memory_logger.get_gpu_memory(device_index=device_idx)
+                if mem_info is None:
+                    # Error already logged by get_gpu_memory()
+                    continue
+
+                current_mb = mem_info['used_mb']
+                # Save stats for logging
+                memory_stats[device_idx].append({
+                    'timestamp': time.time() - start_time,
+                    'used_mb': current_mb,
+                })
+
+                # Check if memory is below tolerance
+                if current_mb > tolerance_mb:
+                    all_devices_ok = False
+
+            if all_devices_ok:
+                elapsed_time = time.time() - start_time
+                # Log memory stats per GPU - all info in one line per GPU
+                for device_idx in range(num_gpus):
+                    if memory_stats[device_idx]:
+                        # Show only the last 10 samples if we have more than 10
+                        samples_to_show = memory_stats[device_idx][-10:]
+                        samples_str = ", ".join([
+                            f"{int(s['used_mb'])}MB@{int(s['timestamp'])}s"
+                            for s in samples_to_show
+                        ])
+                        logger.info(
+                            "GPU %d memory reclaimed in %ds (%d samples): %s",
+                            device_idx,
+                            int(elapsed_time),
+                            len(memory_stats[device_idx]),
+                            samples_str,
+                        )
+                return
+
+            time.sleep(poll_interval)
+
+        # Timeout reached - log final memory stats per GPU
+        logger.error(
+            "Timeout waiting for GPU memory to be reclaimed after %.1fs. "
+            "Memory may not have been fully cleaned up. Proceeding anyway as best effort.",
+            timeout,
+        )
+        for device_idx in range(num_gpus):
+            if memory_stats[device_idx]:
+                # Show only the last 10 samples if we have more than 10
+                samples_to_show = memory_stats[device_idx][-10:]
+                samples_str = ", ".join([
+                    f"{int(s['used_mb'])}MB@{int(s['timestamp'])}s"
+                    for s in samples_to_show
+                ])
+                logger.warning(
+                    "GPU %d memory usage history (%d samples): %s",
+                    device_idx,
+                    len(memory_stats[device_idx]),
+                    samples_str,
+                )
 
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
@@ -1994,6 +2111,56 @@ def get_args_parser() -> ArgumentParser:
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
         "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
+    )
+
+    parser.add_argument(
+        "--ft-enable-gpu-memory-check",
+        "--ft-enable_gpu_memory_check",
+        type=lambda x: str(x).lower() in ["true", "1", "yes"],
+    )
+
+    parser.add_argument(
+        "--ft-gpu-memory-reclaim-timeout",
+        "--ft-gpu_memory_reclaim_timeout",
+        type=str,
+        default=None,
+        dest="ft_gpu_memory_reclaim_timeout",
+        help="Part of Fault Tolerance pkg config (gpu_memory_reclaim_timeout). "
+        "Timeout (in seconds) to wait for GPU memory to be reclaimed after worker shutdown "
+        "before starting new workers. Default: 50.0. Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-gpu-memory-tolerance-mb",
+        "--ft-gpu_memory_tolerance_mb",
+        type=str,
+        default=None,
+        dest="ft_gpu_memory_tolerance_mb",
+        help="Part of Fault Tolerance pkg config (gpu_memory_tolerance_mb). "
+        "Maximum allowed GPU memory usage (in MB) when checking if memory has been "
+        "reclaimed. Default: 512.0. Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-gpu-memory-poll-interval",
+        "--ft-gpu_memory_poll_interval",
+        type=str,
+        default=None,
+        dest="ft_gpu_memory_poll_interval",
+        help="Part of Fault Tolerance pkg config (gpu_memory_poll_interval). "
+        "Poll interval (in seconds) for checking GPU memory during reclaim process. "
+        "Default: 2.0. Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-check-remaining-processes",
+        "--ft-check_remaining_processes",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_check_remaining_processes",
+        help="Part of Fault Tolerance pkg config (check_remaining_processes). "
+        "If enabled, check for and log any remaining worker processes after termination. "
+        "Useful for debugging process cleanup issues. Default: False.",
     )
 
     parser.add_argument(
