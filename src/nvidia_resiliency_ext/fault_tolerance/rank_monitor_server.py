@@ -157,6 +157,7 @@ class RankMonitorServer:
         )
         self.state_machine = RankMonitorStateMachine(self.rmlogger)
         self._periodic_restart_task = None
+        self._restart_check_log_count = 0  # Counter for "Started periodic restart check" logs
         self.health_checker = GPUHealthCheck(
             interval=self.cfg.node_health_check_interval, on_failure=self._handle_unhealthy_node
         )
@@ -184,7 +185,12 @@ class RankMonitorServer:
         self._periodic_restart_task = asyncio.get_running_loop().create_task(
             self._periodic_restart_check()
         )
-        self.logger.info("Started periodic restart check.")
+        # Only log for local rank 0 to reduce log spam, and limit to 2 times (first 2 minutes)
+        if (
+            self.rank_info is None or self.rank_info.local_rank == 0
+        ) and self._restart_check_log_count < 2:
+            self.logger.info("Started periodic restart check.")
+            self._restart_check_log_count += 1
 
     async def stop_periodic_restart_check(self):
         if self._periodic_restart_task:
@@ -192,8 +198,10 @@ class RankMonitorServer:
             try:
                 await self._periodic_restart_task
             except asyncio.CancelledError:
-                self.logger.info("Periodic restart check task cancelled.")
+                self.logger.debug("Periodic restart check task cancelled.")
             self._periodic_restart_task = None
+            # Reset counter when restart completes successfully
+            self._restart_check_log_count = 0
 
     def _shutdown_rank(self):
         # First sends SIGCONT to wake up the process, then "rank_termination_signal" to terminate it
@@ -352,7 +360,7 @@ class RankMonitorServer:
             while True:
                 msg = await read_obj_from_ipc_stream(reader)
                 if msg == "close_worker_ipc_connection":
-                    self.logger.info(
+                    self.logger.debug(
                         "Received request from launcher to close worker IPC connection"
                     )
                     await self.close_current_connection()
@@ -469,7 +477,6 @@ class RankMonitorServer:
                 hb_timed_out = self._is_hb_timeout_elapsed(curr_time)
                 section_timed_out = self._is_section_timeout_elapsed(curr_time)
                 if hb_timed_out or section_timed_out:
-                    self.logger.warning('FT timeout elapsed.')
                     await self._handle_timeout()
             await asyncio.sleep(self.cfg.workload_check_interval)
 
@@ -614,4 +621,4 @@ class RankMonitorServer:
             await self.current_writer.wait_closed()
             self.logger.debug("Closed current IPC connection")
         else:
-            self.logger.warning("No active connection to close")
+            self.logger.debug("No active connection to close")
