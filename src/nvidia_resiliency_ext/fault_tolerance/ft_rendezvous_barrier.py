@@ -209,7 +209,6 @@ class _NodeDescGenerator:
         # we must increment the integer atomically.
         with self._lock:
             local_id = self._local_id
-
             self._local_id += 1
 
         return _NodeDesc(local_addr or socket.getfqdn(), os.getpid(), local_id)
