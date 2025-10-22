@@ -244,6 +244,7 @@
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span> <span class="o">=</span> <span class="n">RankMonitorStateMachine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rmlogger</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">=</span> <span class="mi">0</span>  <span class="c1"># Counter for &quot;Started periodic restart check&quot; logs</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">health_checker</span> <span class="o">=</span> <span class="n">GPUHealthCheck</span><span class="p">(</span>
             <span class="n">interval</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">node_health_check_interval</span><span class="p">,</span> <span class="n">on_failure</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_handle_unhealthy_node</span>
         <span class="p">)</span>
@@ -271,7 +272,12 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_check</span><span class="p">()</span>
         <span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Started periodic restart check.&quot;</span><span class="p">)</span>
+        <span class="c1"># Only log for local rank 0 to reduce log spam, and limit to 2 times (first 2 minutes)</span>
+        <span class="k">if</span> <span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span> <span class="o">==</span> <span class="mi">0</span>
+        <span class="p">)</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Started periodic restart check.&quot;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">+=</span> <span class="mi">1</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop_periodic_restart_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span><span class="p">:</span>
@@ -279,8 +285,10 @@
             <span class="k">try</span><span class="p">:</span>
                 <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span>
             <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">CancelledError</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Periodic restart check task cancelled.&quot;</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Periodic restart check task cancelled.&quot;</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="c1"># Reset counter when restart completes successfully</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">=</span> <span class="mi">0</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="c1"># First sends SIGCONT to wake up the process, then &quot;rank_termination_signal&quot; to terminate it</span>
@@ -439,7 +447,7 @@
             <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
                 <span class="n">msg</span> <span class="o">=</span> <span class="k">await</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">(</span><span class="n">reader</span><span class="p">)</span>
                 <span class="k">if</span> <span class="n">msg</span> <span class="o">==</span> <span class="s2">&quot;close_worker_ipc_connection&quot;</span><span class="p">:</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                         <span class="s2">&quot;Received request from launcher to close worker IPC connection&quot;</span>
                     <span class="p">)</span>
                     <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">close_current_connection</span><span class="p">()</span>
@@ -556,7 +564,6 @@
                 <span class="n">hb_timed_out</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_hb_timeout_elapsed</span><span class="p">(</span><span class="n">curr_time</span><span class="p">)</span>
                 <span class="n">section_timed_out</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_section_timeout_elapsed</span><span class="p">(</span><span class="n">curr_time</span><span class="p">)</span>
                 <span class="k">if</span> <span class="n">hb_timed_out</span> <span class="ow">or</span> <span class="n">section_timed_out</span><span class="p">:</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s1">&#39;FT timeout elapsed.&#39;</span><span class="p">)</span>
                     <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_handle_timeout</span><span class="p">()</span>
             <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">workload_check_interval</span><span class="p">)</span>
 
@@ -701,7 +708,7 @@
             <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_writer</span><span class="o">.</span><span class="n">wait_closed</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Closed current IPC connection&quot;</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;No active connection to close&quot;</span><span class="p">)</span></div>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;No active connection to close&quot;</span><span class="p">)</span></div>
 
 </pre></div>
 
