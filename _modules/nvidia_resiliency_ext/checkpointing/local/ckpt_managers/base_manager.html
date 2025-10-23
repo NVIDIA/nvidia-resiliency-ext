@@ -402,7 +402,7 @@
             <span class="c1"># we must wait for D2H to complete before returning control to the training</span>
             <span class="k">with</span> <span class="n">debug_time</span><span class="p">(</span><span class="s2">&quot;ckpt_D2H_synchronize&quot;</span><span class="p">,</span> <span class="n">logger</span><span class="p">):</span>
                 <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
-            <span class="k">return</span> <span class="n">AsyncRequest</span><span class="p">(</span><span class="n">save_fn</span><span class="p">,</span> <span class="n">save_args</span><span class="p">,</span> <span class="p">[</span><span class="n">finalize_fn</span><span class="p">])</span>
+            <span class="k">return</span> <span class="n">AsyncRequest</span><span class="p">(</span><span class="n">save_fn</span><span class="p">,</span> <span class="n">save_args</span><span class="p">,</span> <span class="p">[</span><span class="n">finalize_fn</span><span class="p">],</span> <span class="n">async_fn_kwargs</span><span class="o">=</span><span class="p">{})</span>
 
         <span class="k">assert</span> <span class="ow">not</span> <span class="n">is_async</span>
         <span class="n">save_fn</span><span class="p">(</span><span class="o">*</span><span class="n">save_args</span><span class="p">)</span>

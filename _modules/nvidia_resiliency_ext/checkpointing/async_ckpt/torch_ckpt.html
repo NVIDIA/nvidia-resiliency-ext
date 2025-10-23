@@ -132,7 +132,7 @@
         <span class="n">preloaded_sd</span> <span class="o">=</span> <span class="n">preload_tensors</span><span class="p">(</span><span class="n">state_dict</span><span class="p">)</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
         <span class="n">async_request</span> <span class="o">=</span> <span class="n">AsyncRequest</span><span class="p">(</span>
-            <span class="n">TorchAsyncCheckpoint</span><span class="o">.</span><span class="n">async_fn</span><span class="p">,</span> <span class="p">(</span><span class="n">preloaded_sd</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">),</span> <span class="p">[],</span> <span class="n">kwargs</span>
+            <span class="n">TorchAsyncCheckpoint</span><span class="o">.</span><span class="n">async_fn</span><span class="p">,</span> <span class="p">(</span><span class="n">preloaded_sd</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">),</span> <span class="p">[],</span> <span class="n">kwargs</span> <span class="ow">or</span> <span class="p">{}</span>
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_async_calls_queue</span><span class="o">.</span><span class="n">schedule_async_request</span><span class="p">(</span><span class="n">async_request</span><span class="p">)</span></div>
 
