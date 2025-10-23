@@ -96,20 +96,37 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 setup_logger(node_local_tmp_prefix="ftlauncher")
 logger = logging.getLogger(LogConfig.name)
 
-def _register_ft_rdzv_handler():
+def _register_ft_rdzv_handler(impl_type: str = "legacy"):
+    """Register the fault-tolerant rendezvous handler.
 
+    Args:
+        impl_type: FT rendezvous implementation to use.
+                  "barrier" - New atomic barrier-based algorithm
+                  "legacy" - Original compare-and-set algorithm (default)
+    """
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
-    from ._ft_rendezvous import FtRendezvousHandler, create_handler
-    from .c10d_monkey_patch import apply_c10d_patch
+    if impl_type == "barrier":
+        from .ft_rendezvous_barrier import create_handler as create_barrier_handler
 
-    # Apply monkey patch to add use_libuv support to c10d backend
-    apply_c10d_patch()
+        def _create_ft_rdzv_handler(params: RendezvousParameters):
+            backend, store = create_backend(params)
+            return create_barrier_handler(store, backend, params)
 
-    def _create_ft_rdzv_handler(params: RendezvousParameters) -> FtRendezvousHandler:
-        backend, store = create_backend(params)
-        return create_handler(store, backend, params)
+    elif impl_type == "legacy":
+        from ._ft_rendezvous import create_handler as create_legacy_handler
+        from .c10d_monkey_patch import apply_c10d_patch
+
+        # Apply monkey patch to add use_libuv support to c10d backend
+        apply_c10d_patch()
+
+        def _create_ft_rdzv_handler(params: RendezvousParameters):
+            backend, store = create_backend(params)
+            return create_legacy_handler(store, backend, params)
+
+    else:
+        raise ValueError(f"Unknown FT rendezvous implementation: {impl_type}. Must be 'barrier' or 'legacy'.")
 
     del rendezvous_handler_registry._registry['c10d']  # FIXME: ugly hack to swap the c10d handler
     rendezvous_handler_registry.register("c10d", _create_ft_rdzv_handler)
@@ -285,6 +302,26 @@ class LocalElasticAgent(SimpleElasticAgent):
             # record the execution time in case there were any exceptions during run.
             self._total_execution_time = int(time.monotonic() - start_time)
 
+    def _open_rendezvous_for_restart(self):
+        """Open rendezvous for restart when using barrier-based rendezvous.
+
+        This method is called when a failure is detected and we need to restart workers.
+        For barrier-based rendezvous, it sets last_participant_arrived_key=0 to signal
+        that a new rendezvous round can begin, allowing hot spares and restarting nodes
+        to join.
+        """
+        # Only applies to barrier-based rendezvous implementation
+        if hasattr(self._rdzv_handler, '_barrier_state'):
+            try:
+                self._rdzv_handler._barrier_state.open_rendezvous()
+                logger.debug(
+                    "[group_rank=%s] Opened rendezvous for restart (barrier-based rendezvous)",
+                    self._worker_group.group_rank if self._worker_group else "N/A"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to open rendezvous: {e}")
+        # For legacy rendezvous, no action needed - it uses different mechanism
+
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         if self._restart_policy == 'any-failed':
             return self._invoke_run_with_any_failed_policy(role)
@@ -346,6 +383,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                         spec.max_restarts,
                     )
                     self._remaining_restarts -= 1
+                    # Open rendezvous before restarting (for barrier-based rendezvous)
+                    self._open_rendezvous_for_restart()
                     self._restart_workers(self._worker_group)
                 else:
                     self._stop_workers(self._worker_group)
@@ -356,10 +395,12 @@ class LocalElasticAgent(SimpleElasticAgent):
                     run_result = self._monitor_workers(self._worker_group)
                     return run_result
             elif state == WorkerState.HEALTHY:
-                # membership changes do not count as retries
+                # Check for cluster-wide issues: unhealthy nodes or new nodes waiting
+                unhealthy_count = self._check_cluster_unhealthy_count()
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 group_rank = self._worker_group.group_rank
-                if num_nodes_waiting > 0:
+
+                if unhealthy_count > 0 or num_nodes_waiting > 0:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -368,13 +409,16 @@ class LocalElasticAgent(SimpleElasticAgent):
                     )
 
                     logger.info(
-                        "[%s] Detected %s "
-                        "new nodes from group_rank=%s; "
-                        "will restart worker group",
+                        "[%s] Detected cluster changes from group_rank=%s "
+                        "(unhealthy_nodes=%s, nodes_waiting=%s); will restart worker group",
                         role,
-                        num_nodes_waiting,
                         group_rank,
+                        unhealthy_count,
+                        num_nodes_waiting,
                     )
+
+                    # Note: The node that triggered the change (unhealthy or new) already opened
+                    # the rendezvous, so we don't need to open it again here.
                     self._restart_workers(self._worker_group)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
@@ -472,6 +516,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                         f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
                     )
                     self._remaining_restarts -= 1
+                    # Open rendezvous before restarting (for barrier-based rendezvous)
+                    self._open_rendezvous_for_restart()
                     self._restart_workers(self._worker_group)
                 else:
                     # try to stop the workers and return the updated run result
@@ -771,10 +817,17 @@ class LocalElasticAgent(SimpleElasticAgent):
                 for local_rank, ret_val in result.return_values.items():
                     worker = worker_group.workers[local_rank]
                     workers_ret_vals[worker.global_rank] = ret_val
-                return RunResult(
-                    state=WorkerState.SUCCEEDED,
-                    return_values=workers_ret_vals,
-                )
+
+                # Check if this is a standby participant with no workers
+                # Standby participants have empty return_values AND no workers
+                if not result.return_values and not worker_pids:
+                    return RunResult(state=WorkerState.HEALTHY)
+                else:
+                    # For active participants, return SUCCEEDED as normal
+                    return RunResult(
+                        state=WorkerState.SUCCEEDED,
+                        return_values=workers_ret_vals,
+                    )
         else:
             return RunResult(state=WorkerState.HEALTHY)
 
@@ -784,38 +837,32 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
-    def clean_rdzv_shutdown(self, close):
-        # Try to exit rendezvous gracefully, with the store host leaving last.
-        # If the store host exits early, other nodes might try to use the store
-        # and fail due to connection errors.
-        # Marking the rdzv as closed causes spare nodes to exit the rdzv with RendezvousGracefulExitError.
-        # and prevents all other agents from using the rdzv, so it should be closed only when leaving
-        # the workload
-        try:
-            rdzv_handler = self._rdzv_handler
-            rdzv_handler._stop_heartbeats()  # stops rdzv backround thread
-            rdzv_handler.remove_this_node()
-            if close:
-                rdzv_handler.set_closed()
-            if self._is_store_host:
-                timeout = self._exit_barrier_timeout
-                pooling_interval = 1.0
-                time_left = timeout
-                while rdzv_handler.num_nodes() > 0 and time_left > 0:
-                    time.sleep(pooling_interval)
-                    time_left -= pooling_interval
-                if rdzv_handler.num_nodes() > 0:
-                    logger.warning(
-                        f"Some nodes did not leave the rendezvous on time ({timeout=} seconds). "
-                        "Exiting agent anyway, but this might result in rdzv failures."
-                    )
-                else:
-                    logger.info(
-                        "Rendezvous don't have any nodes. Leaving the store hosting process..."
-                    )
-        except Exception as e:
-            logger.warning(f"Error while trying to gracefully exit the rendezvous: {e}")
-            pass  # continue, we are exiting the process anyway
+    def _check_cluster_unhealthy_count(self) -> int:
+        """Check the cluster-wide unhealthy count from the rendezvous store.
+
+        Only supported for barrier-based rendezvous. Returns 0 for legacy rendezvous.
+
+        Returns:
+            The number of unhealthy nodes reported in the cluster, or 0 if not available.
+        """
+        # Only barrier-based rendezvous supports unhealthy_count
+        if hasattr(self._rdzv_handler, '_barrier_state'):
+            return self._rdzv_handler._barrier_state._get_unhealthy_count()
+
+        # Legacy rendezvous does not support unhealthy tracking
+        return 0
+
+    def _rendezvous(self, worker_group: WorkerGroup) -> None:
+        """Override _rendezvous to set worker group reference in the handler."""
+        spec = worker_group.spec
+
+        # Set worker group reference in the rendezvous handler
+        # Since we only support c10d backend and replace it with our custom handler,
+        # this will always be FtRendezvousBarrierHandler or FtRendezvousHandler (legacy)
+        spec.rdzv_handler.set_worker_group(worker_group)
+
+        # Call the parent class _rendezvous method
+        super()._rendezvous(worker_group)
 
 
 # Source
@@ -892,11 +939,11 @@ class LaunchConfig:
             self.rdzv_configs["timeout"] = default_timeout
         # bump Torch Elastic default timeouts, so it will work with large scale workloads
         if "join_timeout" not in self.rdzv_configs:
-            self.rdzv_configs["join_timeout"] = 900  # default is 600 seconds
+            self.rdzv_configs["join_timeout"] = 300
         if "close_timeout" not in self.rdzv_configs:
-            self.rdzv_configs["close_timeout"] = 600  # default is 30 seconds
+            self.rdzv_configs["close_timeout"] = 30
         if "read_timeout" not in self.rdzv_configs:
-            self.rdzv_configs["read_timeout"] = 600  # default is 60 seconds
+            self.rdzv_configs["read_timeout"] = 60
 
         # Post-processing to enable refactoring to introduce logs_specs due to non-torchrun API usage
         if self.logs_specs is None:
@@ -1046,6 +1093,10 @@ def launch_agent(
     )
 
     master_addr, master_port = _get_addr_and_port(rdzv_parameters)
+    is_store_host = _is_store_host(rdzv_parameters)
+
+    # Add is_store_host to rdzv_parameters
+    rdzv_parameters.config["is_store_host"] = is_store_host
 
     spec = WorkerSpec(
         role=config.role,
@@ -1069,7 +1120,7 @@ def launch_agent(
         term_timeout=config.term_timeout,
         workers_stop_timeout=config.workers_stop_timeout,
         restart_policy=config.restart_policy,
-        is_store_host=_is_store_host(rdzv_parameters),
+        is_store_host=is_store_host,
     )
 
     shutdown_rdzv = True
@@ -1100,6 +1151,9 @@ def launch_agent(
         return result.return_values
     except UnhealthyNodeException as e:
         # do not shutdown rendezvous when an unhealthy node is leaving
+        # NOTE: This only prevents calling shutdown() to set closed_key.
+        # If this is the store host, the TCPStore will die when this process exits,
+        # effectively terminating the rendezvous regardless of this flag.
         shutdown_rdzv = False
         logger.error(f"Agent .run() raised UnhealthyNodeException: {e}")
         events.record(agent.get_event_failed())
@@ -1122,7 +1176,26 @@ def launch_agent(
         events.record(agent.get_event_failed())
         raise
     finally:
-        agent.clean_rdzv_shutdown(close=shutdown_rdzv)
+        # Store host grace period: The TCPStore is hosted in this process and will be
+        # destroyed when the process exits. To prevent race conditions where other nodes
+        # try to read final state (e.g., closed_key, unhealthy_count) from a destroyed
+        # store, the store host waits briefly before exiting to give other nodes time
+        # to detect the final state.
+        #
+        # IMPORTANT CONSTRAINT: When the store host process exits for any reason, the
+        # TCPStore dies with it, effectively terminating the rendezvous. The shutdown_rdzv
+        # flag only controls whether we explicitly signal closure via closed_key; it cannot
+        # keep the store alive if the store host process exits.
+        if is_store_host:
+            grace_period = 3.0  # seconds
+            logger.info(
+                f"Store host waiting {grace_period} seconds before exit "
+                f"to allow other nodes to read final TCPStore state..."
+            )
+            time.sleep(grace_period)
+
+        if shutdown_rdzv:
+            agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
         with contextlib.suppress(Exception):
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
@@ -1600,7 +1673,7 @@ def get_args_parser() -> ArgumentParser:
         "--monitor_interval",
         action=env,
         type=float,
-        default=0.1,
+        default=0.3,
         help="Interval, in seconds, to monitor the state of workers.",
     )
     parser.add_argument(
@@ -1906,6 +1979,20 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-rdzv-impl",
+        "--ft-rdzv_impl",
+        type=str,
+        choices=["barrier", "legacy"],
+        default="legacy",
+        dest="ft_rdzv_impl",
+        help="FT rendezvous implementation to use. "
+        "'barrier' uses the new atomic barrier-based algorithm (ft_rendezvous_barrier.py), "
+        "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
+        "Default: legacy. Note: This is independent of --rdzv-backend (which specifies "
+        "the coordination backend like c10d or etcd).",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
@@ -2055,8 +2142,8 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
 
-    # Add use_libuv=False for c10d backend
-    if args.rdzv_backend == 'c10d':
+    # Add use_libuv=False for c10d backend with legacy rendezvous only
+    if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'legacy') == 'legacy':
         rdzv_configs['use_libuv'] = False
 
     if args.rdzv_backend == "static":
@@ -2172,7 +2259,9 @@ def run(args):
             args.rdzv_id,
         )
 
-    _register_ft_rdzv_handler()
+    # Register the selected FT rendezvous implementation
+    impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
+    _register_ft_rdzv_handler(impl_type)
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(
         config=config,
