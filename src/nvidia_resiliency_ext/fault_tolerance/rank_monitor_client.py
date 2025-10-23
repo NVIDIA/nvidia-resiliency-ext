@@ -19,6 +19,7 @@ import os
 import socket
 from typing import Any, Collection, Mapping, Optional
 
+from ..shared_utils.numa_bind import numa_bind
 from .data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -88,6 +89,9 @@ class RankMonitorClient:
         `.init_workload_monitoring()` and `.load_state_dict()` need to be called to fully initialize.
         Full FT configuration will be obtained from the server via IPC.
         """
+        # Bind to NUMA node early for optimal performance
+        numa_bind()
+
         self.rank_info = None
         self.rank_monitor_socket = None
         self.is_initialized = False
