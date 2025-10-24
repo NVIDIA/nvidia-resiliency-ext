@@ -65,7 +65,9 @@ class TestAsyncSave:
             """Finalizes async checkpointing and synchronizes processes."""
             save_state_dict_async_finalize(*save_state_dict_ret)
 
-        return AsyncRequest(save_fn, save_args, [finalize_fn], preload_fn=preload_fn)
+        return AsyncRequest(
+            save_fn, save_args, [finalize_fn], preload_fn=preload_fn, async_fn_kwargs={}
+        )
 
     def async_save_checkpoint(
         self,

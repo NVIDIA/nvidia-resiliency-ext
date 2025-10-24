@@ -307,7 +307,7 @@ class BaseCheckpointManager(ABC):
             # we must wait for D2H to complete before returning control to the training
             with debug_time("ckpt_D2H_synchronize", logger):
                 torch.cuda.synchronize()
-            return AsyncRequest(save_fn, save_args, [finalize_fn])
+            return AsyncRequest(save_fn, save_args, [finalize_fn], async_fn_kwargs={})
 
         assert not is_async
         save_fn(*save_args)
