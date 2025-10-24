@@ -1210,6 +1210,7 @@ class FtRendezvousHandler(RendezvousHandler):
     _op_executor: _RendezvousOpExecutor
     _heartbeat_lock: threading.Lock
     _keep_alive_timer: Optional[_PeriodicTimer]
+    _worker_group: Optional[Any] = None  # Store reference to worker group
 
     @classmethod
     def from_backend(
@@ -1325,6 +1326,10 @@ class FtRendezvousHandler(RendezvousHandler):
             local_id=self._this_node.local_id,
             rank=rank,
         )
+
+    def set_worker_group(self, worker_group: Any) -> None:
+        """Set the worker group reference for this handler."""
+        self._worker_group = worker_group
 
     @property
     def settings(self) -> RendezvousSettings:
