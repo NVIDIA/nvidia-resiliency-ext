@@ -129,3 +129,68 @@ API, which can be used to control the workload restarting logic implemented in t
    Please note that only the ft_launcher behavior is affected by this call. 
    The fault tolerance package is job scheduler-agnostic, 
    i.e., it does not control underlying SLURM job allocations.
+
+Non-retryable exceptions
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``--ft-non-retryable-exception-file`` option allows you to specify a file containing exception 
+patterns that indicate errors that won't be fixed by retrying. When a worker fails with an exception 
+matching any of these patterns, the node is immediately marked as unhealthy and will not be retried, 
+preventing wasted time on errors that require manual intervention to fix.
+
+**File format:**
+
+The exception patterns file should contain one pattern per line:
+
+* Each pattern is a case-sensitive substring that will be matched against the full exception text 
+  (exception type, message, and traceback)
+* Lines starting with ``#`` are treated as comments and ignored
+* Empty lines are ignored
+* Patterns are matched using simple substring matching (not regular expressions)
+
+**Example patterns file:**
+
+.. code-block:: text
+
+   # Configuration errors that won't fix themselves
+   insufficient shared memory (shm)
+   Permission denied
+   No such file or directory
+   
+   # Application errors
+   CUDA out of memory
+   ValueError: Invalid configuration
+   
+   # Resource exhaustion
+   Cannot allocate memory
+   Too many open files
+
+**Usage example:**
+
+.. code-block:: bash
+
+   ft_launcher \
+       --nnodes=2 \
+       --nproc-per-node=8 \
+       --max-restarts=5 \
+       --ft-non-retryable-exception-file=/path/to/exception_patterns.txt \
+       train.py
+
+**Behavior:**
+
+When a worker process fails:
+
+1. The launcher checks the worker's error file against the configured exception patterns
+2. If a match is found, the node is marked as unhealthy and the launcher exits on that node
+3. The unhealthy count is incremented in the rendezvous store
+4. Other nodes in the training job will be affected according to the configured restart policy
+
+This feature is particularly useful for:
+
+* **Configuration errors**: Insufficient shared memory, wrong permissions, missing files
+* **Application errors**: Invalid parameters, unsupported configurations
+* **Resource exhaustion**: Out of memory errors, file descriptor limits
+* **Dependency issues**: Missing libraries, version incompatibilities
+
+These types of errors require manual intervention (e.g., adjusting launch parameters, fixing 
+configurations, or installing dependencies) and will not be resolved by simply restarting the worker.

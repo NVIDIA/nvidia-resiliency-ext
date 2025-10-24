@@ -61,6 +61,10 @@ class FaultToleranceConfig:
       Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
       rank assignments are ignored to ensure consistency with infrastructure's rank assignment.
       Note: Hot spare/redundancy is NOT supported with this setting. Default: True.
+    * `non_retryable_exception_file` [str|None] - Path to a file containing exception patterns
+      (one per line) that indicate non-retryable errors. If a worker fails with an exception
+      matching any of these patterns, the node is marked as unhealthy and the launcher will not
+      retry the job on that node. Default: None (all exceptions are retryable).
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -81,6 +85,7 @@ class FaultToleranceConfig:
     link_down_path_template: Optional[str] = None
     skip_section_response: bool = True
     use_infra_group_rank: bool = True
+    non_retryable_exception_file: Optional[str] = None
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':

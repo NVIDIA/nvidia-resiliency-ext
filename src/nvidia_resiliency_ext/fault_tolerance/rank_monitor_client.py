@@ -19,6 +19,8 @@ import os
 import socket
 from typing import Any, Collection, Mapping, Optional
 
+from nvidia_resiliency_ext.shared_utils.error_file_handler import install_exception_handler
+
 from .data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -339,6 +341,12 @@ class RankMonitorClient:
 
         sections = self.cfg.rank_section_timeouts.keys()
         self.timeouts_calc = TimeoutsCalc(sections=sections, safety_factor=self.cfg.safety_factor)
+
+        # Install global exception handler to capture uncaught exceptions to error files
+        # This enables ft_launcher to analyze full tracebacks and detect non-retryable exceptions
+        # Only install if non_retryable_exception_file is configured
+        if self.cfg.non_retryable_exception_file:
+            install_exception_handler()
 
         # by default, use predefined timeouts from the config
         self.hb_timeouts = HeartbeatTimeouts(
