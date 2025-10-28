@@ -140,6 +140,54 @@ class UnhealthyNodeException(Exception):
         super().__init__(self.message)
 
 
+def _wrap_entrypoint_with_numactl(
+    entrypoint: str,
+    args: Tuple,
+    local_rank: int,
+    numa_bind_strict: bool = False,
+) -> Tuple:
+    """
+    Wrap a binary entrypoint with numactl command for NUMA binding.
+
+    This function should only be called when NVRX_GPUS_PER_NUMA is set and
+    entrypoint is a binary/script path (string).
+
+    Args:
+        entrypoint: The worker entrypoint binary/script path
+        args: Original arguments for the worker
+        local_rank: Local rank of the worker
+        numa_bind_strict: If True, use strict binding with --membind. If False, use --localalloc.
+
+    Returns:
+        Tuple of wrapped arguments with numactl prepended
+    """
+    gpus_per_numa = int(os.getenv("NVRX_GPUS_PER_NUMA"))
+    numa_node = local_rank // gpus_per_numa
+
+    # Choose memory binding strategy based on numa_bind_strict
+    if numa_bind_strict:
+        memory_args = ("--membind", str(numa_node))
+        logger.debug(
+            f"Wrapping rank {local_rank} with numactl (strict mode): node={numa_node}, "
+            f"NVRX_GPUS_PER_NUMA={gpus_per_numa}"
+        )
+    else:
+        memory_args = ("--localalloc",)
+        logger.debug(
+            f"Wrapping rank {local_rank} with numactl (local alloc): node={numa_node}, "
+            f"NVRX_GPUS_PER_NUMA={gpus_per_numa}"
+        )
+
+    # Wrap the command with numactl
+    wrapped_args = (
+        "--cpunodebind", str(numa_node),
+    ) + memory_args + (
+        entrypoint,
+    ) + args
+
+    return wrapped_args
+
+
 # LocalElasticAgent source
 # https://github.com/pytorch/pytorch/blob/release/2.3/torch/distributed/elastic/agent/server/local_elastic_agent.py
 
@@ -735,10 +783,26 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
+
+        # Wrap entrypoint with numactl if needed (for binary entrypoints only)
+        entrypoint_to_use = spec.entrypoint
+        args_to_use = args
+
+        # Only wrap if entrypoint is a string (binary), not a function
+        if isinstance(spec.entrypoint, str) and os.getenv("NVRX_GPUS_PER_NUMA") is not None:
+            # Wrap each worker's arguments with numactl
+            wrapped_args = {}
+            for local_rank, worker_args in args.items():
+                wrapped_args[local_rank] = _wrap_entrypoint_with_numactl(
+                    spec.entrypoint, worker_args, local_rank, self._ft_cfg.numa_bind_strict
+                )
+            entrypoint_to_use = "numactl"
+            args_to_use = wrapped_args
+
         self._pcontext = start_processes(
             name=spec.role,
-            entrypoint=spec.entrypoint,
-            args=args,
+            entrypoint=entrypoint_to_use,
+            args=args_to_use,
             envs=envs,
             logs_specs=self._logs_specs,
             log_line_prefixes=log_line_prefixes,
@@ -1990,6 +2054,18 @@ def get_args_parser() -> ArgumentParser:
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
         "Default: legacy. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
+    )
+
+    parser.add_argument(
+        "--ft-numa-bind-strict",
+        "--ft-numa_bind_strict",
+        action="store_true",
+        default=None,
+        dest="ft_numa_bind_strict",
+        help="Enable strict NUMA binding with both CPU and memory bound to the same NUMA node "
+        "(--cpunodebind=N --membind=N). By default, only CPU is bound to NUMA node with local "
+        "memory allocation (--cpunodebind=N --localalloc). This option only affects behavior when "
+        "NVRX_GPUS_PER_NUMA environment variable is set. Default: False.",
     )
 
     parser.add_argument(
