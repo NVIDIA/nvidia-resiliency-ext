@@ -318,10 +318,6 @@
         <span class="n">ft_cfg</span><span class="o">.</span><span class="n">_fix_log_level_type</span><span class="p">()</span>
         <span class="n">ft_cfg</span><span class="o">.</span><span class="n">_fix_rank_termination_signal_type</span><span class="p">()</span>
 
-        <span class="c1"># If we didn&#39;t read from file and no CLI args were provided, raise an error</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="n">is_read_from_file</span> <span class="ow">or</span> <span class="n">cli_ft_args</span><span class="p">):</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;No fault tolerance configuration provided.&quot;</span><span class="p">)</span>
-
         <span class="k">return</span> <span class="n">ft_cfg</span></div>
 
 
