@@ -69,6 +69,11 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
+from nvidia_resiliency_ext.fault_tolerance.launcher_server import (
+    HttpServerManager,
+    LauncherHttpHandler,
+)
+from nvidia_resiliency_ext.fault_tolerance.manager import CycleManager
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     patched_method,
@@ -76,7 +81,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
-from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
+from nvidia_resiliency_ext.shared_utils.profiling import FaultToleranceProfiler, ProfilingEvent
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -275,6 +280,22 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
 
+        # Initialize cycle manager for tracking cycle state
+        self.cycle_manager = CycleManager(max_cache_size=10)
+
+        # Initialize profiler with reference to this agent (provides access to cycle_manager)
+        self.profiler = FaultToleranceProfiler(agent=self)
+
+        # Set profiler on rendezvous handler
+        self._rdzv_handler.set_profiler(self.profiler)
+
+        # HTTP server manager (initialized later if enabled)
+        self.http_server_manager = None
+
+        # Throttle cycle check to avoid excessive calls
+        self._last_cycle_check_time = 0.0
+        self._cycle_check_interval = 5.0  # seconds
+
     DEFAULT_ROLE = "default"  # FIXME
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
@@ -366,7 +387,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 return run_result
             elif state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
                 # Record failure detection event
-                record_profiling_event(
+                self.profiler.record_event(
                     ProfilingEvent.FAILURE_DETECTED,
                     node_id=self._rdzv_handler._this_node,
                     rank=self._worker_group.group_rank,
@@ -402,7 +423,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                 if unhealthy_count > 0 or num_nodes_waiting > 0:
                     # Record failure detection event
-                    record_profiling_event(
+                    self.profiler.record_event(
                         ProfilingEvent.FAILURE_DETECTED,
                         node_id=self._rdzv_handler._this_node,
                         rank=self._worker_group.group_rank,
@@ -556,6 +577,39 @@ class LocalElasticAgent(SimpleElasticAgent):
             with contextlib.suppress(Exception):
                 os.unlink(self.get_rank_mon_socket_path(local_rank))
 
+    def start_http_server(self, host: str = '0.0.0.0', port: int = 2025) -> None:
+        """
+        Start the HTTP server for REST API.
+
+        Args:
+            host: Host address to bind to
+            port: Port to listen on
+
+        Raises:
+            Exception: If HTTP server fails to start
+        """
+        if self.http_server_manager is not None:
+            logger.warning("HTTP server already started")
+            return
+
+        http_handler = LauncherHttpHandler(self)
+        self.http_server_manager = HttpServerManager(
+            handler=http_handler,
+            host=host,
+            port=port
+        )
+        self.http_server_manager.start()
+
+    def stop_http_server(self) -> None:
+        """Stop the HTTP server if it's running."""
+        if self.http_server_manager is not None:
+            try:
+                self.http_server_manager.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping HTTP server: {e}")
+            finally:
+                self.http_server_manager = None
+
     def _setup_local_watchdog(self, envs: Dict[int, Dict[str, str]]) -> None:
         enable_watchdog_env_name = TORCHELASTIC_ENABLE_FILE_TIMER
         watchdog_enabled = os.getenv(enable_watchdog_env_name)
@@ -654,7 +708,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._shutdown(timeout=self._workers_stop_timeout)
 
         # Record worker termination event after shutdown is complete
-        record_profiling_event(
+        self.profiler.record_event(
             ProfilingEvent.WORKER_TERMINATED,
             node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
@@ -670,7 +724,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         restart_count = spec.max_restarts - self._remaining_restarts
 
         # Record worker start start event
-        record_profiling_event(
+        self.profiler.record_event(
             ProfilingEvent.WORKER_START_STARTED,
             node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
@@ -748,7 +802,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
         # Record worker start completion event
-        record_profiling_event(
+        self.profiler.record_event(
             ProfilingEvent.WORKER_START_COMPLETED,
             node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
@@ -829,6 +883,24 @@ class LocalElasticAgent(SimpleElasticAgent):
                         return_values=workers_ret_vals,
                     )
         else:
+            # Check for non-recoverable failures in recent cycles (throttled)
+            current_time = time.monotonic()
+            if current_time - self._last_cycle_check_time >= self._cycle_check_interval:
+                self._last_cycle_check_time = current_time
+                failure_info = self.cycle_manager.check_recent_cycles_for_exit()
+                if failure_info:
+                    cycle_num, failure_reason = failure_info
+                    logger.error(
+                        "[%s] Non-recoverable failure detected in cycle %s: %s. "
+                        "Terminating job without restart attempts.",
+                        role,
+                        cycle_num,
+                        failure_reason,
+                    )
+                    # Prevent any restart attempts for non-recoverable failures
+                    self._remaining_restarts = 0
+                    return RunResult(state=WorkerState.FAILED)
+
             return RunResult(state=WorkerState.HEALTHY)
 
     def any_rank_failed(self) -> bool:
@@ -930,6 +1002,9 @@ class LaunchConfig:
     log_line_prefix_template: Optional[str] = None
     metrics_cfg: Dict[str, str] = field(default_factory=dict)
     local_addr: Optional[str] = None
+    http_server_enable: bool = True
+    http_server_host: str = "0.0.0.0"
+    http_server_port: int = 2025
 
     def __post_init__(self):
         default_timeout = 900
@@ -1123,6 +1198,13 @@ def launch_agent(
         is_store_host=is_store_host,
     )
 
+    # Start HTTP server for REST API if enabled
+    if config.http_server_enable:
+        agent.start_http_server(
+            host=config.http_server_host,
+            port=config.http_server_port
+        )
+
     shutdown_rdzv = True
     try:
         metrics.initialize_metrics(metrics.MetricsConfig(config.metrics_cfg))
@@ -1193,6 +1275,9 @@ def launch_agent(
                 f"to allow other nodes to read final TCPStore state..."
             )
             time.sleep(grace_period)
+
+        # Stop HTTP server
+        agent.stop_http_server()
 
         if shutdown_rdzv:
             agent._rdzv_handler.shutdown()
@@ -1999,6 +2084,37 @@ def get_args_parser() -> ArgumentParser:
     )
 
     #
+    # HTTP Server (REST API)
+    #
+
+    parser.add_argument(
+        "--no-http-server",
+        "--no_http_server",
+        action="store_false",
+        default=True,
+        dest="http_server_enable",
+        help="Disable HTTP server. By default, HTTP server is enabled on port 2025.",
+    )
+
+    parser.add_argument(
+        "--http-server-host",
+        "--http_server_host",
+        type=str,
+        default="0.0.0.0",
+        dest="http_server_host",
+        help="Host address for HTTP server. Default: 0.0.0.0",
+    )
+
+    parser.add_argument(
+        "--http-server-port",
+        "--http_server_port",
+        type=int,
+        default=2025,
+        dest="http_server_port",
+        help="Port for HTTP server. Default: 2025",
+    )
+
+    #
     # Positional arguments.
     #
 
@@ -2199,6 +2315,9 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
         local_addr=args.local_addr,
         logs_specs=logs_specs,
         fault_tol_cfg=fault_tol_cfg,
+        http_server_enable=args.http_server_enable,
+        http_server_host=args.http_server_host,
+        http_server_port=args.http_server_port,
     )
 
     with_python = not args.no_python

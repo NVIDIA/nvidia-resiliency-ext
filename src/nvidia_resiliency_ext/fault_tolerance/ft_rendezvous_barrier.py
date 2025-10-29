@@ -45,7 +45,7 @@ except ImportError:
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck
-from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
+from ..shared_utils.profiling import ProfilingEvent
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
@@ -1005,6 +1005,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     _store: Store
     _barrier_state: _RendezvousBarrierState
     _worker_group: Optional[Any] = None  # Store reference to worker group
+    _profiler: Optional[Any] = None  # FaultToleranceProfiler instance
 
     @classmethod
     def from_backend(
@@ -1098,6 +1099,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
         self._worker_group = worker_group
+
+    def set_profiler(self, profiler: Any) -> None:
+        """Set the profiler instance for recording events."""
+        self._profiler = profiler
 
     def _record(
         self,
@@ -1214,7 +1219,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         log.info(msg)
 
         # Record rendezvous start event
-        rendezvous_start_event_id = record_profiling_event(
+        self._profiler.record_event(
             ProfilingEvent.RENDEZVOUS_STARTED,
             node_id=self._this_node,
         )
@@ -1254,7 +1259,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         log.info(msg)
 
         # Record rendezvous completion event
-        rendezvous_completion_event_id = record_profiling_event(
+        self._profiler.record_event(
             ProfilingEvent.RENDEZVOUS_COMPLETED,
             node_id=self._this_node,
         )
