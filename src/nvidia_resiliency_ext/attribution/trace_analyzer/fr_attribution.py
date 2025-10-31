@@ -14,36 +14,19 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple 
 
 from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
 from nvidia_resiliency_ext.attribution.utils import capture_logs
 
-logging.basicConfig(level=logging.INFO)
+log_level = logging.DEBUG if os.getenv('FR_DEBUG') else logging.INFO
+logging.basicConfig(level=log_level)
 logger = logging.getLogger()
 
 
 # Helper to print to stderr instead of stdout (for MCP compatibility)
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
-
-
-# This mapping is made with reference to the description in Megatron Core
-DEFAULT_PG_ORDER = {
-    # intra-layer collective ops (between sub-layers in the same layer)
-    "EXPERT_": 0,
-    "MODEL_": 0,
-    "TENSOR_": 0,
-    "PIPELINE_": 0,
-    # intra-context collective ops (between different context for the same layer)
-    "TENSOR_AND_CONTEXT_": 1,
-    # data-parallel ops
-    "DATA_PARALLEL": 3,
-    "TENSOR_AND_DATA_PARALLEL_": 3,
-    # distributed optimizer collective ops (between layers)
-    "INTRA_DISTRIBUTED": 4,
-    "default_pg": 5,
-}
 
 
 @dataclass
@@ -53,6 +36,7 @@ class Collective:
     Each field corresponds to fields in the FR dump file
     """
 
+    record_id: int
     file_id: str
     collective_seq_id: int
     p2p_seq_id: int
@@ -112,7 +96,6 @@ class CollectiveAnalyzer(NVRxAttribution):
         eprint(f"args: {args}")
         self.llm = None
         self.type_to_order = None
-        self.set_type_to_order()
         # initialize the NVRxAttribution class to run the attribution pipeline
         super().__init__(
             preprocess_input=self.preprocess_FR_dumps,
@@ -120,7 +103,6 @@ class CollectiveAnalyzer(NVRxAttribution):
             output_handler=self.print_output,
             attribution_kwargs={
                 "model": args.model,
-                "scheduling_order": args.scheduling_order_file,
                 "verbose": args.verbose,
             },
         )
@@ -180,6 +162,22 @@ class CollectiveAnalyzer(NVRxAttribution):
                     logger.info(f"Processing {filepath}...")
                 if self.process_file(filepath):
                     processed_files += 1
+            self.collective_groups = self.group_collectives_by_windows()
+
+            def collectives_to_order():
+                """
+                Collectives to order.
+                """
+                collectives_to_order = {}
+                idx = 0
+                for key, collectives in self.collective_groups.items():
+                    collectives_to_order[key] = idx
+                    idx += 1
+                return collectives_to_order
+
+            self.collectives_to_order = collectives_to_order()
+            logger.info(f"collective_groups: {self.collective_groups.keys()}")
+            logger.info(f"collectives_to_order: {self.collectives_to_order}")
             if self.args.verbose:
                 self.print_pg_configs(verbose=self.args.verbose)
 
@@ -200,7 +198,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             self.print_node_health_status(verbose=self.args.verbose)
 
         # group the process groups with missing and completed ranks
-        # by finding longest paths in the graph confirming to the scheduling order
+        # by finding longest paths in the graph
         grouped_missing_pgs = self.group_pgs(missing_pg)
         if len(grouped_missing_pgs) == 0:
             grouped_completed_pgs = self.group_pgs(completed_pg)
@@ -337,6 +335,119 @@ class CollectiveAnalyzer(NVRxAttribution):
     Helper functions to define steps for the registered attribution steps above
     """
 
+    def group_collectives_by_windows(self):
+        """
+        Group the collectives by windows.
+        """
+        # Track the current index for each rank's collective list
+        rank_indices = {rank_id: 0 for rank_id in self.collectives_by_file.keys()}
+
+        # Track how many times each process group has been fully processed (window/phase counter)
+        pg_window_counter = defaultdict(int)
+
+        # Track which ranks have participated in the current window for each PG
+        # Key: (pg, window_idx), Value: set of rank_ids that have processed this PG in this window
+        pg_window_participants = defaultdict(set)
+
+        # Track which PGs were active (had at least one rank working on them) in the last iteration
+        # This helps us detect when we've completely left a PG and come back to it
+        pgs_with_active_ranks_last_iter = set()
+
+        # Result structure: maps (process_group, sub_group, window_index) to list of collectives
+        matched_groups = defaultdict(list)
+
+        # Keep processing until all ranks have processed all their collectives
+        while any(
+            rank_indices[rank_id] < len(self.collectives_by_file[rank_id])
+            for rank_id in rank_indices.keys()
+        ):
+
+            # Get the current process group type for each rank that hasn't finished
+            current_pg_types = {}
+            for rank_id, idx in rank_indices.items():
+                if idx < len(self.collectives_by_file[rank_id]):
+                    collective = self.collectives_by_file[rank_id][idx]
+                    # Use (process_group[0], process_group[1]) as the key
+                    pg_key = (collective.process_group[0], collective.process_group[1])
+                    current_pg_types[rank_id] = pg_key
+
+            if not current_pg_types:
+                break
+
+            # Find the most common process group type among active ranks
+            # This represents the "wavefront" - the PG type most ranks are working on
+            pg_counter = Counter(current_pg_types.values())
+            current_pg, _ = pg_counter.most_common(1)[0]
+
+            # Determine current window for this PG
+            window_idx = pg_window_counter[current_pg]
+            pg_window_key = (current_pg, window_idx)
+
+            # Check if we should create a new window for this PG
+            # This happens when a significantly different set of ranks arrives
+            ranks_with_current_pg = set(
+                rid for rid, pg in current_pg_types.items() if pg == current_pg
+            )
+            already_participated = pg_window_participants[pg_window_key] & ranks_with_current_pg
+            previous_participants = pg_window_participants[pg_window_key]
+            
+            has_previous_participants = len(previous_participants) > 0
+            has_significant_new_ranks = len(ranks_with_current_pg - previous_participants) >= 2
+            
+            # Create new window if:
+            # 1. Some ranks have already participated (same ranks coming back), OR
+            # 2. We have previous participants and mostly/completely new ranks (different batch)
+            should_create_new_window = False
+            
+            if current_pg not in pgs_with_active_ranks_last_iter:
+                # PG was inactive - check if we need a new window
+                if already_participated or (has_previous_participants and has_significant_new_ranks):
+                    should_create_new_window = True
+            
+            if should_create_new_window:
+                # We're starting a new window/phase
+                pg_window_counter[current_pg] += 1
+                window_idx = pg_window_counter[current_pg]
+                pg_window_key = (current_pg, window_idx)
+
+            # Create key with window index to separate different phases
+            key_with_window = (current_pg[0], current_pg[1], window_idx)
+
+            # Collect all consecutive collectives for this PG from ranks that are at this PG
+            # Keep processing until no more ranks have this PG as their next collective
+            has_matches = True
+            while has_matches:
+                has_matches = False
+                for rank_id in list(rank_indices.keys()):
+                    idx = rank_indices[rank_id]
+                    if idx < len(self.collectives_by_file[rank_id]):
+                        collective = self.collectives_by_file[rank_id][idx]
+                        pg_key = (collective.process_group[0], collective.process_group[1])
+
+                        # If this rank's next collective matches the current PG, process it
+                        if pg_key == current_pg:
+                            matched_groups[key_with_window].append(collective)
+                            rank_indices[rank_id] += 1
+                            has_matches = True
+                            # Track that this rank participated in this window
+                            pg_window_participants[pg_window_key].add(rank_id)
+
+            # Update the set of PGs that have active ranks for the next iteration
+            # After processing, check which PGs still have ranks waiting on them
+            pgs_with_active_ranks = set()
+            for rank_id, idx in rank_indices.items():
+                if idx < len(self.collectives_by_file[rank_id]):
+                    collective = self.collectives_by_file[rank_id][idx]
+                    pg_key = (collective.process_group[0], collective.process_group[1])
+                    pgs_with_active_ranks.add(pg_key)
+
+            pgs_with_active_ranks_last_iter = pgs_with_active_ranks
+
+            # Note: Ranks that have moved to a different PG type "pop up" and wait
+            # They'll be processed in the next iteration when we select their PG as the wavefront
+
+        return matched_groups
+
     def analyze_matches(self, verbose: bool = False):
         """
         Analyze matching collectives across files, grouped by process group type and ordered by sub group.
@@ -354,262 +465,312 @@ class CollectiveAnalyzer(NVRxAttribution):
                 logger.info(f"  {rank_id}: {count} collectives")
         logger.info("")
 
-        # Extract unique sub-group types from the data
-        group_types = set()
-        for key in self.collective_groups.keys():
-            if (
-                len(self.collective_groups[key]) > 1
-            ):  # Only consider groups with multiple collectives
-                _, sub_group = key
-                if sub_group:  # Ensure sub_group is not empty
-                    group_types.add(sub_group)
+        def match_collectives():
+            # Extract unique sub-group types from the data
+            group_types = set()
+            for key in self.collective_groups.keys():
+                if (
+                    len(self.collective_groups[key]) > 1
+                ):  # Only consider groups with multiple collectives
+                    process_group, sub_group, window_idx = key
+                    if sub_group:  # Ensure sub_group is not empty
+                        group_types.add(sub_group)
 
-        # Convert to sorted list
-        group_types = sorted(group_types)
+            # Convert to sorted list
+            group_types = sorted(group_types)
 
-        # If no group types were found, use default ones
-        if not group_types:
-            group_types = ["TENSOR_MODEL", "PIPELINE_MODEL", "DATA_PARALLEL"]
-            logger.info("No sub-group types found in data. Using default group types.")
-        else:
-            logger.info(f"Found group types: {', '.join(group_types)}")
-
-        # Categorize collective groups by type
-        categorized_groups = {group_type: [] for group_type in group_types}
-        other_groups = []  # For groups that don't match any of the specified types
-
-        for key, collectives in self.collective_groups.items():
-            if len(collectives) <= 1:
-                continue
-
-            process_group, sub_group = key
-
-            # Check if this sub_group matches any of our group types
-            if sub_group in group_types:
-                categorized_groups[sub_group].append((key, collectives))
+            # If no group types were found, use default ones
+            if not group_types:
+                group_types = ["TENSOR_MODEL", "PIPELINE_MODEL", "DATA_PARALLEL"]
+                logger.info("No sub-group types found in data. Using default group types.")
             else:
-                other_groups.append((key, collectives))
+                logger.info(f"Found group types: {', '.join(group_types)}")
 
-        # Process each category in the order of group_types
-        completed_pg = defaultdict(list)
-        missing_pg = defaultdict(list)
-        for group_type in group_types:
-            if categorized_groups[group_type]:
-                logger.info(f"=== {group_type} Collectives ===")
+            # Categorize collective groups by type
+            categorized_groups = {group_type: [] for group_type in group_types}
+            other_groups = []  # For groups that don't match any of the specified types
 
-                # Headers for this section
-                headers = [
-                    ("Process Group", 15),
-                    ("PG Desc", 30),
-                    ("Op Type", 20),
-                    ("Size", 15),
-                    ("Dtype", 10),
-                    ("Total NRanks", 20),
-                    ("Identified Ranks", 40),
-                    ("Missing Ranks", 40),
-                ]
+            for key, collectives in self.collective_groups.items():
+                if len(collectives) <= 1:
+                    continue
 
-                header_line = " ".join(f"{name:>{width}}" for name, width in headers)
-                logger.info(header_line)
-                logger.info("-" * len(header_line))
+                process_group, sub_group, window_idx = key
 
-                def get_correct_seq_id(collective):
-                    if (
-                        "nccl:send" in collective.profiling_name
-                        or "nccl:recv" in collective.profiling_name
-                    ):
-                        return collective.p2p_seq_id
-                    else:
-                        return collective.collective_seq_id
+                # Check if this sub_group matches any of our group types
+                if sub_group in group_types:
+                    categorized_groups[sub_group].append((key, collectives))
+                else:
+                    other_groups.append((key, collectives))
 
-                # Sort groups within this category by process_group
-                sorted_groups = sorted(categorized_groups[group_type], key=lambda x: x[0][0])
-                for key, collectives in sorted_groups:
-                    process_group, sub_group = key
-                    # Count occurrences of each rank ID
-                    group_by_seq_id = defaultdict(list)
-                    max_completed_collective_seq_id = -1
-                    max_enqueued_collective_seq_id = -1
-                    local_pg_map = dict()
-                    rank_id = None
-                    for c in collectives:
-                        rank_id = c.file_id
-                        logger.debug(
-                            f"rank_id: {rank_id}, c.pg_id: {c.pg_id}, c.file_id: {c.file_id}, c.collective_seq_id: {c.collective_seq_id}, process_group: {process_group},"
-                            f"c.state: {c.state}"
-                        )
-                        pg_status = self.pg_status[rank_id][str(c.pg_id)]
-                        local_pg_map[rank_id] = c.pg_id
-                        if (
-                            pg_status['last_completed_collective']
-                            >= max_completed_collective_seq_id
-                        ):
-                            max_completed_collective_seq_id = pg_status['last_completed_collective']
-                        if pg_status['last_enqueued_collective'] >= max_enqueued_collective_seq_id:
-                            max_enqueued_collective_seq_id = pg_status['last_enqueued_collective']
+            # Headers for this section
+            headers = [
+                ("Process Group", 15),
+                ("PG Desc", 30),
+                ("Op Type", 20),
+                ("Size", 15),
+                ("Dtype", 10),
+                ("Total NRanks", 20),
+                ("Identified Ranks", 40),
+                ("Missing Ranks", 40),
+            ]
 
+            header_line = " ".join(f"{name:>{width}}" for name, width in headers)
+            logger.info(header_line)
+            logger.info("-" * len(header_line))
+
+            # Process each category in the order of group_types
+            completed_pg = defaultdict(list)
+            missing_pg = defaultdict(list)
+
+            def matching_collectives_per_process_group(collective_group):
+                logger.debug(f"collective_group: {collective_group}")
+                key, collectives = collective_group
+                process_group, sub_group, window_idx = key
+                # Count occurrences of each rank ID
+                group_by_seq_id = defaultdict(list)
+                max_completed_collective_seq_id = -1
+                max_enqueued_collective_seq_id = -1
+                local_pg_map = dict()
+                rank_id = None
+                for c in collectives:
+                    rank_id = c.file_id
                     logger.debug(
-                        f"max_completed_collective_seq_id: {max_completed_collective_seq_id}"
+                        f"rank_id: {rank_id}, c.pg_id: {c.pg_id}, c.file_id: {c.file_id}, c.collective_seq_id: {c.collective_seq_id}, process_group: {process_group},"
+                        f"c.state: {c.state}"
                     )
-                    logger.debug(
-                        f"max_enqueued_collective_seq_id: {max_enqueued_collective_seq_id}"
-                    )
-                    local_pg_id = local_pg_map[rank_id]
-                    # Ranks holding entries earlier than max_completed_collective_seq_id -> ranks failing to complete expected collectives
-                    rank_counts = defaultdict(list)
-                    for c in collectives:
-                        if c.state != 'scheduled':
-                            continue
-                        rank_counts['appeared'].append(c.file_id)
-                        if get_correct_seq_id(c) <= max_completed_collective_seq_id:
-                            rank_counts['mismatched'].append(c.file_id)
-                    appeared_rank_counts = Counter(rank_counts['appeared'])
-                    # Ranks with less number of enqueued collectives than max_enqueued_collective_seq_id -> host not making expected progress
-                    for rank_id in self.pg_configs[process_group]['ranks']:
-                        rank_id = str(rank_id)
-                        if (
-                            rank_id not in self.pg_status
-                            or str(local_pg_id) not in self.pg_status[rank_id]
-                        ):
-                            continue
+                    pg_status = self.pg_status[rank_id][str(c.pg_id)]
+                    local_pg_map[rank_id] = c.pg_id
+                    if pg_status['last_completed_collective'] >= max_completed_collective_seq_id:
+                        max_completed_collective_seq_id = pg_status['last_completed_collective']
+                    if pg_status['last_enqueued_collective'] >= max_enqueued_collective_seq_id:
+                        max_enqueued_collective_seq_id = pg_status['last_enqueued_collective']
 
-                        if (
-                            self.pg_status[rank_id][str(local_pg_id)]['last_enqueued_collective']
-                            < max_enqueued_collective_seq_id
-                        ):
-                            rank_counts['mismatched'].append(rank_id)
-
-                    mismatched_rank_counts = Counter(rank_counts['mismatched'])
-                    logger.debug(f"mismatched_rank_counts: {mismatched_rank_counts}")
-                    total_unique_ranks = len(appeared_rank_counts)
-
-                    # Get a list of unique ranks that appeared in the trace
-                    unique_ranks = sorted(map(int, appeared_rank_counts.keys()))
-
-                    # Find the most common operation type
-
-                    op_names = [
-                        c.profiling_name
-                        for c in collectives
-                        if get_correct_seq_id(c) > max_completed_collective_seq_id
-                    ]
-                    op_counts = Counter(op_names)
-                    logger.debug(f"process_group: {process_group}, op_counts: {op_counts}")
-                    op_type = op_counts.most_common(1)[0][0] if op_counts else "Unknown"
-
-                    def pair_send_recv_operations():
-                        # Pair corresponding send/recv operations
-                        send_ops = {}
-                        recv_ops = {}
-                        other_ops = {}
-
-                        for op, count in op_counts.items():
-                            if "nccl:send" in op:
-                                parts = op.split()
-                                if len(parts) > 1:
-                                    direction = parts[1]  # e.g., "0->1"
-                                    src, dst = direction.split("->")
-                                    send_ops[(src, dst)] = count
-                            elif "nccl:recv" in op:
-                                parts = op.split()
-                                if len(parts) > 1:
-                                    direction = parts[1]  # e.g., "0<-1"
-                                    dst, src = direction.split("<-")
-                                    recv_ops[(dst, src)] = count
-                            else:
-                                other_ops[op] = count
-                        # Combine all unique src-dst pairs
-                        all_pairs = set(send_ops.keys()) | set(
-                            (dst, src) for dst, src in recv_ops.keys()
-                        )
-                        return all_pairs, send_ops, recv_ops, other_ops
-
-                    all_pairs, send_ops, recv_ops, other_ops = pair_send_recv_operations()
-                    # expected ranks for this process group
-                    global_ranks = list(sorted(self.pg_configs[process_group]['ranks']))
-                    missing_ranks = set()
-                    if "nccl:send" in op_type or "nccl:recv" in op_type:
-                        for src, dst in sorted(all_pairs):
-                            send_count = send_ops.get((src, dst), 0)
-                            recv_count = recv_ops.get((dst, src), 0)
-                            logger.debug(
-                                f"src: {src}, dst: {dst}, send_count: {send_count}, recv_count: {recv_count}"
-                            )
-                            # if send_count > recv_count:
-                            #   missing_global_rank = global_ranks[int(dst)]
-                            #   missing_ranks = missing_ranks | set([missing_global_rank])
-                            if recv_count > send_count:
-                                missing_global_rank = global_ranks[int(src)]
-                                missing_ranks = missing_ranks | set([missing_global_rank])
-                    else:
-                        missing_ranks = set(global_ranks) - set(unique_ranks)
-                        missing_ranks = missing_ranks | set(map(int, mismatched_rank_counts.keys()))
-
-                    correct_unique_ranks = set(unique_ranks) - missing_ranks
-                    logger.debug(f"missing_ranks: {missing_ranks}")
-                    process_group_str = process_group
-
-                    # Get size and dtype from the first collective
-                    size_str = (
-                        'x'.join(str(x) for x in collectives[0].input_sizes[0])
-                        if collectives[0].input_sizes
-                        else "N/A"
-                    )
-                    dtype = collectives[0].input_dtypes[0] if collectives[0].input_dtypes else "N/A"
-
-                    row_data = [
-                        (process_group_str, 15, ''),
-                        (sub_group, 30, ''),
-                        (op_type, 20, ''),
-                        (size_str, 15, ''),
-                        (dtype, 10, ''),
-                        (total_unique_ranks, 10, 'd'),
-                        (','.join(map(str, correct_unique_ranks)), 40, ''),
-                        (','.join(map(str, sorted(missing_ranks))), 40, ''),
-                    ]
-
-                    row = " ".join(f"{val:>{width}{fmt}}" for val, width, fmt in row_data)
-                    parsed_row = tuple(row_elem[0] for row_elem in row_data)
-                    if len(missing_ranks) <= 0:
-                        completed_pg[(int)(parsed_row[0])].append(parsed_row)
-                        # print(row)
+                logger.debug(f"max_completed_collective_seq_id: {max_completed_collective_seq_id}")
+                logger.debug(f"max_enqueued_collective_seq_id: {max_enqueued_collective_seq_id}")
+                local_pg_id = local_pg_map[rank_id]
+                # Ranks holding entries earlier than max_completed_collective_seq_id -> ranks failing to complete expected collectives
+                rank_counts = defaultdict(list)
+                for c in collectives:
+                    if c.state != 'scheduled':
                         continue
-                    else:
-                        missing_pg[(int)(parsed_row[0])].append(parsed_row)
-                        logger.info(row)
+                    rank_counts['appeared'].append(c.file_id)
+#                    if get_correct_seq_id(c) <= max_completed_collective_seq_id:
+#                        rank_counts['mismatched'].append(c.file_id)
+                appeared_rank_counts = Counter(rank_counts['appeared'])
+                # Ranks with less number of enqueued collectives than max_enqueued_collective_seq_id -> host not making expected progress
+                for rank_id in self.pg_configs[process_group]['ranks']:
+                    rank_id = str(rank_id)
+                    if (
+                        rank_id not in self.pg_status
+                        or str(local_pg_id) not in self.pg_status[rank_id]
+                    ):
+                        continue
+                    if (
+                        self.pg_status[rank_id][str(local_pg_id)]['last_enqueued_collective']
+                        < max_enqueued_collective_seq_id
+                    ):
+                        rank_counts['mismatched'].append(rank_id)
+                mismatched_rank_counts = Counter(rank_counts['mismatched'])
+                logger.debug(f"mismatched_rank_counts: {mismatched_rank_counts}")
+                total_unique_ranks = len(appeared_rank_counts)
 
-                    # Print detailed rank count distribution
-                    if verbose:
-                        logger.info(f"  Rank count distribution for {process_group_str}:")
-                        for rank, count in sorted(appeared_rank_counts.items()):
-                            logger.info(f"    Rank {rank}: {count} occurrences")
+                # Get a list of unique ranks that appeared in the trace
+                unique_ranks = sorted(map(int, appeared_rank_counts.keys()))
 
-                    # Print operation type distribution with paired send/recv analysis
-                    logger.info("  Operation type distribution:")
-                    # Print paired send/recv operations
-                    logger.info("    Send/Receive pairs (src->dst):")
+                # Find the most common operation type
+                op_names = [
+                    c.profiling_name
+                    for c in collectives
+                    if get_correct_seq_id(c) > max_completed_collective_seq_id
+                ]
+                op_counts = Counter(op_names)
+                logger.debug(f"process_group: {process_group}, op_counts: {op_counts}")
+                op_type = op_counts.most_common(1)[0][0] if op_counts else "Unknown"
 
-                    # Print each pair with send and recv counts
-                    for src, dst in all_pairs:
+                def pair_send_recv_operations():
+                    # Pair corresponding send/recv operations
+                    send_ops = {}
+                    recv_ops = {}
+                    other_ops = {}
+
+                    for op, count in op_counts.items():
+                        if "nccl:send" in op:
+                            parts = op.split()
+                            if len(parts) > 1:
+                                direction = parts[1]  # e.g., "0->1"
+                                src, dst = direction.split("->")
+                                send_ops[(src, dst)] = count
+                        elif "nccl:recv" in op:
+                            parts = op.split()
+                            if len(parts) > 1:
+                                direction = parts[1]  # e.g., "0<-1"
+                                dst, src = direction.split("<-")
+                                recv_ops[(dst, src)] = count
+                        else:
+                            other_ops[op] = count
+                    # Combine all unique src-dst pairs
+                    all_pairs = set(send_ops.keys()) | set(
+                        (dst, src) for dst, src in recv_ops.keys()
+                    )
+                    return all_pairs, send_ops, recv_ops, other_ops
+
+                all_pairs, send_ops, recv_ops, other_ops = pair_send_recv_operations()
+                # expected ranks for this process group
+                global_ranks = list(sorted(self.pg_configs[process_group]['ranks']))
+                missing_ranks = set()
+                if "nccl:send" in op_type or "nccl:recv" in op_type:
+                    for src, dst in sorted(all_pairs):
                         send_count = send_ops.get((src, dst), 0)
                         recv_count = recv_ops.get((dst, src), 0)
-
-                        # Highlight imbalances
-                        if send_count != recv_count:
-                            imbalance = f" [IMBALANCE: {send_count-recv_count:+d}]"
-                        else:
-                            imbalance = ""
-
-                        logger.info(
-                            f"      {global_ranks[int(src)]}->{global_ranks[int(dst)]}: {send_count} sends, {recv_count} recvs{imbalance}"
+                        logger.debug(
+                            f"src: {src}, dst: {dst}, send_count: {send_count}, recv_count: {recv_count}"
                         )
+                        # Only mark as missing if the rank is truly not present in the trace
+                        # Check if recv > send AND the sender is not in unique_ranks
+                        if recv_count > send_count:
+                            missing_global_rank = global_ranks[int(src)]
+                            # Only add to missing if this rank is truly not present
+                            if missing_global_rank not in unique_ranks:
+                                missing_ranks = missing_ranks | set([missing_global_rank])
+                        # Similarly for send > recv
+                        if send_count > recv_count:
+                            missing_global_rank = global_ranks[int(dst)]
+                            if missing_global_rank not in unique_ranks:
+                                missing_ranks = missing_ranks | set([missing_global_rank])
+                else:
+                    missing_ranks = set(global_ranks) - set(unique_ranks)
+                    missing_ranks = missing_ranks | set(map(int, mismatched_rank_counts.keys()))
 
-                    # Print other operations
-                    if other_ops:
-                        logger.info("    Other operations:")
-                        for op, count in sorted(other_ops.items(), key=lambda x: (-x[1], x[0])):
-                            logger.info(f"      {op}: {count}")
+                correct_unique_ranks = set(unique_ranks) - missing_ranks
+                logger.debug(f"missing_ranks: {missing_ranks}")
 
+                # Get size and dtype from the first collective
+                size_str = (
+                    'x'.join(str(x) for x in collectives[0].input_sizes[0])
+                    if collectives[0].input_sizes
+                    else "N/A"
+                )
+                dtype = collectives[0].input_dtypes[0] if collectives[0].input_dtypes else "N/A"
+
+                row_data = [
+                    (process_group, 15, ''),
+                    (','.join(map(str, key[1:])), 30, ''),
+                    (op_type, 20, ''),
+                    (size_str, 15, ''),
+                    (dtype, 10, ''),
+                    (total_unique_ranks, 10, 'd'),
+                    (','.join(map(str, correct_unique_ranks)), 40, ''),
+                    (','.join(map(str, sorted(missing_ranks))), 40, ''),
+                ]
+
+                row = " ".join(f"{val:>{width}{fmt}}" for val, width, fmt in row_data)
+                parsed_row = tuple(row_elem[0] for row_elem in row_data)
+                if len(missing_ranks) <= 0:
+                    completed_pg[(int)(parsed_row[0])].append(parsed_row)
+                    # print(row)
+                    return
+                else:
+                    missing_pg[(int)(parsed_row[0])].append(parsed_row)
+                    logger.info(row)
+
+                # Print detailed rank count distribution
+                if verbose:
+                    logger.info(f"  Rank count distribution for {process_group}:")
+                    for rank, count in sorted(appeared_rank_counts.items()):
+                        logger.info(f"    Rank {rank}: {count} occurrences")
+
+                # Print operation type distribution with paired send/recv analysis
+                logger.info("  Operation type distribution:")
+                # Print paired send/recv operations
+                logger.info("    Send/Receive pairs (src->dst):")
+
+                # Print each pair with send and recv counts
+                for src, dst in all_pairs:
+                    send_count = send_ops.get((src, dst), 0)
+                    recv_count = recv_ops.get((dst, src), 0)
+
+                    # Highlight imbalances
+                    if send_count != recv_count:
+                        imbalance = f" [IMBALANCE: {send_count-recv_count:+d}]"
+                    else:
+                        imbalance = ""
+
+                    logger.info(
+                        f"      {global_ranks[int(src)]}->{global_ranks[int(dst)]}: {send_count} sends, {recv_count} recvs{imbalance}"
+                    )
+
+                # Print other operations
+                if other_ops:
+                    logger.info("    Other operations:")
+                    for op, count in sorted(other_ops.items(), key=lambda x: (-x[1], x[0])):
+                        logger.info(f"      {op}: {count}")
+
+            def get_correct_seq_id(collective):
+                if (
+                    "nccl:send" in collective.profiling_name
+                    or "nccl:recv" in collective.profiling_name
+                ):
+                    return collective.p2p_seq_id
+                else:
+                    return collective.collective_seq_id
+
+            for key, collective_group in self.collective_groups.items():
+                logger.debug(f"key: {key}, collective_group: {collective_group}")
+                matching_collectives_per_process_group((key, collective_group))
+            
+            # Cross-window matching: if the same PG has missing ranks in different windows,
+            # try to match them across windows
+            pg_all_windows = defaultdict(list)  # pg_id -> list of (window_idx, identified_ranks, missing_ranks)
+            
+            for pg_id, entries in missing_pg.items():
+                for entry in entries:
+                    # entry format: (pg_id, pg_desc, op_type, size, dtype, total_nranks, identified_ranks, missing_ranks)
+                    pg_desc = entry[1]  # e.g., "default_pg,0" or "default_pg,1"
+                    identified_ranks_str = entry[6]
+                    missing_ranks_str = entry[7]
+                    
+                    identified_ranks = set(map(int, identified_ranks_str.split(','))) if identified_ranks_str else set()
+                    missing_ranks = set(map(int, missing_ranks_str.split(','))) if missing_ranks_str else set()
+                    
+                    window_idx = int(pg_desc.split(',')[-1]) if ',' in pg_desc else 0
+                    pg_all_windows[pg_id].append((window_idx, identified_ranks, missing_ranks, entry))
+            
+            # For each PG with multiple windows, try to match missing ranks across windows
+            merged_missing_pg = defaultdict(list)
+            for pg_id, windows_data in pg_all_windows.items():
+                if len(windows_data) <= 1:
+                    # Single window, keep as-is
+                    for _, _, _, entry in windows_data:
+                        merged_missing_pg[pg_id].append(entry)
+                    continue
+                
+                # Multiple windows for this PG - try to match across windows
+                all_identified = set()
+                all_missing = set()
+                representative_entry = windows_data[0][3]  # Use first window's entry as template
+                
+                for window_idx, identified, missing, entry in windows_data:
+                    all_identified.update(identified)
+                    all_missing.update(missing)
+                
+                # Ranks that are identified in at least one window should not be considered missing
+                truly_missing = all_missing - all_identified
+                
+                if truly_missing:
+                    # Create merged entry with truly missing ranks
+                    merged_entry = list(representative_entry)
+                    merged_entry[6] = ','.join(map(str, sorted(all_identified)))
+                    merged_entry[7] = ','.join(map(str, sorted(truly_missing)))
+                    merged_entry = tuple(merged_entry)
+                    merged_missing_pg[pg_id].append(merged_entry)
+                else:
+                    # No truly missing ranks after cross-window matching
+                    # Don't add to merged_missing_pg (it's complete now)
+                    pass
+            
+            return completed_pg, merged_missing_pg
+
+        completed_pg, missing_pg = match_collectives()
         return completed_pg, missing_pg
 
     def group_pgs(self, pgs: Dict[str, List[str]]) -> Dict[int, List[int]]:
@@ -672,7 +833,6 @@ class CollectiveAnalyzer(NVRxAttribution):
         visited = set()
         group_id = 0
 
-        # pg_indices should be sorted with the reference to the scheduling order
         def dfs(node, current_path, visited_in_path, visited_keys):
             current_key = pgs[node][0][1]
             logger.debug(f"current_key: {current_key}, visited_keys: {visited_keys}")
@@ -690,33 +850,26 @@ class CollectiveAnalyzer(NVRxAttribution):
                     visited_keys.remove(current_key)
                 return [current_path.copy()]
 
-            def get_pg_type(pgs: Dict[str, List[str]], pg_idx: int) -> Union[str, None]:
-                """Get the process group type for a given pg index"""
-                for group_type, pg_list in pgs.items():
-                    for pg_data in pg_list:
-                        if len(pg_data) > 0 and int(pg_data[0]) == pg_idx:
-                            logger.debug(f"pg_data: {pg_data}, pg_idx: {pg_idx}")
-                            return pg_data[1]
-                return None
-
-            def find_type_val(type_name: str) -> int:
+            def find_type_val(key: tuple[str, str, int]) -> int:
                 """
                 Find the order index of a given process group type
                 """
-                final_value = -1
-                for key, value in self.type_to_order.items():
-                    if type_name.startswith(key) or key.startswith(type_name):
-                        logger.debug(f"key: {key}, value: {value}, type_name: {type_name}")
-                        final_value = max(final_value, value)
-                if final_value == -1:
-                    final_value = self.type_to_order["default_pg"]
-                return final_value
+                type_name = key[0]
+                type_val = key[1].split(',')[0]
+                per_pg_seq = (int)(key[1].split(',')[1])
+                parsed_key = (type_name, type_val, per_pg_seq)
+                logger.debug(
+                    f"key: {parsed_key}, self.collectives_to_order: {self.collectives_to_order[parsed_key]}"
+                )
+                return self.collectives_to_order.get(parsed_key, -1)
 
             all_paths = []
             for neighbor in graph[node]:
                 if neighbor not in visited_in_path:
-                    tail_pg_type = find_type_val(get_pg_type(pgs, current_path[-1]))
-                    new_node_pg_type = find_type_val(get_pg_type(pgs, neighbor))
+                    tail_key = pgs[node][0][:2]
+                    tail_pg_type = find_type_val(tail_key)
+                    new_node_key = pgs[neighbor][0][:2]
+                    new_node_pg_type = find_type_val(new_node_key)
                     logger.debug(f"current_path: {current_path}, neighbor: {neighbor}")
                     logger.debug(
                         f"tail_pg_type: {tail_pg_type}, new_node_pg_type: {new_node_pg_type}"
@@ -728,7 +881,8 @@ class CollectiveAnalyzer(NVRxAttribution):
                         all_paths.extend(paths_from_neighbor)
                     else:
                         all_paths.append(current_path.copy())
-
+            #            visited_in_path.remove(node)
+            visited_keys.remove(current_key)
             return all_paths
 
         def find_valid_paths(graph, start_node, visited):
@@ -740,7 +894,6 @@ class CollectiveAnalyzer(NVRxAttribution):
 
         sorted_pg_indices = sorted(pg_indices, key=lambda x: len(pg_rank_mapping[x]), reverse=True)
         logger.debug(f"sorted_pg_indices: {sorted_pg_indices}")
-        logger.info(f"Using scheduling order: {self.type_to_order}")
 
         for pg_idx in sorted_pg_indices:
             if pg_idx in visited:
@@ -749,9 +902,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             # Find all longest paths starting from this PG
             all_paths = find_valid_paths(graph, pg_idx, visited)
             if all_paths is None:
-                logger.info(
-                    f"No paths conform to scheduling order {self.type_to_order} from PG {pg_idx}. Skipping this PG"
-                )
+                logger.info(f"No paths from PG {pg_idx}. Skipping this PG")
                 continue
             else:
                 seen_paths = set()
@@ -793,26 +944,6 @@ class CollectiveAnalyzer(NVRxAttribution):
         logger.debug(f"unique_paths: {unique_paths}")
         return grouped_pgs
 
-    def set_type_to_order(self):
-        """
-        Set the process group type to order mapping using a passed scheduling order file
-        or use the default process group type to order mapping if no file is passed
-
-        This order is used to group pgs in the `group_pgs` function.
-        Each group has increasing order of process group types.
-        """
-        if not hasattr(self, 'args') or not hasattr(self.args, 'scheduling_order_file'):
-            return
-        self.type_to_order = DEFAULT_PG_ORDER
-        if self.type_to_order is not None:
-            return
-
-        with open(self.args.scheduling_order_file, 'r') as f:
-            scheduling_order = json.load(f)
-            if scheduling_order is not None:
-                self.type_to_order = scheduling_order
-
-        logger.info(f"mapping from process group type to order index: {self.type_to_order}")
 
     def process_file(self, filepath: str):
         """
@@ -852,6 +983,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             for entry in data['entries']:
                 if 'collective_seq_id' in entry and entry['state'] == 'scheduled':
                     collective = Collective(
+                        record_id=entry.get('record_id', -1),
                         file_id=file_id,
                         collective_seq_id=entry['collective_seq_id'],
                         p2p_seq_id=entry.get('p2p_seq_id', -1),
@@ -910,11 +1042,15 @@ class CollectiveAnalyzer(NVRxAttribution):
             if 'health_check_results' in data:
                 self.node_health_status[rank_id] = data['health_check_results']
 
+            # self.collective_groups = self.matching_collectives_by_ordering_of_appearance_of_process_group_types()
+            # logger.info(f"collective_groups: {self.collective_groups.keys()}")
+            '''
             # Group collectives by process_group[0] and process_group[1] only (remove seq_id and op_id)
             for collective in collectives:
                 # Use process_group[0] and process_group[1] as they contain the group identifiers
                 key = (collective.process_group[0], collective.process_group[1])
                 self.collective_groups[key].append(collective)
+            '''
             return True
         except Exception as e:
             eprint(f"Error processing {filepath}: {str(e)}")
@@ -974,12 +1110,6 @@ def main():
     )
     parser.add_argument(
         '-l', '--llm-analyze', action='store_true', help='Use LLM to analyze the output'
-    )
-    parser.add_argument(
-        '-s',
-        '--scheduling-order-file',
-        default="scheduling_order.json",
-        help='Scheduling order file in json format to map process group type to order index',
     )
     parser.add_argument(
         '-m',
