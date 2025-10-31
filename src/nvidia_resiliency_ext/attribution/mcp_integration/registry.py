@@ -4,11 +4,10 @@ This allows multiple attribution modules to be registered and invoked via MCP.
 """
 
 import hashlib
-import inspect
 import json
 import logging
 from dataclasses import asdict, dataclass, is_dataclass
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 from nvidia_resiliency_ext.attribution.base import NVRxAttribution
 
@@ -110,20 +109,20 @@ class AttributionModuleRegistry:
         metadata = self._modules.get(module_name)
         if not metadata:
             return arguments
-        
+
         # Create a copy to avoid modifying the original
         result = dict(arguments)
-        
+
         # Get the properties from the input schema
         input_schema = metadata.input_schema
         properties = input_schema.get("properties", {})
-        
+
         # Apply defaults for missing arguments
         for param_name, param_schema in properties.items():
             if param_name not in result and "default" in param_schema:
                 result[param_name] = param_schema["default"]
                 logger.debug(f"Applied default for {param_name}: {param_schema['default']}")
-        
+
         return result
 
     def cache_result(self, module_name: str, arguments: Dict[str, Any], result: Any):

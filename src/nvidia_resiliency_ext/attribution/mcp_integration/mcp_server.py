@@ -9,7 +9,6 @@ import argparse
 import asyncio
 import json
 import logging
-import uuid
 from typing import Any, Dict, List, Optional
 
 from mcp.server import Server
@@ -199,7 +198,7 @@ class NVRxMCPServer:
         """Execute a single attribution module."""
         # Apply default values from input schema
         arguments_with_defaults = self.registry.apply_defaults(module_name, arguments)
-        
+
         # Get or create module instance
         if module_name not in self.module_instances:
             # Convert arguments to argparse.Namespace
@@ -235,12 +234,11 @@ class NVRxMCPServer:
 
         return [TextContent(type="text", text=serialize_result(response))]
 
-
     async def run(self):
         """Run the MCP server."""
         import os
 
-        logger.info(f"Starting NVRX Attribution MCP Server")
+        logger.info("Starting NVRX Attribution MCP Server")
         logger.info(f"Registered modules: {self.registry.list_modules()}, pid: {os.getpid()}")
 
         async with stdio_server() as (read_stream, write_stream):

@@ -16,9 +16,7 @@ from typing import Any, Dict, List
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from nvidia_resiliency_ext.attribution.mcp_integration.registry import (
-    deserialize_result,
-)
+from nvidia_resiliency_ext.attribution.mcp_integration.registry import deserialize_result
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +139,7 @@ class NVRxMCPClient:
         result_str = await self.call_tool(module_name, arguments)
         return deserialize_result(result_str)
 
-    async def get_result(self,  result_id: str) -> Dict[str, Any]:
+    async def get_result(self, result_id: str) -> Dict[str, Any]:
         """
         Retrieve a cached result by ID.
 

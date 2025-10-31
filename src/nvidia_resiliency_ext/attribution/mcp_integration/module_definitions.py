@@ -9,6 +9,7 @@ import argparse
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
 
+
 def register_all_modules():
     """Register all NVRX attribution modules with the global registry."""
 
@@ -70,6 +71,7 @@ def register_all_modules():
         requires_llm=False,
         dependencies=[],
     )
+
 
 def create_args_from_dict(module_name: str, config: dict) -> argparse.Namespace:
     """
