@@ -4,10 +4,18 @@ This allows multiple attribution modules to be registered and invoked via MCP.
 """
 
 import hashlib
+<<<<<<< HEAD
 import json
 import logging
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, Dict, List, Optional, Type
+=======
+import inspect
+import json
+import logging
+from dataclasses import asdict, dataclass, is_dataclass
+from typing import Any, Callable, Dict, List, Optional, Type
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
 
 from nvidia_resiliency_ext.attribution.base import NVRxAttribution
 
@@ -77,6 +85,7 @@ class AttributionModuleRegistry:
         )
         self._modules[name] = metadata
 
+<<<<<<< HEAD
     def unregister(self, name: str):
         """Unregister a module."""
         if name in self._modules:
@@ -84,6 +93,8 @@ class AttributionModuleRegistry:
         else:
             raise ValueError(f"Module '{name}' not registered")
 
+=======
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
     def get_module_metadata(self, name: str) -> Optional[ModuleMetadata]:
         """Get metadata for a registered module."""
         return self._modules.get(name)
@@ -116,6 +127,7 @@ class AttributionModuleRegistry:
         metadata = self._modules.get(module_name)
         if not metadata:
             return arguments
+<<<<<<< HEAD
 
         # Create a copy to avoid modifying the original
         result = dict(arguments)
@@ -124,12 +136,26 @@ class AttributionModuleRegistry:
         input_schema = metadata.input_schema
         properties = input_schema.get("properties", {})
 
+=======
+        
+        # Create a copy to avoid modifying the original
+        result = dict(arguments)
+        
+        # Get the properties from the input schema
+        input_schema = metadata.input_schema
+        properties = input_schema.get("properties", {})
+        
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
         # Apply defaults for missing arguments
         for param_name, param_schema in properties.items():
             if param_name not in result and "default" in param_schema:
                 result[param_name] = param_schema["default"]
                 logger.debug(f"Applied default for {param_name}: {param_schema['default']}")
+<<<<<<< HEAD
 
+=======
+        
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
         return result
 
     def cache_result(self, module_name: str, arguments: Dict[str, Any], result: Any):

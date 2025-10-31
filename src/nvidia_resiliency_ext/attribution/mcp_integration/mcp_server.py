@@ -9,6 +9,10 @@ import argparse
 import asyncio
 import json
 import logging
+<<<<<<< HEAD
+=======
+import uuid
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
 from typing import Any, Dict, List, Optional
 
 from mcp.server import Server
@@ -198,7 +202,11 @@ class NVRxMCPServer:
         """Execute a single attribution module."""
         # Apply default values from input schema
         arguments_with_defaults = self.registry.apply_defaults(module_name, arguments)
+<<<<<<< HEAD
 
+=======
+        
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
         # Get or create module instance
         if module_name not in self.module_instances:
             # Convert arguments to argparse.Namespace
@@ -234,11 +242,19 @@ class NVRxMCPServer:
 
         return [TextContent(type="text", text=serialize_result(response))]
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
     async def run(self):
         """Run the MCP server."""
         import os
 
+<<<<<<< HEAD
         logger.info("Starting NVRX Attribution MCP Server")
+=======
+        logger.info(f"Starting NVRX Attribution MCP Server")
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
         logger.info(f"Registered modules: {self.registry.list_modules()}, pid: {os.getpid()}")
 
         async with stdio_server() as (read_stream, write_stream):
@@ -248,4 +264,8 @@ class NVRxMCPServer:
 
     def run_sync(self):
         """Run the server synchronously."""
+<<<<<<< HEAD
         asyncio.run(self.run())
+=======
+        asyncio.run(self.run())
+>>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
