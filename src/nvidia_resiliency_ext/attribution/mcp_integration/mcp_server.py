@@ -198,7 +198,6 @@ class NVRxMCPServer:
         """Execute a single attribution module."""
         # Apply default values from input schema
         arguments_with_defaults = self.registry.apply_defaults(module_name, arguments)
-
         # Get or create module instance
         if module_name not in self.module_instances:
             # Convert arguments to argparse.Namespace
