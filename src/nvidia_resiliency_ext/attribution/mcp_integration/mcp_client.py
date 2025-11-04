@@ -16,13 +16,7 @@ from typing import Any, Dict, List
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-<<<<<<< HEAD
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import deserialize_result
-=======
-from nvidia_resiliency_ext.attribution.mcp_integration.registry import (
-    deserialize_result,
-)
->>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
 
 logger = logging.getLogger(__name__)
 
@@ -145,11 +139,7 @@ class NVRxMCPClient:
         result_str = await self.call_tool(module_name, arguments)
         return deserialize_result(result_str)
 
-<<<<<<< HEAD
     async def get_result(self, result_id: str) -> Dict[str, Any]:
-=======
-    async def get_result(self,  result_id: str) -> Dict[str, Any]:
->>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
         """
         Retrieve a cached result by ID.
 
@@ -213,11 +203,7 @@ class MultiServerClient:
 
     def __init__(self):
         """Initialize the multi-server client."""
-<<<<<<< HEAD
         self.servers: Dict[str, NVRxMCPClient] = {}
-=======
-        self.servers: Dict[str, ClientSession] = {}
->>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
         self.module_to_server: Dict[str, str] = {}
 
     def add_server(self, server_name: str, server_command: List[str]):
@@ -228,11 +214,7 @@ class MultiServerClient:
             server_name: Name for the server
             server_command: Command to start the server
         """
-<<<<<<< HEAD
         self.servers[server_name] = NVRxMCPClient(server_command)
-=======
-        self.servers[server_name] = ClientSession(server_command)
->>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
 
     async def connect_all(self):
         """Connect to all registered servers."""

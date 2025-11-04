@@ -96,12 +96,7 @@ order = global_registry.get_execution_order(["log_analyzer", "fr_analyzer", "com
 
 **Tool Types**:
 1. **Module tools**: One per registered module (`log_analyzer`, `fr_analyzer`, etc.)
-<<<<<<< HEAD
 2. **Utility tools**: `status`, `get_result`
-=======
-2. **Pipeline tool**: `run_pipeline` for multi-module execution
-3. **Utility tools**: `status`, `get_result`
->>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
 
 **Resource Pattern**:
 ```
@@ -118,11 +113,7 @@ Example: attribution://log_analyzer/f47ac10b-58cc-4372-a567-0e02b2c3d479
 #### NVRxMCPClient
 - Connects to a single MCP server
 - Async context manager pattern
-<<<<<<< HEAD
 - Methods: `run_module()`, `get_result()`
-=======
-- Methods: `run_module()`, `run_pipeline()`, `get_result()`
->>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
 
 #### MultiServerClient
 - Manages multiple MCP servers

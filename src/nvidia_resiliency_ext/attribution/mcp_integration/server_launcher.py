@@ -57,13 +57,8 @@ def main():
         all_modules = global_registry.list_modules()
         for module in list(all_modules):
             if module not in args.modules:
-<<<<<<< HEAD
                 global_registry.unregister(module)
                 logger.info(f"Unregistered module: {module}")
-=======
-                # Remove from registry (simplified - in production, use proper filtering)
-                logger.info(f"Skipping module: {module}")
->>>>>>> bfd729b (Add MCP integration and changes in `attribution` modules to run with MCP)
         logger.info(f"Enabled modules: {args.modules}")
     else:
         logger.info(f"Enabled modules: {global_registry.list_modules()}")
