@@ -14,7 +14,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple 
+from typing import Dict, List, Tuple
 
 from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
 from nvidia_resiliency_ext.attribution.utils import capture_logs
@@ -390,20 +390,22 @@ class CollectiveAnalyzer(NVRxAttribution):
             )
             already_participated = pg_window_participants[pg_window_key] & ranks_with_current_pg
             previous_participants = pg_window_participants[pg_window_key]
-            
+
             has_previous_participants = len(previous_participants) > 0
             has_significant_new_ranks = len(ranks_with_current_pg - previous_participants) >= 2
-            
+
             # Create new window if:
             # 1. Some ranks have already participated (same ranks coming back), OR
             # 2. We have previous participants and mostly/completely new ranks (different batch)
             should_create_new_window = False
-            
+
             if current_pg not in pgs_with_active_ranks_last_iter:
                 # PG was inactive - check if we need a new window
-                if already_participated or (has_previous_participants and has_significant_new_ranks):
+                if already_participated or (
+                    has_previous_participants and has_significant_new_ranks
+                ):
                     should_create_new_window = True
-            
+
             if should_create_new_window:
                 # We're starting a new window/phase
                 pg_window_counter[current_pg] += 1
@@ -554,8 +556,8 @@ class CollectiveAnalyzer(NVRxAttribution):
                     if c.state != 'scheduled':
                         continue
                     rank_counts['appeared'].append(c.file_id)
-#                    if get_correct_seq_id(c) <= max_completed_collective_seq_id:
-#                        rank_counts['mismatched'].append(c.file_id)
+                #                    if get_correct_seq_id(c) <= max_completed_collective_seq_id:
+                #                        rank_counts['mismatched'].append(c.file_id)
                 appeared_rank_counts = Counter(rank_counts['appeared'])
                 # Ranks with less number of enqueued collectives than max_enqueued_collective_seq_id -> host not making expected progress
                 for rank_id in self.pg_configs[process_group]['ranks']:
@@ -717,24 +719,34 @@ class CollectiveAnalyzer(NVRxAttribution):
             for key, collective_group in self.collective_groups.items():
                 logger.debug(f"key: {key}, collective_group: {collective_group}")
                 matching_collectives_per_process_group((key, collective_group))
-            
+
             # Cross-window matching: if the same PG has missing ranks in different windows,
             # try to match them across windows
-            pg_all_windows = defaultdict(list)  # pg_id -> list of (window_idx, identified_ranks, missing_ranks)
-            
+            pg_all_windows = defaultdict(
+                list
+            )  # pg_id -> list of (window_idx, identified_ranks, missing_ranks)
+
             for pg_id, entries in missing_pg.items():
                 for entry in entries:
                     # entry format: (pg_id, pg_desc, op_type, size, dtype, total_nranks, identified_ranks, missing_ranks)
                     pg_desc = entry[1]  # e.g., "default_pg,0" or "default_pg,1"
                     identified_ranks_str = entry[6]
                     missing_ranks_str = entry[7]
-                    
-                    identified_ranks = set(map(int, identified_ranks_str.split(','))) if identified_ranks_str else set()
-                    missing_ranks = set(map(int, missing_ranks_str.split(','))) if missing_ranks_str else set()
-                    
+
+                    identified_ranks = (
+                        set(map(int, identified_ranks_str.split(',')))
+                        if identified_ranks_str
+                        else set()
+                    )
+                    missing_ranks = (
+                        set(map(int, missing_ranks_str.split(','))) if missing_ranks_str else set()
+                    )
+
                     window_idx = int(pg_desc.split(',')[-1]) if ',' in pg_desc else 0
-                    pg_all_windows[pg_id].append((window_idx, identified_ranks, missing_ranks, entry))
-            
+                    pg_all_windows[pg_id].append(
+                        (window_idx, identified_ranks, missing_ranks, entry)
+                    )
+
             # For each PG with multiple windows, try to match missing ranks across windows
             merged_missing_pg = defaultdict(list)
             for pg_id, windows_data in pg_all_windows.items():
@@ -743,19 +755,19 @@ class CollectiveAnalyzer(NVRxAttribution):
                     for _, _, _, entry in windows_data:
                         merged_missing_pg[pg_id].append(entry)
                     continue
-                
+
                 # Multiple windows for this PG - try to match across windows
                 all_identified = set()
                 all_missing = set()
                 representative_entry = windows_data[0][3]  # Use first window's entry as template
-                
+
                 for window_idx, identified, missing, entry in windows_data:
                     all_identified.update(identified)
                     all_missing.update(missing)
-                
+
                 # Ranks that are identified in at least one window should not be considered missing
                 truly_missing = all_missing - all_identified
-                
+
                 if truly_missing:
                     # Create merged entry with truly missing ranks
                     merged_entry = list(representative_entry)
@@ -767,7 +779,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                     # No truly missing ranks after cross-window matching
                     # Don't add to merged_missing_pg (it's complete now)
                     pass
-            
+
             return completed_pg, merged_missing_pg
 
         completed_pg, missing_pg = match_collectives()
@@ -943,7 +955,6 @@ class CollectiveAnalyzer(NVRxAttribution):
         grouped_pgs = {i: path for i, path in enumerate(unique_paths)}
         logger.debug(f"unique_paths: {unique_paths}")
         return grouped_pgs
-
 
     def process_file(self, filepath: str):
         """

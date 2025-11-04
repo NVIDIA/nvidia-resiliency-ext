@@ -133,54 +133,6 @@ def register_all_modules():
         dependencies=[],
     )
 
-    # Register Combined Log + FR Analyzer
-    try:
-        from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr import CombinedLogFR
-
-        global_registry.register(
-            name="combined_log_fr",
-            module_class=CombinedLogFR,
-            description="Combined analysis of application logs and FR traces with LLM synthesis",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "input_data": {
-                        "type": "array",
-                        "items": {
-                            "type": "array",
-                            "description": "Input data for the module",
-                        },
-                        "description": "Input data for the module",
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "LLM model for synthesis",
-                        "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
-                    },
-                    "threshold": {
-                        "type": "integer",
-                        "description": "Threshold for stopping pipeline",
-                        "default": 0,
-                    },
-                },
-                "required": ["input_data"],
-            },
-            output_schema={
-                "type": "object",
-                "properties": {
-                    "result": {
-                        "type": "string",
-                        "description": "Combined attribution with actionable recommendations",
-                    },
-                    "state": {"type": "string", "enum": ["CONTINUE", "STOP"]},
-                },
-            },
-            requires_llm=True,
-            dependencies=["log_analyzer", "fr_analyzer"],
-        )
-    except ImportError:
-        pass
-
 
 def create_args_from_dict(module_name: str, config: dict) -> argparse.Namespace:
     """
