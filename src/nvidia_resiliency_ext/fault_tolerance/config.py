@@ -81,6 +81,15 @@ class FaultToleranceConfig:
     link_down_path_template: Optional[str] = None
     skip_section_response: bool = True
     use_infra_group_rank: bool = True
+    # Progress tracking configuration (controlled by max_no_progress_restarts)
+    max_no_progress_restarts: int = 3
+    min_progress_iterations: int = 200
+    progress_update_interval: float = 30.0  # Seconds between sending progress updates to launcher
+
+    @property
+    def is_progress_tracking_enabled(self) -> bool:
+        """Check if progress tracking is enabled (controlled by max_no_progress_restarts > 0)."""
+        return self.max_no_progress_restarts > 0
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
