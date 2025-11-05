@@ -1987,12 +1987,12 @@ def get_args_parser() -> ArgumentParser:
         "--ft-rdzv_impl",
         type=str,
         choices=["barrier", "legacy"],
-        default="legacy",
+        default="barrier",
         dest="ft_rdzv_impl",
         help="FT rendezvous implementation to use. "
         "'barrier' uses the new atomic barrier-based algorithm (ft_rendezvous_barrier.py), "
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
-        "Default: legacy. Note: This is independent of --rdzv-backend (which specifies "
+        "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
     )
 
