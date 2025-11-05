@@ -17,6 +17,7 @@ import dataclasses
 import logging
 import os
 import socket
+import sys
 from typing import Any, Collection, Mapping, Optional
 
 from .data import (
@@ -36,7 +37,7 @@ from .data import (
 )
 from .ipc_connector import IpcConnector
 from .timeouts_calc import TimeoutsCalc
-from .utils import read_obj_from_ipc_socket, write_object_to_ipc_socket
+from .utils import get_rank, read_obj_from_ipc_socket, write_object_to_ipc_socket
 
 
 class RankMonitorClientError(Exception):
@@ -111,6 +112,20 @@ class RankMonitorClient:
                 "this rank was not started with ft_launcher"
             )
 
+        # Check if workload framework (e.g., Megatron-LM) is available for automatic iteration tracking
+        # We don't cache _GLOBAL_ARGS here because it may not be initialized yet
+        # (ft_integration.setup() is called before initialize_megatron which sets _GLOBAL_ARGS)
+        self._workload_global_vars_module = None
+        self._cached_workload_args = None  # Cache once _GLOBAL_ARGS is set (optimization)
+        if 'megatron.training.global_vars' in sys.modules:
+            self._workload_global_vars_module = sys.modules['megatron.training.global_vars']
+            # Only log from rank 0 to reduce log spam
+            if get_rank() in (0, "0", None):
+                self.logger.debug(
+                    "Detected Megatron-LM module, will track training iteration automatically "
+                    "once global args are initialized"
+                )
+
     def _ensure_is_ready(self):
         if not self.is_initialized:
             raise RankMonitorClientError("RankMonitorClient is not initialized")
@@ -121,6 +136,47 @@ class RankMonitorClient:
         if not isinstance(reply, OkMsg):
             raise RankMonitorClientError(f"Unexpected reply: {reply}. Expected OkMsg")
         return reply
+
+    def _can_report_iterations(self) -> bool:
+        """
+        Check if the workload framework supports iteration tracking.
+
+        This is based on framework detection (module presence), not current state.
+        Used to "arm" progress tracking even if iterations aren't available yet.
+
+        Returns:
+            True if workload framework is detected and will provide iterations
+        """
+        return self._workload_global_vars_module is not None
+
+    def _get_current_iteration(self) -> Optional[int]:
+        """
+        Get current training iteration from workload framework global state.
+
+        Lazily accesses and caches the global args on first access. Once cached,
+        subsequent calls use the cached reference (optimization for training loop).
+
+        Returns:
+            Current iteration if available from workload framework (e.g., Megatron-LM),
+            None otherwise
+        """
+        if self._workload_global_vars_module is not None:
+            # Check cache first (optimization - avoid getattr on every call)
+            if self._cached_workload_args is None:
+                # Lazily access _GLOBAL_ARGS in case it wasn't set during __init__
+                self._cached_workload_args = getattr(
+                    self._workload_global_vars_module, '_GLOBAL_ARGS', None
+                )
+
+            # Use cached reference (may still be None if not initialized yet)
+            if self._cached_workload_args is not None:
+                # Check curr_iteration first (updated every training step)
+                if hasattr(self._cached_workload_args, 'curr_iteration'):
+                    return self._cached_workload_args.curr_iteration
+                # Fall back to iteration (from checkpoint load)
+                if hasattr(self._cached_workload_args, 'iteration'):
+                    return self._cached_workload_args.iteration
+        return None
 
     def _set_calculated_timeouts(
         self,
@@ -285,7 +341,11 @@ class RankMonitorClient:
             return
 
         try:
-            msg = SectionMsg(rank=self.rank_info.global_rank, section=section, action=action)
+            # Include current iteration if available from framework
+            iteration = self._get_current_iteration()
+            msg = SectionMsg(
+                rank=self.rank_info.global_rank, section=section, action=action, iteration=iteration
+            )
             write_object_to_ipc_socket(msg, self.rank_monitor_socket)
 
             # Only wait for response if skip_section_response is disabled
@@ -311,8 +371,15 @@ class RankMonitorClient:
         self.rank_monitor_socket.connect(rmon_ipc_socket_path)
         write_object_to_ipc_socket(AuthkeyMsg(), self.rank_monitor_socket)
         self._ensure_response_is_ok(self.rank_monitor_socket)
-        init_msg = InitMsg()
-        init_msg.rank_info = self.rank_info
+
+        # Send InitMsg with iteration to arm progress tracking if workload supports it
+        initial_iteration = self._get_current_iteration()
+        if initial_iteration is None and self._can_report_iterations():
+            # Workload framework detected but _GLOBAL_ARGS not initialized yet
+            # Send sentinel value (1) to arm progress tracking - the real iteration
+            # will be reported later when training starts
+            initial_iteration = 1
+        init_msg = InitMsg(rank_info=self.rank_info, iteration=initial_iteration)
         write_object_to_ipc_socket(init_msg, self.rank_monitor_socket)
         reply_for_init = read_obj_from_ipc_socket(self.rank_monitor_socket)
         if not isinstance(reply_for_init, OkMsg):
@@ -330,8 +397,6 @@ class RankMonitorClient:
         """
         if self.is_initialized:
             raise RankMonitorClientError("RankMonitorClient is already initialized")
-
-        self.logger.debug(f"Initializing fault detection. Rank process PID={os.getpid()}")
 
         self.rank_info = RankInfo.get_for_current_rank()
 

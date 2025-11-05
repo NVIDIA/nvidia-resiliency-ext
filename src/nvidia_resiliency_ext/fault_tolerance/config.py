@@ -85,6 +85,15 @@ class FaultToleranceConfig:
     skip_section_response: bool = True
     use_infra_group_rank: bool = True
     numa_bind_strict: bool = False
+    # Progress tracking configuration (controlled by max_no_progress_restarts)
+    max_no_progress_restarts: int = 3
+    min_progress_iterations: int = 200
+    progress_update_interval: float = 30.0  # Seconds between sending progress updates to launcher
+
+    @property
+    def is_progress_tracking_enabled(self) -> bool:
+        """Check if progress tracking is enabled (controlled by max_no_progress_restarts > 0)."""
+        return self.max_no_progress_restarts > 0
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
