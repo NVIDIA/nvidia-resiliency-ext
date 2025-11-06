@@ -446,8 +446,9 @@ class CollectiveAnalyzer(NVRxAttribution):
                         if c.state != 'scheduled':
                             continue
                         rank_counts['appeared'].append(c.file_id)
-                        if get_correct_seq_id(c) <= max_completed_collective_seq_id:
-                            rank_counts['mismatched'].append(c.file_id)
+                        if self.args.use_stale_entries_as_failures:
+                            if get_correct_seq_id(c) <= max_completed_collective_seq_id:
+                                rank_counts['mismatched'].append(c.file_id)
                     appeared_rank_counts = Counter(rank_counts['appeared'])
                     # Ranks with less number of enqueued collectives than max_enqueued_collective_seq_id -> host not making expected progress
                     for rank_id in self.pg_configs[process_group]['ranks']:
@@ -973,6 +974,13 @@ def main():
         '--debug',
         action='store_true',
         help='Convert the trace file to json file, if the trace is binary, for debugging',
+    )
+
+    parser.add_argument(
+        '--use-stale-entries-as-failures',
+        action='store_true',
+        help='Use stale entries as failures in the analysis,'
+        'which are older than the last completed collective for the process group',
     )
 
     args = parser.parse_args()
