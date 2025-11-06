@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 
@@ -102,7 +102,7 @@ class TestTrainingProgressTracker(unittest.TestCase):
         self.assertEqual(tracker.restart_count, 2)
         self.assertEqual(tracker.no_progress_count, 0)
         self.assertEqual(tracker.last_restart_iteration, 800)
-        
+
         # Check INFO log was generated (logs as #1 since restart_count=1 when check happens)
         mock_logger.info.assert_called_once()
         log_message = mock_logger.info.call_args[0][0]
@@ -129,7 +129,7 @@ class TestTrainingProgressTracker(unittest.TestCase):
         # Verify no progress detected
         self.assertEqual(tracker.restart_count, 2)
         self.assertEqual(tracker.no_progress_count, 1)
-        
+
         # Check WARNING log was generated (logs as #1 since restart_count=1 when check happens)
         mock_logger.warning.assert_called_once()
         log_message = mock_logger.warning.call_args[0][0]
@@ -156,11 +156,13 @@ class TestTrainingProgressTracker(unittest.TestCase):
         self.assertEqual(tracker.restart_count, 2)
         self.assertEqual(tracker.no_progress_count, 0)
         self.assertTrue(tracker._iterations_not_reported_warned)
-        
+
         # Check WARNING log was generated once
         self.assertEqual(mock_logger.warning.call_count, 1)
         log_message = mock_logger.warning.call_args[0][0]
-        self.assertIn("Progress tracking is enabled but no iterations are being reported", log_message)
+        self.assertIn(
+            "Progress tracking is enabled but no iterations are being reported", log_message
+        )
 
         # Simulate Cycle 2 - still no iterations, should not warn again
         mock_logger.reset_mock()
@@ -310,4 +312,3 @@ class TestTrainingProgressTracker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

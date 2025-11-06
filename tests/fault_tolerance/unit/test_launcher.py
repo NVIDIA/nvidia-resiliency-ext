@@ -302,21 +302,19 @@ def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
 
 class MockLauncher:
     """Mock launcher with iteration aggregation logic for testing."""
-    
+
     def __init__(self, progress_tracker):
         self._rank_iterations = {}
         self._progress_tracker = progress_tracker
-    
+
     def _update_progress_iteration(self, local_rank: int, iteration: int):
         """Update iteration for a specific rank and aggregate using MIN strategy.
-        
+
         This is extracted from the actual launcher.py for testing.
         """
         # Update this rank's max iteration
-        self._rank_iterations[local_rank] = max(
-            self._rank_iterations.get(local_rank, 0), iteration
-        )
-        
+        self._rank_iterations[local_rank] = max(self._rank_iterations.get(local_rank, 0), iteration)
+
         # Use minimum across all ranks (most conservative - slowest rank determines progress)
         min_iteration = min(self._rank_iterations.values()) if self._rank_iterations else 0
         self._progress_tracker.update_iteration(min_iteration)
@@ -336,10 +334,10 @@ class TestLauncherIterationAggregation(unittest.TestCase):
     def test_single_rank_iteration_update(self):
         """Test iteration update with single rank."""
         self.launcher._update_progress_iteration(0, 100)
-        
+
         # Progress tracker should have the iteration from rank 0
         self.assertEqual(self.progress_tracker.current_max_iteration, 100)
-        
+
         # Update to higher iteration
         self.launcher._update_progress_iteration(0, 200)
         self.assertEqual(self.progress_tracker.current_max_iteration, 200)
@@ -350,12 +348,12 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         self.launcher._update_progress_iteration(0, 100)
         self.launcher._update_progress_iteration(1, 95)
         self.launcher._update_progress_iteration(2, 105)
-        
+
         # Verify launcher correctly tracks each rank's max
         self.assertEqual(self.launcher._rank_iterations[0], 100)
         self.assertEqual(self.launcher._rank_iterations[1], 95)
         self.assertEqual(self.launcher._rank_iterations[2], 105)
-        
+
         # Progress tracker receives MAX of all MINs seen (defensive against out-of-order)
         # First update with rank 0 (100), then updates with lower MINs are ignored by tracker
         self.assertEqual(self.progress_tracker.current_max_iteration, 100)
@@ -368,18 +366,18 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         self.launcher._update_progress_iteration(2, 10)
         # After all 3 ranks report 10, MIN = 10, tracker = 10
         self.assertEqual(self.progress_tracker.current_max_iteration, 10)
-        
+
         # All ranks progress, rank 1 is slightly slower
         self.launcher._update_progress_iteration(0, 50)  # MIN now = 10 (ranks 1,2 still at 10)
         self.launcher._update_progress_iteration(1, 45)  # MIN now = 10 (rank 2 still at 10)
         self.launcher._update_progress_iteration(2, 48)  # MIN now = 45 (slowest)
         # After all updates, MIN = 45, tracker = 45
         self.assertEqual(self.progress_tracker.current_max_iteration, 45)
-        
+
         # All ranks continue progressing
         self.launcher._update_progress_iteration(0, 100)  # MIN = 45 (ranks 1,2 still at 45,48)
-        self.launcher._update_progress_iteration(1, 95)   # MIN = 48 (rank 2 still at 48)
-        self.launcher._update_progress_iteration(2, 98)   # MIN = 95 (slowest)
+        self.launcher._update_progress_iteration(1, 95)  # MIN = 48 (rank 2 still at 48)
+        self.launcher._update_progress_iteration(2, 98)  # MIN = 95 (slowest)
         # After all updates, MIN = 95, tracker = 95
         self.assertEqual(self.progress_tracker.current_max_iteration, 95)
 
@@ -389,7 +387,7 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         self.launcher._update_progress_iteration(0, 100)
         self.launcher._update_progress_iteration(1, 95)
         self.launcher._update_progress_iteration(2, 105)
-        
+
         # Verify each rank's iteration is tracked
         self.assertEqual(self.launcher._rank_iterations[0], 100)
         self.assertEqual(self.launcher._rank_iterations[1], 95)
@@ -400,11 +398,11 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         # Rank 0 reports iterations in non-monotonic order (e.g., out of order messages)
         self.launcher._update_progress_iteration(0, 100)
         self.assertEqual(self.launcher._rank_iterations[0], 100)
-        
+
         # Lower value shouldn't decrease the max for this rank
         self.launcher._update_progress_iteration(0, 50)
         self.assertEqual(self.launcher._rank_iterations[0], 100)
-        
+
         # Higher value should update
         self.launcher._update_progress_iteration(0, 150)
         self.assertEqual(self.launcher._rank_iterations[0], 150)
@@ -422,7 +420,7 @@ class TestLauncherIterationAggregation(unittest.TestCase):
             self.launcher._update_progress_iteration(rank, 100)
         # All at 100, MIN = 100, tracker = 100
         self.assertEqual(self.progress_tracker.current_max_iteration, 100)
-        
+
         # All progress, with slight variations
         iterations = [500, 498, 502, 495, 501, 499, 503, 497]
         for rank, iteration in enumerate(iterations):
@@ -437,7 +435,7 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         for rank in range(4):
             self.launcher._update_progress_iteration(rank, 100)
         self.assertEqual(self.progress_tracker.current_max_iteration, 100)
-        
+
         # 3 ranks progress to 200, 1 straggler stays at 110
         self.launcher._update_progress_iteration(0, 200)  # MIN = 100 (others still at 100)
         self.launcher._update_progress_iteration(1, 200)  # MIN = 100 (ranks 2,3 still at 100)
@@ -445,7 +443,7 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         self.launcher._update_progress_iteration(3, 110)  # MIN = 110 (straggler)
         # Tracker keeps max of MINs seen = 110
         self.assertEqual(self.progress_tracker.current_max_iteration, 110)
-        
+
         # Verify MIN is 110 (straggler)
         min_iter = min(self.launcher._rank_iterations.values())
         self.assertEqual(min_iter, 110)
@@ -456,7 +454,7 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         self.launcher._update_progress_iteration(0, 0)
         self.launcher._update_progress_iteration(1, 1)
         self.launcher._update_progress_iteration(2, 0)
-        
+
         # MIN should be 0
         self.assertEqual(self.progress_tracker.current_max_iteration, 0)
 
@@ -467,15 +465,15 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         for rank in range(4):
             self.launcher._update_progress_iteration(rank, 500)
         self.assertEqual(self.progress_tracker.current_max_iteration, 500)
-        
+
         self.progress_tracker.analyze_previous_cycle()
-        
+
         # Cycle 1: All ranks make good progress to ~800
         for rank in range(4):
             self.launcher._update_progress_iteration(rank, 800)
         # Progress = 800 - 500 = 300 (> 200 threshold)
         self.assertEqual(self.progress_tracker.current_max_iteration, 800)
-        
+
         self.progress_tracker.analyze_previous_cycle()
         self.assertEqual(self.progress_tracker.no_progress_count, 0)
 
@@ -486,12 +484,12 @@ class TestLauncherIterationAggregation(unittest.TestCase):
             self.launcher._update_progress_iteration(rank, 100)
         self.assertEqual(self.progress_tracker.current_max_iteration, 100)
         self.progress_tracker.analyze_previous_cycle()
-        
+
         # Cycle 1: All ranks reach 350 (progress = 250 >= 200)
         for rank in range(4):
             self.launcher._update_progress_iteration(rank, 350)
         self.assertEqual(self.progress_tracker.current_max_iteration, 350)
         self.progress_tracker.analyze_previous_cycle()
-        
+
         # Should detect good progress
         self.assertEqual(self.progress_tracker.no_progress_count, 0)
