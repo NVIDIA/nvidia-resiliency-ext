@@ -229,10 +229,6 @@ class FaultToleranceConfig:
         ft_cfg._fix_log_level_type()
         ft_cfg._fix_rank_termination_signal_type()
 
-        # If we didn't read from file and no CLI args were provided, raise an error
-        if not (is_read_from_file or cli_ft_args):
-            raise ValueError("No fault tolerance configuration provided.")
-
         return ft_cfg
 
     def to_yaml_file(self, cfg_path: str) -> None:
