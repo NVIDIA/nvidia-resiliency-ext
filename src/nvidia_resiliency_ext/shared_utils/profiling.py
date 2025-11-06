@@ -58,7 +58,14 @@ class ProfilingEvent(Enum):
 class FaultToleranceProfiler:
     """Profiler for measuring fault tolerance timing metrics using nv one logger."""
 
-    def __init__(self):
+    def __init__(self, agent=None):
+        """
+        Initialize the profiler.
+
+        Args:
+            agent: LocalElasticAgent instance (provides access to cycle_manager)
+        """
+        self._agent = agent
         self._current_cycle = 0
         # Initialize logger as a member to avoid module-level logger issues
         self._logger = logging.getLogger(LogConfig.name)
@@ -207,6 +214,10 @@ class FaultToleranceProfiler:
         if event == ProfilingEvent.FAILURE_DETECTED:
             self._current_cycle += 1
 
+        # Add event to the current cycle (creates cycle if it doesn't exist)
+        cycle = self._agent.cycle_manager.get_or_create_cycle(self._current_cycle)
+        cycle.add_event(event.value, timestamp, node_id, rank)
+
         # Publish metrics using nv one logger
         self._publish_metrics(event, timestamp, node_id, rank)
 
@@ -217,25 +228,3 @@ class FaultToleranceProfiler:
             f"Time: {utc_time} UTC"
         )
         return event_id
-
-
-# Global profiler instance
-_global_profiler = FaultToleranceProfiler()
-
-
-def record_profiling_event(
-    event: ProfilingEvent,
-    node_id: Optional[Any] = None,
-    rank: Optional[int] = None,
-) -> str:
-    """Convenience function to record a profiling event.
-
-    Args:
-        event: The profiling event to record
-        node_id: Node identifier (can be any type, will be converted to string)
-        rank: Rank identifier
-
-    Returns:
-        Event ID string
-    """
-    return _global_profiler.record_event(event, node_id, rank)

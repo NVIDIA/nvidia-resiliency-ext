@@ -94,6 +94,55 @@ deterministic sorted assignment based on node descriptors. In this mode:
 * Ranks are reassigned based on sorted node descriptors
   
 
+HTTP Status API
+^^^^^^^^^^^^^^^
+
+The ``ft_launcher`` provides a built-in HTTP server that exposes launcher status information via a REST API.
+This feature is **enabled by default** and can be used to monitor launcher state during training.
+
+**Configuration:**
+
+* The HTTP server is enabled by default on port ``2025``
+* To disable: use ``--no-http-server`` flag
+* To change host: use ``--http-server-host`` (default: ``0.0.0.0``)
+* To change port: use ``--http-server-port`` (default: ``2025``)
+
+**Available endpoints:**
+
+* ``GET /status`` - Returns launcher status information
+
+  * ``start_time``: UTC timestamp when the launcher started (ISO 8601 format)
+  * ``current_cycle``: Current failure detection and recovery cycle count
+
+**Example usage:**
+
+.. code-block:: bash
+
+   # HTTP server enabled by default at http://0.0.0.0:2025/status
+   ft_launcher --nnodes=1 --nproc-per-node=8 train.py
+
+   # Query status
+   curl http://localhost:2025/status
+
+   # Disable HTTP server if not needed
+   ft_launcher --no-http-server --nnodes=1 --nproc-per-node=8 train.py
+
+   # Use custom port
+   ft_launcher --http-server-port=8080 --nnodes=1 --nproc-per-node=8 train.py
+
+**Example response:**
+
+.. code-block:: json
+
+   {
+     "start_time": "2025-10-29T12:34:56.789012Z",
+     "current_cycle": 0
+   }
+
+The ``current_cycle`` counter increments each time a failure is detected, making it useful for tracking
+the number of fault recovery attempts during training.
+
+
 Hang detection
 --------------
 
