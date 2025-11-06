@@ -152,10 +152,18 @@ class AuthkeyMsg:
 
 class InitMsg:
     """
-    Send (rank -> rank monitor) to initialize new session
+    Send (rank -> rank monitor) to initialize new session.
+
+    Attributes:
+        rank_info: Information about this rank
+        iteration: Current training iteration if available from workload framework.
+                  If None, indicates that the workload cannot report iterations,
+                  and progress tracking should remain disabled.
     """
 
-    pass
+    def __init__(self, rank_info=None, iteration: Optional[int] = None):
+        self.rank_info = rank_info
+        self.iteration = iteration
 
 
 class HeartbeatMsg:
@@ -188,10 +196,12 @@ class SectionMsg:
         rank: int,
         section: str,
         action: SectionAction,
+        iteration: Optional[int] = None,
     ):
         self.rank = rank
         self.section = section
         self.action = action
+        self.iteration = iteration
 
 
 class UpdateConfigMsg:
