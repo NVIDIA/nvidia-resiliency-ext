@@ -90,7 +90,11 @@ class TorchFRTraceCollector(TraceCollector):
             mode = 'w'
         with open(output_path, mode) as f:
             logger.info(f"{self.rank} is about to dump its trace to {output_path}")
-            dumped_dict = pickle.loads(self.trace)
+            # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
+            # Severity: Medium   Confidence: High
+            # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+            # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
+            dumped_dict = pickle.loads(self.trace)  # nosec
             local_rank = self.rank % torch.cuda.device_count()
             health_check_results = TorchFRTraceCollector.get_health_check_results(local_rank)
             dumped_dict['health_check_results'] = {
