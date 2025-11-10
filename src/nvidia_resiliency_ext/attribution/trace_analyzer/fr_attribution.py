@@ -3,7 +3,12 @@ import glob
 import json
 import logging
 import os
-import pickle
+
+# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
+# Severity: Low   Confidence: High
+# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+# More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_imports.html#b403-import-pickle
+import pickle  # nosec
 import re
 import sys
 from collections import Counter, defaultdict
@@ -815,7 +820,11 @@ class CollectiveAnalyzer(NVRxAttribution):
             else:
                 try:
                     with open(filename, 'rb') as f:
-                        data = pickle.load(f)
+                        # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
+                        # Severity: Medium   Confidence: High
+                        # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+                        # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
+                        data = pickle.load(f)  # nosec
                         # Convert pickle data to JSON-compatible format
                         converted_data = json.loads(json.dumps(data))
                     if self.args.debug:
