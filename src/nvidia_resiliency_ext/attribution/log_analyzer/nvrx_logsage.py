@@ -99,7 +99,7 @@ def main():
     args = parser.parse_args()
 
     analyzer = NVRxLogAnalyzer(args)
-    analyzer.run_sync(args.log_path)
+    analyzer.run_sync(args)
 
 
 if __name__ == "__main__":
