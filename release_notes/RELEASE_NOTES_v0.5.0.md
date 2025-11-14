@@ -13,7 +13,6 @@ This release includes major new features for fault tolerance, checkpointing, hea
 - Supports libuv-based communication for improved performance
 - Adds `close()` semantics for proper resource cleanup
 - Includes early termination support when unhealthy node count exceeds threshold
-- New `--ft-enable-rank-monitors` CLI option to control rank monitor functionality
 - Comprehensive unit test coverage for barrier rendezvous
 
 ### 2. Flight Recorder Attribution Module (PR #172)
@@ -32,13 +31,7 @@ This release includes major new features for fault tolerance, checkpointing, hea
   - RENDEZVOUS_STARTED, RENDEZVOUS_COMPLETED
   - WORKER_START_STARTED, WORKER_START_COMPLETED
 - `FaultToleranceProfiler` class with thread-safe event recording
-- Calculates metrics by restart cycle:
-  - Failure to termination time
-  - Rendezvous duration
-  - Worker start time
-  - Total cycle time (startup vs restart)
 - OneLogger exporter integration for metrics reporting
-- Profiling summary logged on shutdown
 
 ### 4. Flight Recorder Trace Collection (PR #122)
 - Automatic FR trace collection at abort when Flight Recorder and env vars are configured
@@ -103,7 +96,7 @@ This release includes major new features for fault tolerance, checkpointing, hea
 - Added `set_worker_group` to legacy rendezvous (PR #172)
 
 #### Configuration and CLI
-- Cleaned up ft-launcher arguments for consistency (PR #64)
+- Removed ft-launcher* arguments for consistency (PR #64)
   - Removed unnecessary config ignore flags
   - Fixed config file argument handling
   - Removed redundant parameter prefixes
@@ -112,7 +105,6 @@ This release includes major new features for fault tolerance, checkpointing, hea
 - `--rdzv-endpoint` now properly supported with c10d backend (PR #194)
 - Fixed `--max-restarts` to reflect job level restart attempts (PR #211)
 - Allowed ft_launcher to run with default FaultToleranceConfig (PR #205)
-- Added `--ft-enable-rank-monitors` option
 
 #### Monitoring and Logging
 - Changed default worker monitor interval to 0.1 second (PR #48)
@@ -350,7 +342,7 @@ This release includes major new features for fault tolerance, checkpointing, hea
 ### API Changes
 1. **AsyncRequest**: `async_fn_kwargs` parameter handling changed to prevent state pollution
 2. **Health Checks**: Refactored to support device-specific monitoring
-3. **ft-launcher**: Cleaned up CLI arguments (deprecated arguments still work with warnings)
+3. **ft-launcher**: Removed CLI arguments (deprecated arguments have been removed)
 
 ### Module Reorganization
 1. **Straggler → Attribution**: Straggler module moved to `attribution` directory
