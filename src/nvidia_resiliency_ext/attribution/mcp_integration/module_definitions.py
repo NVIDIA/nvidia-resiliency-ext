@@ -130,9 +130,7 @@ def register_all_modules():
 
     # Register Combined Log + FR Analyzer
     try:
-        from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr import (
-            CombinedLogFR,
-        )
+        from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr import CombinedLogFR
 
         global_registry.register(
             name="combined_log_fr",
@@ -175,15 +173,6 @@ def register_all_modules():
             requires_llm=True,
             dependencies=["log_analyzer", "fr_analyzer"],
         )
-    except ImportError:
-        pass
-
-    # Register Straggler Detection (if available)
-    try:
-        from nvidia_resiliency_ext.attribution.straggler.straggler import Detector
-
-        # Note: Straggler detector has a different interface, may need adapter
-        # global_registry.register(...)
     except ImportError:
         pass
 
