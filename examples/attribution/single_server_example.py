@@ -139,7 +139,9 @@ async def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run MCP client with SSE transport')
+    parser = argparse.ArgumentParser(
+        description='Single MCP Server with Multiple Attribution Modules'
+    )
     parser.add_argument('--log-path', type=str, help='Path to log file')
     parser.add_argument('--fr-path', type=str, help='Path to FR dumps')
     args = parser.parse_args()

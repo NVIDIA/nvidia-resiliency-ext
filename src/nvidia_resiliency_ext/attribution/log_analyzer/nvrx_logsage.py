@@ -1,6 +1,7 @@
 import argparse
-import os
 import logging
+import os
+
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
 from logsage.auto_resume_policy.error_attribution import get_proposed_solution_cat
@@ -11,13 +12,16 @@ from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribu
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.api_key = os.getenv("NVIDIA_API_KEY")
         if not self.api_key:
             raise ValueError("NVIDIA_API_KEY environment variable is not set")
-        logger.info(f"Using API key: {self.api_key[:10]}..." if self.api_key else "No API key found")
+        logger.info(
+            f"Using API key: {self.api_key[:10]}..." if self.api_key else "No API key found"
+        )
         logger.info(f"Using model: {args.model}")
         self.lru_cache = LRUCache(100_000)
         self.llm = ChatNVIDIA(
@@ -70,7 +74,9 @@ class NVRxLogAnalyzer(NVRxAttribution):
     async def print_output(self, attribution_result: str) -> tuple[str, AttributionState]:
         # Concatenate all strings in attribution_result if it's a list/tuple
         logger.info(f"attribution_result: {attribution_result}")
-        attr_state = AttributionState.STOP if 'STOP' in attribution_result[0] else AttributionState.CONTINUE
+        attr_state = (
+            AttributionState.STOP if 'STOP' in attribution_result[0] else AttributionState.CONTINUE
+        )
         if isinstance(attribution_result, (list, tuple)):
             concatenated_result = '\n'.join(str(item) for item in attribution_result)
         else:
