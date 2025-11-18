@@ -57,8 +57,8 @@ def main():
         all_modules = global_registry.list_modules()
         for module in list(all_modules):
             if module not in args.modules:
-                # Remove from registry (simplified - in production, use proper filtering)
-                logger.info(f"Skipping module: {module}")
+                global_registry.unregister(module)
+                logger.info(f"Unregistered module: {module}")
         logger.info(f"Enabled modules: {args.modules}")
     else:
         logger.info(f"Enabled modules: {global_registry.list_modules()}")

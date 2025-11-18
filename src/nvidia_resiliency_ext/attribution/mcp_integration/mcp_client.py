@@ -203,7 +203,7 @@ class MultiServerClient:
 
     def __init__(self):
         """Initialize the multi-server client."""
-        self.servers: Dict[str, ClientSession] = {}
+        self.servers: Dict[str, NVRxMCPClient] = {}
         self.module_to_server: Dict[str, str] = {}
 
     def add_server(self, server_name: str, server_command: List[str]):
@@ -214,7 +214,7 @@ class MultiServerClient:
             server_name: Name for the server
             server_command: Command to start the server
         """
-        self.servers[server_name] = ClientSession(server_command)
+        self.servers[server_name] = NVRxMCPClient(server_command)
 
     async def connect_all(self):
         """Connect to all registered servers."""

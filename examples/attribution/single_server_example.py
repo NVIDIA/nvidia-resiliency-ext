@@ -72,8 +72,7 @@ async def main(args: argparse.Namespace):
             llm_analyze=False,
             pattern="_dump_*",
         )
-        logger.info(f"Result ID: {fr_result}")
-        logger.info(f"State: {fr_result}")
+        logger.info(f"Result: {fr_result}")
 
         # 4. List and access cached resources
         logger.info("\n6. Cached Resources:")

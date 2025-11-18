@@ -77,6 +77,13 @@ class AttributionModuleRegistry:
         )
         self._modules[name] = metadata
 
+    def unregister(self, name: str):
+        """Unregister a module."""
+        if name in self._modules:
+            del self._modules[name]
+        else:
+            raise ValueError(f"Module '{name}' not registered")
+
     def get_module_metadata(self, name: str) -> Optional[ModuleMetadata]:
         """Get metadata for a registered module."""
         return self._modules.get(name)
