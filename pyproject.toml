@@ -43,6 +43,7 @@ nvidia-ml-py = ">=12.570.86"
 defusedxml = "*"
 langchain-nvidia-ai-endpoints = ">=0.3.15"
 mcp = ">=1.15.0"
+logsage = "=0.1.1"
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
