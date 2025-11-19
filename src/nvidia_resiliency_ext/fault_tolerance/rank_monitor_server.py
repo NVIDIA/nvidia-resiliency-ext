@@ -157,7 +157,7 @@ class RankMonitorServer:
         )
         self.state_machine = RankMonitorStateMachine(self.rmlogger)
         self._periodic_restart_task = None
-        self._restart_check_log_count = 0  # Counter for "Started periodic restart check" logs
+        self._restart_check_log_count = 0  # Flag to log "Started periodic restart check" only once
         self.health_checker = GPUHealthCheck(
             interval=self.cfg.node_health_check_interval, on_failure=self._handle_unhealthy_node
         )
@@ -166,6 +166,9 @@ class RankMonitorServer:
             f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_to_rmon.socket"
         )
         self.launcher_server = None
+        self.launcher_writer = None  # Keep connection to launcher for bidirectional IPC
+        self._max_iteration_this_cycle = 0  # Track max iteration in current restart cycle
+        self._last_sent_iteration = 0  # Track last iteration sent to launcher (avoid duplicates)
 
         if self.cfg.enable_nic_monitor:
             self.logger.info("Enable NIC health monitoring.")
@@ -185,7 +188,7 @@ class RankMonitorServer:
         self._periodic_restart_task = asyncio.get_running_loop().create_task(
             self._periodic_restart_check()
         )
-        # Only log for local rank 0 to reduce log spam, and limit to 2 times (first 2 minutes)
+        # Only log once from local rank 0 to reduce log spam
         if (
             self.rank_info is None or self.rank_info.local_rank == 0
         ) and self._restart_check_log_count < 2:
@@ -234,15 +237,12 @@ class RankMonitorServer:
             self.logger.error("_shutdown_rank_if_alive exception! ", exc_info=True)
 
     async def _handle_unhealthy_node(self):
-        self.logger.debug("In RankMonitorServer._handle_unhealthy_node.")
         self._shutdown_rank_if_alive()
 
     async def _handle_unhealthy_nic(self):
-        self.logger.debug("In RankMonitorServer._handle_unhealthy_nic.")
         self._shutdown_rank_if_alive()
 
     async def _handle_timeout(self):
-        self.logger.debug("In RankMonitorServer._handle_timeout.")
         self._shutdown_rank_if_alive()
 
     async def _handle_authkey_msg(self, msg, writer):
@@ -277,6 +277,31 @@ class RankMonitorServer:
         if self.nic_health_checker is not None:
             self.nic_health_checker.set_nic_device(local_rank=self.rank_info.local_rank)
         self.rmlogger.set_connected_rank(msg.rank_info.global_rank)
+
+        # Send initial iteration to launcher if workload can report iterations
+        # If msg.iteration is None, the workload cannot report iterations and
+        # progress tracking will remain disabled (both last_restart_iteration
+        # and current_max_iteration stay at 0).
+        if self.launcher_writer is not None and msg.iteration is not None:
+            await write_obj_to_ipc_stream(
+                {
+                    "type": "iteration_update",
+                    "local_rank": self.rank_info.local_rank,
+                    "iteration": msg.iteration,
+                },
+                self.launcher_writer,
+            )
+            self._last_sent_iteration = msg.iteration
+            # Only log from rank 0 to reduce log spam
+            if self.rank_info.global_rank == 0:
+                self.logger.debug(f"Sent initial iteration to launcher: {msg.iteration}")
+        elif msg.iteration is None:
+            # Only log from rank 0 to reduce log spam
+            if self.rank_info.global_rank == 0:
+                self.logger.debug(
+                    "Workload cannot report iterations, progress tracking will be disabled"
+                )
+
         await write_obj_to_ipc_stream(OkMsg(cfg=self.cfg), writer)
 
     async def _handle_heartbeat_msg(self, msg, writer):
@@ -295,6 +320,11 @@ class RankMonitorServer:
         if self._periodic_restart_task is not None:
             await self.stop_periodic_restart_check()
         self.state_machine.handle_section_msg()
+
+        # Track max iteration for this restart cycle (will be sent to launcher on next init)
+        if msg.iteration is not None:
+            self._max_iteration_this_cycle = max(self._max_iteration_this_cycle, msg.iteration)
+
         resp = ErrorMsg()
         current_time = time.monotonic()
         if msg.action is SectionAction.OPEN:
@@ -338,16 +368,21 @@ class RankMonitorServer:
         self.state_machine.handle_ipc_connection_lost()
         if self.state_machine.is_restarting():
             self.start_periodic_restart_check()
+
+        # Check for unclosed sections before clearing rank_info
+        if self.open_sections:
+            open_section_names = list(self.open_sections.keys())
+            # Only log from rank 0 to reduce restart/crash log spam (common during failures)
+            if self.rank_info and self.rank_info.global_rank == 0:
+                self.logger.warning(
+                    f"Section(s) {open_section_names} were still open. Use `.end_all_sections()` to avoid this."
+                )
+            self.open_sections.clear()
+
         self.rank_info = None
         self.start_time = None
         self.last_hb_time = None
         self.out_of_section_time = None
-        if self.open_sections:
-            open_section_names = list(self.open_sections.keys())
-            self.logger.warning(
-                f"Section(s) {open_section_names} were still open. you can use`.end_all_sections` to avoid this warning"
-            )
-            self.open_sections.clear()
         self.rmlogger.set_connected_rank(None)
         if self.connection_lock.locked():
             self.connection_lock.release()
@@ -355,23 +390,27 @@ class RankMonitorServer:
     async def _handle_launcher_ipc_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """Handle IPC connection from the launcher."""
+        """Handle IPC connection from the launcher. Keeps connection open for bidirectional communication."""
+        self.launcher_writer = writer
+
         try:
             while True:
                 msg = await read_obj_from_ipc_stream(reader)
                 if msg == "close_worker_ipc_connection":
-                    self.logger.debug(
-                        "Received request from launcher to close worker IPC connection"
-                    )
+                    # Normal shutdown request - close worker connection
                     await self.close_current_connection()
+                elif msg == "shutdown":
+                    # Shutdown request received (not logged - normal operation)
+                    break
                 else:
                     self.logger.warning(f"Received unknown message from launcher: {msg}")
         except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
-            # Valid stream close exceptions.
+            # Valid stream close exceptions - launcher disconnected (normal shutdown)
             pass
         except Exception as e:
             self.logger.error(f"Error handling launcher IPC connection: {e}")
         finally:
+            self.launcher_writer = None
             writer.close()
             await writer.wait_closed()
 
@@ -415,7 +454,6 @@ class RankMonitorServer:
         with contextlib.suppress(Exception):
             writer.close()
             await writer.wait_closed()
-        self.logger.debug("Leaving _handle_ipc_connection. ")
 
     def _handle_signal(self, sig):
         self.state_machine.handle_signal()
@@ -492,6 +530,34 @@ class RankMonitorServer:
     async def _periodic_nic_health_check(self):
         await self.nic_health_checker.async_check()
 
+    async def _periodic_progress_update(self):
+        """Periodically send current max iteration to launcher for progress tracking."""
+        while True:
+            await asyncio.sleep(self.cfg.progress_update_interval)
+
+            # Only send if iteration has changed since last send
+            if (
+                self.launcher_writer is not None
+                and self._max_iteration_this_cycle > self._last_sent_iteration
+                and self.rank_info is not None
+            ):
+
+                iteration_to_send = self._max_iteration_this_cycle
+                await write_obj_to_ipc_stream(
+                    {
+                        "type": "iteration_update",
+                        "local_rank": self.rank_info.local_rank,
+                        "iteration": iteration_to_send,
+                    },
+                    self.launcher_writer,
+                )
+                self._last_sent_iteration = iteration_to_send
+                # Only log from rank 0 to reduce log spam
+                if self.rank_info.global_rank == 0:
+                    self.logger.debug(
+                        f"Sent periodic progress update to launcher: iteration={iteration_to_send}"
+                    )
+
     async def _rank_monitor_loop(self):
         # Handle usual termination signals
         for sig_to_handle in [
@@ -531,6 +597,10 @@ class RankMonitorServer:
         if self.nic_health_checker is not None:
             asyncio.get_running_loop().create_task(self._periodic_nic_health_check())
 
+        # Periodic progress update to launcher
+        if self.cfg.is_progress_tracking_enabled:
+            asyncio.get_running_loop().create_task(self._periodic_progress_update())
+
         self.rank_monitor_ready_event.set()
 
         try:
@@ -566,7 +636,6 @@ class RankMonitorServer:
             setup_logger(force_reset=True, node_local_tmp_prefix="rankmonsvr")
             logger = logging.getLogger(LogConfig.name)
 
-            logger.debug(f"Starting RankMonitorServer... PID={os.getpid()}")
             inst = RankMonitorServer(
                 cfg,
                 ipc_socket_path,
@@ -575,13 +644,13 @@ class RankMonitorServer:
                 is_restarter_logger,
             )
             asyncio.run(inst._rank_monitor_loop())
-            logger.debug("Leaving RankMonitorServer process")
         except asyncio.exceptions.CancelledError:
-            logger.debug("asyncio.exceptions.CancelledError in RankMonitorServer.run")
-            pass  # Ignore the exception
+            logger.debug(
+                "asyncio.exceptions.CancelledError in RankMonitorServer.run - clean shutdown"
+            )
         except Exception as e:
-            logger.error(f"Exception caught in RankMonitorServer.run: {e}")
-            pass  # Ignore the exception
+            logger.error(f"Exception caught in RankMonitorServer.run: {e}", exc_info=True)
+            sys.exit(1)  # Exit with error code to signal failure
 
     @staticmethod
     def run_in_subprocess(
@@ -619,6 +688,4 @@ class RankMonitorServer:
         if self.current_writer is not None:
             self.current_writer.close()
             await self.current_writer.wait_closed()
-            self.logger.debug("Closed current IPC connection")
-        else:
-            self.logger.debug("No active connection to close")
+            # Connection closed (not logged - normal shutdown operation)

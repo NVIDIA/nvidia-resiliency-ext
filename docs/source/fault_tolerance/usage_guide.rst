@@ -55,12 +55,12 @@ using ``--ft-<parameter-name>``.
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
 The restart behavior depends on the ``--ft-restart-policy`` parameter, which supports two modes:
 
-* ``any-failed`` (default)  
-  All workers are restarted if any worker fails.  
+* ``any-failed`` (default)
+  All workers are restarted if any worker fails.
 
 * ``min-healthy``
-  Workers are restarted when the number of healthy nodes (nodes where all worker processes are running) 
-  falls below the minimum specified in ``--nnodes``. This allows for some worker failures to be handled 
+  Workers are restarted when the number of healthy nodes (nodes where all worker processes are running)
+  falls below the minimum specified in ``--nnodes``. This allows for some worker failures to be handled
   without restarting remaining workers, e.g., with the :doc:`../inprocess/index`.
   For details on how ``min-healthy`` policy interacts with :doc:`../inprocess/index` see :doc:`integration/inprocess`.
 
@@ -76,23 +76,65 @@ By default (``--ft-use-infra-group-rank=True``), rank assignments **always** com
 * The launcher first checks ``SLURM_PROCID`` (automatically set in SLURM environments)
 * If not available, it falls back to ``GROUP_RANK`` (set by ``ft_launcher`` itself)
 
-Infrastructure ranks are used for **every rendezvous**, including after failures/restarts. Previous 
+Infrastructure ranks are used for **every rendezvous**, including after failures/restarts. Previous
 rank assignments are ignored. This ensures consistency with the infrastructure's rank assignment,
 which is important for static deployments and proper resource allocation.
 
 .. note::
-   Hot spare/redundancy is **NOT supported** with ``use_infra_group_rank=True`` because dynamic 
+   Hot spare/redundancy is **NOT supported** with ``use_infra_group_rank=True`` because dynamic
    rendezvous cannot guarantee that lower infrastructure ranks will join as participants first.
 
 **Deterministic assignment (alternative):**
 
-Set ``--ft-use-infra-group-rank=False`` (or ``use_infra_group_rank: false`` in config) to use 
+Set ``--ft-use-infra-group-rank=False`` (or ``use_infra_group_rank: false`` in config) to use
 deterministic sorted assignment based on node descriptors. In this mode:
 
 * Previous rank assignments are preserved when possible
 * New workers fill gaps left by failed workers
 * Ranks are reassigned based on sorted node descriptors
-  
+
+
+NUMA binding
+^^^^^^^^^^^^
+
+The ``ft_launcher`` supports automatic NUMA node binding for workers through the ``NVRX_GPUS_PER_NUMA``
+environment variable. When set, the launcher automatically wraps each worker process with ``numactl``
+to bind it to the appropriate NUMA node based on its local rank.
+
+.. important::
+   **Prerequisites:** This feature requires the ``numactl`` command-line tool to be installed and
+   available in the system PATH. The launcher will fail to start workers if ``numactl`` is not found.
+
+   To install on common Linux distributions:
+
+   * **Ubuntu/Debian:** ``sudo apt-get install numactl``
+   * **RHEL/CentOS/Rocky:** ``sudo yum install numactl``
+
+**How it works:**
+
+* Set ``NVRX_GPUS_PER_NUMA`` to the number of GPUs per NUMA node on your system
+* The launcher calculates the NUMA node as: ``numa_node = local_rank // gpus_per_numa``
+* Each worker is automatically wrapped with: ``numactl --cpunodebind=<numa_node> --membind=<numa_node>``
+* This applies only to binary/script entrypoints (not Python function entrypoints)
+
+**Example usage:**
+
+.. code-block:: bash
+
+    # For a system with 4 GPUs per NUMA node (8 GPUs total, 2 NUMA nodes)
+    export NVRX_GPUS_PER_NUMA=4
+    ft_launcher --nproc-per-node=8 train.py
+
+    # In this configuration:
+    # - Ranks 0-3 will be bound to NUMA node 0
+    # - Ranks 4-7 will be bound to NUMA node 1
+
+**Benefits:**
+
+Proper NUMA binding can significantly improve performance by ensuring memory locality
+and reducing cross-NUMA memory access overhead, which is especially important for
+multi-GPU training workloads.
+
 
 Hang detection
 --------------
@@ -102,30 +144,30 @@ Users can choose the API that is best suited for their needs, or use both APIs a
 
 * Heartbeats API
 
-The training script periodically sends `heartbeats` to the monitor. 
+The training script periodically sends `heartbeats` to the monitor.
 If no heartbeat arrives in a defined time, the workload is considered hung.
-This API is the simplest to use but might require coarse timeouts 
-that need to cover a wide range of possible intervals between heartbeats. 
+This API is the simplest to use but might require coarse timeouts
+that need to cover a wide range of possible intervals between heartbeats.
 Please find more details in :doc:`integration/heartbeats`.
 
-* Sections API  
+* Sections API
 
-Some parts of the training scripts are wrapped in `sections`. 
+Some parts of the training scripts are wrapped in `sections`.
 If any section is opened for too long, the workload is considered hung.
-The sections-based API requires more changes in the user code, but timeouts 
-can be defined more precisely, and hangs can be detected quicker. 
+The sections-based API requires more changes in the user code, but timeouts
+can be defined more precisely, and hangs can be detected quicker.
 Please find more details in :doc:`integration/sections`.
 
 Workload control
 ----------------
-In some cases, it might be useful to control the ``ft_launcher`` behavior based on a rank state. 
-For example, if an irrecoverable error is encountered in a rank, it might be reasonable to break 
-the launcher restarting loop and exit instead of restarting; for other exception types, one might 
-want to exclude the current node from subsequent restart attempts. ``RankMonitorClient`` exposes the 
-:meth:`nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request` 
+In some cases, it might be useful to control the ``ft_launcher`` behavior based on a rank state.
+For example, if an irrecoverable error is encountered in a rank, it might be reasonable to break
+the launcher restarting loop and exit instead of restarting; for other exception types, one might
+want to exclude the current node from subsequent restart attempts. ``RankMonitorClient`` exposes the
+:meth:`nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request`
 API, which can be used to control the workload restarting logic implemented in the launcher.
 
 .. note::
-   Please note that only the ft_launcher behavior is affected by this call. 
-   The fault tolerance package is job scheduler-agnostic, 
+   Please note that only the ft_launcher behavior is affected by this call.
+   The fault tolerance package is job scheduler-agnostic,
    i.e., it does not control underlying SLURM job allocations.
