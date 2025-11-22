@@ -64,26 +64,6 @@ The restart behavior depends on the ``--ft-restart-policy`` parameter, which sup
   without restarting remaining workers, e.g., with the :doc:`../inprocess/index`.
   For details on how ``min-healthy`` policy interacts with :doc:`../inprocess/index` see :doc:`integration/inprocess`.
 
-GPU Memory Reclaim
-^^^^^^^^^^^^^^^^^^
-
-When ``--max-restarts`` is specified, ``ft_launcher`` can optionally wait for GPU memory to be
-released before starting new workers after a restart. This helps ensure that GPU memory from
-terminated workers has been fully reclaimed before starting new processes.
-
-This feature is controlled by two parameters:
-
-* ``--ft-gpu-memory-reclaim-timeout`` (default: 10.0 seconds)
-  Timeout for waiting for GPU memory to return to baseline levels. Set to 0 to disable the feature.
-
-* ``--ft-gpu-memory-tolerance-mb`` (default: 50.0 MB)
-  Tolerance for comparing current memory usage to baseline.
-
-The baseline GPU memory usage is captured during the initial start.
-On subsequent restarts, the launcher polls GPU memory every 500ms and waits until it returns to baseline
-(within tolerance) or the timeout is reached. If the timeout is reached, an error is logged but the
-restart proceeds as a best effort.
-
 Rank assignment
 ^^^^^^^^^^^^^^^
 
@@ -112,6 +92,7 @@ deterministic sorted assignment based on node descriptors. In this mode:
 * Previous rank assignments are preserved when possible
 * New workers fill gaps left by failed workers
 * Ranks are reassigned based on sorted node descriptors
+
 
 NUMA binding
 ^^^^^^^^^^^^
@@ -153,6 +134,7 @@ to bind it to the appropriate NUMA node based on its local rank.
 Proper NUMA binding can significantly improve performance by ensuring memory locality
 and reducing cross-NUMA memory access overhead, which is especially important for
 multi-GPU training workloads.
+
 
 Hang detection
 --------------
