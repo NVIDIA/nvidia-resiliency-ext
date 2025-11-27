@@ -69,6 +69,10 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
+from nvidia_resiliency_ext.fault_tolerance.error_classifier import (
+    check_error_file_for_non_retryable_exception,
+    load_non_retryable_exception_patterns,
+)
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     patched_method,
@@ -274,6 +278,13 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+
+        # Load non-retryable exception patterns once at initialization
+        self._non_retryable_patterns: Optional[List[str]] = None
+        if fault_tol_cfg and fault_tol_cfg.non_retryable_exception_file:
+            self._non_retryable_patterns = load_non_retryable_exception_patterns(
+                fault_tol_cfg.non_retryable_exception_file
+            )
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -796,6 +807,27 @@ class LocalElasticAgent(SimpleElasticAgent):
         if result:
 
             if result.is_failed():
+                # Check for non-retryable exceptions in the failed workers
+                has_non_retryable = self._check_for_non_retryable_exceptions(result.failures)
+
+                # If non-retryable exception found, increment unhealthy count and exit
+                if has_non_retryable:
+                    if hasattr(self._rdzv_handler, '_barrier_state'):
+                        # For barrier-based rendezvous, increment the unhealthy count
+                        self._rdzv_handler._barrier_state.store.add(
+                            self._rdzv_handler._barrier_state.unhealthy_count_key, 1
+                        )
+
+                    # Raise UnhealthyNodeException to exit this node's launcher immediately
+                    # This prevents wasting time retrying on faulty hardware
+                    # The exception will be caught and logged in launch_agent()
+                    msg = (
+                        "Non-retryable exception detected in worker process. "
+                        "This node has a permanent failure (e.g., hardware error) and cannot continue training. "
+                        "Node marked as unhealthy and will exit. Other nodes can continue without this node."
+                    )
+                    raise UnhealthyNodeException(msg)
+
                 # map local rank failure to global rank
                 worker_failures = {}
                 for local_rank, failure in result.failures.items():
@@ -840,6 +872,34 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._pcontext is not None:
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
+
+    def _check_for_non_retryable_exceptions(self, failures: Dict[int, Any]) -> bool:
+        """Check if any of the worker failures were caused by non-retryable exceptions.
+
+        Args:
+            failures: Dictionary mapping local_rank to ProcessFailure objects
+
+        Returns:
+            True if any non-retryable exception was found, False otherwise
+        """
+        # Check if non-retryable exception patterns were loaded
+        if not self._non_retryable_patterns:
+            return False
+
+        # Check each failure's error file against the patterns
+        found_non_retryable = False
+        for local_rank, failure in failures.items():
+            # ProcessFailure.error_file may be "<N/A>" if the file doesn't exist
+            if os.path.exists(failure.error_file):
+                if check_error_file_for_non_retryable_exception(failure.error_file, self._non_retryable_patterns):
+                    logger.error(
+                        f"Non-retryable exception detected in worker rank {local_rank}. "
+                        f"Error file: {failure.error_file}"
+                    )
+                    found_non_retryable = True
+                    # Continue checking other failures to log all non-retryable exceptions
+
+        return found_non_retryable
 
     def _check_cluster_unhealthy_count(self) -> int:
         """Check the cluster-wide unhealthy count from the rendezvous store.
@@ -1915,6 +1975,17 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_restart_check_interval",
         help="Part of Fault Tolerance pkg config (restart_check_interval). Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-non-retryable-exception-file",
+        "--ft-non_retryable_exception_file",
+        type=str,
+        default=None,
+        dest="ft_non_retryable_exception_file",
+        help="Part of Fault Tolerance pkg config (non_retryable_exception_file). "
+        "Path to a file containing exception patterns (one per line) that indicate non-retryable errors. "
+        "If a worker fails with an exception matching any pattern, the node is marked unhealthy and not retried.",
     )
 
     parser.add_argument(
