@@ -61,6 +61,14 @@ class FaultToleranceConfig:
       Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
       rank assignments are ignored to ensure consistency with infrastructure's rank assignment.
       Note: Hot spare/redundancy is NOT supported with this setting. Default: True.
+    * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed
+      after worker shutdown before starting new workers. Default: 50.0.
+    * `gpu_memory_tolerance_mb` [float] maximum allowed GPU memory usage (in MB) when checking if
+      memory has been reclaimed. Default: 512.0.
+    * `gpu_memory_poll_interval` [float] poll interval (in seconds) for checking GPU memory during
+      reclaim process. Default: 2.0.
+    * `check_remaining_processes` [bool] if True, check for and log any remaining worker processes
+      after termination. Useful for debugging process cleanup issues. Default: False.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -81,6 +89,10 @@ class FaultToleranceConfig:
     link_down_path_template: Optional[str] = None
     skip_section_response: bool = True
     use_infra_group_rank: bool = True
+    gpu_memory_reclaim_timeout: float = 50.0
+    gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
+    gpu_memory_poll_interval: float = 2.0  # Poll interval for GPU memory check (in seconds)
+    check_remaining_processes: bool = False
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
@@ -210,6 +222,9 @@ class FaultToleranceConfig:
             'node_health_check_interval',
             'safety_factor',
             'restart_check_interval',
+            'gpu_memory_reclaim_timeout',
+            'gpu_memory_tolerance_mb',
+            'gpu_memory_poll_interval',
         ]
         for field in fields(FaultToleranceConfig):
             cli_field_name = f"ft_{field.name}"
