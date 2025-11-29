@@ -310,6 +310,7 @@ class _RendezvousBarrierState:
         self.ack_count_key = f"{self.prefix}:ack_count"
         self.closed_key = f"{self.prefix}:closed"
         self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
+        self.peer_aborted_count_key = f"{self.prefix}:peer_aborted_count"
 
         # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist
         # This key is always present and serves as the open/close indicator:
@@ -487,6 +488,34 @@ class _RendezvousBarrierState:
 
         unhealthy_count_bytes = self.store.get(self.unhealthy_count_key)
         return int(unhealthy_count_bytes.decode('utf-8'))
+
+    def _increment_peer_aborted_count(self) -> int:
+        """Increment the peer aborted count to signal a restart.
+
+        This is called by a launcher when it detects local worker failure and decides
+        to restart, notifying other healthy nodes to restart as well for faster
+        failure propagation.
+
+        Returns:
+            The new peer aborted count after incrementing
+        """
+        new_count = self.store.add(self.peer_aborted_count_key, 1)
+        return new_count
+
+    def _get_peer_aborted_count(self) -> int:
+        """Get the current peer aborted count.
+
+        This count tracks how many peers have detected local worker failures and
+        decided to restart, enabling faster failure propagation across the cluster.
+
+        Returns:
+            The number of peers that have aborted so far, or 0 if the key doesn't exist
+        """
+        if not self.store.check([self.peer_aborted_count_key]):
+            return 0
+
+        peer_aborted_count_bytes = self.store.get(self.peer_aborted_count_key)
+        return int(peer_aborted_count_bytes.decode('utf-8'))
 
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
         """Check for early closure and timeout, raising appropriate exceptions if detected.
@@ -858,6 +887,10 @@ class _RendezvousBarrierState:
         Note: We do NOT clear last_participant_arrived_key because it serves as the
         open/close indicator for the rendezvous. It remains set to 1 (closed) during
         training and is reset to 0 (open) by the launcher when a failure is detected.
+
+        This method is called by the last participant to acknowledge in Step 3b, BEFORE
+        rank assignment. This ensures all participants are still waiting and cannot
+        start the next cycle yet, making it safe to clear the global counters.
         """
         # Clear main keys - individual arrived_<count> keys don't need clearing
         # DO NOT clear last_participant_arrived_key - it indicates open/close state
@@ -865,6 +898,7 @@ class _RendezvousBarrierState:
             self.arrived_count_key,
             self.ack_count_key,
             self.unhealthy_count_key,  # Clear unhealthy counter for next round
+            self.peer_aborted_count_key,  # Clear peer aborted counter for next round
         ]
 
         # Delete main keys
