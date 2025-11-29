@@ -385,6 +385,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                         spec.max_restarts,
                     )
                     self._remaining_restarts -= 1
+                    # Increment peer_aborted_count to notify other nodes (for barrier-based rendezvous)
+                    if hasattr(self._rdzv_handler, '_barrier_state'):
+                        self._rdzv_handler._barrier_state._increment_peer_aborted_count()
                     # Open rendezvous before restarting (for barrier-based rendezvous)
                     self._open_rendezvous_for_restart()
                     self._restart_workers(self._worker_group)
@@ -397,12 +400,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                     run_result = self._monitor_workers(self._worker_group)
                     return run_result
             elif state == WorkerState.HEALTHY:
-                # Check for cluster-wide issues: unhealthy nodes or new nodes waiting
+                # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
                 unhealthy_count = self._check_cluster_unhealthy_count()
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
+                peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
 
-                if unhealthy_count > 0 or num_nodes_waiting > 0:
+                if unhealthy_count > 0 or num_nodes_waiting > 0 or peer_aborted_count > 0:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -413,11 +417,12 @@ class LocalElasticAgent(SimpleElasticAgent):
                     if self._remaining_restarts > 0:
                         logger.info(
                             "[%s] Detected cluster changes from group_rank=%s "
-                            "(unhealthy_nodes=%s, nodes_waiting=%s); will restart worker group",
+                            "(unhealthy_nodes=%s, nodes_waiting=%s, peer_aborted=%s); will restart worker group",
                             role,
                             group_rank,
                             unhealthy_count,
                             num_nodes_waiting,
+                            peer_aborted_count,
                         )
                         self._remaining_restarts -= 1
                         # Note: The node that triggered the change (unhealthy or new) already opened
@@ -803,6 +808,27 @@ class LocalElasticAgent(SimpleElasticAgent):
         Args:
             num_gpus: Number of GPUs on this node
         """
+        def log_memory_stats(memory_stats, num_gpus, log_func, message_template, *args):
+            """Helper to log GPU memory statistics."""
+            for device_idx in range(num_gpus):
+                if memory_stats[device_idx]:
+                    # Show the first sample and the last 10 samples
+                    if len(memory_stats[device_idx]) > 11:
+                        samples_to_show = [memory_stats[device_idx][0]] + memory_stats[device_idx][-10:]
+                    else:
+                        samples_to_show = memory_stats[device_idx]
+                    samples_str = ", ".join([
+                        f"{int(s['used_mb'])}MB@{int(s['timestamp'])}s"
+                        for s in samples_to_show
+                    ])
+                    log_func(
+                        message_template,
+                        device_idx,
+                        *args,
+                        len(memory_stats[device_idx]),
+                        samples_str,
+                    )
+
         memory_logger = GPUMemoryLogger()
         timeout = self._ft_cfg.gpu_memory_reclaim_timeout
         tolerance_mb = self._ft_cfg.gpu_memory_tolerance_mb
@@ -836,22 +862,13 @@ class LocalElasticAgent(SimpleElasticAgent):
 
             if all_devices_ok:
                 elapsed_time = time.time() - start_time
-                # Log memory stats per GPU - all info in one line per GPU
-                for device_idx in range(num_gpus):
-                    if memory_stats[device_idx]:
-                        # Show only the last 10 samples if we have more than 10
-                        samples_to_show = memory_stats[device_idx][-10:]
-                        samples_str = ", ".join([
-                            f"{int(s['used_mb'])}MB@{int(s['timestamp'])}s"
-                            for s in samples_to_show
-                        ])
-                        logger.info(
-                            "GPU %d memory reclaimed in %ds (%d samples): %s",
-                            device_idx,
-                            int(elapsed_time),
-                            len(memory_stats[device_idx]),
-                            samples_str,
-                        )
+                log_memory_stats(
+                    memory_stats,
+                    num_gpus,
+                    logger.info,
+                    "GPU %d memory reclaimed in %ds (%d samples): %s",
+                    int(elapsed_time),
+                )
                 return
 
             time.sleep(poll_interval)
@@ -862,20 +879,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             "Memory may not have been fully cleaned up. Proceeding anyway as best effort.",
             timeout,
         )
-        for device_idx in range(num_gpus):
-            if memory_stats[device_idx]:
-                # Show only the last 10 samples if we have more than 10
-                samples_to_show = memory_stats[device_idx][-10:]
-                samples_str = ", ".join([
-                    f"{int(s['used_mb'])}MB@{int(s['timestamp'])}s"
-                    for s in samples_to_show
-                ])
-                logger.warning(
-                    "GPU %d memory usage history (%d samples): %s",
-                    device_idx,
-                    len(memory_stats[device_idx]),
-                    samples_str,
-                )
+        log_memory_stats(
+            memory_stats,
+            num_gpus,
+            logger.warning,
+            "GPU %d memory usage history (%d samples): %s",
+        )
 
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
@@ -971,6 +980,24 @@ class LocalElasticAgent(SimpleElasticAgent):
             return self._rdzv_handler._barrier_state._get_unhealthy_count()
 
         # Legacy rendezvous does not support unhealthy tracking
+        return 0
+
+    def _check_cluster_peer_aborted_count(self) -> int:
+        """Check the cluster-wide peer aborted count from the rendezvous store.
+
+        This tracks how many peers have detected local failures and decided to restart,
+        enabling faster failure propagation across the cluster.
+
+        Only supported for barrier-based rendezvous. Returns 0 for legacy rendezvous.
+
+        Returns:
+            The number of peers that have aborted in this cycle, or 0 if not available.
+        """
+        # Only barrier-based rendezvous supports peer_aborted_count
+        if hasattr(self._rdzv_handler, '_barrier_state'):
+            return self._rdzv_handler._barrier_state._get_peer_aborted_count()
+
+        # Legacy rendezvous does not support peer aborted tracking
         return 0
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
@@ -1133,6 +1160,7 @@ def _get_entrypoint_name(entrypoint: Union[Callable, str, None], args: List[Any]
 def _get_addr_and_port(
     rdzv_parameters: RendezvousParameters,
 ) -> Tuple[Optional[str], Optional[int]]:
+
     if rdzv_parameters.backend != "static":
         return (None, None)
     endpoint = rdzv_parameters.endpoint
@@ -2111,12 +2139,6 @@ def get_args_parser() -> ArgumentParser:
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
         "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
-    )
-
-    parser.add_argument(
-        "--ft-enable-gpu-memory-check",
-        "--ft-enable_gpu_memory_check",
-        type=lambda x: str(x).lower() in ["true", "1", "yes"],
     )
 
     parser.add_argument(
