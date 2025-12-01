@@ -340,6 +340,46 @@ class LocalElasticAgent(SimpleElasticAgent):
                 logger.error(f"Failed to open rendezvous: {e}")
         # For legacy rendezvous, no action needed - it uses different mechanism
 
+    def _handle_restart_decision(
+        self,
+        role: str,
+        spec: WorkerSpec,
+        log_msg: str,
+        open_rendezvous: bool = False,
+    ) -> bool:
+        """Handle restart decision logic based on progress tracking and remaining restarts.
+
+        Args:
+            role: The role name for logging
+            spec: Worker specification
+            log_msg: Custom log message for restart
+            open_rendezvous: Whether to open rendezvous before restart (for barrier-based rendezvous)
+
+        Returns:
+            True if restart was initiated (caller should continue monitoring loop)
+            False if no restart (caller should stop workers and return failure)
+        """
+        self._progress_tracker.analyze_previous_cycle()
+        should_terminate_early = self._progress_tracker.should_terminate_early()
+
+        if should_terminate_early:
+            logger.error(
+                "[%s] Progress tracker detected no progress across restarts. "
+                "No more restarts will be attempted.",
+                role
+            )
+            return False
+        elif self._remaining_restarts > 0:
+            logger.info(log_msg, role)
+            self._remaining_restarts -= 1
+            if open_rendezvous:
+                self._open_rendezvous_for_restart()
+            self._restart_workers(self._worker_group)
+            return True
+        else:
+            # No more restarts available
+            return False
+
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         if self._restart_policy == 'any-failed':
             return self._invoke_run_with_any_failed_policy(role)
@@ -390,36 +430,22 @@ class LocalElasticAgent(SimpleElasticAgent):
                     rank=self._worker_group.group_rank,
                 )
 
-                self._progress_tracker.analyze_previous_cycle()
-                should_terminate_early = self._progress_tracker.should_terminate_early()
+                log_msg = (
+                    f"[%s] Worker group {state.name}. "
+                    f"{self._remaining_restarts}/{spec.max_restarts} attempts left; "
+                    f"will restart worker group"
+                )
+                should_restart = self._handle_restart_decision(
+                    role, spec, log_msg, open_rendezvous=True
+                )
 
-                if should_terminate_early:
-                    logger.error(
-                        "[%s] Progress tracker detected no progress across restarts. "
-                        "No more restarts will be attempted.",
-                        role
-                    )
-                elif self._remaining_restarts > 0:
-                    logger.info(
-                        "[%s] Worker group %s. "
-                        "%s/%s attempts left;"
-                        " will restart worker group",
-                        role,
-                        state.name,
-                        self._remaining_restarts,
-                        spec.max_restarts,
-                    )
-                    self._remaining_restarts -= 1
-                    # Open rendezvous before restarting (for barrier-based rendezvous)
-                    self._open_rendezvous_for_restart()
-                    self._restart_workers(self._worker_group)
+                if should_restart:
                     continue  # Continue monitoring after restart
 
                 # No more restarts (either exhausted or early termination)
                 self._stop_workers(self._worker_group)
                 self._worker_group.state = WorkerState.FAILED
-                run_result = self._monitor_workers(self._worker_group)
-                return run_result
+                return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
                 # Check for cluster-wide issues: unhealthy nodes or new nodes waiting
                 unhealthy_count = self._check_cluster_unhealthy_count()
@@ -434,21 +460,20 @@ class LocalElasticAgent(SimpleElasticAgent):
                         rank=self._worker_group.group_rank,
                     )
 
-                    if self._remaining_restarts > 0:
-                        logger.info(
-                            "[%s] Detected cluster changes from group_rank=%s "
-                            "(unhealthy_nodes=%s, nodes_waiting=%s); will restart worker group",
-                            role,
-                            group_rank,
-                            unhealthy_count,
-                            num_nodes_waiting,
-                        )
-                        self._remaining_restarts -= 1
-                        # Note: The node that triggered the change (unhealthy or new) already opened
-                        # the rendezvous, so we don't need to open it again here.
-                        self._restart_workers(self._worker_group)
-                    else:
+                    log_msg = (
+                        f"[%s] Detected cluster changes from group_rank={group_rank} "
+                        f"(unhealthy_nodes={unhealthy_count}, nodes_waiting={num_nodes_waiting}); "
+                        f"will restart worker group"
+                    )
+                    # Note: The node that triggered the change (unhealthy or new) already opened
+                    # the rendezvous, so we don't need to open it again here.
+                    should_restart = self._handle_restart_decision(
+                        role, spec, log_msg, open_rendezvous=False
+                    )
+
+                    if not should_restart:
                         self._stop_workers(self._worker_group)
+                        self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
