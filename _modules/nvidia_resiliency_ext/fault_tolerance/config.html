@@ -142,6 +142,14 @@
 <span class="sd">      Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous</span>
 <span class="sd">      rank assignments are ignored to ensure consistency with infrastructure&#39;s rank assignment.</span>
 <span class="sd">      Note: Hot spare/redundancy is NOT supported with this setting. Default: True.</span>
+<span class="sd">    * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed</span>
+<span class="sd">      after worker shutdown before starting new workers. Default: 50.0.</span>
+<span class="sd">    * `gpu_memory_tolerance_mb` [float] maximum allowed GPU memory usage (in MB) when checking if</span>
+<span class="sd">      memory has been reclaimed. Default: 512.0.</span>
+<span class="sd">    * `gpu_memory_poll_interval` [float] poll interval (in seconds) for checking GPU memory during</span>
+<span class="sd">      reclaim process. Default: 2.0.</span>
+<span class="sd">    * `check_remaining_processes` [bool] if True, check for and log any remaining worker processes</span>
+<span class="sd">      after termination. Useful for debugging process cleanup issues. Default: False.</span>
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
@@ -162,6 +170,10 @@
     <span class="n">link_down_path_template</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">skip_section_response</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="n">use_infra_group_rank</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">gpu_memory_reclaim_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">50.0</span>
+    <span class="n">gpu_memory_tolerance_mb</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">512.0</span>  <span class="c1"># Maximum allowed GPU memory usage (in MB)</span>
+    <span class="n">gpu_memory_poll_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.0</span>  <span class="c1"># Poll interval for GPU memory check (in seconds)</span>
+    <span class="n">check_remaining_processes</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 
 <div class="viewcode-block" id="FaultToleranceConfig.from_kwargs">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs">[docs]</a>
@@ -299,6 +311,9 @@
             <span class="s1">&#39;node_health_check_interval&#39;</span><span class="p">,</span>
             <span class="s1">&#39;safety_factor&#39;</span><span class="p">,</span>
             <span class="s1">&#39;restart_check_interval&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;gpu_memory_reclaim_timeout&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;gpu_memory_tolerance_mb&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;gpu_memory_poll_interval&#39;</span><span class="p">,</span>
         <span class="p">]</span>
         <span class="k">for</span> <span class="n">field</span> <span class="ow">in</span> <span class="n">fields</span><span class="p">(</span><span class="n">FaultToleranceConfig</span><span class="p">):</span>
             <span class="n">cli_field_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;ft_</span><span class="si">{</span><span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span>

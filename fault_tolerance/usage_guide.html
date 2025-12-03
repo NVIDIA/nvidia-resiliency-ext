@@ -158,6 +158,25 @@ falls below the minimum specified in <code class="docutils literal notranslate">
 without restarting remaining workers, e.g., with the <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a>.
 For details on how <code class="docutils literal notranslate"><span class="pre">min-healthy</span></code> policy interacts with <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a> see <a class="reference internal" href="integration/inprocess.html"><span class="doc">FT Launcher &amp; Inprocess integration</span></a>.</p></li>
 </ul>
+<section id="gpu-memory-reclaim">
+<h4>GPU Memory Reclaim<a class="headerlink" href="#gpu-memory-reclaim" title="Link to this heading"></a></h4>
+<p>When <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can optionally wait for GPU memory to be
+released before starting new workers after a restart. This helps ensure that GPU memory from
+terminated workers has been fully reclaimed before starting new processes.</p>
+<p>This feature is controlled by three parameters:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-reclaim-timeout</span></code> (default: 50.0 seconds)
+Timeout for waiting for GPU memory to drop below the tolerance threshold. Set to 0 to disable the feature.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-tolerance-mb</span></code> (default: 512.0 MB)
+Maximum allowed GPU memory usage. The launcher waits until GPU memory drops below this threshold.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-poll-interval</span></code> (default: 2.0 seconds)
+Poll interval for checking GPU memory usage during the reclaim process.</p></li>
+</ul>
+<p>On restarts, the launcher periodically checks GPU memory usage and waits until it drops below
+the tolerance threshold or the timeout is reached. Memory statistics for each GPU are collected
+and logged after the reclaim process completes. If the timeout is reached, an error is logged but the
+restart proceeds as a best effort.</p>
+</section>
 <section id="rank-assignment">
 <h4>Rank assignment<a class="headerlink" href="#rank-assignment" title="Link to this heading"></a></h4>
 <p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> assigns ranks to workers during the rendezvous process.</p>
