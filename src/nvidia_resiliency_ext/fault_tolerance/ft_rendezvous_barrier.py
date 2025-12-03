@@ -17,6 +17,7 @@ import os
 import socket
 import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -85,7 +86,7 @@ class RendezvousTimeout:
 
     _DEFAULT_TIMEOUTS = {
         "join": timedelta(seconds=600),
-        "last_call": timedelta(seconds=30),
+        "last_call": timedelta(seconds=10),
         "close": timedelta(seconds=30),
         "heartbeat": timedelta(seconds=5),
     }
@@ -156,6 +157,12 @@ class RendezvousSettings:
             Whether to use infrastructure group rank for rank assignment instead of
             arrival-based assignment. If True, ranks are read from SLURM_PROCID (in SLURM
             environments) or GROUP_RANK (set by launcher) environment variables.
+        domain_id_from_node_name:
+            Whether to parse domain ID from node name for segment-aware rank assignment.
+        domain_id_prefix:
+            Prefix to strip from domain_id to extract domain number.
+        segment:
+            Number of nodes to select from each domain. None disables segment awareness.
     """
 
     run_id: str
@@ -165,6 +172,9 @@ class RendezvousSettings:
     keep_alive_interval: timedelta
     keep_alive_max_attempt: int
     use_infra_group_rank: bool = True
+    domain_id_from_node_name: bool = True
+    domain_id_prefix: str = "nvl72"
+    segment: Optional[int] = None
 
 
 @dataclass(eq=True, order=True, frozen=True)
@@ -260,6 +270,47 @@ class RendezvousParticipantInfo:
             raise ValueError(f"Invalid participant info data: {e}")
 
 
+def _parse_domain_number_from_node_name(node_name: str, domain_id_prefix: str) -> Optional[int]:
+    """Parse domain number from node name by extracting domain_id and removing prefix.
+
+    Expected format: <domain_id>-<node_id> where domain_id = <prefix><domain_number>
+    Example: "nvl72144-T01" with prefix "nvl72" -> domain_id="nvl72144", domain_number=144
+
+    Args:
+        node_name: The node name to parse
+        domain_id_prefix: The prefix to strip from domain_id to get domain_number
+
+    Returns:
+        The domain number if found and parsed successfully, None otherwise
+    """
+    # Extract domain_id (part before the first hyphen)
+    parts = node_name.split('-', 1)
+    if not parts:
+        return None
+
+    domain_id = parts[0]
+
+    # Remove prefix to get domain_number
+    if not domain_id.startswith(domain_id_prefix):
+        log.warning(
+            f"Node name '{node_name}' has domain_id '{domain_id}' that doesn't start "
+            f"with expected prefix '{domain_id_prefix}'"
+        )
+        return None
+
+    domain_number_str = domain_id[len(domain_id_prefix) :]
+
+    # Parse domain_number as integer
+    try:
+        return int(domain_number_str)
+    except ValueError:
+        log.warning(
+            f"Failed to parse domain number from node name '{node_name}': "
+            f"domain_id='{domain_id}', after removing prefix '{domain_id_prefix}' got '{domain_number_str}'"
+        )
+        return None
+
+
 class _RendezvousBarrierState:
     """Hold the state of a rendezvous barrier.
 
@@ -293,15 +344,24 @@ class _RendezvousBarrierState:
         is_store_host: bool = False,
         join_timeout_seconds: float = 600.0,
         use_infra_group_rank: bool = True,
+        domain_id_from_node_name: bool = True,
+        domain_id_prefix: str = "nvl72",
+        segment: Optional[int] = None,
     ):
         self.store = store
         self.run_id = run_id
         self.is_store_host = is_store_host
         self.join_timeout_seconds = join_timeout_seconds
         self.use_infra_group_rank = use_infra_group_rank
+        self.domain_id_from_node_name = domain_id_from_node_name
+        self.domain_id_prefix = domain_id_prefix
+        self.segment = segment
         self._rendezvous_start_time = None
         self._prev_participants = {}  # Store previous round's participants and their ranks
         self._attempted_open = False  # Track if this node tried to open rendezvous
+
+        # Cache for node_name -> domain_number lookups to avoid repeated parsing
+        self._node_domain_cache: Dict[str, Optional[int]] = {}
 
         # Key prefixes for the barrier
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
@@ -317,6 +377,22 @@ class _RendezvousBarrierState:
         #   1 = rendezvous is CLOSED (training in progress, hot spares should wait)
         if not self.store.check([self.last_participant_arrived_key]):
             self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
+
+    def _get_domain_number(self, node_name: str) -> Optional[int]:
+        """Get domain number for a node name using cache.
+
+        Args:
+            node_name: The node name to parse
+
+        Returns:
+            The domain number if found and parsed successfully, None otherwise
+        """
+        if node_name not in self._node_domain_cache:
+            # Parse and cache the result
+            self._node_domain_cache[node_name] = _parse_domain_number_from_node_name(
+                node_name, self.domain_id_prefix
+            )
+        return self._node_domain_cache[node_name]
 
     def _assign_group_ranks(
         self,
@@ -350,7 +426,7 @@ class _RendezvousBarrierState:
 
         # Pass 1: Try to preserve previous ranks for active participants (first min_nodes)
         free_ranks = set(range(active_count))
-        for idx, (node_desc, _) in enumerate(sorted_participants):
+        for idx, (node_desc, _, _) in enumerate(sorted_participants):
             if idx < active_count:
                 # Active participant - try to reuse previous rank
                 prev_rank = prev_participants.get(node_desc, -1)
@@ -366,7 +442,7 @@ class _RendezvousBarrierState:
         # Pass 2: Assign free ranks to unassigned active participants
         if free_ranks:
             free_ranks = sorted(free_ranks)
-            for idx, (node_desc, _) in enumerate(sorted_participants[:active_count]):
+            for idx, (node_desc, _, _) in enumerate(sorted_participants[:active_count]):
                 if result[node_desc] == -1:
                     result[node_desc] = free_ranks.pop(0)
 
@@ -385,44 +461,60 @@ class _RendezvousBarrierState:
     ) -> Dict[_NodeDesc, int]:
         """Assign group ranks using infrastructure ranks with hardware failure resilience.
 
-        Core principle: group_rank = infra_rank (strict deterministic mapping)
-        Exception: Fill gaps in [0, min_nodes) caused by HW failures using spare nodes
+        Core principle: Select participants in SLURM topology order, assign contiguous ranks [0..min_nodes)
 
-        Example with HW failure:
-            min_nodes=5, arrivals: infra_ranks [0, 1, 3, 4, 10, 11]  (rank 2 missing due to HW failure)
-            - Node(infra=0) → group_rank=0  (direct mapping, primary active)
-            - Node(infra=1) → group_rank=1  (direct mapping, primary active)
-            - Node(infra=3) → group_rank=3  (direct mapping, primary active)
-            - Node(infra=4) → group_rank=4  (direct mapping, primary active)
-            - Node(infra=10) → group_rank=2 (promoted to fill gap at rank 2)
-            - Node(infra=11) → group_rank=11 (direct mapping, unpromoted spare)
+        With segment awareness enabled (segment is not None):
+        - segment is a MINIMUM threshold: domains must have >= segment nodes to be valid
+        - From each domain, as many COMPLETE segments as possible are selected
+        - Domains are selected in SLURM topology order
+        - Exactly min_nodes participants are selected (min_nodes must be divisible by segment)
+
+        Default behavior (segment is None):
+        - Select first min_nodes participants in SLURM topology order
+
+        Both configurations produce contiguous group ranks [0, 1, 2, ..., min_nodes-1] following
+        SLURM topology order.
+
+        Example (no segment awareness):
+            min_nodes=5, arrivals: infra_ranks [0, 1, 3, 4, 10, 11]
+            Active participants (first 5 in SLURM order):
+            - Node(infra=0) → group_rank=0
+            - Node(infra=1) → group_rank=1
+            - Node(infra=3) → group_rank=2  (reassigned from 3 to 2)
+            - Node(infra=4) → group_rank=3  (reassigned from 4 to 3)
+            - Node(infra=10) → group_rank=4 (reassigned from 10 to 4)
+            Standby participants:
+            - Node(infra=11) → group_rank=5 (standby)
 
         Args:
             participants: List of (node_desc, infra_rank) tuples
-            min_nodes: Minimum number of active nodes
+            min_nodes: Target number of active nodes
 
         Returns:
             Dictionary of node_desc -> assigned_group_rank
 
         Raises:
-            RuntimeError: If insufficient spare nodes to fill gaps in [0, min_nodes)
-            ValueError: If duplicate infra_ranks detected
+            RuntimeError: If insufficient nodes available
+            ValueError: If duplicate infra_ranks detected or min_nodes not divisible by segment
         """
-        result = {}
-        infra_ranks_seen = set()
-        gaps = set(range(min_nodes))  # Start with all primary ranks as potential gaps
-        spare_nodes = []  # Collect spare nodes during iteration
+        # Step 1: Sort by infra_rank to get SLURM topology order - O(N log N)
+        sorted_participants = sorted(participants, key=lambda x: x[1])
 
-        # Single pass: Assign ranks, detect duplicates, collect spares, build gaps
-        for node_desc, infra_rank in participants:
-            # Validate infrastructure rank
-            if infra_rank < 0:
-                raise ValueError(
-                    f"Invalid infrastructure rank {infra_rank} for participant {node_desc}. "
-                    f"Expected non-negative integer from SLURM_PROCID or GROUP_RANK."
+        # Step 2: Select participants based on configuration
+        if self.segment is not None and self.domain_id_from_node_name:
+            # Segment-aware: filter by domain constraints
+            selected_participants = self._select_by_domain(sorted_participants, min_nodes)
+        else:
+            # Default: take first min_nodes in SLURM order
+            if len(sorted_participants) < min_nodes:
+                raise RuntimeError(
+                    f"Insufficient participants: have {len(sorted_participants)}, need {min_nodes}"
                 )
+            selected_participants = sorted_participants[:min_nodes]
 
-            # Check for duplicate infra_ranks (deployment error)
+        # Step 3: Check for duplicate infra_ranks
+        infra_ranks_seen = set()
+        for node_desc, infra_rank in selected_participants:
             if infra_rank in infra_ranks_seen:
                 raise RuntimeError(
                     f"Duplicate infrastructure rank {infra_rank} detected. "
@@ -431,48 +523,172 @@ class _RendezvousBarrierState:
                 )
             infra_ranks_seen.add(infra_rank)
 
-            # Default assignment: group_rank = infra_rank (direct mapping)
-            result[node_desc] = infra_rank
+        # Step 4: Assign contiguous group ranks [0..min_nodes) to active participants - O(N)
+        result = {}
+        selected_node_descs = set()
+        for new_rank, (node_desc, original_infra_rank) in enumerate(selected_participants):
+            result[node_desc] = new_rank
+            selected_node_descs.add(node_desc)
+            log.debug(
+                f"Rank assignment: {node_desc.addr} "
+                f"(orig_infra={original_infra_rank}) -> group_rank={new_rank} (active)"
+            )
 
-            if infra_rank < min_nodes:
-                gaps.discard(infra_rank)  # Remove from gaps as we see primary ranks
-            else:
-                spare_nodes.append((node_desc, infra_rank))
+        # Step 5: Assign standby ranks to unselected participants
+        standby_rank = min_nodes
+        for node_desc, infra_rank in sorted_participants:
+            if node_desc not in selected_node_descs:
+                result[node_desc] = standby_rank
+                log.debug(
+                    f"Rank assignment: {node_desc.addr} "
+                    f"(orig_infra={infra_rank}) -> group_rank={standby_rank} (standby)"
+                )
+                standby_rank += 1
 
-        # Log summary instead of per-participant logs to avoid spam with large participant counts
-        primary_count = min_nodes - len(gaps)
-        log.debug(
-            f"Assigned group_ranks using infra_rank: "
-            f"{primary_count} primary active, {len(spare_nodes)} spare, {len(gaps)} gaps"
+        log.info(
+            f"Assigned {len(selected_participants)} active ranks [0..{min_nodes-1}] "
+            f"and {len(result) - len(selected_participants)} standby ranks [{min_nodes}..{len(result)-1}] "
+            f"following SLURM topology order"
         )
 
-        # Handle spare nodes: fill gaps (if any) and ensure contiguous group_rank assignment
-        if spare_nodes:
-            # Sort spare nodes by infra_rank for deterministic promotion
-            spare_nodes.sort(key=lambda x: x[1])
+        return result
 
-            # Sort gaps for deterministic processing
-            gaps = sorted(gaps)
+    def _select_by_domain(
+        self,
+        sorted_participants: List[Tuple[_NodeDesc, int]],
+        min_nodes: int,
+    ) -> List[Tuple[_NodeDesc, int]]:
+        """Select participants based on domain constraints.
 
-            if gaps:
-                # Defensive check: This should never happen because rendezvous guarantees
-                # total_participants >= min_nodes, which means spare_nodes >= gaps
-                # Proof: P + S >= min_nodes => S >= min_nodes - P => S >= gaps
-                assert len(gaps) <= len(spare_nodes), (
-                    f"INTERNAL ERROR: Insufficient spare nodes to fill gaps. "
-                    f"gaps={len(gaps)} at ranks {gaps}, spare_nodes={len(spare_nodes)}. "
-                    f"This should never happen if rendezvous guarantees total_participants >= min_nodes."
+        Assumes participants are already sorted by infra_rank (SLURM topology order).
+        Does NOT reassign ranks - only filters and selects based on domain constraints.
+
+        Rules:
+        - segment is MINIMUM threshold: domains must have >= segment nodes to be valid
+        - From each domain, select as many COMPLETE segments as possible
+          (e.g., domain with 12 nodes and segment=4 → use 12 nodes = 3 segments)
+          (e.g., domain with 10 nodes and segment=4 → use 8 nodes = 2 segments)
+        - Select exactly min_nodes total (min_nodes must be divisible by segment)
+        - Domains are selected in SLURM topology order (by first node's position)
+
+        Args:
+            sorted_participants: List of (node_desc, infra_rank) tuples, pre-sorted by infra_rank
+            min_nodes: Target number of nodes (must be divisible by segment)
+
+        Returns:
+            Selected list of (node_desc, infra_rank) tuples in SLURM topology order
+
+        Raises:
+            ValueError: If min_nodes is not divisible by segment
+            RuntimeError: If insufficient nodes available
+        """
+        # Validate that min_nodes is divisible by segment
+        if min_nodes % self.segment != 0:
+            raise ValueError(
+                f"min_nodes ({min_nodes}) must be divisible by segment ({self.segment}). "
+                f"Expected min_nodes to be a multiple of segment size."
+            )
+
+        # Participants are already sorted by infra_rank (SLURM topology order)
+        # Step 1: Group by domain - O(N)
+        domain_to_participants: Dict[int, List[Tuple[_NodeDesc, int]]] = defaultdict(list)
+        nodes_without_domain = []
+
+        for node_desc, infra_rank in sorted_participants:
+            domain_num = self._get_domain_number(node_desc.addr)
+            if domain_num is None:
+                nodes_without_domain.append((node_desc, infra_rank))
+            else:
+                domain_to_participants[domain_num].append((node_desc, infra_rank))
+
+        if nodes_without_domain:
+            log.warning(f"Found {len(nodes_without_domain)} nodes without valid domain numbers")
+
+        # Step 2: Classify valid domains and calculate usable segments - O(# domains)
+        valid_domains_info = []  # List of (domain_num, usable_nodes, first_infra_rank)
+
+        for domain_num, domain_participants in domain_to_participants.items():
+            domain_size = len(domain_participants)
+
+            if domain_size < self.segment:
+                log.warning(
+                    f"Excluding domain {domain_num}: {domain_size} nodes < segment {self.segment}"
                 )
+                continue
 
-                # Promote spare nodes to fill gaps
-                for gap_rank, (node_desc, original_infra_rank) in zip(gaps, spare_nodes):
-                    result[node_desc] = gap_rank
-                    log.warning(
-                        f"PROMOTED spare node {node_desc} (infra_rank={original_infra_rank}) to "
-                        f"group_rank={gap_rank} to fill gap caused by hardware failure"
-                    )
-                # Note: Unpromoted spare nodes keep their original infra_rank as group_rank
-                # They were already assigned result[node_desc] = infra_rank in the first pass
+            # Calculate how many complete segments we can use from this domain
+            # e.g., domain_size=12, segment=4 → usable_nodes=12 (3 complete segments)
+            # e.g., domain_size=10, segment=4 → usable_nodes=8 (2 complete segments)
+            num_complete_segments = domain_size // self.segment
+            usable_nodes = num_complete_segments * self.segment
+
+            # Get first node's infra_rank for ordering
+            first_infra_rank = domain_participants[0][1]  # Already sorted by infra_rank
+
+            valid_domains_info.append((domain_num, usable_nodes, first_infra_rank))
+
+            log.debug(
+                f"Domain {domain_num}: {domain_size} total nodes, {usable_nodes} usable nodes "
+                f"({num_complete_segments} segments)"
+            )
+
+        if not valid_domains_info:
+            raise RuntimeError(f"No valid domains found (all domains have < {self.segment} nodes)")
+
+        # Step 3: Select domains in SLURM topology order - O(# domains log # domains)
+        # Sort by first_infra_rank to maintain SLURM topology order
+        valid_domains_info.sort(key=lambda x: x[2])  # x[2] is first_infra_rank
+
+        # Select domains until we reach exactly min_nodes
+        selected_domains = []  # List of (domain_num, usable_nodes)
+        total_selected_nodes = 0
+
+        for domain_num, usable_nodes, first_infra_rank in valid_domains_info:
+            if total_selected_nodes >= min_nodes:
+                break
+
+            selected_domains.append((domain_num, usable_nodes))
+            total_selected_nodes += usable_nodes
+
+            log.debug(
+                f"Selected domain {domain_num}: {usable_nodes} nodes, total={total_selected_nodes}"
+            )
+
+        if total_selected_nodes < min_nodes:
+            raise RuntimeError(
+                f"Insufficient nodes: selected {total_selected_nodes} from "
+                f"{len(selected_domains)} domains, need {min_nodes}. "
+                f"Each domain must have at least {self.segment} nodes."
+            )
+
+        # Create a set of selected domains with their node limits
+        domain_limits = {domain_num: usable_nodes for domain_num, usable_nodes in selected_domains}
+
+        # Step 4: Collect selected nodes in SLURM order - O(N)
+        result = []
+        domain_node_counts = defaultdict(int)
+
+        for node_desc, infra_rank in sorted_participants:
+            domain_num = self._get_domain_number(node_desc.addr)
+            if domain_num not in domain_limits:
+                continue  # Domain not selected
+
+            # Only take up to usable_nodes from this domain
+            if domain_node_counts[domain_num] >= domain_limits[domain_num]:
+                continue
+
+            result.append((node_desc, infra_rank))
+            domain_node_counts[domain_num] += 1
+
+            # Stop if we've collected exactly min_nodes
+            if len(result) >= min_nodes:
+                break
+
+        log.info(
+            f"Segment filtering: {len(sorted_participants)} participants -> "
+            f"{len(result)} selected from {len(selected_domains)} domains "
+            f"(segment={self.segment}, min_nodes={min_nodes})"
+        )
 
         return result
 
@@ -828,7 +1044,8 @@ class _RendezvousBarrierState:
             total_participants: Total number of participants
 
         Returns:
-            List of tuples: (node_desc, infra_rank)
+            List of tuples: (node_desc, infra_rank) in arrival order.
+            Note: Consumers of this method sort the list according to their needs.
         """
         arrived_count = total_participants
 
@@ -1018,6 +1235,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         timeout: Optional[RendezvousTimeout] = None,
         is_store_host: bool = False,
         use_infra_group_rank: bool = True,
+        domain_id_from_node_name: bool = True,
+        domain_id_prefix: str = "nvl72",
+        segment: Optional[int] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1040,6 +1260,12 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 Whether this node is the TCPStore host.
             use_infra_group_rank:
                 Whether to use infrastructure group rank for rank assignment.
+            domain_id_from_node_name:
+                Whether to parse domain ID from node name.
+            domain_id_prefix:
+                Prefix to strip from domain_id to extract domain number.
+            segment:
+                Number of nodes to select from each domain.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1052,6 +1278,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             keep_alive_interval=timedelta(seconds=5),
             keep_alive_max_attempt=3,
             use_infra_group_rank=use_infra_group_rank,
+            domain_id_from_node_name=domain_id_from_node_name,
+            domain_id_prefix=domain_id_prefix,
+            segment=segment,
         )
 
         return cls(node, settings, "c10d", store, is_store_host)
@@ -1088,6 +1317,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             is_store_host,
             settings.timeout.join.total_seconds(),
             settings.use_infra_group_rank,
+            settings.domain_id_from_node_name,
+            settings.domain_id_prefix,
+            settings.segment,
         )
         self._assigned_rank = None
         self._world_size = None
@@ -1380,26 +1612,38 @@ def create_handler(
         backend:
             The backend (not used in this implementation).
 
-    +-------------------+------------------------------------------------------+
-    | Parameter         | Description                                          |
-    +===================+======================================================+
-    | join_timeout      | The total time, in seconds, within which the         |
-    |                   | rendezvous is expected to complete. Defaults to 600  |
-    |                   | seconds.                                             |
-    +-------------------+------------------------------------------------------+
-    | last_call_timeout | An additional wait amount, in seconds, before        |
-    |                   | completing the rendezvous once the minimum number of |
-    |                   | nodes has been reached. Defaults to 30 seconds.      |
-    +-------------------+------------------------------------------------------+
-    | close_timeout     | The time, in seconds, within which the rendezvous is |
-    |                   | expected to close after a call to                    |
-    |                   | :py:meth:`RendezvousHandler.set_closed` or           |
-    |                   | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
-    |                   | 30 seconds.                                          |
-    +-------------------+------------------------------------------------------+
-    | use_infra_group_  | Whether to use infrastructure group rank for rank    |
-    | rank              | assignment. Defaults to True.                        |
-    +-------------------+------------------------------------------------------+
+    +----------------------------+------------------------------------------------------+
+    | Parameter                  | Description                                          |
+    +============================+======================================================+
+    | join_timeout               | The total time, in seconds, within which the         |
+    |                            | rendezvous is expected to complete. Defaults to 600  |
+    |                            | seconds.                                             |
+    +----------------------------+------------------------------------------------------+
+    | last_call_timeout          | An additional wait amount, in seconds, before        |
+    |                            | completing the rendezvous once the minimum number of |
+    |                            | nodes has been reached. Defaults to 30 seconds.      |
+    +----------------------------+------------------------------------------------------+
+    | close_timeout              | The time, in seconds, within which the rendezvous is |
+    |                            | expected to close after a call to                    |
+    |                            | :py:meth:`RendezvousHandler.set_closed` or           |
+    |                            | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
+    |                            | 30 seconds.                                          |
+    +----------------------------+------------------------------------------------------+
+    | use_infra_group_rank       | Whether to use infrastructure group rank for rank    |
+    |                            | assignment. Defaults to True.                        |
+    +----------------------------+------------------------------------------------------+
+    | domain_id_from_node_name   | Whether to parse domain ID from node name for segment- |
+    |                            | aware rank assignment. Defaults to True.             |
+    +----------------------------+------------------------------------------------------+
+    | domain_id_prefix           | Prefix to strip from domain_id to extract domain number. |
+    |                            | Defaults to "nvl72".                                 |
+    +----------------------------+------------------------------------------------------+
+    | segment                    | Minimum number of nodes required per domain for      |
+    |                            | segment-aware rank assignment. Domains with fewer nodes|
+    |                            | are excluded. As many complete segments as possible  |
+    |                            | are selected from each domain. min_nodes must be     |
+    |                            | divisible by segment. Defaults to None (disabled).   |
+    +----------------------------+------------------------------------------------------+
     """
     try:
         timeout = RendezvousTimeout(
@@ -1411,6 +1655,9 @@ def create_handler(
         # Get is_store_host from parameters
         is_store_host = params.config.get('is_store_host', False)
         use_infra_group_rank = params.config.get('use_infra_group_rank', True)
+        domain_id_from_node_name = params.config.get('domain_id_from_node_name', True)
+        domain_id_prefix = params.config.get('domain_id_prefix', 'nvl72')
+        segment = params.config.get('segment', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -1422,6 +1669,9 @@ def create_handler(
             timeout,
             is_store_host=is_store_host,
             use_infra_group_rank=use_infra_group_rank,
+            domain_id_from_node_name=domain_id_from_node_name,
+            domain_id_prefix=domain_id_prefix,
+            segment=segment,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

@@ -58,9 +58,18 @@ class FaultToleranceConfig:
       high-frequency operations. Server logs errors instead of sending them back.
       Default: True (recommended for production). Set to False during development to catch errors immediately.
     * `use_infra_group_rank` - If True, always use infrastructure group rank for rank assignment.
-      Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
-      rank assignments are ignored to ensure consistency with infrastructure's rank assignment.
-      Note: Hot spare/redundancy is NOT supported with this setting. Default: True.
+      Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher).
+      Participants are selected in SLURM topology order and assigned contiguous group ranks [0..min_nodes).
+      Previous rank assignments are ignored to ensure consistency. Default: True.
+    * `domain_id_from_node_name` - If True, parse domain ID from node name for segment-aware rank assignment.
+      Node name format: <domain_id>-<node_id> where domain_id = <prefix><domain_number>.
+      Example: "nvl72144-T01" with prefix "nvl72" → domain_id="nvl72144", domain_number=144. Default: True.
+    * `domain_id_prefix` - Prefix to strip from domain_id to extract domain number. Default: "nvl72".
+    * `segment` - Minimum number of nodes required per domain for segment-aware rank assignment.
+      Domains with fewer nodes are excluded. From each valid domain, as many complete segments
+      as possible are selected (e.g., 12 nodes with segment=4 → use 12 nodes = 3 segments).
+      Domains are selected in SLURM topology order. min_nodes must be divisible by segment.
+      Set to None to disable segment awareness (simple first-N selection). Default: None.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -81,6 +90,9 @@ class FaultToleranceConfig:
     link_down_path_template: Optional[str] = None
     skip_section_response: bool = True
     use_infra_group_rank: bool = True
+    domain_id_from_node_name: bool = True
+    domain_id_prefix: str = "nvl72"
+    segment: Optional[int] = None
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
