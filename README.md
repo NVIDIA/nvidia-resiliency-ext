@@ -50,8 +50,9 @@ For detailed documentation and usage information about each component, please re
 | Architecture         | x86_64, arm64                                                              |
 | Operating System     | Ubuntu 22.04, 24.04                                                        |
 | Python Version       | >= 3.10, < 3.13                                                            |
-| PyTorch Version      | >= 2.3.1 (injob & chkpt), >= 2.5.1 (inprocess)                             |
-| CUDA & CUDA Toolkit  | >= 12.5 (12.8 required for GPU health check)                               |
+| PyTorch Version      | >= 2.5.1, >= 2.8.0 (Fault Attribution)                                      |
+| CUDA & CUDA Toolkit  | >= 12.8                                                                    |
 | NVML Driver          | >= 535 (570 required for GPU health check)                                 |
-| NCCL Version         | >= 2.21.5 (injob & chkpt), >= 2.26.2 (inprocess)                           |
+| NCCL Version         | < 2.28.3 OR >= 2.28.9 (avoid NCCL 2.28.3–2.28.8 due to inprocess issue)    |
+| TE Version           | >= 2.5                                                                     |
 
