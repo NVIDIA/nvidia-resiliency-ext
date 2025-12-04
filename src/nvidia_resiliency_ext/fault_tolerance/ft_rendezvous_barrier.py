@@ -45,7 +45,7 @@ except ImportError:
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, IBLinkStateHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -153,10 +153,6 @@ class RendezvousSettings:
         keep_alive_max_attempt:
             The maximum number of failed heartbeat attempts after which a node
             is considered dead.
-        use_infra_group_rank:
-            Whether to use infrastructure group rank for rank assignment instead of
-            arrival-based assignment. If True, ranks are read from SLURM_PROCID (in SLURM
-            environments) or GROUP_RANK (set by launcher) environment variables.
         domain_id_from_node_name:
             Whether to parse domain ID from node name for segment-aware rank assignment.
         domain_id_prefix:
@@ -171,7 +167,6 @@ class RendezvousSettings:
     timeout: RendezvousTimeout
     keep_alive_interval: timedelta
     keep_alive_max_attempt: int
-    use_infra_group_rank: bool = True
     domain_id_from_node_name: bool = True
     domain_id_prefix: str = "nvl72"
     segment: Optional[int] = None
@@ -236,7 +231,7 @@ class RendezvousParticipantInfo:
     A rendezvous participant can be a physical node or a process in a physical node
     in the simulation case. This class provides a JSON-based format that can store:
     - NodeDesc (addr, pid, local_id)
-    - Infrastructure rank (optional, used when use_infra_group_rank is enabled)
+    - Infrastructure rank (from SLURM_PROCID/GROUP_RANK or deterministically assigned)
 
     The format is designed to support up to 4K participants efficiently.
     In future, this can be changed to Protobuf for better efficiency and performance.
@@ -343,7 +338,6 @@ class _RendezvousBarrierState:
         run_id: str,
         is_store_host: bool = False,
         join_timeout_seconds: float = 600.0,
-        use_infra_group_rank: bool = True,
         domain_id_from_node_name: bool = True,
         domain_id_prefix: str = "nvl72",
         segment: Optional[int] = None,
@@ -352,12 +346,10 @@ class _RendezvousBarrierState:
         self.run_id = run_id
         self.is_store_host = is_store_host
         self.join_timeout_seconds = join_timeout_seconds
-        self.use_infra_group_rank = use_infra_group_rank
         self.domain_id_from_node_name = domain_id_from_node_name
         self.domain_id_prefix = domain_id_prefix
         self.segment = segment
         self._rendezvous_start_time = None
-        self._prev_participants = {}  # Store previous round's participants and their ranks
         self._attempted_open = False  # Track if this node tried to open rendezvous
 
         # Cache for node_name -> domain_number lookups to avoid repeated parsing
@@ -397,62 +389,21 @@ class _RendezvousBarrierState:
     def _assign_group_ranks(
         self,
         participants: List[Tuple[_NodeDesc, int]],
-        prev_participants: Dict[_NodeDesc, int],
         min_nodes: int,
     ) -> Dict[_NodeDesc, int]:
-        """Assign group ranks to participants, preserving previous assignments when possible.
+        """Assign group ranks to participants using infrastructure rank order.
 
         Args:
             participants: List of (node_desc, infra_rank) tuples
-            prev_participants: Dictionary of previous round's node_desc -> group_rank mapping
             min_nodes: Minimum number of active nodes
 
         Returns:
             Dictionary of node_desc -> assigned_group_rank
         """
-        if self.use_infra_group_rank:
-            return self._assign_group_ranks_with_infra_rank(participants, min_nodes)
-
-        # Original logic for non-infrastructure rank mode (arrival-based assignment)
-        # First min_nodes arrivals are active (ranks 0 to min_nodes-1)
-        # Later arrivals are standby (sequential ranks starting from min_nodes)
-        # Note: len(participants) >= min_nodes is guaranteed by rendezvous completion logic
-
-        result = {}
-        active_count = min_nodes
-
-        # Sort all participants by node_desc for deterministic assignment
-        sorted_participants = sorted(participants, key=lambda x: x[0])
-
-        # Pass 1: Try to preserve previous ranks for active participants (first min_nodes)
-        free_ranks = set(range(active_count))
-        for idx, (node_desc, _, _) in enumerate(sorted_participants):
-            if idx < active_count:
-                # Active participant - try to reuse previous rank
-                prev_rank = prev_participants.get(node_desc, -1)
-                if 0 <= prev_rank < active_count and prev_rank in free_ranks:
-                    result[node_desc] = prev_rank
-                    free_ranks.remove(prev_rank)
-                else:
-                    result[node_desc] = -1  # Assign later
-            else:
-                # Standby participant - sequential assignment
-                result[node_desc] = idx
-
-        # Pass 2: Assign free ranks to unassigned active participants
-        if free_ranks:
-            free_ranks = sorted(free_ranks)
-            for idx, (node_desc, _, _) in enumerate(sorted_participants[:active_count]):
-                if result[node_desc] == -1:
-                    result[node_desc] = free_ranks.pop(0)
-
-        standby_count = len(sorted_participants) - active_count
-        log.debug(
-            f"Assigned group_ranks by arrival order: "
-            f"{active_count} active, {standby_count} standby"
-        )
-
-        return result
+        # Always use infrastructure rank-based assignment
+        # If infra_rank is not set (=-1), it will be assigned deterministically
+        # based on sorted node order in _assign_group_ranks_with_infra_rank
+        return self._assign_group_ranks_with_infra_rank(participants, min_nodes)
 
     def _assign_group_ranks_with_infra_rank(
         self,
@@ -497,6 +448,23 @@ class _RendezvousBarrierState:
             RuntimeError: If insufficient nodes available
             ValueError: If duplicate infra_ranks detected or min_nodes not divisible by segment
         """
+        # Step 0: Check if any nodes have unassigned infra_rank (-1)
+        # This happens when neither SLURM_PROCID nor GROUP_RANK is set
+        has_unassigned = any(infra_rank == -1 for _, infra_rank in participants)
+
+        if has_unassigned:
+            # Assign infra_ranks deterministically based on sorted node order
+            # Sort by node_desc for deterministic ordering
+            sorted_by_node = sorted(participants, key=lambda x: x[0])
+
+            # Create new participants list with assigned infra_ranks
+            participants = [(node_desc, idx) for idx, (node_desc, _) in enumerate(sorted_by_node)]
+
+            log.info(
+                f"Assigned infrastructure ranks deterministically based on node order "
+                f"for {len(participants)} participants (SLURM_PROCID/GROUP_RANK not set)"
+            )
+
         # Step 1: Sort by infra_rank to get SLURM topology order - O(N log N)
         sorted_participants = sorted(participants, key=lambda x: x[1])
 
@@ -875,18 +843,19 @@ class _RendezvousBarrierState:
             raise RendezvousClosedError(msg)
 
         # Determine infrastructure rank
-        infra_rank = -1
-        if self.use_infra_group_rank:
-            # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
-            infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', '-1'))
+        # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
+        infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', None))
+        if infra_rank_str is not None:
             infra_rank = int(infra_rank_str)
-            if infra_rank < 0:
-                raise ValueError(
-                    "use_infra_group_rank is enabled but neither SLURM_PROCID nor GROUP_RANK "
-                    "environment variable is set. Please set one of these environment variables "
-                    "or disable use_infra_group_rank."
-                )
             log.debug(f"[{node_desc}] Using infrastructure rank {infra_rank} from environment")
+        else:
+            # Neither env var is set - will be assigned deterministically later
+            # based on sorted node order in assign_group_ranks
+            infra_rank = -1
+            log.debug(
+                f"[{node_desc}] Neither SLURM_PROCID nor GROUP_RANK is set. "
+                f"Infrastructure rank will be assigned based on sorted node order."
+            )
 
         # Store participant information in arrived_<count> key using the unique identifier
         arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
@@ -1123,9 +1092,7 @@ class _RendezvousBarrierState:
                 f"the actual number of nodes being launched."
             )
 
-        assigned_group_ranks = self._assign_group_ranks(
-            all_participants, self._prev_participants, min_nodes
-        )
+        assigned_group_ranks = self._assign_group_ranks(all_participants, min_nodes)
 
         # Store the assigned ranks and total participants in the store
         for i, (node_desc_item, infra_rank) in enumerate(all_participants):
@@ -1144,11 +1111,8 @@ class _RendezvousBarrierState:
             rank_value = f"{assigned_group_rank},{total_participants}"
             self.store.set(rank_key, rank_value.encode('utf-8'))
 
-        # Save current participants for next round
-        self._prev_participants = assigned_group_ranks.copy()
-
         log.debug(
-            f"[{node_desc}] [Step 3b] Assigned group ranks to {len(assigned_group_ranks)} participants, preserving previous assignments"
+            f"[{node_desc}] [Step 3b] Assigned group ranks to {len(assigned_group_ranks)} participants"
         )
 
     def is_closed(self) -> bool:
@@ -1234,10 +1198,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         local_addr: Optional[str] = None,
         timeout: Optional[RendezvousTimeout] = None,
         is_store_host: bool = False,
-        use_infra_group_rank: bool = True,
         domain_id_from_node_name: bool = True,
         domain_id_prefix: str = "nvl72",
         segment: Optional[int] = None,
+        enable_nic_healthcheck: bool = False,
+        link_state_path_template: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1258,14 +1223,16 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 The timeout configuration of the rendezvous.
             is_store_host:
                 Whether this node is the TCPStore host.
-            use_infra_group_rank:
-                Whether to use infrastructure group rank for rank assignment.
             domain_id_from_node_name:
                 Whether to parse domain ID from node name.
             domain_id_prefix:
                 Prefix to strip from domain_id to extract domain number.
             segment:
                 Number of nodes to select from each domain.
+            enable_nic_healthcheck:
+                Whether to enable IB link state health check before rendezvous.
+            link_state_path_template:
+                Template path for IB link state files.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1277,13 +1244,20 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             timeout or RendezvousTimeout(),
             keep_alive_interval=timedelta(seconds=5),
             keep_alive_max_attempt=3,
-            use_infra_group_rank=use_infra_group_rank,
             domain_id_from_node_name=domain_id_from_node_name,
             domain_id_prefix=domain_id_prefix,
             segment=segment,
         )
 
-        return cls(node, settings, "c10d", store, is_store_host)
+        return cls(
+            node,
+            settings,
+            "c10d",
+            store,
+            is_store_host,
+            enable_nic_healthcheck=enable_nic_healthcheck,
+            link_state_path_template=link_state_path_template,
+        )
 
     def __init__(
         self,
@@ -1292,6 +1266,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         backend_name: str,
         store: Store,
         is_store_host: bool = False,
+        enable_nic_healthcheck: bool = False,
+        link_state_path_template: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1316,7 +1292,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             settings.run_id,
             is_store_host,
             settings.timeout.join.total_seconds(),
-            settings.use_infra_group_rank,
             settings.domain_id_from_node_name,
             settings.domain_id_prefix,
             settings.segment,
@@ -1326,6 +1301,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         self._ranks_connector = IpcConnector(FT_LAUNCHER_IPC_SOCKET)
         self._ranks_connector.start_receiving()
+
+        # Store NIC health check configuration
+        self._enable_nic_healthcheck = enable_nic_healthcheck
+        self._link_state_path_template = link_state_path_template
 
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
@@ -1362,27 +1341,44 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """See base class."""
         return False
 
+    def _run_health_check(self, health_checker, check_name: str, failure_message: str) -> None:
+        """Helper method to run a health check with consistent error handling.
+
+        Args:
+            health_checker: Health checker instance to call
+            check_name: Name of the health check (for logging)
+            failure_message: Error message to use if health check fails
+        """
+        try:
+            if not health_checker():
+                self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+                log.error(f"{check_name} failed for node {self._this_node}: {failure_message}")
+                raise UnhealthyNodeException(failure_message)
+        except UnhealthyNodeException:
+            raise
+        except Exception as e:
+            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+            log.error(f"Unexpected error during {check_name} for node {self._this_node}: {str(e)}")
+            raise UnhealthyNodeException(str(e)) from e
+
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU health check for this node."""
+        """Perform GPU and IB link state health checks for this node."""
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
 
         # Perform GPU health check
-        health_checker = GPUHealthCheck()
-        try:
-            health_status = health_checker()
-        except Exception as e:
-            # Unexpected error during health check
-            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
-            log.error(f"Unexpected error during health check for node {self._this_node}: {str(e)}")
-            raise UnhealthyNodeException(str(e)) from e
+        self._run_health_check(
+            GPUHealthCheck(), "GPU health check", f"Node {self._this_node} has an unhealthy GPU."
+        )
 
-        if not health_status:
-            # Health check failed
-            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
-            log.error(f"Health check failed for node {self._this_node}: Node has an unhealthy GPU.")
-            raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
+        # Perform IB link state health check if enabled
+        if self._enable_nic_healthcheck:
+            self._run_health_check(
+                IBLinkStateHealthCheck(link_state_path_template=self._link_state_path_template),
+                "IB link state health check",
+                f"Node {self._this_node} has unhealthy IB link(s).",
+            )
 
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
@@ -1629,9 +1625,6 @@ def create_handler(
     |                            | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
     |                            | 30 seconds.                                          |
     +----------------------------+------------------------------------------------------+
-    | use_infra_group_rank       | Whether to use infrastructure group rank for rank    |
-    |                            | assignment. Defaults to True.                        |
-    +----------------------------+------------------------------------------------------+
     | domain_id_from_node_name   | Whether to parse domain ID from node name for segment- |
     |                            | aware rank assignment. Defaults to True.             |
     +----------------------------+------------------------------------------------------+
@@ -1644,6 +1637,13 @@ def create_handler(
     |                            | are selected from each domain. min_nodes must be     |
     |                            | divisible by segment. Defaults to None (disabled).   |
     +----------------------------+------------------------------------------------------+
+    | enable_nic_healthcheck     | Whether to enable IB link state health check before  |
+    |                            | rendezvous. Defaults to False.                       |
+    +----------------------------+------------------------------------------------------+
+    | link_state_path_template   | Template path for IB link state files. Should contain|
+    |                            | {nic} placeholder. Defaults to None (uses default    |
+    |                            | path /sys/class/infiniband/{nic}/ports/1/state).     |
+    +----------------------------+------------------------------------------------------+
     """
     try:
         timeout = RendezvousTimeout(
@@ -1654,10 +1654,11 @@ def create_handler(
 
         # Get is_store_host from parameters
         is_store_host = params.config.get('is_store_host', False)
-        use_infra_group_rank = params.config.get('use_infra_group_rank', True)
         domain_id_from_node_name = params.config.get('domain_id_from_node_name', True)
         domain_id_prefix = params.config.get('domain_id_prefix', 'nvl72')
         segment = params.config.get('segment', None)
+        enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
+        link_state_path_template = params.config.get('link_state_path_template', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -1668,10 +1669,11 @@ def create_handler(
             params.local_addr,
             timeout,
             is_store_host=is_store_host,
-            use_infra_group_rank=use_infra_group_rank,
             domain_id_from_node_name=domain_id_from_node_name,
             domain_id_prefix=domain_id_prefix,
             segment=segment,
+            enable_nic_healthcheck=enable_nic_healthcheck,
+            link_state_path_template=link_state_path_template,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

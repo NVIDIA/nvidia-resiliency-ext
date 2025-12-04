@@ -93,7 +93,6 @@ class AssignRanksTest(TestCase):
     """Test the _assign_ranks static method which handles rank assignment logic."""
 
     def test_assign_ranks_with_infra_rank_always_uses_infra(self) -> None:
-        """Test that infrastructure ranks are always used when use_infra_group_rank=True."""
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
@@ -107,7 +106,6 @@ class AssignRanksTest(TestCase):
         prev = {}  # Empty prev
 
         result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=True
         )
 
         # Should use infrastructure ranks directly
@@ -115,8 +113,7 @@ class AssignRanksTest(TestCase):
         self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
         self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
 
-    def test_assign_ranks_ignores_prev_when_use_infra_group_rank(self) -> None:
-        """Test that previous assignments are IGNORED when use_infra_group_rank=True."""
+    def test_assign_ranks_uses_infra_ranks(self) -> None:
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
@@ -128,24 +125,19 @@ class AssignRanksTest(TestCase):
             _NodeDesc("node2", 1, 1): 2,  # Infrastructure rank 2
         }
 
-        # Previous assignment (different from infrastructure ranks)
-        prev = {
-            _NodeDesc("node0", 1, 1): 2,  # Was rank 2
-            _NodeDesc("node1", 1, 1): 0,  # Was rank 0
-            _NodeDesc("node2", 1, 1): 1,  # Was rank 1
-        }
+        # Previous assignment is ignored with infrastructure ranks
+        prev = {}
 
         result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=True
+            participants, prev
         )
 
-        # Should use infrastructure ranks, NOT previous assignments
+        # Should use infrastructure ranks directly
         self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
         self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
         self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
 
     def test_assign_ranks_fills_gaps_after_node_failure(self) -> None:
-        """Test that gaps are filled when a node leaves and a new node joins (use_infra_group_rank=False)."""
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
@@ -169,7 +161,6 @@ class AssignRanksTest(TestCase):
         }
 
         result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=False
         )
 
         # Should preserve existing assignments and fill gap
@@ -178,8 +169,7 @@ class AssignRanksTest(TestCase):
         self.assertEqual(result[_NodeDesc("node3", 1, 1)], 1)  # Fills the gap left by node1
 
     def test_assign_ranks_sort_order_does_not_affect_prev_reuse(self) -> None:
-        """Test that sort order doesn't prevent participants from reusing previous ranks (use_infra_group_rank=False).
-
+        """
         This test uses node descriptors that will sort in a different order than
         their previous rank assignment, to verify that each participant can still
         reclaim their previous rank regardless of sort order.
@@ -212,7 +202,6 @@ class AssignRanksTest(TestCase):
         }
 
         result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=False
         )
 
         # Each node should reclaim their previous rank, regardless of sort order
@@ -298,7 +287,6 @@ class BackendRendezvousStateHolderTest(TestCase, CustomAssertMixin):
             timeout=RendezvousTimeout(),
             keep_alive_interval=timedelta(seconds=30),
             keep_alive_max_attempt=3,
-            use_infra_group_rank=False,
         )
 
         self._cache_duration = 0
@@ -547,7 +535,6 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
             timeout=self._timeout,
             keep_alive_interval=timedelta(seconds=30),
             keep_alive_max_attempt=3,
-            use_infra_group_rank=False,
         )
 
     def _create_op_executor(
@@ -897,7 +884,6 @@ class DynamicRendezvousHandlerTest(TestCase):
             ),
             keep_alive_interval=self._keep_alive_interval,
             keep_alive_max_attempt=3,
-            use_infra_group_rank=False,
         )
 
         self._state_holder.state = self._state
@@ -1109,7 +1095,6 @@ class IntegrationTest(TestCase):
             "last_call_timeout": "2",
             "local_addr": f"address_{len(self._handlers)}",
             "upscaling_enabled": True,
-            "use_infra_group_rank": False,  # Integration tests run in single process, can't set different GROUP_RANK per handler
         }
         params.update(**kwargs)
 
@@ -1258,13 +1243,11 @@ class IntegrationTest(TestCase):
                 self.tearDown()
 
     @patch.dict(os.environ, {"GROUP_RANK": "0"}, clear=False)
-    def test_use_infra_group_rank_with_env_var(self) -> None:
-        """Test that infrastructure group rank is used when GROUP_RANK is set."""
-        # Test with use_infra_group_rank=True (default) and GROUP_RANK env var set
+    def test_infra_rank_from_env_var(self) -> None:
+        """Test that infrastructure rank is used when GROUP_RANK is set."""
         handler = self._create_handler(
             min_nodes=1,
             max_nodes=1,
-            use_infra_group_rank=True,
         )
 
         # Perform rendezvous
@@ -1276,8 +1259,8 @@ class IntegrationTest(TestCase):
         self.assertEqual(world_size, 1)
 
     @patch.dict(os.environ, {}, clear=False)
-    def test_use_infra_group_rank_without_env_var_raises_error(self) -> None:
-        """Test that using infra group rank without env var raises an error."""
+    def test_use_deterministic_rank_without_env_var(self) -> None:
+        """Test that ranks are assigned deterministically when env vars are not set."""
         # Remove GROUP_RANK if it exists
         os.environ.pop("GROUP_RANK", None)
         os.environ.pop("SLURM_PROCID", None)
@@ -1285,14 +1268,15 @@ class IntegrationTest(TestCase):
         handler = self._create_handler(
             min_nodes=1,
             max_nodes=1,
-            use_infra_group_rank=True,
         )
 
-        # Should raise ValueError due to missing environment variables
-        with self.assertRaises(ValueError) as cm:
-            handler.next_rendezvous()
+        # Should succeed with deterministic rank assignment
+        rdzv_info = handler.next_rendezvous()
+        rank, world_size = _extract_rendezvous_info(rdzv_info)
 
-        self.assertIn("neither SLURM_PROCID nor GROUP_RANK", str(cm.exception))
+        # Verify rank is assigned (should be 0 for single node)
+        self.assertEqual(rank, 0)
+        self.assertEqual(world_size, 1)
 
     def test_worker_states_invalid_transitions(self) -> None:
         # one final state should not be changed into another final state

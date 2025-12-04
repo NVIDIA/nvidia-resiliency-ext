@@ -59,7 +59,7 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, IBLinkStateHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -233,10 +233,6 @@ class RendezvousSettings:
             If set to True (default), nodes from the redundancy list and new arrivals are migrated
             to the wait list. If set to False, new arrivals will be moved to the redundancy list
             and will wait there until the next rendezvous round.
-        use_infra_group_rank:
-            Whether to use infrastructure group rank for rank assignment instead of sorted
-            participant-based assignment. If True, ranks are read from SLURM_PROCID (in SLURM
-            environments) or GROUP_RANK (set by launcher) environment variables.
     """
 
     run_id: str
@@ -246,7 +242,6 @@ class RendezvousSettings:
     keep_alive_interval: timedelta
     keep_alive_max_attempt: int
     upscaling_enabled: bool = True
-    use_infra_group_rank: bool = True
 
 
 @dataclass(eq=True, order=True, frozen=True)
@@ -793,23 +788,21 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         except KeyError:
             log.debug(f"Node {self._node} was not in the wait list.")
 
-        # The ranks of the participants will be set once the rendezvous is
-        # complete. If use_infra_group_rank is enabled, store the infrastructure
-        # rank (SLURM_PROCID or GROUP_RANK) here; otherwise, use placeholder -1.
-        if self._settings.use_infra_group_rank:
-            # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
-            infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', '-1'))
+        # Store infrastructure rank if available from SLURM_PROCID or GROUP_RANK
+        # If neither is set, use -1 and it will be assigned deterministically later
+        infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', None))
+        if infra_rank_str is not None:
             infra_rank = int(infra_rank_str)
-            if infra_rank < 0:
-                raise ValueError(
-                    "use_infra_group_rank is enabled but neither SLURM_PROCID nor GROUP_RANK "
-                    "environment variable is set. Please set one of these environment variables "
-                    "or disable use_infra_group_rank."
-                )
-            state.participants[self._node] = infra_rank
             log.debug(f"Node {self._node} stored infrastructure rank {infra_rank} from environment")
         else:
-            state.participants[self._node] = 0
+            # Neither env var is set - will be assigned deterministically later
+            # based on sorted node order in _assign_ranks
+            infra_rank = -1
+            log.debug(
+                f"Node {self._node} neither SLURM_PROCID nor GROUP_RANK is set. "
+                f"Infrastructure rank will be assigned based on sorted node order."
+            )
+        state.participants[self._node] = infra_rank
 
         self._keep_alive()
 
@@ -895,71 +888,50 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
     def _assign_ranks(
         participants: Dict[_NodeDesc, int],
         prev: Dict[_NodeDesc, int],
-        use_infra_group_rank: bool = False,
     ) -> Dict[_NodeDesc, int]:
         """
-        Assign ranks to participants in the rendezvous.
+        Assign ranks to participants using infrastructure ranks when available.
 
-        Behavior depends on use_infra_group_rank:
-
-        1. If use_infra_group_rank=True:
-           - ALWAYS use infrastructure ranks directly from SLURM_PROCID or GROUP_RANK
-           - Previous assignments are ignored
-           - Validates that all ranks are in range [0, world_size) and unique
-           - Ensures consistency with infrastructure's rank assignment
-           - Note: Hot spare/redundancy is NOT supported in this mode as dynamic
-             rendezvous cannot guarantee lower ranks join as participants first
-
-        2. If use_infra_group_rank=False:
-           - Use deterministic assignment, preserving previous ranks when possible
-           - Fill gaps left by failed nodes with new participants
+        If infrastructure ranks (from SLURM_PROCID/GROUP_RANK) are available (>=0),
+        they are used directly. If any node has infra_rank=-1 (environment variables not set),
+        all nodes are assigned ranks deterministically based on sorted node order.
 
         Args:
             participants: Dict mapping node descriptors to infrastructure ranks
-            prev: Dict of previous rank assignments (empty on first rendezvous)
-            use_infra_group_rank: If True, always use infrastructure ranks
+            prev: Dict of previous rank assignments (unused, kept for API compatibility)
 
         Returns:
             Dict mapping node descriptors to assigned ranks
         """
-        # If use_infra_group_rank is enabled, use the infrastructure ranks directly
-        if use_infra_group_rank:
-            # Validate that all participants have valid infrastructure ranks
-            for node, rank in participants.items():
-                if rank < 0 or rank >= len(participants):
-                    raise ValueError(
-                        f"Invalid infrastructure rank {rank} for node {node}. "
-                        f"Expected rank in range [0, {len(participants)})"
-                    )
-            # Check for duplicate ranks
-            ranks_set = set(participants.values())
-            if len(ranks_set) != len(participants):
-                raise ValueError(
-                    f"Duplicate infrastructure ranks detected in participants: {participants}"
-                )
-            log.debug(f"Using infrastructure ranks directly: {participants}")
-            return dict(participants)
+        # Check if any nodes have unassigned infra_rank (-1)
+        has_unassigned = any(rank == -1 for rank in participants.values())
 
-        # Default behavior: Assign ranks. Re-use assignment from the previous round as much as possible
-        world_size = len(participants)
-        sorted_keys = sorted(participants.keys())
-        free_ranks = set(range(world_size))
-        res = {}
-        for p in sorted_keys:
-            prev_rank = prev.get(p, -1)
-            if prev_rank >= 0 and prev_rank < world_size and prev_rank in free_ranks:
-                # if this node can have the same rank, use it
-                res[p] = prev_rank
-                free_ranks.remove(prev_rank)
-            else:
-                res[p] = -1
-        # Fill the gaps with the remaining free rank ids
-        free_ranks = sorted(free_ranks)
-        for p in sorted_keys:
-            if res[p] < 0:
-                res[p] = free_ranks.pop(0)
-        assert not free_ranks
-        return res
+        if has_unassigned:
+            # Assign infra_ranks deterministically based on sorted node order
+            sorted_nodes = sorted(participants.keys())
+            result = {node: idx for idx, node in enumerate(sorted_nodes)}
+            log.info(
+                f"Assigned infrastructure ranks deterministically based on node order "
+                f"for {len(participants)} participants (SLURM_PROCID/GROUP_RANK not set)"
+            )
+            return result
+
+        # All nodes have infrastructure ranks - use them directly
+        # Validate that all participants have valid infrastructure ranks
+        for node, rank in participants.items():
+            if rank < 0 or rank >= len(participants):
+                raise ValueError(
+                    f"Invalid infrastructure rank {rank} for node {node}. "
+                    f"Expected rank in range [0, {len(participants)})"
+                )
+        # Check for duplicate ranks
+        ranks_set = set(participants.values())
+        if len(ranks_set) != len(participants):
+            raise ValueError(
+                f"Duplicate infrastructure ranks detected in participants: {participants}"
+            )
+        log.debug(f"Using infrastructure ranks directly: {participants}")
+        return dict(participants)
 
     def _mark_rendezvous_complete(self) -> None:
         msg = (
@@ -983,10 +955,8 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             state.redundancy_list.update(state.wait_list)
             state.wait_list.clear()
 
-        # Will try to preserve node<->rank mapping
-        state.participants = self._assign_ranks(
-            state.participants, self._prev_participants, self._settings.use_infra_group_rank
-        )
+        # Assign ranks using infrastructure order
+        state.participants = self._assign_ranks(state.participants, self._prev_participants)
 
         # Set initial worker states, assume all workers are healthy at the beginning
         state.worker_states = {n: WorkerState.HEALTHY for n in state.participants}
@@ -1223,7 +1193,8 @@ class FtRendezvousHandler(RendezvousHandler):
         local_addr: Optional[str] = None,
         timeout: Optional[RendezvousTimeout] = None,
         upscaling_enabled: bool = True,
-        use_infra_group_rank: bool = False,
+        enable_nic_healthcheck: bool = False,
+        link_state_path_template: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousHandler`.
 
@@ -1244,8 +1215,10 @@ class FtRendezvousHandler(RendezvousHandler):
                 The timeout configuration of the rendezvous.
             upscaling_enabled:
                 Whether to enable upscaling of a completed rendezvous with redundant or new nodes.
-            use_infra_group_rank:
-                Whether to use infrastructure group rank for rank assignment.
+            enable_nic_healthcheck:
+                Whether to enable IB link state health check before rendezvous.
+            link_state_path_template:
+                Template path for IB link state files.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1258,12 +1231,19 @@ class FtRendezvousHandler(RendezvousHandler):
             keep_alive_interval=timedelta(seconds=5),
             keep_alive_max_attempt=3,
             upscaling_enabled=upscaling_enabled,
-            use_infra_group_rank=use_infra_group_rank,
         )
 
         state_holder = _BackendRendezvousStateHolder(backend, settings)
 
-        return cls(node, settings, backend.name, store, state_holder)
+        return cls(
+            node,
+            settings,
+            backend.name,
+            store,
+            state_holder,
+            enable_nic_healthcheck=enable_nic_healthcheck,
+            link_state_path_template=link_state_path_template,
+        )
 
     def __init__(
         self,
@@ -1272,6 +1252,8 @@ class FtRendezvousHandler(RendezvousHandler):
         backend_name: str,
         store: Store,
         state_holder: _RendezvousStateHolder,
+        enable_nic_healthcheck: bool = False,
+        link_state_path_template: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1310,6 +1292,10 @@ class FtRendezvousHandler(RendezvousHandler):
 
         self._keep_alive_timer = None
 
+        # Store NIC health check configuration
+        self._enable_nic_healthcheck = enable_nic_healthcheck
+        self._link_state_path_template = link_state_path_template
+
     def _record(
         self,
         message: str,
@@ -1345,25 +1331,42 @@ class FtRendezvousHandler(RendezvousHandler):
         """See base class."""
         return False
 
+    def _run_health_check(self, health_checker, check_name: str, failure_message: str) -> None:
+        """Helper method to run a health check with consistent error handling.
+
+        Args:
+            health_checker: Health checker instance to call
+            check_name: Name of the health check (for logging)
+            failure_message: Error message to use if health check fails
+        """
+        try:
+            if not health_checker():
+                raise UnhealthyNodeException(failure_message)
+        except UnhealthyNodeException:
+            log.error(f"{check_name} failed for node {self._this_node}: {failure_message}")
+            raise
+        except Exception as e:
+            log.error(f"Unexpected error during {check_name} for node {self._this_node}: {str(e)}")
+            raise UnhealthyNodeException(str(e)) from e
+
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU health check for this node."""
+        """Perform GPU and IB link state health checks for this node."""
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
+
         # Perform GPU health check
-        health_checker = GPUHealthCheck()
-        try:
-            health_status = health_checker()
-            if not health_status:
-                raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
-        except UnhealthyNodeException as e:
-            # Log specific health check failure
-            log.error(f"Health check failed for node {self._this_node}: {str(e)}")
-            raise
-        except Exception as e:
-            # General exception for unexpected issues during health check
-            log.error(f"Unexpected error during health check for node {self._this_node}: {str(e)}")
-            raise UnhealthyNodeException(str(e))
+        self._run_health_check(
+            GPUHealthCheck(), "GPU health check", f"Node {self._this_node} has an unhealthy GPU."
+        )
+
+        # Perform IB link state health check if enabled
+        if self._enable_nic_healthcheck:
+            self._run_health_check(
+                IBLinkStateHealthCheck(link_state_path_template=self._link_state_path_template),
+                "IB link state health check",
+                f"Node {self._this_node} has unhealthy IB link(s).",
+            )
 
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
@@ -1736,6 +1739,12 @@ def create_handler(
     | rank              | rank assignment. Previous assignments are ignored.   |
     |                   | Hot spare/redundancy NOT supported. Defaults to True.|
     +-------------------+------------------------------------------------------+
+    | enable_nic_       | Whether to enable IB link state health check before  |
+    | healthcheck       | rendezvous. Defaults to False.                       |
+    +-------------------+------------------------------------------------------+
+    | link_state_path_  | Template path for IB link state files. Should contain|
+    | template          | {nic} placeholder. Defaults to None (uses default).  |
+    +-------------------+------------------------------------------------------+
     """
     try:
         timeout = RendezvousTimeout(
@@ -1746,7 +1755,8 @@ def create_handler(
 
         # torchrun default behaviour if not specified otherwise
         upscale_completed = params.config.get('upscaling_enabled', True)
-        use_infra_group_rank = params.config.get('use_infra_group_rank', True)
+        enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
+        link_state_path_template = params.config.get('link_state_path_template', None)
 
         return FtRendezvousHandler.from_backend(
             params.run_id,
@@ -1757,7 +1767,8 @@ def create_handler(
             params.local_addr,
             timeout,
             upscaling_enabled=upscale_completed,
-            use_infra_group_rank=use_infra_group_rank,
+            enable_nic_healthcheck=enable_nic_healthcheck,
+            link_state_path_template=link_state_path_template,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

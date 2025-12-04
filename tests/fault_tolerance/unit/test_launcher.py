@@ -76,7 +76,6 @@ def test_rank_not_send_initial_hb(tmp_dir):
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
-    ft_cfg.use_infra_group_rank = False
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
@@ -96,7 +95,6 @@ def test_rank_failed(tmp_dir):
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
-    ft_cfg.use_infra_group_rank = False
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
@@ -115,7 +113,6 @@ def test_ranks_exit_gracefully(tmp_dir):
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
-    ft_cfg.use_infra_group_rank = False
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()}"
     launcher_cmd = (
@@ -136,7 +133,6 @@ def test_launcher_sigterm_graceful_exit(tmp_dir):
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
-    ft_cfg.use_infra_group_rank = False
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=return0"
     launcher_cmd = (
@@ -158,7 +154,6 @@ def test_launcher_sigterm_ignored(tmp_dir):
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
-    ft_cfg.use_infra_group_rank = False
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=ignore"
     launcher_cmd = (
@@ -180,7 +175,6 @@ def test_ranks_restart(tmp_dir):
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
-    ft_cfg.use_infra_group_rank = False
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --tmp_dir={tmp_dir}"
     launcher_cmd = (
@@ -208,7 +202,6 @@ def test_missing_cfg(tmp_dir):
     launcher_cmd = (
         "ft_launcher --monitor-interval=1"
         f" --ft-cfg-path={empty_ft_cfg_path} --nproc-per-node={WORLD_SIZE} --ft-rank-heartbeat-timeout=1.0"
-        " --ft-use-infra-group-rank=False"
         f" {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
@@ -219,7 +212,6 @@ def test_missing_cfg(tmp_dir):
         "ft_launcher --monitor-interval=1"
         " --ft-cfg-path=/not/there.yaml"
         " --ft-rank-heartbeat-timeout=1.0"
-        " --ft-use-infra-group-rank=False"
         f" --nproc-per-node={WORLD_SIZE}"
         f" {cmd_to_run}"
     )
@@ -235,7 +227,6 @@ def test_config_provided_via_cli(tmp_dir):
         " --ft-rank-heartbeat-timeout=2.0"
         " --ft-rank-termination-signal=SIGUSR2"
         " --ft-log-level=WARNING"
-        " --ft-use-infra-group-rank=False"
     )
     cmd_to_run = f"{_get_util_script_path()} --scenario=dump_cfg --tmp_dir={tmp_dir}"
     launcher_cmd = "ft_launcher" f" {ft_params_str} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
@@ -262,7 +253,6 @@ def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
         rank_heartbeat_timeout=222.0,
         rank_termination_signal=signal.SIGTSTP,
         log_level=logging.INFO,
-        use_infra_group_rank=False,
     )
     ft_cfg_path = os.path.join(tmp_dir, "ft_cfg.yaml")
     base_cfg.to_yaml_file(ft_cfg_path)

@@ -1935,7 +1935,22 @@ def get_args_parser() -> ArgumentParser:
         type=lambda x: str(x).lower() not in ["false", "0", "no"],
         default=None,
         dest="ft_enable_nic_monitor",
-        help="Enable or Disable NIC health monitoring in training. Default: False.",
+        help="Enable or Disable NIC health monitoring in training. "
+        "This monitors link_downed counters periodically during training. Default: False.",
+    )
+
+    parser.add_argument(
+        "--ft-enable-nic-healthcheck",
+        "--ft-enable_nic_healthcheck",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_enable_nic_healthcheck",
+        help="Enable or Disable NIC link state health check before rendezvous. "
+        "This checks if InfiniBand ports are in ACTIVE state and fails if any port "
+        "transitioned from ACTIVE to non-ACTIVE. Unlike --ft-enable-nic-monitor "
+        "(which periodically monitors link_downed counters), this performs a one-time "
+        "state check during rendezvous. Can be used independently or together with "
+        "--ft-enable-nic-monitor. Default: False.",
     )
 
     parser.add_argument(
@@ -1958,6 +1973,17 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-link-state-path-template",
+        "--ft-link_state_path_template",
+        type=str,
+        default=None,
+        dest="ft_link_state_path_template",
+        help="Part of Fault Tolerance pkg config (link_state_path_template). "
+        "Template path to check IB link state. Should contain {nic} placeholder. "
+        "Default: /sys/class/infiniband/{nic}/ports/1/state",
+    )
+
+    parser.add_argument(
         "--ft-skip-section-response",
         "--ft-skip_section_response",
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
@@ -1967,19 +1993,6 @@ def get_args_parser() -> ArgumentParser:
         "If enabled (default), section and heartbeat messages are sent without waiting "
         "for server response, significantly reducing latency. "
         "Set to false during development to catch programming errors immediately.",
-    )
-
-    parser.add_argument(
-        "--ft-use-infra-group-rank",
-        "--ft-use_infra_group_rank",
-        type=lambda x: str(x).lower() not in ["false", "0", "no"],
-        default=None,
-        dest="ft_use_infra_group_rank",
-        help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
-        "If enabled, always use infrastructure group rank for rank assignment. "
-        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). Previous assignments "
-        "are ignored to ensure consistency with infrastructure rank assignment. "
-        "Note: Hot spare/redundancy NOT supported. Default: True.",
     )
 
     parser.add_argument(
@@ -2200,13 +2213,14 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
 
-    # Pass use_infra_group_rank from fault tolerance config to rendezvous config
-    rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
-
     # Pass segment-related configs to rendezvous config
     rdzv_configs['domain_id_from_node_name'] = fault_tol_cfg.domain_id_from_node_name
     rdzv_configs['domain_id_prefix'] = fault_tol_cfg.domain_id_prefix
     rdzv_configs['segment'] = fault_tol_cfg.segment
+    
+    # Pass NIC health check configs to rendezvous config
+    rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
+    rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
