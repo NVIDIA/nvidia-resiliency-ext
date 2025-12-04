@@ -69,6 +69,7 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
+from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PerCycleLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
@@ -709,6 +710,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec = worker_group.spec
         store = worker_group.store
         assert store is not None
+
+        # TODO: Consider using self._rdzv_handler.round() instead of calculating from _remaining_restarts
+        # Using rdzv.round() would be more robust for hot spare scenarios and provide a single source
+        # of truth for the restart cycle number.
         restart_count = spec.max_restarts - self._remaining_restarts
 
         # Record worker start start event
@@ -1874,6 +1879,24 @@ def get_args_parser() -> ArgumentParser:
         "directory is re-used for multiple runs (a unique job-level sub-directory is created with "
         "rdzv_id as the prefix).",
     )
+
+    parser.add_argument(
+        "--ft-base-logfile",
+        "--ft_base_logfile",
+        action=env,
+        type=str,
+        default=None,
+        dest="ft_base_logfile",
+        help="Base log file path for per-cycle logging (e.g. /lustre/logs/job_12345.log). "
+        "Automatically enables per-cycle consolidated logging with flat file structure: "
+        "/lustre/logs/job_12345_cycle0.log, /lustre/logs/job_12345_cycle1.log, etc. "
+        "All ranks' stdout and stderr go to the same file per cycle (truly consolidated). "
+        "Each line is automatically prefixed with [global_rank]: (like 'srun -l') for easy identification. "
+        "Uses O_APPEND flag for safe concurrent writes from multiple ranks. "
+        "Avoids filesystem pressure at scale (1 file instead of N*ranks files). "
+        "Ideal for SLURM jobs with thousands of ranks.",
+    )
+
     parser.add_argument(
         "-r",
         "--redirects",
@@ -1952,8 +1975,10 @@ def get_args_parser() -> ArgumentParser:
         "--logs_specs",
         default=None,
         type=str,
-        help="torchrun.logs_specs group entrypoint name, value must be type of LogsSpecs. "
-        "Can be used to override custom logging behavior.",
+        help="Logging behavior configuration. Options: "
+        "(1) None (default): Creates separate log files per rank per restart cycle. "
+        "(2) 'per_cycle': Consolidates all ranks' logs into a single log file per restart cycle. "
+        "(3) Custom entrypoint name from torchrun.logs_specs group for advanced customization.",
     )
 
     #
@@ -2279,9 +2304,18 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
 
     Returns `DefaultLogsSpecs` when logs_spec_name is None.
     Raises ValueError when entrypoint for `logs_spec_name` can't be found in entrypoints.
+
+    Built-in options:
+    - None (default): Uses DefaultLogsSpecs (per-rank log files per cycle)
+    - 'per_cycle': Uses PerCycleLogsSpecs (single log file per cycle for all ranks)
     """
     logs_specs_cls = None
-    if logs_specs_name is not None:
+
+    # Handle built-in per_cycle option
+    if logs_specs_name == "per_cycle":
+        logs_specs_cls = PerCycleLogsSpecs
+    elif logs_specs_name is not None:
+        # Try to load from entrypoints
         eps = metadata.entry_points()
         if hasattr(eps, "select"):  # >= 3.10
             group = eps.select(group="torchrun.logs_specs")
@@ -2296,8 +2330,6 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
             raise ValueError(
                 f"Could not find entrypoint under 'torchrun.logs_specs[{logs_specs_name}]' key"
             )
-
-        logger.info("Using logs_spec '%s' mapped to %s", logs_specs_name, str(logs_specs_cls))
     else:
         logs_specs_cls = DefaultLogsSpecs
 
@@ -2365,13 +2397,28 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
                 "--local_ranks_filter must be a comma-separated list of integers e.g. --local_ranks_filter=0,1,2"
             ) from e
 
-    logs_specs_cls: Type[LogsSpecs] = _get_logs_specs_class(args.logs_specs)
-    logs_specs = logs_specs_cls(
-        log_dir=args.log_dir,
-        redirects=Std.from_str(args.redirects),
-        tee=Std.from_str(args.tee),
-        local_ranks_filter=ranks,
-    )
+    # Determine logs_specs based on ft_base_logfile or logs_specs argument
+    base_log_file = getattr(args, 'ft_base_logfile', None)
+
+    if base_log_file:
+        # If --ft-base-logfile is specified, automatically use PerCycleLogsSpecs
+        # This provides a simple interface: just specify the base log file and get per-cycle logging
+        if args.logs_specs is not None:
+            logger.warning(
+                "--logs-specs is ignored when --ft-base-logfile is specified. "
+                "Using PerCycleLogsSpecs automatically."
+            )
+        logs_specs = PerCycleLogsSpecs(base_log_file=base_log_file)
+        # Note: PerCycleLogsSpecs handles rank prefixing internally via sitecustomize.py
+    else:
+        # Standard logs_specs creation for other cases
+        logs_specs_cls: Type[LogsSpecs] = _get_logs_specs_class(args.logs_specs)
+        logs_specs = logs_specs_cls(
+            log_dir=args.log_dir,
+            redirects=Std.from_str(args.redirects),
+            tee=Std.from_str(args.tee),
+            local_ranks_filter=ranks,
+        )
 
     config = LaunchConfig(
         min_nodes=min_nodes,
