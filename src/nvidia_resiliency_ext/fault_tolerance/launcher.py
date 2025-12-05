@@ -2188,7 +2188,7 @@ def get_args_parser() -> ArgumentParser:
         help="Parse domain ID from node name for segment-aware rank assignment. "
         "Node name format: <domain_id>-<node_id> where domain_id = <prefix><domain_number>. "
         "Example: 'nvl72144-T01' with prefix 'nvl72' has domain_id='nvl72144', domain_number=144. "
-        "Default: True.",
+        "Default: True, but automatically set to False when --ft-segment is not specified.",
     )
 
     parser.add_argument(

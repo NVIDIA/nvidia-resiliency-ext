@@ -103,12 +103,10 @@ class AssignRanksTest(TestCase):
             _NodeDesc("node1", 1, 1): 1,
             _NodeDesc("node2", 1, 1): 2,
         }
-        prev = {}  # Empty prev
 
-        result = _DistributedRendezvousOpExecutor._assign_ranks(
-        )
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
 
-        # Should use infrastructure ranks directly
+        # Should sort by infrastructure ranks and assign contiguous group ranks
         self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
         self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
         self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
@@ -125,61 +123,44 @@ class AssignRanksTest(TestCase):
             _NodeDesc("node2", 1, 1): 2,  # Infrastructure rank 2
         }
 
-        # Previous assignment is ignored with infrastructure ranks
-        prev = {}
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
 
-        result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev
-        )
-
-        # Should use infrastructure ranks directly
+        # Should sort by infrastructure ranks and assign contiguous group ranks
         self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
         self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
         self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
 
-    def test_assign_ranks_fills_gaps_after_node_failure(self) -> None:
+    def test_assign_ranks_with_gaps_in_infra_ranks(self) -> None:
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
 
-        # Original: node0 (rank 0), node1 (rank 1), node2 (rank 2)
-        # node1 fails
-        # node3 joins
-        # New setup should be: node0 (rank 0), node2 (rank 2), node3 (rank 1 - fills gap)
-
+        # Infrastructure ranks with gaps (e.g., from SLURM with some nodes missing)
+        # Infra ranks: [0, 5, 10] should map to group ranks [0, 1, 2]
         participants = {
-            _NodeDesc("node0", 1, 1): 10,  # Infrastructure rank (not used when False)
-            _NodeDesc("node2", 1, 1): 12,  # Infrastructure rank (not used when False)
-            _NodeDesc("node3", 1, 1): 13,  # Infrastructure rank (not used when False) - new node
+            _NodeDesc("node0", 1, 1): 0,  # Infra rank 0
+            _NodeDesc("node1", 1, 1): 5,  # Infra rank 5
+            _NodeDesc("node2", 1, 1): 10,  # Infra rank 10
         }
 
-        # Previous assignment (node1 is gone)
-        prev = {
-            _NodeDesc("node0", 1, 1): 0,
-            _NodeDesc("node2", 1, 1): 2,
-            # node1 is not in prev because it failed
-        }
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
 
-        result = _DistributedRendezvousOpExecutor._assign_ranks(
-        )
+        # Should sort by infra rank and assign contiguous group ranks
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)  # Smallest infra rank -> group rank 0
+        self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)  # Middle infra rank -> group rank 1
+        self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)  # Largest infra rank -> group rank 2
 
-        # Should preserve existing assignments and fill gap
-        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)  # Preserved
-        self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)  # Preserved
-        self.assertEqual(result[_NodeDesc("node3", 1, 1)], 1)  # Fills the gap left by node1
-
-    def test_assign_ranks_sort_order_does_not_affect_prev_reuse(self) -> None:
+    def test_assign_ranks_preserves_slurm_topology_order(self) -> None:
         """
-        This test uses node descriptors that will sort in a different order than
-        their previous rank assignment, to verify that each participant can still
-        reclaim their previous rank regardless of sort order.
+        Test that participants are assigned group ranks in SLURM topology order
+        (sorted by infrastructure rank), regardless of node descriptor sort order.
         """
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
 
-        # Create nodes that will sort as: aaa_node < bbb_node < zzz_node (alphabetically)
-        # But assign them ranks in reverse order
+        # Create nodes that sort alphabetically as: aaa < bbb < zzz
+        # But assign them infrastructure ranks in reverse order
         node_aaa = _NodeDesc("aaa_node", 1, 1)
         node_bbb = _NodeDesc("bbb_node", 1, 1)
         node_zzz = _NodeDesc("zzz_node", 1, 1)
@@ -188,26 +169,19 @@ class AssignRanksTest(TestCase):
         sorted_nodes = sorted([node_zzz, node_aaa, node_bbb])
         self.assertEqual(sorted_nodes, [node_aaa, node_bbb, node_zzz])
 
-        # Previous assignments: reverse of sort order
-        prev = {
-            node_aaa: 2,  # First in sort order, but had rank 2
-            node_bbb: 1,  # Second in sort order, had rank 1
-            node_zzz: 0,  # Last in sort order, but had rank 0
-        }
-
+        # Assign infrastructure ranks in reverse of alphabetical order
         participants = {
-            node_aaa: 100,  # Infrastructure ranks (not used when False)
-            node_bbb: 101,
-            node_zzz: 102,
+            node_aaa: 102,  # Largest infra rank
+            node_bbb: 101,  # Middle infra rank
+            node_zzz: 100,  # Smallest infra rank
         }
 
-        result = _DistributedRendezvousOpExecutor._assign_ranks(
-        )
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
 
-        # Each node should reclaim their previous rank, regardless of sort order
-        self.assertEqual(result[node_aaa], 2)  # Reclaimed rank 2
-        self.assertEqual(result[node_bbb], 1)  # Reclaimed rank 1
-        self.assertEqual(result[node_zzz], 0)  # Reclaimed rank 0
+        # Group ranks should follow SLURM topology order (infra rank order), not alphabetical
+        self.assertEqual(result[node_zzz], 0)  # Smallest infra rank -> group rank 0
+        self.assertEqual(result[node_bbb], 1)  # Middle infra rank -> group rank 1
+        self.assertEqual(result[node_aaa], 2)  # Largest infra rank -> group rank 2
 
 
 # RendezvousState is largely unchanged from upstream, but we test serialization

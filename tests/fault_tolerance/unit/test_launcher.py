@@ -76,6 +76,7 @@ def test_rank_not_send_initial_hb(tmp_dir):
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg.workload_check_interval = 1.0
+    ft_cfg.domain_id_from_node_name = False
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (

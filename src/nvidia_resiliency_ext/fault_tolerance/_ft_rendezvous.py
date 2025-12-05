@@ -64,6 +64,7 @@ from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
+from .utils import get_infrastructure_rank
 
 log = logging.getLogger(LogConfig.name)
 
@@ -656,7 +657,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
     _state: _RendezvousState
     _state_holder: _RendezvousStateHolder
     _settings: RendezvousSettings
-    _prev_participants: Dict[_NodeDesc, int]
     _prev_round: Optional[int]
 
     def __init__(
@@ -668,7 +668,6 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         self._node = node
         self._state_holder = state_holder
         self._settings = settings
-        self._prev_participants = {}
         self._prev_round = None
 
     def _record(self, message: str, node_state: NodeState = NodeState.RUNNING) -> None:
@@ -718,9 +717,8 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             # the rendezvous.
             action = state_handler(ctx, deadline)
 
-            # Save the current round participants if rendezvous is completed
+            # Save the current round if rendezvous is completed
             if self._state.complete and self._prev_round != self._state.round:
-                self._prev_participants = self._state.participants.copy()
                 self._prev_round = self._state.round
 
             if action == _Action.FINISH:
@@ -790,18 +788,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
 
         # Store infrastructure rank if available from SLURM_PROCID or GROUP_RANK
         # If neither is set, use -1 and it will be assigned deterministically later
-        infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', None))
-        if infra_rank_str is not None:
-            infra_rank = int(infra_rank_str)
-            log.debug(f"Node {self._node} stored infrastructure rank {infra_rank} from environment")
-        else:
-            # Neither env var is set - will be assigned deterministically later
-            # based on sorted node order in _assign_ranks
-            infra_rank = -1
-            log.debug(
-                f"Node {self._node} neither SLURM_PROCID nor GROUP_RANK is set. "
-                f"Infrastructure rank will be assigned based on sorted node order."
-            )
+        infra_rank = get_infrastructure_rank()
         state.participants[self._node] = infra_rank
 
         self._keep_alive()
@@ -887,18 +874,17 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
     @staticmethod
     def _assign_ranks(
         participants: Dict[_NodeDesc, int],
-        prev: Dict[_NodeDesc, int],
     ) -> Dict[_NodeDesc, int]:
         """
         Assign ranks to participants using infrastructure ranks when available.
 
         If infrastructure ranks (from SLURM_PROCID/GROUP_RANK) are available (>=0),
-        they are used directly. If any node has infra_rank=-1 (environment variables not set),
+        they are sorted and assigned contiguous group ranks [0, 1, 2, ...].
+        If any node has infra_rank=-1 (environment variables not set),
         all nodes are assigned ranks deterministically based on sorted node order.
 
         Args:
             participants: Dict mapping node descriptors to infrastructure ranks
-            prev: Dict of previous rank assignments (unused, kept for API compatibility)
 
         Returns:
             Dict mapping node descriptors to assigned ranks
@@ -916,22 +902,21 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             )
             return result
 
-        # All nodes have infrastructure ranks - use them directly
-        # Validate that all participants have valid infrastructure ranks
-        for node, rank in participants.items():
-            if rank < 0 or rank >= len(participants):
-                raise ValueError(
-                    f"Invalid infrastructure rank {rank} for node {node}. "
-                    f"Expected rank in range [0, {len(participants)})"
-                )
+        # All nodes have infrastructure ranks - sort and assign contiguous group ranks
         # Check for duplicate ranks
         ranks_set = set(participants.values())
         if len(ranks_set) != len(participants):
             raise ValueError(
                 f"Duplicate infrastructure ranks detected in participants: {participants}"
             )
-        log.debug(f"Using infrastructure ranks directly: {participants}")
-        return dict(participants)
+
+        # Sort participants by infrastructure rank (SLURM topology order)
+        # and assign contiguous group ranks [0, 1, 2, ...]
+        sorted_participants = sorted(participants.items(), key=lambda x: x[1])
+        result = {node: idx for idx, (node, _) in enumerate(sorted_participants)}
+
+        log.debug(f"Assigned group ranks based on infrastructure rank order: {result}")
+        return result
 
     def _mark_rendezvous_complete(self) -> None:
         msg = (
@@ -956,7 +941,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             state.wait_list.clear()
 
         # Assign ranks using infrastructure order
-        state.participants = self._assign_ranks(state.participants, self._prev_participants)
+        state.participants = self._assign_ranks(state.participants)
 
         # Set initial worker states, assume all workers are healthy at the beginning
         state.worker_states = {n: WorkerState.HEALTHY for n in state.participants}
@@ -1216,9 +1201,9 @@ class FtRendezvousHandler(RendezvousHandler):
             upscaling_enabled:
                 Whether to enable upscaling of a completed rendezvous with redundant or new nodes.
             enable_nic_healthcheck:
-                Whether to enable IB link state health check before rendezvous.
+                Whether to enable all NIC link state health check before rendezvous.
             link_state_path_template:
-                Template path for IB link state files.
+                Template path for NIC link state files.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)

@@ -34,6 +34,41 @@ logger = logging.getLogger(LogConfig.name)
 _IPC_PICKLER = multiprocessing.reduction.ForkingPickler(open(os.devnull, mode='wb'))
 
 
+def get_infrastructure_rank() -> int:
+    """Get infrastructure rank from environment variables with SLURM validation.
+
+    Returns infrastructure rank from SLURM_PROCID (preferred) or GROUP_RANK (fallback).
+    If neither is set, returns -1 to indicate it should be assigned deterministically.
+
+    Returns:
+        int: Infrastructure rank (>=0) or -1 if not set
+
+    Raises:
+        RuntimeError: If SLURM_JOB_ID is set but SLURM_PROCID is missing
+    """
+    # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
+    infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', None))
+
+    if infra_rank_str is not None:
+        infra_rank = int(infra_rank_str)
+        logger.debug(f"Using infrastructure rank {infra_rank} from environment")
+        return infra_rank
+
+    # Check if we're running under SLURM - if so, SLURM_PROCID should be defined
+    if os.getenv('SLURM_JOB_ID') is not None:
+        raise RuntimeError(
+            "SLURM_JOB_ID is set but SLURM_PROCID is not defined. "
+            "This indicates a SLURM deployment error. "
+            "SLURM_PROCID should be automatically set by SLURM for each task."
+        )
+
+    # Neither env var is set - will be assigned deterministically later
+    logger.debug(
+        "Neither SLURM_PROCID nor GROUP_RANK is set. Infrastructure rank will be assigned deterministically."
+    )
+    return -1
+
+
 def is_process_alive(pid):
     try:
         process = psutil.Process(pid)

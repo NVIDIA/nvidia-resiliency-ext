@@ -29,7 +29,6 @@ These tests focus on:
 import os
 import threading
 import time
-import pytest
 from datetime import timedelta
 from unittest import TestCase
 
@@ -59,24 +58,24 @@ def _test_timeout(seconds=TEST_LAST_CALL_TIMEOUT_SECS):
 
 class BaseRendezvousTest(TestCase):
     """Base test class that clears SLURM/GROUP_RANK environment variables.
-    
+
     Most tests should inherit from this to ensure they use deterministic rank
     assignment rather than being affected by the shell environment.
-    
+
     Tests that specifically need to test infrastructure rank behavior from
     environment variables should inherit directly from TestCase instead.
     """
-    
+
     def setUp(self):
         """Save and clear SLURM/GROUP_RANK environment variables."""
-        import os
+
         self._saved_slurm_procid = os.environ.pop('SLURM_PROCID', None)
         self._saved_group_rank = os.environ.pop('GROUP_RANK', None)
         super().setUp()
-    
+
     def tearDown(self):
         """Restore SLURM/GROUP_RANK environment variables."""
-        import os
+
         super().tearDown()
         if self._saved_slurm_procid is not None:
             os.environ['SLURM_PROCID'] = self._saved_slurm_procid
@@ -188,6 +187,7 @@ class Step2CompletionTest(BaseRendezvousTest):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
@@ -364,6 +364,7 @@ class RaceConditionTest(BaseRendezvousTest):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
@@ -619,6 +620,7 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
@@ -845,6 +847,7 @@ class ErrorCaseTest(BaseRendezvousTest):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
@@ -976,6 +979,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
@@ -1086,6 +1090,7 @@ class HandlerIntegrationTest(BaseRendezvousTest):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         import time
+
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store

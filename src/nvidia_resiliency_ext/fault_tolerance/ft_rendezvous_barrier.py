@@ -50,6 +50,7 @@ from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
+from .utils import get_infrastructure_rank
 
 log = logging.getLogger(LogConfig.name)
 
@@ -265,7 +266,7 @@ class RendezvousParticipantInfo:
             raise ValueError(f"Invalid participant info data: {e}")
 
 
-def _parse_domain_number_from_node_name(node_name: str, domain_id_prefix: str) -> Optional[int]:
+def _parse_domain_number_from_node_name(node_name: str, domain_id_prefix: str) -> int:
     """Parse domain number from node name by extracting domain_id and removing prefix.
 
     Expected format: <domain_id>-<node_id> where domain_id = <prefix><domain_number>
@@ -276,22 +277,24 @@ def _parse_domain_number_from_node_name(node_name: str, domain_id_prefix: str) -
         domain_id_prefix: The prefix to strip from domain_id to get domain_number
 
     Returns:
-        The domain number if found and parsed successfully, None otherwise
+        The domain number parsed from the node name
+
+    Raises:
+        RuntimeError: If the domain number cannot be parsed from the node name
     """
     # Extract domain_id (part before the first hyphen)
     parts = node_name.split('-', 1)
     if not parts:
-        return None
+        raise RuntimeError(f"Node name '{node_name}' does not contain a hyphen separator")
 
     domain_id = parts[0]
 
     # Remove prefix to get domain_number
     if not domain_id.startswith(domain_id_prefix):
-        log.warning(
+        raise RuntimeError(
             f"Node name '{node_name}' has domain_id '{domain_id}' that doesn't start "
             f"with expected prefix '{domain_id_prefix}'"
         )
-        return None
 
     domain_number_str = domain_id[len(domain_id_prefix) :]
 
@@ -299,11 +302,10 @@ def _parse_domain_number_from_node_name(node_name: str, domain_id_prefix: str) -
     try:
         return int(domain_number_str)
     except ValueError:
-        log.warning(
+        raise RuntimeError(
             f"Failed to parse domain number from node name '{node_name}': "
             f"domain_id='{domain_id}', after removing prefix '{domain_id_prefix}' got '{domain_number_str}'"
         )
-        return None
 
 
 class _RendezvousBarrierState:
@@ -390,273 +392,134 @@ class _RendezvousBarrierState:
     def _assign_group_ranks(
         self,
         participants: List[Tuple[_NodeDesc, int]],
-        min_nodes: int,
-    ) -> Dict[_NodeDesc, int]:
-        """Assign group ranks to participants using infrastructure rank order.
-
-        Args:
-            participants: List of (node_desc, infra_rank) tuples
-            min_nodes: Minimum number of active nodes
-
-        Returns:
-            Dictionary of node_desc -> assigned_group_rank
-        """
-        # Always use infrastructure rank-based assignment
-        # If infra_rank is not set (=-1), it will be assigned deterministically
-        # based on sorted node order in _assign_group_ranks_with_infra_rank
-        return self._assign_group_ranks_with_infra_rank(participants, min_nodes)
-
-    def _assign_group_ranks_with_infra_rank(
-        self,
-        participants: List[Tuple[_NodeDesc, int]],
-        min_nodes: int,
+        world_size: int,
     ) -> Dict[_NodeDesc, int]:
         """Assign group ranks using infrastructure ranks with hardware failure resilience.
 
-        Core principle: Select participants in SLURM topology order, assign contiguous ranks [0..min_nodes)
-
-        With segment awareness enabled (segment is not None):
-        - segment is a MINIMUM threshold: domains must have >= segment nodes to be valid
-        - From each domain, as many COMPLETE segments as possible are selected
-        - Domains are selected in SLURM topology order
-        - Exactly min_nodes participants are selected (min_nodes must be divisible by segment)
-
-        Default behavior (segment is None):
-        - Select first min_nodes participants in SLURM topology order
-
-        Both configurations produce contiguous group ranks [0, 1, 2, ..., min_nodes-1] following
-        SLURM topology order.
-
-        Example (no segment awareness):
-            min_nodes=5, arrivals: infra_ranks [0, 1, 3, 4, 10, 11]
-            Active participants (first 5 in SLURM order):
-            - Node(infra=0) → group_rank=0
-            - Node(infra=1) → group_rank=1
-            - Node(infra=3) → group_rank=2  (reassigned from 3 to 2)
-            - Node(infra=4) → group_rank=3  (reassigned from 4 to 3)
-            - Node(infra=10) → group_rank=4 (reassigned from 10 to 4)
-            Standby participants:
-            - Node(infra=11) → group_rank=5 (standby)
+        Simplified unified logic (works for both segment=None and segment-aware cases):
+        1. Group participants by domain
+        2. Sort domains by SLURM topology (smallest infra_rank in each domain)
+        3. Single pass walk through sorted domains:
+           - Get complete segments from each domain
+           - Assign active ranks [0..world_size) directly
+           - Assign standby ranks [world_size..) directly
+        4. Treat segment=None as segment=1 (every node is its own segment)
 
         Args:
             participants: List of (node_desc, infra_rank) tuples
-            min_nodes: Target number of active nodes
+            world_size: Target number of active nodes (training world size)
 
         Returns:
             Dictionary of node_desc -> assigned_group_rank
 
         Raises:
             RuntimeError: If insufficient nodes available
-            ValueError: If duplicate infra_ranks detected or min_nodes not divisible by segment
+            ValueError: If duplicate infra_ranks or world_size not divisible by segment
         """
-        # Step 0: Check if any nodes have unassigned infra_rank (-1)
-        # This happens when neither SLURM_PROCID nor GROUP_RANK is set
+        # Treat segment=None as segment=1
+        segment = self.segment if self.segment is not None else 1
+        if world_size % segment != 0:
+            raise ValueError(f"world_size ({world_size}) must be divisible by segment ({segment})")
+
+        # Handle unassigned infra_ranks and sort by infra_rank (SLURM topology order)
         has_unassigned = any(infra_rank == -1 for _, infra_rank in participants)
-
         if has_unassigned:
-            # Assign infra_ranks deterministically based on sorted node order
-            # Sort by node_desc for deterministic ordering
+            # Sort by node_desc and assign sequential infra_ranks [0, 1, 2, ...]
+            # No need to sort again - already in infra_rank order
+            # No duplicates possible since we assign sequential indices
             sorted_by_node = sorted(participants, key=lambda x: x[0])
-
-            # Create new participants list with assigned infra_ranks
-            participants = [(node_desc, idx) for idx, (node_desc, _) in enumerate(sorted_by_node)]
-
-            log.info(
-                f"Assigned infrastructure ranks deterministically based on node order "
-                f"for {len(participants)} participants (SLURM_PROCID/GROUP_RANK not set)"
-            )
-
-        # Step 1: Sort by infra_rank to get SLURM topology order - O(N log N)
-        sorted_participants = sorted(participants, key=lambda x: x[1])
-
-        # Step 2: Select participants based on configuration
-        if self.segment is not None and self.domain_id_from_node_name:
-            # Segment-aware: filter by domain constraints
-            selected_participants = self._select_by_domain(sorted_participants, min_nodes)
+            sorted_participants = [
+                (node_desc, idx) for idx, (node_desc, _) in enumerate(sorted_by_node)
+            ]
         else:
-            # Default: take first min_nodes in SLURM order
-            if len(sorted_participants) < min_nodes:
-                raise RuntimeError(
-                    f"Insufficient participants: have {len(sorted_participants)}, need {min_nodes}"
-                )
-            selected_participants = sorted_participants[:min_nodes]
+            # Sort by existing infra_rank
+            sorted_participants = sorted(participants, key=lambda x: x[1])
 
-        # Step 3: Check for duplicate infra_ranks
-        infra_ranks_seen = set()
-        for node_desc, infra_rank in selected_participants:
-            if infra_rank in infra_ranks_seen:
+            # Check for duplicate infra_ranks early (deployment error)
+            infra_ranks = {infra_rank for _, infra_rank in sorted_participants}
+            if len(infra_ranks) != len(sorted_participants):
                 raise RuntimeError(
-                    f"Duplicate infrastructure rank {infra_rank} detected. "
-                    f"This indicates a deployment error - each node must have a unique "
-                    f"SLURM_PROCID or GROUP_RANK value."
+                    "Duplicate infrastructure ranks detected. "
+                    "Each node must have a unique SLURM_PROCID or GROUP_RANK."
                 )
-            infra_ranks_seen.add(infra_rank)
 
-        # Step 4: Assign contiguous group ranks [0..min_nodes) to active participants - O(N)
+        # Step 1: Group by domain
+        # When segment is None, treat each node as its own domain (non-segmented deployment)
+        if self.domain_id_from_node_name and self.segment is not None:
+            domain_to_participants: Dict[int, List[Tuple[_NodeDesc, int]]] = defaultdict(list)
+            for node_desc, infra_rank in sorted_participants:
+                domain_num = self._get_domain_number(node_desc.addr)
+                domain_to_participants[domain_num].append((node_desc, infra_rank))
+        else:
+            # Each node is its own domain
+            domain_to_participants = {
+                infra_rank: [(node_desc, infra_rank)]
+                for node_desc, infra_rank in sorted_participants
+            }
+
+        # Step 2: Sort domains by SLURM topology (first node's infra_rank in each domain)
+        # Since participants are already sorted by infra_rank, domain_participants[0][1] is the smallest
+        sorted_domains = sorted(
+            domain_to_participants.items(), key=lambda x: x[1][0][1]
+        )  # x[1][0][1] = first participant's infra_rank
+
+        # Step 3: Single pass - walk through sorted domains and assign ranks directly
+        # Work in segments for cleaner arithmetic
+        num_segments = world_size // segment
         result = {}
-        selected_node_descs = set()
-        for new_rank, (node_desc, original_infra_rank) in enumerate(selected_participants):
-            result[node_desc] = new_rank
-            selected_node_descs.add(node_desc)
-            log.debug(
-                f"Rank assignment: {node_desc.addr} "
-                f"(orig_infra={original_infra_rank}) -> group_rank={new_rank} (active)"
-            )
+        active_rank = 0
+        active_segments = 0
+        standby_rank = world_size
 
-        # Step 5: Assign standby ranks to unselected participants
-        standby_rank = min_nodes
-        for node_desc, infra_rank in sorted_participants:
-            if node_desc not in selected_node_descs:
+        for domain_num, domain_participants in sorted_domains:
+            domain_segments = len(domain_participants) // segment
+
+            # Calculate how many nodes to take for active ranks
+            if active_segments < num_segments and domain_segments > 0:
+                segments_to_take = min(domain_segments, num_segments - active_segments)
+            else:
+                segments_to_take = 0
+
+            nodes_to_take = segments_to_take * segment
+
+            # Assign active ranks
+            for node_desc, infra_rank in domain_participants[:nodes_to_take]:
+                result[node_desc] = active_rank
+                log.debug(
+                    f"Rank: {node_desc.addr} (infra={infra_rank}) -> group_rank={active_rank} (active)"
+                )
+                active_rank += 1
+
+            active_segments += segments_to_take
+
+            # Assign standby ranks to rest from this domain
+            for node_desc, infra_rank in domain_participants[nodes_to_take:]:
                 result[node_desc] = standby_rank
                 log.debug(
-                    f"Rank assignment: {node_desc.addr} "
-                    f"(orig_infra={infra_rank}) -> group_rank={standby_rank} (standby)"
+                    f"Rank: {node_desc.addr} (infra={infra_rank}) -> group_rank={standby_rank} (standby)"
                 )
                 standby_rank += 1
 
-        log.info(
-            f"Assigned {len(selected_participants)} active ranks [0..{min_nodes-1}] "
-            f"and {len(result) - len(selected_participants)} standby ranks [{min_nodes}..{len(result)-1}] "
-            f"following SLURM topology order"
-        )
-
-        return result
-
-    def _select_by_domain(
-        self,
-        sorted_participants: List[Tuple[_NodeDesc, int]],
-        min_nodes: int,
-    ) -> List[Tuple[_NodeDesc, int]]:
-        """Select participants based on domain constraints.
-
-        Assumes participants are already sorted by infra_rank (SLURM topology order).
-        Does NOT reassign ranks - only filters and selects based on domain constraints.
-
-        Rules:
-        - segment is MINIMUM threshold: domains must have >= segment nodes to be valid
-        - From each domain, select as many COMPLETE segments as possible
-          (e.g., domain with 12 nodes and segment=4 → use 12 nodes = 3 segments)
-          (e.g., domain with 10 nodes and segment=4 → use 8 nodes = 2 segments)
-        - Select exactly min_nodes total (min_nodes must be divisible by segment)
-        - Domains are selected in SLURM topology order (by first node's position)
-
-        Args:
-            sorted_participants: List of (node_desc, infra_rank) tuples, pre-sorted by infra_rank
-            min_nodes: Target number of nodes (must be divisible by segment)
-
-        Returns:
-            Selected list of (node_desc, infra_rank) tuples in SLURM topology order
-
-        Raises:
-            ValueError: If min_nodes is not divisible by segment
-            RuntimeError: If insufficient nodes available
-        """
-        # Validate that min_nodes is divisible by segment
-        if min_nodes % self.segment != 0:
-            raise ValueError(
-                f"min_nodes ({min_nodes}) must be divisible by segment ({self.segment}). "
-                f"Expected min_nodes to be a multiple of segment size."
-            )
-
-        # Participants are already sorted by infra_rank (SLURM topology order)
-        # Step 1: Group by domain - O(N)
-        domain_to_participants: Dict[int, List[Tuple[_NodeDesc, int]]] = defaultdict(list)
-        nodes_without_domain = []
-
-        for node_desc, infra_rank in sorted_participants:
-            domain_num = self._get_domain_number(node_desc.addr)
-            if domain_num is None:
-                nodes_without_domain.append((node_desc, infra_rank))
-            else:
-                domain_to_participants[domain_num].append((node_desc, infra_rank))
-
-        if nodes_without_domain:
-            log.warning(f"Found {len(nodes_without_domain)} nodes without valid domain numbers")
-
-        # Step 2: Classify valid domains and calculate usable segments - O(# domains)
-        valid_domains_info = []  # List of (domain_num, usable_nodes, first_infra_rank)
-
-        for domain_num, domain_participants in domain_to_participants.items():
-            domain_size = len(domain_participants)
-
-            if domain_size < self.segment:
-                log.warning(
-                    f"Excluding domain {domain_num}: {domain_size} nodes < segment {self.segment}"
+            if nodes_to_take > 0:
+                log.debug(
+                    f"Domain {domain_num}: {segments_to_take} segments ({nodes_to_take} nodes) active, "
+                    f"{len(domain_participants) - nodes_to_take} standby"
                 )
-                continue
+            else:
+                log.debug(f"Domain {domain_num}: all {len(domain_participants)} nodes to standby")
 
-            # Calculate how many complete segments we can use from this domain
-            # e.g., domain_size=12, segment=4 → usable_nodes=12 (3 complete segments)
-            # e.g., domain_size=10, segment=4 → usable_nodes=8 (2 complete segments)
-            num_complete_segments = domain_size // self.segment
-            usable_nodes = num_complete_segments * self.segment
-
-            # Get first node's infra_rank for ordering
-            first_infra_rank = domain_participants[0][1]  # Already sorted by infra_rank
-
-            valid_domains_info.append((domain_num, usable_nodes, first_infra_rank))
-
-            log.debug(
-                f"Domain {domain_num}: {domain_size} total nodes, {usable_nodes} usable nodes "
-                f"({num_complete_segments} segments)"
-            )
-
-        if not valid_domains_info:
-            raise RuntimeError(f"No valid domains found (all domains have < {self.segment} nodes)")
-
-        # Step 3: Select domains in SLURM topology order - O(# domains log # domains)
-        # Sort by first_infra_rank to maintain SLURM topology order
-        valid_domains_info.sort(key=lambda x: x[2])  # x[2] is first_infra_rank
-
-        # Select domains until we reach exactly min_nodes
-        selected_domains = []  # List of (domain_num, usable_nodes)
-        total_selected_nodes = 0
-
-        for domain_num, usable_nodes, first_infra_rank in valid_domains_info:
-            if total_selected_nodes >= min_nodes:
-                break
-
-            selected_domains.append((domain_num, usable_nodes))
-            total_selected_nodes += usable_nodes
-
-            log.debug(
-                f"Selected domain {domain_num}: {usable_nodes} nodes, total={total_selected_nodes}"
-            )
-
-        if total_selected_nodes < min_nodes:
+        # Validate we have enough active segments
+        if active_segments < num_segments:
             raise RuntimeError(
-                f"Insufficient nodes: selected {total_selected_nodes} from "
-                f"{len(selected_domains)} domains, need {min_nodes}. "
-                f"Each domain must have at least {self.segment} nodes."
+                f"Insufficient nodes: assigned {active_segments} segments ({active_rank} nodes), "
+                f"need {num_segments} segments ({world_size} nodes). "
+                f"Each domain must have at least {segment} nodes."
             )
-
-        # Create a set of selected domains with their node limits
-        domain_limits = {domain_num: usable_nodes for domain_num, usable_nodes in selected_domains}
-
-        # Step 4: Collect selected nodes in SLURM order - O(N)
-        result = []
-        domain_node_counts = defaultdict(int)
-
-        for node_desc, infra_rank in sorted_participants:
-            domain_num = self._get_domain_number(node_desc.addr)
-            if domain_num not in domain_limits:
-                continue  # Domain not selected
-
-            # Only take up to usable_nodes from this domain
-            if domain_node_counts[domain_num] >= domain_limits[domain_num]:
-                continue
-
-            result.append((node_desc, infra_rank))
-            domain_node_counts[domain_num] += 1
-
-            # Stop if we've collected exactly min_nodes
-            if len(result) >= min_nodes:
-                break
 
         log.info(
-            f"Segment filtering: {len(sorted_participants)} participants -> "
-            f"{len(result)} selected from {len(selected_domains)} domains "
-            f"(segment={self.segment}, min_nodes={min_nodes})"
+            f"Assigned {active_segments} segments ({active_rank} active ranks [0..{world_size-1}]) and "
+            f"{standby_rank - world_size} standby ranks [{world_size}..{standby_rank-1}] "
+            f"(segment={segment})"
         )
 
         return result
@@ -872,19 +735,7 @@ class _RendezvousBarrierState:
             raise RendezvousClosedError(msg)
 
         # Determine infrastructure rank
-        # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
-        infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', None))
-        if infra_rank_str is not None:
-            infra_rank = int(infra_rank_str)
-            log.debug(f"[{node_desc}] Using infrastructure rank {infra_rank} from environment")
-        else:
-            # Neither env var is set - will be assigned deterministically later
-            # based on sorted node order in assign_group_ranks
-            infra_rank = -1
-            log.debug(
-                f"[{node_desc}] Neither SLURM_PROCID nor GROUP_RANK is set. "
-                f"Infrastructure rank will be assigned based on sorted node order."
-            )
+        infra_rank = get_infrastructure_rank()
 
         # Store participant information in arrived_<count> key using the unique identifier
         arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
@@ -1095,12 +946,12 @@ class _RendezvousBarrierState:
                 log.debug(f"[{node_desc}] Failed to delete key {key}: {e}")
 
     def assign_group_ranks(
-        self, min_nodes: int, max_nodes: int, total_participants: int, node_desc: _NodeDesc
+        self, world_size: int, max_nodes: int, total_participants: int, node_desc: _NodeDesc
     ) -> bool:
-        """Assign group ranks to all participants while preserving previous assignments. Called by Rank 0 (TCPStore host).
+        """Assign group ranks to all participants. Called by Rank 0 (TCPStore host).
 
         Args:
-            min_nodes: Minimum number of active participants
+            world_size: Target world size for training (number of active participants)
             max_nodes: Maximum number of participants allowed
             total_participants: Total number of participants (passed to avoid race condition)
         """
@@ -1126,7 +977,7 @@ class _RendezvousBarrierState:
                 f"the actual number of nodes being launched."
             )
 
-        assigned_group_ranks = self._assign_group_ranks(all_participants, min_nodes)
+        assigned_group_ranks = self._assign_group_ranks(all_participants, world_size)
 
         # Store the assigned ranks and total participants in the store
         for i, (node_desc_item, infra_rank) in enumerate(all_participants):
@@ -1264,9 +1115,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             segment:
                 Number of nodes to select from each domain.
             enable_nic_healthcheck:
-                Whether to enable IB link state health check before rendezvous.
+                Whether to enable all NIC link state health check before rendezvous.
             link_state_path_template:
-                Template path for IB link state files.
+                Template path for NIC link state files.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1659,17 +1510,19 @@ def create_handler(
     |                            | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
     |                            | 30 seconds.                                          |
     +----------------------------+------------------------------------------------------+
-    | domain_id_from_node_name   | Whether to parse domain ID from node name for segment- |
-    |                            | aware rank assignment. Defaults to True.             |
+    | domain_id_from_node_name   | Whether to parse domain ID from node name for        |
+    |                            | segment-aware rank assignment. Defaults to True, but |
+    |                            | automatically set to False when segment=None.        |
     +----------------------------+------------------------------------------------------+
-    | domain_id_prefix           | Prefix to strip from domain_id to extract domain number. |
-    |                            | Defaults to "nvl72".                                 |
+    | domain_id_prefix           | Prefix to strip from domain_id to extract domain     |
+    |                            | number. Defaults to "nvl72".                         |
     +----------------------------+------------------------------------------------------+
     | segment                    | Minimum number of nodes required per domain for      |
-    |                            | segment-aware rank assignment. Domains with fewer nodes|
-    |                            | are excluded. As many complete segments as possible  |
-    |                            | are selected from each domain. min_nodes must be     |
-    |                            | divisible by segment. Defaults to None (disabled).   |
+    |                            | segment-aware rank assignment. Domains with fewer    |
+    |                            | nodes are excluded. As many complete segments as     |
+    |                            | possible are selected from each domain. min_nodes    |
+    |                            | must be divisible by segment. Defaults to None       |
+    |                            | (disabled).                                          |
     +----------------------------+------------------------------------------------------+
     | enable_nic_healthcheck     | Whether to enable IB link state health check before  |
     |                            | rendezvous. Defaults to False.                       |
