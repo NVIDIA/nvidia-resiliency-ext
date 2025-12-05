@@ -830,6 +830,699 @@ class GroupRankAssignmentTest(TestCase):
         ranks = sorted(result.values())
         self.assertEqual(ranks, [0, 1, 2, 3, 4])
 
+    def test_rank_assignment_preserves_slurm_topology_order(self):
+        """Test that participants arriving out-of-order are assigned group ranks
+        in SLURM topology order (sorted by infrastructure rank), not arrival order.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+        )
+
+        # Create nodes that arrive in arbitrary order (e.g., alphabetically: aaa < bbb < zzz)
+        # But assign them infrastructure ranks in reverse order
+        node_aaa = _NodeDesc("aaa_node", 100, 0)
+        node_bbb = _NodeDesc("bbb_node", 101, 0)
+        node_zzz = _NodeDesc("zzz_node", 102, 0)
+
+        # Verify sort order by node descriptor is as expected
+        sorted_nodes = sorted([node_zzz, node_aaa, node_bbb])
+        self.assertEqual(sorted_nodes, [node_aaa, node_bbb, node_zzz])
+
+        # Create participants list with infra ranks in reverse of alphabetical order
+        # Simulating they arrived/joined out of order
+        participants = [
+            (node_aaa, 102),  # Largest infra rank
+            (node_bbb, 101),  # Middle infra rank
+            (node_zzz, 100),  # Smallest infra rank
+        ]
+        min_nodes = 3
+
+        # Assign ranks
+        result = state._assign_group_ranks(participants, min_nodes)
+
+        # Group ranks should follow SLURM topology order (infra rank order), not node descriptor order
+        self.assertEqual(result[node_zzz], 0)  # Smallest infra rank -> group rank 0
+        self.assertEqual(result[node_bbb], 1)  # Middle infra rank -> group rank 1
+        self.assertEqual(result[node_aaa], 2)  # Largest infra rank -> group rank 2
+
+    def test_rank_assignment_with_hot_spare_segment_none(self):
+        """Test rank assignment with hot spare nodes (segment=None).
+
+        When there are more participants than world_size and segment=None,
+        the extra nodes become hot spares with ranks >= world_size.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=None,  # No segment awareness
+        )
+
+        # 5 nodes, world_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0),  # Active
+            (_NodeDesc("node1", 101, 0), 1),  # Active
+            (_NodeDesc("node2", 102, 0), 2),  # Active
+            (_NodeDesc("node3", 103, 0), 3),  # Hot spare
+            (_NodeDesc("node4", 104, 0), 4),  # Hot spare
+        ]
+        world_size = 3
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # First 3 get active ranks [0,1,2]
+        self.assertEqual(result[_NodeDesc("node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("node2", 102, 0)], 2)
+
+        # Remaining 2 are hot spares [3,4]
+        self.assertEqual(result[_NodeDesc("node3", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("node4", 104, 0)], 4)
+
+    def test_rank_assignment_segment_1_with_hot_spare(self):
+        """Test rank assignment with segment=1 and hot spare nodes.
+
+        segment=1 means each node is a complete segment.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=False,  # Disable domain parsing for this test
+            segment=1,
+        )
+
+        # 5 nodes, world_size=3, segment=1 -> first 3 active, remaining 2 hot spares
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0),
+            (_NodeDesc("node1", 101, 0), 1),
+            (_NodeDesc("node2", 102, 0), 2),
+            (_NodeDesc("node3", 103, 0), 3),  # Hot spare
+            (_NodeDesc("node4", 104, 0), 4),  # Hot spare
+        ]
+        world_size = 3
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Active ranks
+        self.assertEqual(result[_NodeDesc("node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("node2", 102, 0)], 2)
+
+        # Hot spares
+        self.assertEqual(result[_NodeDesc("node3", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("node4", 104, 0)], 4)
+
+    def test_rank_assignment_segment_4_with_hot_spare(self):
+        """Test rank assignment with segment=4 and hot spare nodes.
+
+        segment=4 means we need 4 nodes per segment.
+        world_size=8 requires 2 complete segments.
+        Using domain-aware assignment with 2 domains.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        # Domain 100: 8 nodes (2 complete segments) -> first 8 active
+        # Domain 101: 4 nodes (1 complete segment) -> all standby (already have enough)
+        # Total 12 nodes, world_size=8 (2 segments)
+        participants = [
+            # Domain 100: 8 nodes
+            (_NodeDesc("nvl72100-node0", 100, 0), 0),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7),
+            # Domain 101: 4 nodes
+            (_NodeDesc("nvl72101-node0", 108, 0), 8),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11),
+        ]
+        world_size = 8
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100: all 8 nodes are active (2 complete segments) [0-7]
+        for i in range(8):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+        # Domain 101: all 4 nodes are standby [8-11]
+        for i in range(4):
+            self.assertEqual(result[_NodeDesc(f"nvl72101-node{i}", 108 + i, 0)], 8 + i)
+
+    def test_rank_assignment_segment_16_with_hot_spare(self):
+        """Test rank assignment with segment=16 and hot spare nodes.
+
+        segment=16 means we need 16 nodes per segment.
+        Using domain-aware assignment with 2 domains.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=16,
+        )
+
+        # Domain 100: 16 nodes (1 complete segment) -> all 16 active
+        # Domain 101: 4 nodes (0 complete segments) -> all 4 standby
+        # Total 20 nodes, world_size=16 (1 segment)
+        participants = [
+            # Domain 100: 16 nodes
+            *[(_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i) for i in range(16)],
+            # Domain 101: 4 nodes
+            *[(_NodeDesc(f"nvl72101-node{i}", 116 + i, 0), 16 + i) for i in range(4)],
+        ]
+        world_size = 16
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100: all 16 nodes are active (1 complete segment) [0-15]
+        for i in range(16):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+        # Domain 101: all 4 nodes are standby [16-19]
+        for i in range(4):
+            self.assertEqual(result[_NodeDesc(f"nvl72101-node{i}", 116 + i, 0)], 16 + i)
+
+    def test_rank_assignment_domain_with_zero_complete_segments(self):
+        """Test rank assignment when a domain has 0 complete segments.
+
+        If segment=4 and a domain has only 3 nodes, those nodes can't form
+        a complete segment and should be assigned to standby.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        # Domain 100: 4 nodes (1 complete segment) -> active
+        # Domain 101: 3 nodes (0 complete segments) -> all standby
+        # World_size=4 requires 1 segment
+        participants = [
+            # Domain 100: 4 nodes
+            (_NodeDesc("nvl72100-node0", 100, 0), 0),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3),
+            # Domain 101: 3 nodes (incomplete segment)
+            (_NodeDesc("nvl72101-node0", 104, 0), 4),
+            (_NodeDesc("nvl72101-node1", 105, 0), 5),
+            (_NodeDesc("nvl72101-node2", 106, 0), 6),
+        ]
+        world_size = 4
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100: all 4 nodes active [0-3]
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 3)
+
+        # Domain 101: all 3 nodes become standby [4-6]
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 104, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 105, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 106, 0)], 6)
+
+    def test_rank_assignment_domain_with_one_complete_segment(self):
+        """Test rank assignment when a domain has exactly 1 complete segment."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        # Domain 100: 4 nodes (1 complete segment)
+        # Domain 101: 4 nodes (1 complete segment)
+        # World_size=8 requires 2 segments, both domains contribute 1 segment
+        participants = [
+            # Domain 100
+            (_NodeDesc("nvl72100-node0", 100, 0), 0),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3),
+            # Domain 101
+            (_NodeDesc("nvl72101-node0", 104, 0), 4),
+            (_NodeDesc("nvl72101-node1", 105, 0), 5),
+            (_NodeDesc("nvl72101-node2", 106, 0), 6),
+            (_NodeDesc("nvl72101-node3", 107, 0), 7),
+        ]
+        world_size = 8
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Both domains contribute 1 segment each, all nodes active
+        # Domain 100 comes first (lower infra_rank)
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 3)
+
+        # Domain 101
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 104, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 105, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 106, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72101-node3", 107, 0)], 7)
+
+    def test_rank_assignment_domain_with_multiple_complete_segments(self):
+        """Test rank assignment when a domain has multiple complete segments.
+
+        A domain with 12 nodes and segment=4 has 3 complete segments.
+        If world_size=4 (1 segment needed), domain uses 4 nodes, rest are standby.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        # Domain 100: 12 nodes (3 complete segments)
+        # World_size=4 requires 1 segment
+        # -> First 4 nodes active, remaining 8 standby
+        participants = [(_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i) for i in range(12)]
+        world_size = 4
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # First 4 nodes active (1 segment)
+        for i in range(4):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+        # Remaining 8 nodes standby [4-11]
+        for i in range(4, 12):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+    def test_rank_assignment_multiple_domains_mixed_segments(self):
+        """Test rank assignment with multiple domains having different segment counts.
+
+        Test scenario:
+        - Domain 100: 8 nodes (2 segments with segment=4)
+        - Domain 101: 6 nodes (1 complete segment + 2 incomplete)
+        - Domain 102: 4 nodes (1 complete segment)
+        - World_size=8 (2 segments needed)
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        participants = [
+            # Domain 100: 8 nodes (2 segments) - lower infra_rank comes first
+            (_NodeDesc("nvl72100-node0", 100, 0), 0),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7),
+            # Domain 101: 6 nodes (1 segment + 2 incomplete)
+            (_NodeDesc("nvl72101-node0", 108, 0), 8),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11),
+            (_NodeDesc("nvl72101-node4", 112, 0), 12),
+            (_NodeDesc("nvl72101-node5", 113, 0), 13),
+            # Domain 102: 4 nodes (1 segment)
+            (_NodeDesc("nvl72102-node0", 114, 0), 14),
+            (_NodeDesc("nvl72102-node1", 115, 0), 15),
+            (_NodeDesc("nvl72102-node2", 116, 0), 16),
+            (_NodeDesc("nvl72102-node3", 117, 0), 17),
+        ]
+        world_size = 8  # Need 2 segments
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100 contributes 2 segments (all 8 nodes active) [0-7]
+        for i in range(8):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+        # Domain 101: all nodes go to standby (we already have 2 segments)
+        for i in range(6):
+            self.assertEqual(result[_NodeDesc(f"nvl72101-node{i}", 108 + i, 0)], 8 + i)
+
+        # Domain 102: all nodes go to standby
+        for i in range(4):
+            self.assertEqual(result[_NodeDesc(f"nvl72102-node{i}", 114 + i, 0)], 14 + i)
+
+    def test_rank_assignment_out_of_order_with_hot_spare_segment_none(self):
+        """Test that out-of-order infra rank arrivals work correctly with hot spares (segment=None).
+
+        Participants arrive in arbitrary order, but should be sorted by infra_rank
+        and assigned group ranks accordingly, with extras becoming hot spares.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=None,
+        )
+
+        # Participants arrive out-of-order (infra ranks: 4, 1, 3, 0, 2)
+        # After sorting by infra_rank: 0, 1, 2, 3, 4
+        # World_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
+        participants = [
+            (_NodeDesc("node4", 104, 0), 4),  # Out-of-order
+            (_NodeDesc("node1", 101, 0), 1),
+            (_NodeDesc("node3", 103, 0), 3),
+            (_NodeDesc("node0", 100, 0), 0),
+            (_NodeDesc("node2", 102, 0), 2),
+        ]
+        world_size = 3
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Should be sorted by infra_rank and assigned accordingly
+        self.assertEqual(
+            result[_NodeDesc("node0", 100, 0)], 0
+        )  # infra_rank 0 -> group rank 0 (active)
+        self.assertEqual(
+            result[_NodeDesc("node1", 101, 0)], 1
+        )  # infra_rank 1 -> group rank 1 (active)
+        self.assertEqual(
+            result[_NodeDesc("node2", 102, 0)], 2
+        )  # infra_rank 2 -> group rank 2 (active)
+        self.assertEqual(
+            result[_NodeDesc("node3", 103, 0)], 3
+        )  # infra_rank 3 -> group rank 3 (hot spare)
+        self.assertEqual(
+            result[_NodeDesc("node4", 104, 0)], 4
+        )  # infra_rank 4 -> group rank 4 (hot spare)
+
+    def test_rank_assignment_out_of_order_with_hot_spare_segment_4(self):
+        """Test that out-of-order infra rank arrivals work correctly with segment=4 and hot spares.
+
+        Participants from different domains arrive out-of-order, but should be sorted
+        by infra_rank (SLURM topology order) for proper segment assignment.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        # Participants arrive out-of-order from 2 domains
+        # Domain 100 has infra_ranks [0-7], Domain 101 has infra_ranks [8-11]
+        # Listed in reverse order to test sorting
+        participants = [
+            # Domain 101 nodes (listed first, but have higher infra_ranks)
+            (_NodeDesc("nvl72101-node3", 111, 0), 11),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8),
+            # Domain 100 nodes (listed second, in reverse order)
+            (_NodeDesc("nvl72100-node7", 107, 0), 7),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0),
+        ]
+        world_size = 8  # Need 2 segments
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Despite out-of-order arrival, Domain 100 (lower infra_ranks) should be sorted first
+        # Domain 100: all 8 nodes active [0-7]
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("nvl72100-node4", 104, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72100-node5", 105, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72100-node6", 106, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72100-node7", 107, 0)], 7)
+
+        # Domain 101: all 4 nodes are standby [8-11]
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 108, 0)], 8)
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 109, 0)], 9)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 110, 0)], 10)
+        self.assertEqual(result[_NodeDesc("nvl72101-node3", 111, 0)], 11)
+
+    def test_rank_assignment_out_of_order_mixed_domains_segment_4(self):
+        """Test out-of-order arrivals with mixed segment counts across domains.
+
+        Tests that nodes from multiple domains arriving in arbitrary order are
+        correctly sorted and assigned ranks based on infra_rank and segment rules.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        # Domain 100: infra_ranks [0-5] (1 complete segment + 2 incomplete)
+        # Domain 101: infra_ranks [6-9] (1 complete segment)
+        # Domain 102: infra_ranks [10-12] (0 complete segments)
+        # Listed in completely arbitrary order
+        participants = [
+            (_NodeDesc("nvl72102-node2", 112, 0), 12),  # Domain 102
+            (_NodeDesc("nvl72100-node3", 103, 0), 3),  # Domain 100
+            (_NodeDesc("nvl72101-node1", 107, 0), 7),  # Domain 101
+            (_NodeDesc("nvl72102-node0", 110, 0), 10),  # Domain 102
+            (_NodeDesc("nvl72100-node5", 105, 0), 5),  # Domain 100
+            (_NodeDesc("nvl72101-node3", 109, 0), 9),  # Domain 101
+            (_NodeDesc("nvl72100-node0", 100, 0), 0),  # Domain 100
+            (_NodeDesc("nvl72101-node2", 108, 0), 8),  # Domain 101
+            (_NodeDesc("nvl72102-node1", 111, 0), 11),  # Domain 102
+            (_NodeDesc("nvl72100-node4", 104, 0), 4),  # Domain 100
+            (_NodeDesc("nvl72100-node1", 101, 0), 1),  # Domain 100
+            (_NodeDesc("nvl72101-node0", 106, 0), 6),  # Domain 101
+            (_NodeDesc("nvl72100-node2", 102, 0), 2),  # Domain 100
+        ]
+        world_size = 8  # Need 2 segments
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100 (infra_ranks 0-5): 1 complete segment (4 nodes) active, 2 standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("nvl72100-node4", 104, 0)], 8)  # Standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node5", 105, 0)], 9)  # Standby
+
+        # Domain 101 (infra_ranks 6-9): 1 complete segment (4 nodes) active
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 106, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 107, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 108, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72101-node3", 109, 0)], 7)
+
+        # Domain 102 (infra_ranks 10-12): 0 complete segments, all 3 standby
+        self.assertEqual(result[_NodeDesc("nvl72102-node0", 110, 0)], 10)  # Standby
+        self.assertEqual(result[_NodeDesc("nvl72102-node1", 111, 0)], 11)  # Standby
+        self.assertEqual(result[_NodeDesc("nvl72102-node2", 112, 0)], 12)  # Standby
+
+    def test_rank_assignment_with_gaps_in_infra_ranks_segment_none(self):
+        """Test rank assignment with gaps in infra_ranks (simulating node failures), segment=None.
+
+        When some nodes fail and don't join, there are gaps in infra_ranks.
+        E.g., if nodes 2, 4, 5 failed, we have infra_ranks [0, 1, 3, 6, 7] instead of [0-7].
+        These should still get contiguous group ranks [0, 1, 2, 3, 4].
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=None,
+        )
+
+        # Simulate 5 nodes joining with gaps: infra_ranks [0, 1, 3, 6, 7]
+        # Missing nodes: 2, 4, 5 (failed to join)
+        # World_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0),  # infra_rank 0
+            (_NodeDesc("node1", 101, 0), 1),  # infra_rank 1
+            (_NodeDesc("node3", 103, 0), 3),  # infra_rank 3 (2 failed)
+            (_NodeDesc("node6", 106, 0), 6),  # infra_rank 6 (4,5 failed)
+            (_NodeDesc("node7", 107, 0), 7),  # infra_rank 7
+        ]
+        world_size = 3
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Should get contiguous group ranks [0-4] based on sorted infra_rank
+        self.assertEqual(result[_NodeDesc("node0", 100, 0)], 0)  # Active
+        self.assertEqual(result[_NodeDesc("node1", 101, 0)], 1)  # Active
+        self.assertEqual(result[_NodeDesc("node3", 103, 0)], 2)  # Active
+        self.assertEqual(result[_NodeDesc("node6", 106, 0)], 3)  # Hot spare
+        self.assertEqual(result[_NodeDesc("node7", 107, 0)], 4)  # Hot spare
+
+    def test_rank_assignment_with_gaps_in_infra_ranks_with_hot_spare(self):
+        """Test rank assignment with gaps in infra_ranks and hot spares (segment=None).
+
+        More aggressive gap scenario: infra_ranks [0, 5, 10, 15, 20, 22, 24]
+        Simulates many node failures (1-4, 6-9, 11-14, 16-19, 21, 23 all failed).
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=None,
+        )
+
+        # Large gaps in infra_ranks
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0),
+            (_NodeDesc("node5", 105, 0), 5),
+            (_NodeDesc("node10", 110, 0), 10),
+            (_NodeDesc("node15", 115, 0), 15),
+            (_NodeDesc("node20", 120, 0), 20),
+            (_NodeDesc("node22", 122, 0), 22),
+            (_NodeDesc("node24", 124, 0), 24),
+        ]
+        world_size = 4  # Need 4 active nodes
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Should get contiguous group ranks [0-6], first 4 active, last 3 hot spares
+        self.assertEqual(result[_NodeDesc("node0", 100, 0)], 0)  # Active
+        self.assertEqual(result[_NodeDesc("node5", 105, 0)], 1)  # Active
+        self.assertEqual(result[_NodeDesc("node10", 110, 0)], 2)  # Active
+        self.assertEqual(result[_NodeDesc("node15", 115, 0)], 3)  # Active
+        self.assertEqual(result[_NodeDesc("node20", 120, 0)], 4)  # Hot spare
+        self.assertEqual(result[_NodeDesc("node22", 122, 0)], 5)  # Hot spare
+        self.assertEqual(result[_NodeDesc("node24", 124, 0)], 6)  # Hot spare
+
+    def test_rank_assignment_with_gaps_in_infra_ranks_segment_4(self):
+        """Test rank assignment with gaps in infra_ranks across domains with segment=4.
+
+        Simulates scenario where some nodes in each domain failed to join,
+        leaving gaps in infra_ranks within each domain.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        # Domain 100: infra_ranks [0, 2, 4, 6, 8, 10] (nodes 1,3,5,7,9 failed)
+        #             6 nodes -> 1 complete segment (4 nodes), 2 incomplete
+        # Domain 101: infra_ranks [12, 14, 17, 19] (nodes 13,15,16,18 failed)
+        #             4 nodes -> 1 complete segment
+        # World_size=8 requires 2 segments
+        participants = [
+            # Domain 100 (with gaps)
+            (_NodeDesc("nvl72100-node0", 100, 0), 0),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6),
+            (_NodeDesc("nvl72100-node8", 108, 0), 8),
+            (_NodeDesc("nvl72100-node10", 110, 0), 10),
+            # Domain 101 (with gaps)
+            (_NodeDesc("nvl72101-node0", 112, 0), 12),
+            (_NodeDesc("nvl72101-node2", 114, 0), 14),
+            (_NodeDesc("nvl72101-node5", 117, 0), 17),
+            (_NodeDesc("nvl72101-node7", 119, 0), 19),
+        ]
+        world_size = 8
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100: 1 complete segment (4 nodes) active, 2 standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node4", 104, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node6", 106, 0)], 3)
+        self.assertEqual(result[_NodeDesc("nvl72100-node8", 108, 0)], 8)  # Standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node10", 110, 0)], 9)  # Standby
+
+        # Domain 101: 1 complete segment (4 nodes) active
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 112, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 114, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node5", 117, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72101-node7", 119, 0)], 7)
+
+    def test_rank_assignment_with_gaps_out_of_order_segment_4(self):
+        """Test rank assignment with gaps in infra_ranks arriving out-of-order with segment=4.
+
+        Combines three challenging scenarios:
+        1. Gaps in infra_ranks (node failures)
+        2. Out-of-order arrivals
+        3. Multiple domains with segment awareness
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            domain_id_from_node_name=True,
+            domain_id_prefix="nvl72",
+            segment=4,
+        )
+
+        # Domain 100: infra_ranks [1, 3, 5, 7, 9] (0,2,4,6,8 failed) -> 1 segment + 1 incomplete
+        # Domain 101: infra_ranks [11, 13, 15, 17] (10,12,14,16 failed) -> 1 segment
+        # Listed in reverse order to test sorting
+        participants = [
+            # Domain 101 first, in reverse
+            (_NodeDesc("nvl72101-node7", 117, 0), 17),
+            (_NodeDesc("nvl72101-node5", 115, 0), 15),
+            (_NodeDesc("nvl72101-node3", 113, 0), 13),
+            (_NodeDesc("nvl72101-node1", 111, 0), 11),
+            # Domain 100 second, in reverse
+            (_NodeDesc("nvl72100-node9", 109, 0), 9),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1),
+        ]
+        world_size = 8
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Despite reverse order and gaps, Domain 100 (lower infra_ranks) comes first
+        # Domain 100: 1 complete segment (4 nodes) active, 1 standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node5", 105, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node7", 107, 0)], 3)
+        self.assertEqual(result[_NodeDesc("nvl72100-node9", 109, 0)], 8)  # Standby
+
+        # Domain 101: 1 complete segment (4 nodes) active
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 111, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node3", 113, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node5", 115, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72101-node7", 117, 0)], 7)
+
 
 class ErrorCaseTest(BaseRendezvousTest):
     """Test error cases and exception handling."""

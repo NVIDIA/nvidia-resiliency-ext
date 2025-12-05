@@ -183,6 +183,148 @@ class AssignRanksTest(TestCase):
         self.assertEqual(result[node_bbb], 1)  # Middle infra rank -> group rank 1
         self.assertEqual(result[node_aaa], 2)  # Largest infra rank -> group rank 2
 
+    def test_assign_ranks_with_hot_spare_segment_none(self) -> None:
+        """Test rank assignment with hot spare nodes (segment=None).
+
+        When there are more participants than min_nodes, the legacy rendezvous
+        assigns contiguous group ranks [0, 1, 2, ...] to all participants in
+        SLURM topology order. The first min_nodes get active ranks [0..min_nodes-1],
+        and extras become hot spares with ranks [min_nodes..N-1].
+        """
+        from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
+            _DistributedRendezvousOpExecutor,
+        )
+
+        # Simulate 5 participants (infra ranks 0-4), where min_nodes=3
+        # First 3 should be active [0,1,2], remaining 2 are hot spares [3,4]
+        participants = {
+            _NodeDesc("node0", 1, 1): 0,  # Active: group rank 0
+            _NodeDesc("node1", 1, 1): 1,  # Active: group rank 1
+            _NodeDesc("node2", 1, 1): 2,  # Active: group rank 2
+            _NodeDesc("node3", 1, 1): 3,  # Hot spare: group rank 3
+            _NodeDesc("node4", 1, 1): 4,  # Hot spare: group rank 4
+        }
+
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # All nodes get contiguous group ranks in SLURM topology order
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
+        self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
+        self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
+        self.assertEqual(result[_NodeDesc("node3", 1, 1)], 3)  # Hot spare
+        self.assertEqual(result[_NodeDesc("node4", 1, 1)], 4)  # Hot spare
+
+        # Verify all ranks are contiguous
+        self.assertEqual(set(result.values()), {0, 1, 2, 3, 4})
+
+    def test_assign_ranks_out_of_order_with_hot_spare(self) -> None:
+        """Test that out-of-order infra rank arrivals work correctly with hot spares.
+
+        Participants arrive in arbitrary order, but should be sorted by infra_rank
+        and assigned group ranks accordingly, with extras becoming hot spares.
+        """
+        from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
+            _DistributedRendezvousOpExecutor,
+        )
+
+        # Participants arrive out-of-order (infra ranks: 4, 1, 3, 0, 2)
+        # After sorting by infra_rank: 0, 1, 2, 3, 4
+        # First 3 get active ranks [0,1,2], remaining 2 are hot spares [3,4]
+        participants = {
+            _NodeDesc("node_d", 1, 1): 4,  # Out-of-order
+            _NodeDesc("node_b", 1, 1): 1,
+            _NodeDesc("node_c", 1, 1): 3,
+            _NodeDesc("node_a", 1, 1): 0,
+            _NodeDesc("node_e", 1, 1): 2,
+        }
+
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # Should be sorted by infra_rank and assigned accordingly
+        self.assertEqual(result[_NodeDesc("node_a", 1, 1)], 0)  # infra_rank 0 -> group rank 0
+        self.assertEqual(result[_NodeDesc("node_b", 1, 1)], 1)  # infra_rank 1 -> group rank 1
+        self.assertEqual(result[_NodeDesc("node_e", 1, 1)], 2)  # infra_rank 2 -> group rank 2
+        self.assertEqual(
+            result[_NodeDesc("node_c", 1, 1)], 3
+        )  # infra_rank 3 -> group rank 3 (hot spare)
+        self.assertEqual(
+            result[_NodeDesc("node_d", 1, 1)], 4
+        )  # infra_rank 4 -> group rank 4 (hot spare)
+
+        # Verify all ranks are contiguous
+        self.assertEqual(set(result.values()), {0, 1, 2, 3, 4})
+
+    def test_assign_ranks_with_gaps_and_hot_spare(self) -> None:
+        """Test rank assignment with gaps in infra_ranks (simulating node failures) and hot spares.
+
+        When some nodes fail and don't join, there are gaps in infra_ranks.
+        E.g., if nodes 2, 4, 5 failed, we have infra_ranks [0, 1, 3, 6, 7] instead of [0-7].
+        These should still get contiguous group ranks [0, 1, 2, 3, 4].
+        With hot spares, the first min_nodes are active, rest are hot spares.
+        """
+        from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
+            _DistributedRendezvousOpExecutor,
+        )
+
+        # Simulate 5 nodes joining with gaps: infra_ranks [0, 1, 3, 6, 7]
+        # Missing nodes: 2, 4, 5 (failed to join)
+        # Should get contiguous group ranks [0, 1, 2, 3, 4]
+        # If min_nodes=3, first 3 are active, last 2 are hot spares
+        participants = {
+            _NodeDesc("node0", 1, 1): 0,  # infra_rank 0 -> group rank 0 (active)
+            _NodeDesc("node1", 1, 1): 1,  # infra_rank 1 -> group rank 1 (active)
+            _NodeDesc("node3", 1, 1): 3,  # infra_rank 3 -> group rank 2 (active)
+            _NodeDesc("node6", 1, 1): 6,  # infra_rank 6 -> group rank 3 (hot spare)
+            _NodeDesc("node7", 1, 1): 7,  # infra_rank 7 -> group rank 4 (hot spare)
+        }
+
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # Should get contiguous group ranks [0-4] based on sorted infra_rank
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
+        self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
+        self.assertEqual(result[_NodeDesc("node3", 1, 1)], 2)
+        self.assertEqual(result[_NodeDesc("node6", 1, 1)], 3)
+        self.assertEqual(result[_NodeDesc("node7", 1, 1)], 4)
+
+        # Verify all ranks are contiguous
+        self.assertEqual(set(result.values()), {0, 1, 2, 3, 4})
+
+    def test_assign_ranks_with_large_gaps_and_hot_spare(self) -> None:
+        """Test rank assignment with large gaps in infra_ranks and hot spares.
+
+        More aggressive gap scenario: infra_ranks [0, 5, 10, 15, 20, 22, 24]
+        Simulates many node failures (1-4, 6-9, 11-14, 16-19, 21, 23 all failed).
+        """
+        from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
+            _DistributedRendezvousOpExecutor,
+        )
+
+        # Large gaps in infra_ranks
+        participants = {
+            _NodeDesc("node0", 1, 1): 0,
+            _NodeDesc("node5", 1, 1): 5,
+            _NodeDesc("node10", 1, 1): 10,
+            _NodeDesc("node15", 1, 1): 15,
+            _NodeDesc("node20", 1, 1): 20,
+            _NodeDesc("node22", 1, 1): 22,
+            _NodeDesc("node24", 1, 1): 24,
+        }
+
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # Should get contiguous group ranks [0-6], sorted by infra_rank
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
+        self.assertEqual(result[_NodeDesc("node5", 1, 1)], 1)
+        self.assertEqual(result[_NodeDesc("node10", 1, 1)], 2)
+        self.assertEqual(result[_NodeDesc("node15", 1, 1)], 3)
+        self.assertEqual(result[_NodeDesc("node20", 1, 1)], 4)
+        self.assertEqual(result[_NodeDesc("node22", 1, 1)], 5)
+        self.assertEqual(result[_NodeDesc("node24", 1, 1)], 6)
+
+        # Verify all ranks are contiguous
+        self.assertEqual(set(result.values()), {0, 1, 2, 3, 4, 5, 6})
+
 
 # RendezvousState is largely unchanged from upstream, but we test serialization
 # since it includes FT-specific worker_states field
