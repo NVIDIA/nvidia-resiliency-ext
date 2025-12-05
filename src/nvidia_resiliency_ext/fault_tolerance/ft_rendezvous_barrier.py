@@ -73,7 +73,9 @@ class RendezvousTimeout:
             The time within which the rendezvous is expected to complete.
         last_call:
             An additional wait amount before completing the rendezvous once the
-            rendezvous has the minimum number of required participants.
+            rendezvous has the minimum number of required participants. Note: this
+            only applies to SUBSEQUENT rendezvous after the first one. The first
+            rendezvous always waits for max_nodes.
         close:
             The time within which the rendezvous is expected to close after a
             call to :py:meth:`RendezvousHandler.set_closed` or
@@ -522,7 +524,9 @@ class _RendezvousBarrierState:
 
         standby_info = ""
         if standby_rank > world_size:
-            standby_info = f" and {standby_rank - world_size} standby ranks [{world_size}..{standby_rank-1}]"
+            standby_info = (
+                f" and {standby_rank - world_size} standby ranks [{world_size}..{standby_rank-1}]"
+            )
 
         log.info(
             f"Assigned {active_segments} segments ({active_rank} active ranks [0..{world_size-1}]){standby_info} "
@@ -676,34 +680,45 @@ class _RendezvousBarrierState:
             time.sleep(1.0)  # Poll every 1 second
 
     def perform_rendezvous(
-        self, node_desc: _NodeDesc, min_nodes: int, max_nodes: int, last_call_timeout: timedelta
+        self,
+        node_desc: _NodeDesc,
+        min_nodes: int,
+        max_nodes: int,
+        last_call_timeout: timedelta,
+        is_first_rendezvous: bool,
     ) -> Tuple[int, int]:
         """Perform the complete rendezvous process: join, wait for completion, acknowledge, and get rank.
 
         DESIGN RATIONALE:
         This atomic barrier-based rendezvous design balances flexibility with convergence guarantees:
 
-        1. FLEXIBILITY: We use last_call_timeout (not max_nodes) as completion criteria because:
-           - Future hot-fix scenarios may need to exclude broken participants without failing
-           - We cannot wait for max_nodes (active + standby) as this would block legitimate completions
+        1. FIRST RENDEZVOUS ENFORCEMENT: The first rendezvous (initial startup) REQUIRES max_nodes
+           to join before completion. This ensures all expected nodes participate during initial
+           startup when all nodes should be available. This prevents premature start with missing nodes.
+
+        2. FLEXIBILITY (SUBSEQUENT RENDEZVOUS): After the first rendezvous, we use last_call_timeout
+           (not max_nodes) as completion criteria because:
+           - Hot-fix scenarios may need to exclude broken participants without failing the job
+           - We cannot wait for max_nodes after failures as some nodes may be permanently down
            - The system needs to be resilient to partial failures while maintaining progress
 
-        2. CONVERGENCE: The rendezvous will complete when either:
-           - max_nodes is reached (immediate completion), OR
-           - min_nodes is reached AND last_call_timeout expires (graceful completion)
+        3. CONVERGENCE: The rendezvous will complete when either:
+           - FIRST RENDEZVOUS: max_nodes is reached (strict requirement)
+           - SUBSEQUENT RENDEZVOUS: max_nodes is reached (immediate completion), OR
+             min_nodes is reached AND last_call_timeout expires (graceful completion)
 
-        3. NEW COMER HANDLING:
+        4. NEW COMER HANDLING:
            - New comers arriving during active rendezvous participate in the current round
            - New comers arriving after completion trigger the next rendezvous round
            - All existing participants detect new comers and restart to join the new round
            - This ensures eventual convergence with the new comer
 
-        4. RACE CONDITION MITIGATION:
+        5. RACE CONDITION MITIGATION:
            - The last_call_timeout provides a grace period for nodes that are restarting
            - This prevents premature completion when nodes are in the process of joining
            - The timeout balances responsiveness with inclusion of restarting nodes
 
-        5. HOT SPARE HANDLING (Step 0):
+        6. HOT SPARE HANDLING (Step 0):
            - Hot spares arriving after training starts will wait at Step 0
            - They wait until a failure opens the rendezvous (value=0)
            - This prevents disruption of ongoing training
@@ -713,6 +728,9 @@ class _RendezvousBarrierState:
             min_nodes: Minimum number of nodes required for training to proceed
             max_nodes: Maximum number of nodes allowed (active + standby)
             last_call_timeout: Grace period after min_nodes reached to allow restarting nodes to join
+                              (only applies to subsequent rendezvous, not the first one)
+            is_first_rendezvous: True if this is the first rendezvous cycle (enforces max_nodes),
+                                False for subsequent cycles (allows graceful completion)
 
         Returns:
             Tuple of (group_rank, total_participants)
@@ -760,7 +778,8 @@ class _RendezvousBarrierState:
 
         # Step 2: Wait for rendezvous completion
         last_call_deadline = None
-        if self._arrived_count >= min_nodes:
+        if self._arrived_count >= min_nodes and not is_first_rendezvous:
+            # Only set deadline for non-first rendezvous
             last_call_deadline = datetime.utcnow() + last_call_timeout
 
         while True:
@@ -795,21 +814,25 @@ class _RendezvousBarrierState:
                 break
 
             # Check if we should mark completion now
-            # DESIGN NOTE: We complete on last_call_timeout (not max_nodes) to support:
-            # 1. Hot-fix scenarios where broken participants are excluded without failing the job
-            # 2. Flexibility in participant count while ensuring convergence
-            # 3. Grace period for restarting nodes to join before completion
+            # DESIGN NOTE:
+            # - FIRST RENDEZVOUS: We require max_nodes to ensure all nodes join during initial startup
+            # - SUBSEQUENT RENDEZVOUS: We complete on last_call_timeout to support:
+            #   1. Hot-fix scenarios where broken participants are excluded without failing the job
+            #   2. Flexibility in participant count while ensuring convergence
+            #   3. Grace period for restarting nodes to join before completion
             should_complete = False
 
             if self._arrived_count >= max_nodes:
-                # Max nodes reached - immediate completion
+                # Max nodes reached - immediate completion (both first and subsequent)
                 should_complete = True
             elif (
-                self._arrived_count >= min_nodes
+                not is_first_rendezvous
+                and self._arrived_count >= min_nodes
                 and last_call_deadline
                 and datetime.utcnow() >= last_call_deadline
             ):
                 # Min nodes reached and grace period expired - graceful completion
+                # ONLY allowed for subsequent rendezvous (not first)
                 # This allows the system to proceed even if not all potential nodes have joined
                 should_complete = True
 
@@ -1193,6 +1216,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._assigned_rank = None
         self._world_size = None
 
+        # Track whether first rendezvous has completed
+        # This flag is used to enforce max_nodes on first cycle, then allow graceful
+        # completion with min_nodes + timeout on subsequent cycles
+        self._first_rendezvous_completed = False
+
+        # Track rendezvous round number in memory (increments on each next_rendezvous call)
+        # Used to isolate MASTER_ADDR/MASTER_PORT between rendezvous rounds
+        self._rendezvous_round = 0
+
         self._ranks_connector = IpcConnector(FT_LAUNCHER_IPC_SOCKET)
         self._ranks_connector.start_receiving()
 
@@ -1304,12 +1336,24 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     def _perform_rendezvous(self) -> None:
         """Perform the complete rendezvous process."""
         # Perform complete rendezvous process
+        # Pass flag indicating if this is the first rendezvous
+        is_first_rendezvous = not self._first_rendezvous_completed
+
         group_rank, total_participants = self._barrier_state.perform_rendezvous(
             self._this_node,
             self._settings.min_nodes,
             self._settings.max_nodes,
             self._settings.timeout.last_call,
+            is_first_rendezvous,
         )
+
+        # Mark that first rendezvous has completed
+        # This will be False for all subsequent rendezvous calls on this handler instance
+        self._first_rendezvous_completed = True
+
+        # Increment round number for the next rendezvous
+        # This ensures each rendezvous round uses an isolated namespace for MASTER_ADDR/MASTER_PORT
+        self._rendezvous_round += 1
 
         # Store the assigned rank and world size
         self._assigned_rank = group_rank
@@ -1457,7 +1501,12 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         raise NotImplementedError("Not implemented")
 
     def round(self) -> int:
-        raise NotImplementedError("Not implemented")
+        """Return the current rendezvous round.
+
+        The round number starts at 0 and increments after each successful rendezvous.
+        This is useful for debugging and understanding the rendezvous lifecycle.
+        """
+        return self._rendezvous_round
 
     def get_run_id(self) -> str:
         """See base class."""
@@ -1492,8 +1541,16 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         log.info(msg)
 
     def _get_store(self) -> Store:
-        """Get the store for this rendezvous."""
-        key_prefix = f"torch.rendezvous.{self._settings.run_id}.0"
+        """Get the store for this rendezvous.
+
+        Uses round number in the prefix to isolate MASTER_ADDR/MASTER_PORT keys
+        between rendezvous rounds, preventing race conditions when rank 0 changes.
+
+        The round number is tracked in memory and increments each time next_rendezvous()
+        completes. This ensures each handler instance uses progressively isolated namespaces
+        for bootstrap keys without requiring TCPStore coordination.
+        """
+        key_prefix = f"torch.rendezvous.{self._settings.run_id}.{self._rendezvous_round}"
 
         return PrefixStore(key_prefix, self._store)
 
@@ -1525,7 +1582,11 @@ def create_handler(
     +----------------------------+------------------------------------------------------+
     | last_call_timeout          | An additional wait amount, in seconds, before        |
     |                            | completing the rendezvous once the minimum number of |
-    |                            | nodes has been reached. Defaults to 30 seconds.      |
+    |                            | nodes has been reached. Defaults to 10 seconds.      |
+    |                            | NOTE: This only applies to SUBSEQUENT rendezvous     |
+    |                            | after the first one. The FIRST rendezvous always     |
+    |                            | waits for max_nodes to ensure all nodes join during  |
+    |                            | initial startup.                                     |
     +----------------------------+------------------------------------------------------+
     | close_timeout              | The time, in seconds, within which the rendezvous is |
     |                            | expected to close after a call to                    |

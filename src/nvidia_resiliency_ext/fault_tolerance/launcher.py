@@ -157,6 +157,7 @@ class RankMonitorState:
     socket_path: str = ""
     listener_thread: Optional[threading.Thread] = None
     stop_event: Optional[threading.Event] = None
+    writer: Optional[Any] = None  # asyncio.StreamWriter for sending messages to rank monitor
 
 
 class LocalElasticAgent(SimpleElasticAgent):
@@ -474,7 +475,8 @@ class LocalElasticAgent(SimpleElasticAgent):
             elif state == WorkerState.HEALTHY:
                 # If this is a standby node (no workers), trigger restart completed event
                 # so that the rank monitors (especially the restarter logger) can report lifecycle events
-                if self._is_standby_node(self._worker_group):
+                # Only trigger if there was an actual restart (not on first cycle)
+                if self._is_standby_node(self._worker_group) and self._remaining_restarts < spec.max_restarts:
                     self._trigger_restart_completed_on_rank_monitors()
 
                 # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
@@ -787,6 +789,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # Create connection in THIS thread's event loop
                 reader, writer = await asyncio.open_unix_connection(socket_path)
 
+                # Store writer on the state object so it can be used to send messages
+                self._rank_monitors[local_rank].writer = writer
+
                 try:
                     while not stop_event.is_set():
                         # Use wait_for with timeout to allow checking stop_event periodically
@@ -805,6 +810,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # Clean up connection
                     writer.close()
                     await writer.wait_closed()
+                    # Clear the writer reference
+                    self._rank_monitors[local_rank].writer = None
             except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
                 logger.debug(f"Rank monitor {local_rank} connection closed")
             except Exception as e:

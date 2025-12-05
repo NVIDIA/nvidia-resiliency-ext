@@ -732,7 +732,6 @@ class NicLinkStateHealthCheck(PciMixin):
                         if ':' in state:
                             state = state.split(':', 1)[1].strip()
                         self._baseline_port_states[ib_device] = state
-                        logger.debug(f"NIC device {ib_device}: baseline state = {state}")
                 except Exception as e:
                     logger.warning(f"Failed to read baseline state for {ib_device}: {str(e)}")
         except Exception as e:
@@ -740,6 +739,12 @@ class NicLinkStateHealthCheck(PciMixin):
 
         if not self._baseline_port_states:
             logger.warning("No network devices found for baseline initialization")
+        else:
+            # Log all baseline states in a single consolidated message
+            devices_summary = ", ".join(
+                [f"{dev}={state}" for dev, state in self._baseline_port_states.items()]
+            )
+            logger.debug(f"NIC baseline states: {devices_summary}")
 
     def __call__(self) -> bool:
         """
