@@ -298,6 +298,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._node_id = self._get_fq_hostname()
         # Track if we've triggered restart completed for standby nodes (reset on each restart)
         self._restart_completed_triggered = False
+        # Track previous standby state to detect transitions
+        self._was_standby_node = False
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -958,15 +960,24 @@ class LocalElasticAgent(SimpleElasticAgent):
         args: Dict[int, Tuple] = {}
         envs: Dict[int, Dict[str, str]] = {}
         log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
+
+        # Get master_addr and master_port, handling compatibility with older PyTorch versions
+        try:
+            master_addr = worker_group.master_addr
+            master_port = worker_group.master_port
+        except AttributeError:
+            # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
+            master_addr, master_port = super()._get_master_addr_port(store)
+
+        # Debug logging: Log worker start info once for all workers
+        logger.debug(
+            f"Starting {len(worker_group.workers)} worker(s) "
+            f"[group_rank={worker_group.group_rank}] with "
+            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
+        )
+
         for worker in worker_group.workers:
             local_rank = worker.local_rank
-            # Get master_addr and master_port, handling compatibility with older PyTorch versions
-            try:
-                master_addr = worker_group.master_addr
-                master_port = worker_group.master_port
-            except AttributeError:
-                # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
-                master_addr, master_port = super()._get_master_addr_port(store)
 
             worker_env = {
                 "LOCAL_RANK": str(local_rank),
@@ -1010,17 +1021,22 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self.setup_rank_monitors(envs=envs)
 
-        # If this node is in standby mode, cancel periodic restart checks.
+        # If this node is transitioning from active to standby mode, cancel periodic restart checks.
         # Standby nodes are those assigned a group_rank >= min_nodes after rendezvous.
         # The rendezvous handler sets local_world_size to 0 for standby nodes, so no workers are created.
         # Let the normal flow continue - PyTorch handles local_world_size=0 correctly.
-        if self._is_standby_node(worker_group):
+        is_standby = self._is_standby_node(worker_group)
+        if is_standby and not self._was_standby_node:
+            # Transitioning from active to standby - cancel periodic restart checks
             min_nodes = spec.rdzv_handler._settings.min_nodes
             logger.debug(
-                f"Node is in standby mode (group_rank={worker_group.group_rank}, min_nodes={min_nodes}), "
+                f"Node transitioning to standby mode (group_rank={worker_group.group_rank}, min_nodes={min_nodes}), "
                 "cancelling periodic restart checks on rank monitors"
             )
             self._cancel_periodic_restart_checks()
+
+        # Update the standby state tracker
+        self._was_standby_node = is_standby
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
@@ -1493,6 +1509,8 @@ def launch_agent(
 
     # Add is_store_host to rdzv_parameters
     rdzv_parameters.config["is_store_host"] = is_store_host
+    # Add nproc_per_node so the rendezvous handler can restore local_world_size for standby->active transitions
+    rdzv_parameters.config["nproc_per_node"] = config.nproc_per_node
 
     spec = WorkerSpec(
         role=config.role,

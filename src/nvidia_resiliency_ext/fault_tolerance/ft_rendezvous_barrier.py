@@ -160,6 +160,9 @@ class RendezvousSettings:
             Prefix to strip from domain_id to extract domain number.
         segment:
             Number of nodes to select from each domain. None disables segment awareness.
+        nproc_per_node:
+            Number of processes per node (local_world_size). Used to restore local_world_size
+            when a standby node becomes active.
     """
 
     run_id: str
@@ -171,6 +174,7 @@ class RendezvousSettings:
     domain_id_from_node_name: bool = True
     domain_id_prefix: str = "nvl72"
     segment: Optional[int] = None
+    nproc_per_node: int = 1  # Default to 1 if not specified
 
 
 @dataclass(eq=True, order=True, frozen=True)
@@ -516,9 +520,12 @@ class _RendezvousBarrierState:
                 f"Each domain must have at least {segment} nodes."
             )
 
+        standby_info = ""
+        if standby_rank > world_size:
+            standby_info = f" and {standby_rank - world_size} standby ranks [{world_size}..{standby_rank-1}]"
+
         log.info(
-            f"Assigned {active_segments} segments ({active_rank} active ranks [0..{world_size-1}]) and "
-            f"{standby_rank - world_size} standby ranks [{world_size}..{standby_rank-1}] "
+            f"Assigned {active_segments} segments ({active_rank} active ranks [0..{world_size-1}]){standby_info} "
             f"(segment={segment})"
         )
 
@@ -1086,6 +1093,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         domain_id_from_node_name: bool = True,
         domain_id_prefix: str = "nvl72",
         segment: Optional[int] = None,
+        nproc_per_node: int = 1,  # Number of processes per node
         enable_nic_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
     ):
@@ -1132,6 +1140,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             domain_id_from_node_name=domain_id_from_node_name,
             domain_id_prefix=domain_id_prefix,
             segment=segment,
+            nproc_per_node=nproc_per_node,
         )
 
         return cls(
@@ -1352,11 +1361,18 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             world_size = self._world_size
             store = self._get_store()
 
-            # If this is a standby participant, modify the worker group's local_world_size
-            if self._worker_group is not None and rank >= self._settings.min_nodes:
+            # Adjust local_world_size based on whether this is a standby or active participant
+            assert (
+                self._worker_group is not None
+            ), "set_worker_group must be called before next_rendezvous"
+            if rank >= self._settings.min_nodes:
                 # This is a standby participant, set local_world_size to 0
                 self._worker_group.spec.local_world_size = 0
-                log.info(f"Set local_world_size to 0 for standby participant with rank {rank}")
+            else:
+                # This is an active participant, ensure local_world_size is correct
+                if self._worker_group.spec.local_world_size == 0:
+                    # Restore from the configured value in settings
+                    self._worker_group.spec.local_world_size = self._settings.nproc_per_node
 
         except Exception as e:
             self._record(
@@ -1552,6 +1568,7 @@ def create_handler(
         domain_id_from_node_name = params.config.get('domain_id_from_node_name', True)
         domain_id_prefix = params.config.get('domain_id_prefix', 'nvl72')
         segment = params.config.get('segment', None)
+        nproc_per_node = params.config.get('nproc_per_node', 1)
         enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
         link_state_path_template = params.config.get('link_state_path_template', None)
 
@@ -1567,6 +1584,7 @@ def create_handler(
             domain_id_from_node_name=domain_id_from_node_name,
             domain_id_prefix=domain_id_prefix,
             segment=segment,
+            nproc_per_node=nproc_per_node,
             enable_nic_healthcheck=enable_nic_healthcheck,
             link_state_path_template=link_state_path_template,
         )
