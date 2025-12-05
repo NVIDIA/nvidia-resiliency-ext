@@ -59,7 +59,7 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck, IBLinkStateHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1335,7 +1335,7 @@ class FtRendezvousHandler(RendezvousHandler):
             raise UnhealthyNodeException(str(e)) from e
 
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU and IB link state health checks for this node."""
+        """Perform GPU and NIC link state health checks for this node."""
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
@@ -1345,12 +1345,12 @@ class FtRendezvousHandler(RendezvousHandler):
             GPUHealthCheck(), "GPU health check", f"Node {self._this_node} has an unhealthy GPU."
         )
 
-        # Perform IB link state health check if enabled
+        # Perform NIC link state health check if enabled
         if self._enable_nic_healthcheck:
             self._run_health_check(
-                IBLinkStateHealthCheck(link_state_path_template=self._link_state_path_template),
-                "IB link state health check",
-                f"Node {self._this_node} has unhealthy IB link(s).",
+                NicLinkStateHealthCheck(link_state_path_template=self._link_state_path_template),
+                "NIC link state health check",
+                f"Node {self._this_node} has unhealthy NIC link(s).",
             )
 
     def handle_control_requests_from_rank(self) -> None:
@@ -1724,11 +1724,12 @@ def create_handler(
     | rank              | rank assignment. Previous assignments are ignored.   |
     |                   | Hot spare/redundancy NOT supported. Defaults to True.|
     +-------------------+------------------------------------------------------+
-    | enable_nic_       | Whether to enable IB link state health check before  |
+    | enable_nic_       | Whether to enable NIC link state health check before |
     | healthcheck       | rendezvous. Defaults to False.                       |
     +-------------------+------------------------------------------------------+
-    | link_state_path_  | Template path for IB link state files. Should contain|
-    | template          | {nic} placeholder. Defaults to None (uses default).  |
+    | link_state_path_  | Template path for NIC link state files. Should       |
+    | template          | contain {nic} placeholder. Defaults to None (uses    |
+    |                   | default).                                            |
     +-------------------+------------------------------------------------------+
     """
     try:

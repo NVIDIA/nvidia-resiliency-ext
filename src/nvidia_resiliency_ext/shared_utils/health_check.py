@@ -668,16 +668,16 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
         return True
 
 
-class IBLinkStateHealthCheck(PciMixin):
-    """Health check for InfiniBand link state monitoring.
+class NicLinkStateHealthCheck(PciMixin):
+    """Health check for NIC link state monitoring (RDMA and Ethernet).
 
-    This class monitors the state of InfiniBand ports to detect when ports
-    transition from ACTIVE to non-ACTIVE states. It takes a baseline snapshot
-    of all port states during initialization and compares against this baseline
-    during health checks.
+    This class monitors the state of network interface ports (both RDMA/InfiniBand
+    and Ethernet) to detect when ports transition from ACTIVE to non-ACTIVE states.
+    It takes a baseline snapshot of all port states during initialization and compares
+    against this baseline during health checks.
     """
 
-    # Default path template for IB link state
+    # Default path template for NIC link state
     DEFAULT_LINK_STATE_PATH = "/sys/class/infiniband/{nic}/ports/1/state"
 
     def __init__(
@@ -686,7 +686,7 @@ class IBLinkStateHealthCheck(PciMixin):
         on_failure: Optional[Callable] = None,
     ):
         """
-        Initializes the IBLinkStateHealthCheck class.
+        Initializes the NicLinkStateHealthCheck class.
 
         Args:
             link_state_path_template (Optional[str]): Template string for the link state path.
@@ -700,15 +700,15 @@ class IBLinkStateHealthCheck(PciMixin):
         # Snapshot of initial port states: {nic_name: state_string}
         self._baseline_port_states: Dict[str, str] = {}
 
-        # Initialize baseline by scanning all InfiniBand devices
+        # Initialize baseline by scanning all network devices
         self._initialize_baseline()
 
     def _initialize_baseline(self):
         """
-        Initialize the baseline snapshot of all InfiniBand port states.
+        Initialize the baseline snapshot of all NIC port states.
 
-        This scans all available InfiniBand devices and records their current
-        port states as the baseline for future comparisons.
+        This scans all available network devices (RDMA/InfiniBand and Ethernet) and
+        records their current port states as the baseline for future comparisons.
         """
         infiniband_path = "/sys/class/infiniband"
 
@@ -721,7 +721,7 @@ class IBLinkStateHealthCheck(PciMixin):
                 state_path = self.link_state_path_template.format(nic=ib_device)
 
                 if not os.path.exists(state_path):
-                    logger.debug(f"IB link state path not found: {state_path}")
+                    logger.debug(f"NIC link state path not found: {state_path}")
                     continue
 
                 try:
@@ -732,18 +732,18 @@ class IBLinkStateHealthCheck(PciMixin):
                         if ':' in state:
                             state = state.split(':', 1)[1].strip()
                         self._baseline_port_states[ib_device] = state
-                        logger.info(f"IB device {ib_device}: baseline state = {state}")
+                        logger.debug(f"NIC device {ib_device}: baseline state = {state}")
                 except Exception as e:
                     logger.warning(f"Failed to read baseline state for {ib_device}: {str(e)}")
         except Exception as e:
-            logger.warning(f"Failed to scan InfiniBand devices: {str(e)}")
+            logger.warning(f"Failed to scan network devices: {str(e)}")
 
         if not self._baseline_port_states:
-            logger.warning("No InfiniBand devices found for baseline initialization")
+            logger.warning("No network devices found for baseline initialization")
 
     def __call__(self) -> bool:
         """
-        Synchronous IB link state health check callable.
+        Synchronous NIC link state health check callable.
 
         Returns:
             bool: Returns True if all ports remain in their baseline state (or ACTIVE),
@@ -753,7 +753,7 @@ class IBLinkStateHealthCheck(PciMixin):
 
     def _perform_health_check(self) -> bool:
         """
-        Core method to perform IB link state health check.
+        Core method to perform NIC link state health check.
 
         Compares current port states against the baseline. If any port that was
         initially ACTIVE is now in a different (non-ACTIVE) state, this is
@@ -764,7 +764,7 @@ class IBLinkStateHealthCheck(PciMixin):
         """
         if not self._baseline_port_states:
             # No baseline established, skip the check
-            logger.debug("No baseline port states available, skipping IB link state check")
+            logger.debug("No baseline port states available, skipping NIC link state check")
             return True
 
         all_healthy = True
@@ -773,7 +773,7 @@ class IBLinkStateHealthCheck(PciMixin):
             state_path = self.link_state_path_template.format(nic=ib_device)
 
             if not os.path.exists(state_path):
-                logger.debug(f"IB link state path no longer exists: {state_path}")
+                logger.debug(f"NIC link state path no longer exists: {state_path}")
                 continue
 
             try:
@@ -786,13 +786,13 @@ class IBLinkStateHealthCheck(PciMixin):
                     # Check if port transitioned from ACTIVE to non-ACTIVE
                     if baseline_state == "ACTIVE" and current_state != "ACTIVE":
                         logger.error(
-                            f"IB device {ib_device}: Port state changed from "
+                            f"NIC device {ib_device}: Port state changed from "
                             f"{baseline_state} to {current_state}. Health check FAILED."
                         )
                         all_healthy = False
                     elif current_state != baseline_state:
                         logger.warning(
-                            f"IB device {ib_device}: Port state changed from "
+                            f"NIC device {ib_device}: Port state changed from "
                             f"{baseline_state} to {current_state}"
                         )
             except Exception as e:

@@ -51,13 +51,13 @@ class FaultToleranceConfig:
     * `restart_check_interval` - interval between checks if restart is in progress, needed for layered restart protocol
     * `enable_nic_monitor` - Enable NIC health monitoring in training. Default: False.
     * `enable_nic_healthcheck` - Enable NIC link state health check before rendezvous. This checks if
-      InfiniBand ports are in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE.
+      network interface ports (RDMA/InfiniBand and Ethernet) are in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE.
       Unlike enable_nic_monitor (which periodically monitors link_downed counters), this performs a one-time
       state check during rendezvous. Can be used independently or together with enable_nic_monitor. Default: False.
     * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
     * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
       placeholder which will be replaced with actual NIC device name.
-    * `link_state_path_template` - Template path for IB link state files. Should contain '{nic}'
+    * `link_state_path_template` - Template path for NIC link state files. Should contain '{nic}'
       placeholder which will be replaced with actual NIC device name. Default: /sys/class/infiniband/{nic}/ports/1/state
     * `skip_section_response` - If True, section and heartbeat messages are sent without waiting
       for server response (unidirectional communication). This significantly reduces latency for

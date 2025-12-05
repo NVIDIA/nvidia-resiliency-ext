@@ -78,6 +78,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     patched_method,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
+    write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
@@ -295,8 +296,25 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        # Track if we've triggered restart completed for standby nodes (reset on each restart)
+        self._restart_completed_triggered = False
 
     DEFAULT_ROLE = "default"  # FIXME
+
+    def _is_standby_node(self, worker_group: WorkerGroup) -> bool:
+        """Check if this node is in standby mode.
+
+        A node is in standby mode when its group_rank >= min_nodes.
+        Standby nodes do not run workers and wait to replace failed active nodes.
+
+        Args:
+            worker_group: The worker group to check
+
+        Returns:
+            True if the node is in standby mode, False if it's an active node
+        """
+        min_nodes = worker_group.spec.rdzv_handler._settings.min_nodes
+        return worker_group.group_rank >= min_nodes
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -375,6 +393,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         elif self._remaining_restarts > 0:
             logger.info(log_msg, role)
             self._remaining_restarts -= 1
+            # Reset restart completed trigger flag for the new restart cycle
+            self._restart_completed_triggered = False
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
             self._restart_workers(self._worker_group)
@@ -450,6 +470,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
+                # If this is a standby node (no workers), trigger restart completed event
+                # so that the rank monitors (especially the restarter logger) can report lifecycle events
+                if self._is_standby_node(self._worker_group):
+                    self._trigger_restart_completed_on_rank_monitors()
+
                 # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
                 unhealthy_count = self._check_cluster_unhealthy_count()
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
@@ -617,6 +642,79 @@ class LocalElasticAgent(SimpleElasticAgent):
                     *[self._connect_to_rank_monitor(lr, rmon) for lr, rmon in new_monitors]
                 )
             asyncio.run(connect_all())
+
+    def _cancel_periodic_restart_checks(self):
+        """Cancel periodic restart checks on all rank monitors (for standby mode)."""
+        async def send_cancel():
+            tasks = []
+            for local_rank, rmon_state in self._rank_monitors.items():
+                if rmon_state.writer is not None:
+                    try:
+                        tasks.append(
+                            write_obj_to_ipc_stream("cancel_periodic_restart_check", rmon_state.writer)
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to queue cancel message for rank monitor {local_rank}: {e}"
+                        )
+
+            if tasks:
+                # Send all cancel messages concurrently
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                # Log any errors
+                for local_rank, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            f"Failed to send cancel message to rank monitor {local_rank}: {result}"
+                        )
+
+        try:
+            asyncio.run(send_cancel())
+        except Exception as e:
+            logger.warning(f"Error cancelling periodic restart checks: {e}")
+
+    def _trigger_restart_completed_on_rank_monitors(self):
+        """Trigger restart completed state on rank monitors (for standby nodes).
+
+        This ensures standby nodes (like the store host when it's standby) continue
+        to report restart lifecycle events even though they have no active workers.
+
+        This is idempotent per restart cycle - only sends once per cycle.
+        """
+        # Only trigger once per restart cycle
+        if self._restart_completed_triggered:
+            return
+
+        async def send_trigger():
+            tasks = []
+            for local_rank, rmon_state in self._rank_monitors.items():
+                if rmon_state.writer is not None:
+                    try:
+                        tasks.append(
+                            write_obj_to_ipc_stream("trigger_restart_completed", rmon_state.writer)
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to queue trigger_restart_completed for rank monitor {local_rank}: {e}"
+                        )
+
+            if tasks:
+                # Send all trigger messages concurrently
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                # Log any errors
+                for local_rank, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            f"Failed to send trigger_restart_completed to rank monitor {local_rank}: {result}"
+                        )
+
+        try:
+            asyncio.run(send_trigger())
+            logger.debug("Triggered restart completed on rank monitors for standby node")
+            # Mark as triggered for this restart cycle
+            self._restart_completed_triggered = True
+        except Exception as e:
+            logger.warning(f"Error triggering restart completed: {e}")
 
     def shutdown_rank_monitors(self):
         # Stop listener threads and terminate rank monitor processes
@@ -911,6 +1009,18 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._setup_local_watchdog(envs=envs)
 
         self.setup_rank_monitors(envs=envs)
+
+        # If this node is in standby mode, cancel periodic restart checks.
+        # Standby nodes are those assigned a group_rank >= min_nodes after rendezvous.
+        # The rendezvous handler sets local_world_size to 0 for standby nodes, so no workers are created.
+        # Let the normal flow continue - PyTorch handles local_world_size=0 correctly.
+        if self._is_standby_node(worker_group):
+            min_nodes = spec.rdzv_handler._settings.min_nodes
+            logger.debug(
+                f"Node is in standby mode (group_rank={worker_group.group_rank}, min_nodes={min_nodes}), "
+                "cancelling periodic restart checks on rank monitors"
+            )
+            self._cancel_periodic_restart_checks()
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
@@ -2248,11 +2358,11 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_enable_nic_healthcheck",
         help="Enable or Disable NIC link state health check before rendezvous. "
-        "This checks if InfiniBand ports are in ACTIVE state and fails if any port "
-        "transitioned from ACTIVE to non-ACTIVE. Unlike --ft-enable-nic-monitor "
-        "(which periodically monitors link_downed counters), this performs a one-time "
-        "state check during rendezvous. Can be used independently or together with "
-        "--ft-enable-nic-monitor. Default: False.",
+        "This checks if network interface ports (RDMA/InfiniBand and Ethernet) are "
+        "in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE. "
+        "Unlike --ft-enable-nic-monitor (which periodically monitors link_downed counters), "
+        "this performs a one-time state check during rendezvous. Can be used independently "
+        "or together with --ft-enable-nic-monitor. Default: False.",
     )
 
     parser.add_argument(
@@ -2281,7 +2391,7 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_link_state_path_template",
         help="Part of Fault Tolerance pkg config (link_state_path_template). "
-        "Template path to check IB link state. Should contain {nic} placeholder. "
+        "Template path to check NIC link state. Should contain {nic} placeholder. "
         "Default: /sys/class/infiniband/{nic}/ports/1/state",
     )
 
@@ -2596,7 +2706,7 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     rdzv_configs['domain_id_from_node_name'] = fault_tol_cfg.domain_id_from_node_name
     rdzv_configs['domain_id_prefix'] = fault_tol_cfg.domain_id_prefix
     rdzv_configs['segment'] = fault_tol_cfg.segment
-    
+
     # Pass NIC health check configs to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template

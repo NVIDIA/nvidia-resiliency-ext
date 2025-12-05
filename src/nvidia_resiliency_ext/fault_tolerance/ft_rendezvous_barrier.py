@@ -45,7 +45,7 @@ except ImportError:
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck, IBLinkStateHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1191,6 +1191,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._enable_nic_healthcheck = enable_nic_healthcheck
         self._link_state_path_template = link_state_path_template
 
+        # Initialize NIC link state health checker (single instance to maintain baseline)
+        self._nic_link_state_checker = None
+        if self._enable_nic_healthcheck:
+            self._nic_link_state_checker = NicLinkStateHealthCheck(
+                link_state_path_template=self._link_state_path_template
+            )
+
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
         self._worker_group = worker_group
@@ -1247,7 +1254,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             raise UnhealthyNodeException(str(e)) from e
 
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU and IB link state health checks for this node."""
+        """Perform GPU and NIC link state health checks for this node."""
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
@@ -1257,12 +1264,12 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             GPUHealthCheck(), "GPU health check", f"Node {self._this_node} has an unhealthy GPU."
         )
 
-        # Perform IB link state health check if enabled
-        if self._enable_nic_healthcheck:
+        # Perform NIC link state health check if enabled
+        if self._nic_link_state_checker is not None:
             self._run_health_check(
-                IBLinkStateHealthCheck(link_state_path_template=self._link_state_path_template),
-                "IB link state health check",
-                f"Node {self._this_node} has unhealthy IB link(s).",
+                self._nic_link_state_checker,
+                "NIC link state health check",
+                f"Node {self._this_node} has unhealthy NIC link(s).",
             )
 
     def handle_control_requests_from_rank(self) -> None:
@@ -1524,12 +1531,13 @@ def create_handler(
     |                            | must be divisible by segment. Defaults to None       |
     |                            | (disabled).                                          |
     +----------------------------+------------------------------------------------------+
-    | enable_nic_healthcheck     | Whether to enable IB link state health check before  |
+    | enable_nic_healthcheck     | Whether to enable NIC link state health check before |
     |                            | rendezvous. Defaults to False.                       |
     +----------------------------+------------------------------------------------------+
-    | link_state_path_template   | Template path for IB link state files. Should contain|
-    |                            | {nic} placeholder. Defaults to None (uses default    |
-    |                            | path /sys/class/infiniband/{nic}/ports/1/state).     |
+    | link_state_path_template   | Template path for NIC link state files. Should       |
+    |                            | contain {nic} placeholder. Defaults to None (uses    |
+    |                            | default path /sys/class/infiniband/{nic}/ports/1/    |
+    |                            | state).                                              |
     +----------------------------+------------------------------------------------------+
     """
     try:
