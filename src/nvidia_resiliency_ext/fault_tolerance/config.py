@@ -93,6 +93,15 @@ class FaultToleranceConfig:
     gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
     gpu_memory_poll_interval: float = 2.0  # Poll interval for GPU memory check (in seconds)
     check_remaining_processes: bool = False
+    # Progress tracking configuration (controlled by max_no_progress_restarts)
+    max_no_progress_restarts: int = 3
+    min_progress_iterations: int = 200
+    progress_update_interval: float = 30.0  # Seconds between sending progress updates to launcher
+
+    @property
+    def is_progress_tracking_enabled(self) -> bool:
+        """Check if progress tracking is enabled (controlled by max_no_progress_restarts > 0)."""
+        return self.max_no_progress_restarts > 0
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':

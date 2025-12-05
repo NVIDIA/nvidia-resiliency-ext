@@ -25,6 +25,7 @@ import signal
 import socket
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import warnings
@@ -70,12 +71,13 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PerCycleLogsSpecs
+from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
     patched_method,
+    read_obj_from_ipc_stream,
     terminate_mp_processes,
-    write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
@@ -145,6 +147,15 @@ class UnhealthyNodeException(Exception):
 
 # LocalElasticAgent source
 # https://github.com/pytorch/pytorch/blob/release/2.3/torch/distributed/elastic/agent/server/local_elastic_agent.py
+
+
+@dataclass
+class RankMonitorState:
+    """State for a single rank monitor process and its IPC connections."""
+    process: Any  # multiprocessing.Process
+    socket_path: str = ""
+    listener_thread: Optional[threading.Thread] = None
+    stop_event: Optional[threading.Event] = None
 
 
 class LocalElasticAgent(SimpleElasticAgent):
@@ -272,8 +283,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._term_timeout = term_timeout
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
-        self._local_rank_to_rmon: Dict[int, Any] = dict()
+        # Rank monitor state (process, IPC connections, listener tasks) per local rank
+        self._rank_monitors: Dict[int, RankMonitorState] = dict()
         self._ft_cfg = fault_tol_cfg
+        # Centralized progress tracking (always instantiated, active only if configured)
+        self._progress_tracker = TrainingProgressTracker(
+            min_progress_iterations=fault_tol_cfg.min_progress_iterations,
+            max_no_progress_restarts=fault_tol_cfg.max_no_progress_restarts,
+        )
+        self._rank_iterations: Dict[int, int] = dict()  # Track max iteration per rank
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
@@ -322,8 +340,48 @@ class LocalElasticAgent(SimpleElasticAgent):
                     self._worker_group.group_rank if self._worker_group else "N/A"
                 )
             except Exception as e:
-                logger.warning(f"Failed to open rendezvous: {e}")
+                logger.error(f"Failed to open rendezvous: {e}")
         # For legacy rendezvous, no action needed - it uses different mechanism
+
+    def _handle_restart_decision(
+        self,
+        role: str,
+        spec: WorkerSpec,
+        log_msg: str,
+        open_rendezvous: bool = False,
+    ) -> bool:
+        """Handle restart decision logic based on progress tracking and remaining restarts.
+
+        Args:
+            role: The role name for logging
+            spec: Worker specification
+            log_msg: Custom log message for restart
+            open_rendezvous: Whether to open rendezvous before restart (for barrier-based rendezvous)
+
+        Returns:
+            True if restart was initiated (caller should continue monitoring loop)
+            False if no restart (caller should stop workers and return failure)
+        """
+        self._progress_tracker.analyze_previous_cycle()
+        should_terminate_early = self._progress_tracker.should_terminate_early()
+
+        if should_terminate_early:
+            logger.error(
+                "[%s] Progress tracker detected no progress across restarts. "
+                "No more restarts will be attempted.",
+                role
+            )
+            return False
+        elif self._remaining_restarts > 0:
+            logger.info(log_msg, role)
+            self._remaining_restarts -= 1
+            if open_rendezvous:
+                self._open_rendezvous_for_restart()
+            self._restart_workers(self._worker_group)
+            return True
+        else:
+            # No more restarts available
+            return False
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         if self._restart_policy == 'any-failed':
@@ -375,31 +433,22 @@ class LocalElasticAgent(SimpleElasticAgent):
                     rank=self._worker_group.group_rank,
                 )
 
-                if self._remaining_restarts > 0:
-                    logger.info(
-                        "[%s] Worker group %s. "
-                        "%s/%s attempts left;"
-                        " will restart worker group",
-                        role,
-                        state.name,
-                        self._remaining_restarts,
-                        spec.max_restarts,
-                    )
-                    self._remaining_restarts -= 1
-                    # Increment peer_aborted_count to notify other nodes (for barrier-based rendezvous)
-                    if hasattr(self._rdzv_handler, '_barrier_state'):
-                        self._rdzv_handler._barrier_state._increment_peer_aborted_count()
-                    # Open rendezvous before restarting (for barrier-based rendezvous)
-                    self._open_rendezvous_for_restart()
-                    self._restart_workers(self._worker_group)
-                else:
-                    self._stop_workers(self._worker_group)
-                    self._worker_group.state = WorkerState.FAILED
-                    # to preserve torchrun's behaviour, should not return WorkerState.UNHEALTHY.
-                    # we use WorkerState.UNHEALTHY to denote a worker group that is still
-                    # running but has some failed workers. torchrun does not use WorkerState.UNHEALTHY
-                    run_result = self._monitor_workers(self._worker_group)
-                    return run_result
+                log_msg = (
+                    f"[%s] Worker group {state.name}. "
+                    f"{self._remaining_restarts}/{spec.max_restarts} attempts left; "
+                    f"will restart worker group"
+                )
+                should_restart = self._handle_restart_decision(
+                    role, spec, log_msg, open_rendezvous=True
+                )
+
+                if should_restart:
+                    continue  # Continue monitoring after restart
+
+                # No more restarts (either exhausted or early termination)
+                self._stop_workers(self._worker_group)
+                self._worker_group.state = WorkerState.FAILED
+                return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
                 # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
                 unhealthy_count = self._check_cluster_unhealthy_count()
@@ -415,22 +464,20 @@ class LocalElasticAgent(SimpleElasticAgent):
                         rank=self._worker_group.group_rank,
                     )
 
-                    if self._remaining_restarts > 0:
-                        logger.info(
-                            "[%s] Detected cluster changes from group_rank=%s "
-                            "(unhealthy_nodes=%s, nodes_waiting=%s, peer_aborted=%s); will restart worker group",
-                            role,
-                            group_rank,
-                            unhealthy_count,
-                            num_nodes_waiting,
-                            peer_aborted_count,
-                        )
-                        self._remaining_restarts -= 1
-                        # Note: The node that triggered the change (unhealthy or new) already opened
-                        # the rendezvous, so we don't need to open it again here.
-                        self._restart_workers(self._worker_group)
-                    else:
+                    log_msg = (
+                        f"[%s] Detected cluster changes from group_rank={group_rank} "
+                        f"(unhealthy_nodes={unhealthy_count}, nodes_waiting={num_nodes_waiting}); "
+                        f"will restart worker group"
+                    )
+                    # Note: The node that triggered the change (unhealthy or new) already opened
+                    # the rendezvous, so we don't need to open it again here.
+                    should_restart = self._handle_restart_decision(
+                        role, spec, log_msg, open_rendezvous=False
+                    )
+
+                    if not should_restart:
                         self._stop_workers(self._worker_group)
+                        self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
@@ -543,6 +590,8 @@ class LocalElasticAgent(SimpleElasticAgent):
 
     def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
+        new_monitors = []  # Track newly started monitors
+
         for worker_env in envs.values():
             # Start rank monitors if not already started
             # Each rank (re)connects to its rank monitor when it starts
@@ -550,23 +599,122 @@ class LocalElasticAgent(SimpleElasticAgent):
             local_rank = int(worker_env['LOCAL_RANK'])
             is_restarter_logger = self._is_store_host and local_rank == 0
             rmon_ipc_socket = worker_env[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR]
-            if local_rank not in self._local_rank_to_rmon:
-                self._local_rank_to_rmon[local_rank] = RankMonitorServer.run_in_subprocess(
+            if local_rank not in self._rank_monitors:
+                rmon_proc = RankMonitorServer.run_in_subprocess(
                     cfg=self._ft_cfg,
                     ipc_socket_path=rmon_ipc_socket,
                     is_restarter_logger=is_restarter_logger,
                     mp_ctx=fork_mp_ctx,
                     env=worker_env,
                 )
+                self._rank_monitors[local_rank] = RankMonitorState(process=rmon_proc)
+                new_monitors.append((local_rank, rmon_proc))
+
+        # Establish bidirectional IPC connections to new rank monitors
+        if new_monitors:
+            async def connect_all():
+                await asyncio.gather(
+                    *[self._connect_to_rank_monitor(lr, rmon) for lr, rmon in new_monitors]
+                )
+            asyncio.run(connect_all())
 
     def shutdown_rank_monitors(self):
-        for local_rank, rmon_proc in self._local_rank_to_rmon.items():
+        # Stop listener threads and terminate rank monitor processes
+        for local_rank, state in self._rank_monitors.items():
+            # Signal listener thread to stop
+            if state.stop_event:
+                state.stop_event.set()
+
+            # Wait for listener thread to finish (will close connection gracefully)
+            if state.listener_thread and state.listener_thread.is_alive():
+                state.listener_thread.join(timeout=2.0)
+
+        # Terminate rank monitor processes
+        for local_rank, state in self._rank_monitors.items():
             with contextlib.suppress(Exception):
-                rmon_proc.terminate()
+                state.process.terminate()
             with contextlib.suppress(Exception):
-                rmon_proc.join()
+                state.process.join()
             with contextlib.suppress(Exception):
                 os.unlink(self.get_rank_mon_socket_path(local_rank))
+
+    async def _connect_to_rank_monitor(self, local_rank: int, rmon_proc) -> None:
+        """Start listener thread for rank monitor bidirectional IPC.
+
+        Note: This is called after rank_monitor_ready_event is set, which guarantees
+        the socket file already exists. The actual connection is created inside the
+        background thread's event loop to avoid event loop conflicts.
+        """
+        launcher_to_rmon_socket = f"{tempfile.gettempdir()}/_ft_launcher{rmon_proc.pid}_to_rmon.socket"
+
+        state = self._rank_monitors[local_rank]
+        state.socket_path = launcher_to_rmon_socket
+        state.stop_event = threading.Event()
+
+        # Start listener thread (will create connection in its own event loop)
+        state.listener_thread = threading.Thread(
+            target=self._listen_to_rank_monitor_thread,
+            args=(local_rank, launcher_to_rmon_socket, state.stop_event),
+            daemon=True,
+            name=f"RankMonitor-{local_rank}-Listener"
+        )
+        state.listener_thread.start()
+
+    def _update_progress_iteration(self, local_rank: int, iteration: int):
+        """Update iteration for a specific rank and aggregate using MIN strategy."""
+        # Update this rank's max iteration
+        self._rank_iterations[local_rank] = max(
+            self._rank_iterations.get(local_rank, 0), iteration
+        )
+
+        # Use minimum across all ranks (most conservative - slowest rank determines progress)
+        min_iteration = min(self._rank_iterations.values()) if self._rank_iterations else 0
+        self._progress_tracker.update_iteration(min_iteration)
+
+    def _listen_to_rank_monitor_thread(self, local_rank: int, socket_path: str, stop_event: threading.Event) -> None:
+        """Listen for messages from rank monitor in a background thread.
+
+        This runs in a separate thread with its own event loop to receive messages
+        from the rank monitor server. The connection is created in this thread's
+        event loop to avoid cross-loop conflicts.
+        """
+        # Create a new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def listen_loop():
+            try:
+                # Create connection in THIS thread's event loop
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+
+                try:
+                    while not stop_event.is_set():
+                        # Use wait_for with timeout to allow checking stop_event periodically
+                        try:
+                            msg = await asyncio.wait_for(read_obj_from_ipc_stream(reader), timeout=1.0)
+                            if isinstance(msg, dict) and msg.get("type") == "iteration_update":
+                                # Handle iteration update from rank monitor
+                                iteration = msg["iteration"]
+                                self._update_progress_iteration(local_rank, iteration)
+                            else:
+                                logger.debug(f"Received message from rank monitor {local_rank}: {msg}")
+                        except asyncio.TimeoutError:
+                            # Timeout is expected, just check stop_event and continue
+                            continue
+                finally:
+                    # Clean up connection
+                    writer.close()
+                    await writer.wait_closed()
+            except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
+                logger.debug(f"Rank monitor {local_rank} connection closed")
+            except Exception as e:
+                if not stop_event.is_set():
+                    logger.error(f"Error listening to rank monitor {local_rank}: {e}")
+
+        try:
+            loop.run_until_complete(listen_loop())
+        finally:
+            loop.close()
 
     def _setup_local_watchdog(self, envs: Dict[int, Dict[str, str]]) -> None:
         enable_watchdog_env_name = TORCHELASTIC_ENABLE_FILE_TIMER
@@ -646,23 +794,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
-        # Send close message to rank monitors
-        for local_rank, rmon_proc in self._local_rank_to_rmon.items():
-            try:
-                launcher_to_rmon_socket = f"{tempfile.gettempdir()}/_ft_launcher{rmon_proc.pid}_to_rmon.socket"
-                if os.path.exists(launcher_to_rmon_socket):
-                    async def send_close_msg():
-                        reader, writer = await asyncio.open_unix_connection(launcher_to_rmon_socket)
-                        try:
-                            await write_obj_to_ipc_stream("close_worker_ipc_connection", writer)
-                        finally:
-                            writer.close()
-                            await writer.wait_closed()
-
-                    asyncio.run(send_close_msg())
-            except Exception as e:
-                logger.warning(f"Failed to send close message to rank monitor {local_rank}: {e}")
-
+        # Rank monitors will detect worker shutdown when worker processes disconnect
         self._shutdown(timeout=self._workers_stop_timeout)
 
         # Check for remaining processes if configured
@@ -2214,6 +2346,32 @@ def get_args_parser() -> ArgumentParser:
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
+    )
+
+    #
+    # Progress tracking arguments
+    #
+
+    parser.add_argument(
+        "--ft-max-no-progress-restarts",
+        "--ft-max_no_progress_restarts",
+        type=int,
+        default=3,
+        dest="ft_max_no_progress_restarts",
+        help="Maximum consecutive restarts without progress before early termination. "
+        "Progress tracking is enabled when this value > 0. "
+        "Set to 0 or -1 to disable progress tracking. "
+        "Default: 3 (progress tracking enabled).",
+    )
+
+    parser.add_argument(
+        "--ft-min-progress-iterations",
+        "--ft-min_progress_iterations",
+        type=int,
+        default=200,
+        dest="ft_min_progress_iterations",
+        help="Minimum iterations required to consider a restart as making progress. "
+        "Default: 200.",
     )
 
     #
