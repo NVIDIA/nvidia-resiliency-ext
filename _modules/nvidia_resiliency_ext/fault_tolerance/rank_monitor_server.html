@@ -244,7 +244,7 @@
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span> <span class="o">=</span> <span class="n">RankMonitorStateMachine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rmlogger</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">=</span> <span class="mi">0</span>  <span class="c1"># Counter for &quot;Started periodic restart check&quot; logs</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">=</span> <span class="mi">0</span>  <span class="c1"># Flag to log &quot;Started periodic restart check&quot; only once</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">health_checker</span> <span class="o">=</span> <span class="n">GPUHealthCheck</span><span class="p">(</span>
             <span class="n">interval</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">node_health_check_interval</span><span class="p">,</span> <span class="n">on_failure</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_handle_unhealthy_node</span>
         <span class="p">)</span>
@@ -253,6 +253,9 @@
             <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">tempfile</span><span class="o">.</span><span class="n">gettempdir</span><span class="p">()</span><span class="si">}</span><span class="s2">/_ft_launcher</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">_to_rmon.socket&quot;</span>
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">launcher_server</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># Keep connection to launcher for bidirectional IPC</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_max_iteration_this_cycle</span> <span class="o">=</span> <span class="mi">0</span>  <span class="c1"># Track max iteration in current restart cycle</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_sent_iteration</span> <span class="o">=</span> <span class="mi">0</span>  <span class="c1"># Track last iteration sent to launcher (avoid duplicates)</span>
 
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">enable_nic_monitor</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Enable NIC health monitoring.&quot;</span><span class="p">)</span>
@@ -272,7 +275,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_check</span><span class="p">()</span>
         <span class="p">)</span>
-        <span class="c1"># Only log for local rank 0 to reduce log spam, and limit to 2 times (first 2 minutes)</span>
+        <span class="c1"># Only log once from local rank 0 to reduce log spam</span>
         <span class="k">if</span> <span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span> <span class="o">==</span> <span class="mi">0</span>
         <span class="p">)</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
@@ -321,15 +324,12 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="s2">&quot;_shutdown_rank_if_alive exception! &quot;</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_unhealthy_node</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;In RankMonitorServer._handle_unhealthy_node.&quot;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_unhealthy_nic</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;In RankMonitorServer._handle_unhealthy_nic.&quot;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_timeout</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;In RankMonitorServer._handle_timeout.&quot;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_authkey_msg</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">,</span> <span class="n">writer</span><span class="p">):</span>
@@ -364,6 +364,31 @@
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">nic_health_checker</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">nic_health_checker</span><span class="o">.</span><span class="n">set_nic_device</span><span class="p">(</span><span class="n">local_rank</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rmlogger</span><span class="o">.</span><span class="n">set_connected_rank</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">)</span>
+
+        <span class="c1"># Send initial iteration to launcher if workload can report iterations</span>
+        <span class="c1"># If msg.iteration is None, the workload cannot report iterations and</span>
+        <span class="c1"># progress tracking will remain disabled (both last_restart_iteration</span>
+        <span class="c1"># and current_max_iteration stay at 0).</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">msg</span><span class="o">.</span><span class="n">iteration</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">await</span> <span class="n">write_obj_to_ipc_stream</span><span class="p">(</span>
+                <span class="p">{</span>
+                    <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;iteration_update&quot;</span><span class="p">,</span>
+                    <span class="s2">&quot;local_rank&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span><span class="p">,</span>
+                    <span class="s2">&quot;iteration&quot;</span><span class="p">:</span> <span class="n">msg</span><span class="o">.</span><span class="n">iteration</span><span class="p">,</span>
+                <span class="p">},</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span><span class="p">,</span>
+            <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_last_sent_iteration</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">iteration</span>
+            <span class="c1"># Only log from rank 0 to reduce log spam</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Sent initial iteration to launcher: </span><span class="si">{</span><span class="n">msg</span><span class="o">.</span><span class="n">iteration</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">msg</span><span class="o">.</span><span class="n">iteration</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="c1"># Only log from rank 0 to reduce log spam</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                    <span class="s2">&quot;Workload cannot report iterations, progress tracking will be disabled&quot;</span>
+                <span class="p">)</span>
+
         <span class="k">await</span> <span class="n">write_obj_to_ipc_stream</span><span class="p">(</span><span class="n">OkMsg</span><span class="p">(</span><span class="n">cfg</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="p">),</span> <span class="n">writer</span><span class="p">)</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_heartbeat_msg</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">,</span> <span class="n">writer</span><span class="p">):</span>
@@ -382,6 +407,11 @@
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">stop_periodic_restart_check</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">handle_section_msg</span><span class="p">()</span>
+
+        <span class="c1"># Track max iteration for this restart cycle (will be sent to launcher on next init)</span>
+        <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">iteration</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_max_iteration_this_cycle</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_max_iteration_this_cycle</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">iteration</span><span class="p">)</span>
+
         <span class="n">resp</span> <span class="o">=</span> <span class="n">ErrorMsg</span><span class="p">()</span>
         <span class="n">current_time</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
         <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">action</span> <span class="ow">is</span> <span class="n">SectionAction</span><span class="o">.</span><span class="n">OPEN</span><span class="p">:</span>
@@ -425,16 +455,21 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">handle_ipc_connection_lost</span><span class="p">()</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">is_restarting</span><span class="p">():</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">start_periodic_restart_check</span><span class="p">()</span>
+
+        <span class="c1"># Check for unclosed sections before clearing rank_info</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="p">:</span>
+            <span class="n">open_section_names</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+            <span class="c1"># Only log from rank 0 to reduce restart/crash log spam (common during failures)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Section(s) </span><span class="si">{</span><span class="n">open_section_names</span><span class="si">}</span><span class="s2"> were still open. Use `.end_all_sections()` to avoid this.&quot;</span>
+                <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">last_hb_time</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">out_of_section_time</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="p">:</span>
-            <span class="n">open_section_names</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;Section(s) </span><span class="si">{</span><span class="n">open_section_names</span><span class="si">}</span><span class="s2"> were still open. you can use`.end_all_sections` to avoid this warning&quot;</span>
-            <span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rmlogger</span><span class="o">.</span><span class="n">set_connected_rank</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">connection_lock</span><span class="o">.</span><span class="n">locked</span><span class="p">():</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">connection_lock</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
@@ -442,23 +477,27 @@
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_launcher_ipc_connection</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span> <span class="n">reader</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">StreamReader</span><span class="p">,</span> <span class="n">writer</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">StreamWriter</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Handle IPC connection from the launcher.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Handle IPC connection from the launcher. Keeps connection open for bidirectional communication.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span> <span class="o">=</span> <span class="n">writer</span>
+
         <span class="k">try</span><span class="p">:</span>
             <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
                 <span class="n">msg</span> <span class="o">=</span> <span class="k">await</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">(</span><span class="n">reader</span><span class="p">)</span>
                 <span class="k">if</span> <span class="n">msg</span> <span class="o">==</span> <span class="s2">&quot;close_worker_ipc_connection&quot;</span><span class="p">:</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                        <span class="s2">&quot;Received request from launcher to close worker IPC connection&quot;</span>
-                    <span class="p">)</span>
+                    <span class="c1"># Normal shutdown request - close worker connection</span>
                     <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">close_current_connection</span><span class="p">()</span>
+                <span class="k">elif</span> <span class="n">msg</span> <span class="o">==</span> <span class="s2">&quot;shutdown&quot;</span><span class="p">:</span>
+                    <span class="c1"># Shutdown request received (not logged - normal operation)</span>
+                    <span class="k">break</span>
                 <span class="k">else</span><span class="p">:</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Received unknown message from launcher: </span><span class="si">{</span><span class="n">msg</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
         <span class="k">except</span> <span class="p">(</span><span class="n">asyncio</span><span class="o">.</span><span class="n">IncompleteReadError</span><span class="p">,</span> <span class="ne">ConnectionResetError</span><span class="p">,</span> <span class="ne">BrokenPipeError</span><span class="p">,</span> <span class="ne">EOFError</span><span class="p">):</span>
-            <span class="c1"># Valid stream close exceptions.</span>
+            <span class="c1"># Valid stream close exceptions - launcher disconnected (normal shutdown)</span>
             <span class="k">pass</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Error handling launcher IPC connection: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
         <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span> <span class="o">=</span> <span class="kc">None</span>
             <span class="n">writer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
             <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">wait_closed</span><span class="p">()</span>
 
@@ -502,7 +541,6 @@
         <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">suppress</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
             <span class="n">writer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
             <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">wait_closed</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Leaving _handle_ipc_connection. &quot;</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_handle_signal</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">sig</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">handle_signal</span><span class="p">()</span>
@@ -579,6 +617,34 @@
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_periodic_nic_health_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">nic_health_checker</span><span class="o">.</span><span class="n">async_check</span><span class="p">()</span>
 
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_periodic_progress_update</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Periodically send current max iteration to launcher for progress tracking.&quot;&quot;&quot;</span>
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">progress_update_interval</span><span class="p">)</span>
+
+            <span class="c1"># Only send if iteration has changed since last send</span>
+            <span class="k">if</span> <span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_iteration_this_cycle</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_sent_iteration</span>
+                <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="p">):</span>
+
+                <span class="n">iteration_to_send</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_iteration_this_cycle</span>
+                <span class="k">await</span> <span class="n">write_obj_to_ipc_stream</span><span class="p">(</span>
+                    <span class="p">{</span>
+                        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;iteration_update&quot;</span><span class="p">,</span>
+                        <span class="s2">&quot;local_rank&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span><span class="p">,</span>
+                        <span class="s2">&quot;iteration&quot;</span><span class="p">:</span> <span class="n">iteration_to_send</span><span class="p">,</span>
+                    <span class="p">},</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span><span class="p">,</span>
+                <span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_last_sent_iteration</span> <span class="o">=</span> <span class="n">iteration_to_send</span>
+                <span class="c1"># Only log from rank 0 to reduce log spam</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;Sent periodic progress update to launcher: iteration=</span><span class="si">{</span><span class="n">iteration_to_send</span><span class="si">}</span><span class="s2">&quot;</span>
+                    <span class="p">)</span>
+
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_rank_monitor_loop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="c1"># Handle usual termination signals</span>
         <span class="k">for</span> <span class="n">sig_to_handle</span> <span class="ow">in</span> <span class="p">[</span>
@@ -618,6 +684,10 @@
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">nic_health_checker</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_periodic_nic_health_check</span><span class="p">())</span>
 
+        <span class="c1"># Periodic progress update to launcher</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">is_progress_tracking_enabled</span><span class="p">:</span>
+            <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_periodic_progress_update</span><span class="p">())</span>
+
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_ready_event</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
 
         <span class="k">try</span><span class="p">:</span>
@@ -653,7 +723,6 @@
             <span class="n">setup_logger</span><span class="p">(</span><span class="n">force_reset</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">node_local_tmp_prefix</span><span class="o">=</span><span class="s2">&quot;rankmonsvr&quot;</span><span class="p">)</span>
             <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
 
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Starting RankMonitorServer... PID=</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
             <span class="n">inst</span> <span class="o">=</span> <span class="n">RankMonitorServer</span><span class="p">(</span>
                 <span class="n">cfg</span><span class="p">,</span>
                 <span class="n">ipc_socket_path</span><span class="p">,</span>
@@ -662,13 +731,13 @@
                 <span class="n">is_restarter_logger</span><span class="p">,</span>
             <span class="p">)</span>
             <span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">inst</span><span class="o">.</span><span class="n">_rank_monitor_loop</span><span class="p">())</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Leaving RankMonitorServer process&quot;</span><span class="p">)</span>
         <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">exceptions</span><span class="o">.</span><span class="n">CancelledError</span><span class="p">:</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;asyncio.exceptions.CancelledError in RankMonitorServer.run&quot;</span><span class="p">)</span>
-            <span class="k">pass</span>  <span class="c1"># Ignore the exception</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                <span class="s2">&quot;asyncio.exceptions.CancelledError in RankMonitorServer.run - clean shutdown&quot;</span>
+            <span class="p">)</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Exception caught in RankMonitorServer.run: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-            <span class="k">pass</span>  <span class="c1"># Ignore the exception</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Exception caught in RankMonitorServer.run: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+            <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># Exit with error code to signal failure</span>
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">run_in_subprocess</span><span class="p">(</span>
@@ -705,11 +774,9 @@
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">close_current_connection</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_writer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">current_writer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
-            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_writer</span><span class="o">.</span><span class="n">wait_closed</span><span class="p">()</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Closed current IPC connection&quot;</span><span class="p">)</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;No active connection to close&quot;</span><span class="p">)</span></div>
+            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_writer</span><span class="o">.</span><span class="n">wait_closed</span><span class="p">()</span></div>
 
+            <span class="c1"># Connection closed (not logged - normal shutdown operation)</span>
 </pre></div>
 
            </div>

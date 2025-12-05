@@ -96,6 +96,7 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">socket</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">sys</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Collection</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">.data</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
@@ -115,7 +116,7 @@
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.ipc_connector</span><span class="w"> </span><span class="kn">import</span> <span class="n">IpcConnector</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.timeouts_calc</span><span class="w"> </span><span class="kn">import</span> <span class="n">TimeoutsCalc</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">,</span> <span class="n">write_object_to_ipc_socket</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_rank</span><span class="p">,</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">,</span> <span class="n">write_object_to_ipc_socket</span>
 
 
 <div class="viewcode-block" id="RankMonitorClientError">
@@ -195,6 +196,20 @@
                 <span class="s2">&quot;this rank was not started with ft_launcher&quot;</span>
             <span class="p">)</span>
 
+        <span class="c1"># Check if workload framework (e.g., Megatron-LM) is available for automatic iteration tracking</span>
+        <span class="c1"># We don&#39;t cache _GLOBAL_ARGS here because it may not be initialized yet</span>
+        <span class="c1"># (ft_integration.setup() is called before initialize_megatron which sets _GLOBAL_ARGS)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_workload_global_vars_module</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_cached_workload_args</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># Cache once _GLOBAL_ARGS is set (optimization)</span>
+        <span class="k">if</span> <span class="s1">&#39;megatron.training.global_vars&#39;</span> <span class="ow">in</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_workload_global_vars_module</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">modules</span><span class="p">[</span><span class="s1">&#39;megatron.training.global_vars&#39;</span><span class="p">]</span>
+            <span class="c1"># Only log from rank 0 to reduce log spam</span>
+            <span class="k">if</span> <span class="n">get_rank</span><span class="p">()</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;0&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                    <span class="s2">&quot;Detected Megatron-LM module, will track training iteration automatically &quot;</span>
+                    <span class="s2">&quot;once global args are initialized&quot;</span>
+                <span class="p">)</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">_ensure_is_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="s2">&quot;RankMonitorClient is not initialized&quot;</span><span class="p">)</span>
@@ -205,6 +220,47 @@
         <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">reply</span><span class="p">,</span> <span class="n">OkMsg</span><span class="p">):</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unexpected reply: </span><span class="si">{</span><span class="n">reply</span><span class="si">}</span><span class="s2">. Expected OkMsg&quot;</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">reply</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_can_report_iterations</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Check if the workload framework supports iteration tracking.</span>
+
+<span class="sd">        This is based on framework detection (module presence), not current state.</span>
+<span class="sd">        Used to &quot;arm&quot; progress tracking even if iterations aren&#39;t available yet.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            True if workload framework is detected and will provide iterations</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_workload_global_vars_module</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_get_current_iteration</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Get current training iteration from workload framework global state.</span>
+
+<span class="sd">        Lazily accesses and caches the global args on first access. Once cached,</span>
+<span class="sd">        subsequent calls use the cached reference (optimization for training loop).</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Current iteration if available from workload framework (e.g., Megatron-LM),</span>
+<span class="sd">            None otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_workload_global_vars_module</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="c1"># Check cache first (optimization - avoid getattr on every call)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cached_workload_args</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="c1"># Lazily access _GLOBAL_ARGS in case it wasn&#39;t set during __init__</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_cached_workload_args</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_workload_global_vars_module</span><span class="p">,</span> <span class="s1">&#39;_GLOBAL_ARGS&#39;</span><span class="p">,</span> <span class="kc">None</span>
+                <span class="p">)</span>
+
+            <span class="c1"># Use cached reference (may still be None if not initialized yet)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cached_workload_args</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="c1"># Check curr_iteration first (updated every training step)</span>
+                <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_cached_workload_args</span><span class="p">,</span> <span class="s1">&#39;curr_iteration&#39;</span><span class="p">):</span>
+                    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cached_workload_args</span><span class="o">.</span><span class="n">curr_iteration</span>
+                <span class="c1"># Fall back to iteration (from checkpoint load)</span>
+                <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_cached_workload_args</span><span class="p">,</span> <span class="s1">&#39;iteration&#39;</span><span class="p">):</span>
+                    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cached_workload_args</span><span class="o">.</span><span class="n">iteration</span>
+        <span class="k">return</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_set_calculated_timeouts</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
@@ -375,7 +431,11 @@
             <span class="k">return</span>
 
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">msg</span> <span class="o">=</span> <span class="n">SectionMsg</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span> <span class="n">section</span><span class="o">=</span><span class="n">section</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="n">action</span><span class="p">)</span>
+            <span class="c1"># Include current iteration if available from framework</span>
+            <span class="n">iteration</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_current_iteration</span><span class="p">()</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">SectionMsg</span><span class="p">(</span>
+                <span class="n">rank</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span> <span class="n">section</span><span class="o">=</span><span class="n">section</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="n">action</span><span class="p">,</span> <span class="n">iteration</span><span class="o">=</span><span class="n">iteration</span>
+            <span class="p">)</span>
             <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
 
             <span class="c1"># Only wait for response if skip_section_response is disabled</span>
@@ -401,8 +461,15 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">rmon_ipc_socket_path</span><span class="p">)</span>
         <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">AuthkeyMsg</span><span class="p">(),</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
-        <span class="n">init_msg</span> <span class="o">=</span> <span class="n">InitMsg</span><span class="p">()</span>
-        <span class="n">init_msg</span><span class="o">.</span><span class="n">rank_info</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span>
+
+        <span class="c1"># Send InitMsg with iteration to arm progress tracking if workload supports it</span>
+        <span class="n">initial_iteration</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_current_iteration</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">initial_iteration</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_can_report_iterations</span><span class="p">():</span>
+            <span class="c1"># Workload framework detected but _GLOBAL_ARGS not initialized yet</span>
+            <span class="c1"># Send sentinel value (1) to arm progress tracking - the real iteration</span>
+            <span class="c1"># will be reported later when training starts</span>
+            <span class="n">initial_iteration</span> <span class="o">=</span> <span class="mi">1</span>
+        <span class="n">init_msg</span> <span class="o">=</span> <span class="n">InitMsg</span><span class="p">(</span><span class="n">rank_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="p">,</span> <span class="n">iteration</span><span class="o">=</span><span class="n">initial_iteration</span><span class="p">)</span>
         <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">init_msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="n">reply_for_init</span> <span class="o">=</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">reply_for_init</span><span class="p">,</span> <span class="n">OkMsg</span><span class="p">):</span>
@@ -422,8 +489,6 @@
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="s2">&quot;RankMonitorClient is already initialized&quot;</span><span class="p">)</span>
-
-        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Initializing fault detection. Rank process PID=</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="o">=</span> <span class="n">RankInfo</span><span class="o">.</span><span class="n">get_for_current_rank</span><span class="p">()</span>
 
