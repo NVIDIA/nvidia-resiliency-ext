@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package nvhcd;
+
+option go_package = "nvhcd.nvidia.com/proto";
+
+// HealthCheckService provides health check functionality for compute nodes
+service HealthCheckService {
+  // RunHealthCheck executes the configured health check script with given arguments
+  rpc RunHealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// HealthCheckRequest contains the arguments to pass to the health check script
+message HealthCheckRequest {
+  // Arguments to pass to the health check script
+  repeated string args = 1;
+}
+
+// HealthCheckResponse contains the results of the health check execution
+message HealthCheckResponse {
+  // Whether the health check succeeded (exit code 0)
+  bool success = 1;
+  
+  // Exit code from the health check script
+  int32 exit_code = 2;
+  
+  // JSON output from the health check script
+  string output = 3;
+  
+  // Error message if execution failed
+  string error = 4;
+}
+

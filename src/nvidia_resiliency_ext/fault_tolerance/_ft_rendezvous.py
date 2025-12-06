@@ -59,7 +59,7 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, InfraNodeHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1350,12 +1350,21 @@ class FtRendezvousHandler(RendezvousHandler):
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
-        # Perform GPU health check
+        # Perform GPU and Infra node health checks
         health_checker = GPUHealthCheck()
+        _infrahc_socket = os.environ.get("INFRAHCD_SOCKET") or os.environ.get("INFRAHC_SOCKET")
+        infrahc_checker = (
+            InfraNodeHealthCheck(socket_path=_infrahc_socket)
+            if _infrahc_socket
+            else InfraNodeHealthCheck()
+        )
         try:
             health_status = health_checker()
+            infrahc_status = infrahc_checker()
             if not health_status:
                 raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
+            if not infrahc_status:
+                raise UnhealthyNodeException(f"Node {self._this_node} failed Infra node health check.")
         except UnhealthyNodeException as e:
             # Log specific health check failure
             log.error(f"Health check failed for node {self._this_node}: {str(e)}")
