@@ -798,3 +798,95 @@ class NVLHealthCheck(PynvmlMixin):
         except Exception as e:
             logger.warning(f"Unexpected Error checking GPU {device_index}: {str(e)}")
             return False
+
+
+class InfraNodeHealthCheck:
+    """
+    Node-level health check that queries the Infra health check service (infrahc)
+    over a Unix domain socket via gRPC.
+    """
+
+    def __init__(
+        self,
+        socket_path: str = "/var/run/nvhcd.sock",
+        args: Optional[list] = None,
+        interval: int = 60,
+        on_failure: Optional[Callable] = None,
+        request_timeout_sec: Optional[float] = 60,
+    ):
+        self.socket_path = socket_path
+        self.args = args or []
+        self.interval = interval
+        self.on_failure = on_failure
+        self.request_timeout_sec = request_timeout_sec
+
+        # Optional imports; health check becomes a no-op if gRPC/protos aren't available
+        self._grpc = None
+        self._pb2 = None
+        self._pb2_grpc = None
+        try:
+            import grpc as _grpc_mod
+
+            # Relative import from package
+            from .proto import nvhcd_pb2 as _pb2_mod
+            from .proto import nvhcd_pb2_grpc as _pb2_grpc_mod
+
+            self._grpc = _grpc_mod
+            self._pb2 = _pb2_mod
+            self._pb2_grpc = _pb2_grpc_mod
+        except Exception as e:
+            logger.debug(f"InfraHCD gRPC client unavailable: {e}")
+
+    async def async_check(self) -> None:
+        while True:
+            await asyncio.sleep(self.interval)
+            result = await self._check_health()
+            if not result and self.on_failure:
+                await self.on_failure()
+
+    async def _check_health(self) -> bool:
+        return self._perform_health_check()
+
+    def __call__(self) -> Union[Optional[Exception], bool]:
+        return self._perform_health_check()
+
+    def _perform_health_check(self) -> bool:
+        """
+        Query Infra health check service over UDS and interpret success as healthy.
+        Behavior:
+          - If gRPC/protos are unavailable, or socket is missing, return True (non-fatal/optional check).
+          - On gRPC connectivity errors, return False.
+        """
+        # If gRPC client cannot be constructed, return True (non-fatal/optional check)
+        if self._grpc is None or self._pb2 is None or self._pb2_grpc is None:
+            return True
+
+        # If socket does not exist, assume service not deployed and return True (non-fatal/optional check)
+        if not os.path.exists(self.socket_path):
+            logger.debug(f"Infra health check socket not found at {self.socket_path}; skipping node health check.")
+            return True
+
+        try:
+            with self._grpc.insecure_channel(f'unix://{self.socket_path}') as channel:
+                stub = self._pb2_grpc.HealthCheckServiceStub(channel)
+                request = self._pb2.HealthCheckRequest(args=["epilog"])
+                if self.request_timeout_sec is not None:
+                    response = stub.RunHealthCheck(request, timeout=self.request_timeout_sec)
+                else:
+                    response = stub.RunHealthCheck(request)
+
+                if not getattr(response, "success", False): # If the health check failed, return False
+                    exit_code = getattr(response, "exit_code", None)
+                    output = getattr(response, "output", "")
+                    error = getattr(response, "error", "")
+                    msg = f"Infra health check failed (exit_code={exit_code}). Output: {output}"
+                    if error:
+                        msg += f" Error: {error}"
+                    logger.warning(msg)
+                    return False
+
+                return True
+
+        except Exception as e:
+            logger.warning(f"InfraHCD gRPC connectivity error: {str(e)}; treating as healthy (skip).")
+            return True

@@ -2012,6 +2012,16 @@ def get_args_parser() -> ArgumentParser:
         "rdzv_id as the prefix).",
     )
 
+    # Infra health check daemon (InfraHC) socket
+    parser.add_argument(
+        "--infrahc-socket",
+        "--infrahc_socket",
+        dest="infrahc_socket",
+        type=str,
+        default="/var/run/infrahc.sock",
+        help="Unix domain socket path for Infra health check service (infrahc), e.g., /var/run/infrahc.sock.",
+    )
+
     parser.add_argument(
         "--ft-base-logfile",
         "--ft_base_logfile",
@@ -2660,6 +2670,11 @@ def run(args):
     # Register the selected FT rendezvous implementation
     impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
     _register_ft_rdzv_handler(impl_type)
+    # Propagate InfraHCD socket path to environment for downstream components
+    infrahc_socket = getattr(args, "infrahc_socket", None)
+    if infrahc_socket:
+        os.environ["INFRAHCD_SOCKET"] = infrahc_socket
+
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(
         config=config,

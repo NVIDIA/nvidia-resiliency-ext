@@ -44,7 +44,7 @@ except ImportError:
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, InfraNodeHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1170,10 +1170,17 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
 
-        # Perform GPU health check
+        # Perform GPU and Infra node health checks
         health_checker = GPUHealthCheck()
+        _infrahc_socket = os.environ.get("INFRAHCD_SOCKET") or os.environ.get("INFRAHC_SOCKET")
+        infrahc_checker = (
+            InfraNodeHealthCheck(socket_path=_infrahc_socket)
+            if _infrahc_socket
+            else InfraNodeHealthCheck()
+        )
         try:
             health_status = health_checker()
+            infrahc_status = infrahc_checker()
         except Exception as e:
             # Unexpected error during health check
             self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
@@ -1185,6 +1192,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
             log.error(f"Health check failed for node {self._this_node}: Node has an unhealthy GPU.")
             raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
+        if not infrahc_status:
+            # Infra node health check failed
+            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+            log.error(
+                f"Health check failed for node {self._this_node}: Infra node health check reported unhealthy."
+            )
+            raise UnhealthyNodeException(
+                f"Node {self._this_node} failed Infra node health check."
+            )
 
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
