@@ -78,6 +78,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     patched_method,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
+    write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
@@ -156,6 +157,7 @@ class RankMonitorState:
     socket_path: str = ""
     listener_thread: Optional[threading.Thread] = None
     stop_event: Optional[threading.Event] = None
+    writer: Optional[Any] = None  # asyncio.StreamWriter for sending messages to rank monitor
 
 
 class LocalElasticAgent(SimpleElasticAgent):
@@ -295,8 +297,27 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        # Track if we've triggered restart completed for standby nodes (reset on each restart)
+        self._restart_completed_triggered = False
+        # Track previous standby state to detect transitions
+        self._was_standby_node = False
 
     DEFAULT_ROLE = "default"  # FIXME
+
+    def _is_standby_node(self, worker_group: WorkerGroup) -> bool:
+        """Check if this node is in standby mode.
+
+        A node is in standby mode when its group_rank >= min_nodes.
+        Standby nodes do not run workers and wait to replace failed active nodes.
+
+        Args:
+            worker_group: The worker group to check
+
+        Returns:
+            True if the node is in standby mode, False if it's an active node
+        """
+        min_nodes = worker_group.spec.rdzv_handler._settings.min_nodes
+        return worker_group.group_rank >= min_nodes
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -375,6 +396,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         elif self._remaining_restarts > 0:
             logger.info(log_msg, role)
             self._remaining_restarts -= 1
+            # Reset restart completed trigger flag for the new restart cycle
+            self._restart_completed_triggered = False
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
             self._restart_workers(self._worker_group)
@@ -450,6 +473,12 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
+                # If this is a standby node (no workers), trigger restart completed event
+                # so that the rank monitors (especially the restarter logger) can report lifecycle events
+                # Only trigger if there was an actual restart (not on first cycle)
+                if self._is_standby_node(self._worker_group) and self._remaining_restarts < spec.max_restarts:
+                    self._trigger_restart_completed_on_rank_monitors()
+
                 # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
                 unhealthy_count = self._check_cluster_unhealthy_count()
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
@@ -618,6 +647,79 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
             asyncio.run(connect_all())
 
+    def _cancel_periodic_restart_checks(self):
+        """Cancel periodic restart checks on all rank monitors (for standby mode)."""
+        async def send_cancel():
+            tasks = []
+            for local_rank, rmon_state in self._rank_monitors.items():
+                if rmon_state.writer is not None:
+                    try:
+                        tasks.append(
+                            write_obj_to_ipc_stream("cancel_periodic_restart_check", rmon_state.writer)
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to queue cancel message for rank monitor {local_rank}: {e}"
+                        )
+
+            if tasks:
+                # Send all cancel messages concurrently
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                # Log any errors
+                for local_rank, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            f"Failed to send cancel message to rank monitor {local_rank}: {result}"
+                        )
+
+        try:
+            asyncio.run(send_cancel())
+        except Exception as e:
+            logger.warning(f"Error cancelling periodic restart checks: {e}")
+
+    def _trigger_restart_completed_on_rank_monitors(self):
+        """Trigger restart completed state on rank monitors (for standby nodes).
+
+        This ensures standby nodes (like the store host when it's standby) continue
+        to report restart lifecycle events even though they have no active workers.
+
+        This is idempotent per restart cycle - only sends once per cycle.
+        """
+        # Only trigger once per restart cycle
+        if self._restart_completed_triggered:
+            return
+
+        async def send_trigger():
+            tasks = []
+            for local_rank, rmon_state in self._rank_monitors.items():
+                if rmon_state.writer is not None:
+                    try:
+                        tasks.append(
+                            write_obj_to_ipc_stream("trigger_restart_completed", rmon_state.writer)
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to queue trigger_restart_completed for rank monitor {local_rank}: {e}"
+                        )
+
+            if tasks:
+                # Send all trigger messages concurrently
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                # Log any errors
+                for local_rank, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            f"Failed to send trigger_restart_completed to rank monitor {local_rank}: {result}"
+                        )
+
+        try:
+            asyncio.run(send_trigger())
+            logger.debug("Triggered restart completed on rank monitors for standby node")
+            # Mark as triggered for this restart cycle
+            self._restart_completed_triggered = True
+        except Exception as e:
+            logger.warning(f"Error triggering restart completed: {e}")
+
     def shutdown_rank_monitors(self):
         # Stop listener threads and terminate rank monitor processes
         for local_rank, state in self._rank_monitors.items():
@@ -687,6 +789,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # Create connection in THIS thread's event loop
                 reader, writer = await asyncio.open_unix_connection(socket_path)
 
+                # Store writer on the state object so it can be used to send messages
+                self._rank_monitors[local_rank].writer = writer
+
                 try:
                     while not stop_event.is_set():
                         # Use wait_for with timeout to allow checking stop_event periodically
@@ -705,6 +810,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # Clean up connection
                     writer.close()
                     await writer.wait_closed()
+                    # Clear the writer reference
+                    self._rank_monitors[local_rank].writer = None
             except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
                 logger.debug(f"Rank monitor {local_rank} connection closed")
             except Exception as e:
@@ -860,15 +967,24 @@ class LocalElasticAgent(SimpleElasticAgent):
         args: Dict[int, Tuple] = {}
         envs: Dict[int, Dict[str, str]] = {}
         log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
+
+        # Get master_addr and master_port, handling compatibility with older PyTorch versions
+        try:
+            master_addr = worker_group.master_addr
+            master_port = worker_group.master_port
+        except AttributeError:
+            # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
+            master_addr, master_port = super()._get_master_addr_port(store)
+
+        # Debug logging: Log worker start info once for all workers
+        logger.debug(
+            f"Starting {len(worker_group.workers)} worker(s) "
+            f"[group_rank={worker_group.group_rank}] with "
+            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
+        )
+
         for worker in worker_group.workers:
             local_rank = worker.local_rank
-            # Get master_addr and master_port, handling compatibility with older PyTorch versions
-            try:
-                master_addr = worker_group.master_addr
-                master_port = worker_group.master_port
-            except AttributeError:
-                # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
-                master_addr, master_port = super()._get_master_addr_port(store)
 
             worker_env = {
                 "LOCAL_RANK": str(local_rank),
@@ -911,6 +1027,23 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._setup_local_watchdog(envs=envs)
 
         self.setup_rank_monitors(envs=envs)
+
+        # If this node is transitioning from active to standby mode, cancel periodic restart checks.
+        # Standby nodes are those assigned a group_rank >= min_nodes after rendezvous.
+        # The rendezvous handler sets local_world_size to 0 for standby nodes, so no workers are created.
+        # Let the normal flow continue - PyTorch handles local_world_size=0 correctly.
+        is_standby = self._is_standby_node(worker_group)
+        if is_standby and not self._was_standby_node:
+            # Transitioning from active to standby - cancel periodic restart checks
+            min_nodes = spec.rdzv_handler._settings.min_nodes
+            logger.debug(
+                f"Node transitioning to standby mode (group_rank={worker_group.group_rank}, min_nodes={min_nodes}), "
+                "cancelling periodic restart checks on rank monitors"
+            )
+            self._cancel_periodic_restart_checks()
+
+        # Update the standby state tracker
+        self._was_standby_node = is_standby
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
@@ -1383,6 +1516,8 @@ def launch_agent(
 
     # Add is_store_host to rdzv_parameters
     rdzv_parameters.config["is_store_host"] = is_store_host
+    # Add nproc_per_node so the rendezvous handler can restore local_world_size for standby->active transitions
+    rdzv_parameters.config["nproc_per_node"] = config.nproc_per_node
 
     spec = WorkerSpec(
         role=config.role,
@@ -2237,7 +2372,22 @@ def get_args_parser() -> ArgumentParser:
         type=lambda x: str(x).lower() not in ["false", "0", "no"],
         default=None,
         dest="ft_enable_nic_monitor",
-        help="Enable or Disable NIC health monitoring in training. Default: False.",
+        help="Enable or Disable NIC health monitoring in training. "
+        "This monitors link_downed counters periodically during training. Default: False.",
+    )
+
+    parser.add_argument(
+        "--ft-enable-nic-healthcheck",
+        "--ft-enable_nic_healthcheck",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_enable_nic_healthcheck",
+        help="Enable or Disable NIC link state health check before rendezvous. "
+        "This checks if network interface ports (RDMA/InfiniBand and Ethernet) are "
+        "in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE. "
+        "Unlike --ft-enable-nic-monitor (which periodically monitors link_downed counters), "
+        "this performs a one-time state check during rendezvous. Can be used independently "
+        "or together with --ft-enable-nic-monitor. Default: False.",
     )
 
     parser.add_argument(
@@ -2260,6 +2410,17 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-link-state-path-template",
+        "--ft-link_state_path_template",
+        type=str,
+        default=None,
+        dest="ft_link_state_path_template",
+        help="Part of Fault Tolerance pkg config (link_state_path_template). "
+        "Template path to check NIC link state. Should contain {nic} placeholder. "
+        "Default: /sys/class/infiniband/{nic}/ports/1/state",
+    )
+
+    parser.add_argument(
         "--ft-skip-section-response",
         "--ft-skip_section_response",
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
@@ -2269,19 +2430,6 @@ def get_args_parser() -> ArgumentParser:
         "If enabled (default), section and heartbeat messages are sent without waiting "
         "for server response, significantly reducing latency. "
         "Set to false during development to catch programming errors immediately.",
-    )
-
-    parser.add_argument(
-        "--ft-use-infra-group-rank",
-        "--ft-use_infra_group_rank",
-        type=lambda x: str(x).lower() not in ["false", "0", "no"],
-        default=None,
-        dest="ft_use_infra_group_rank",
-        help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
-        "If enabled, always use infrastructure group rank for rank assignment. "
-        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). Previous assignments "
-        "are ignored to ensure consistency with infrastructure rank assignment. "
-        "Note: Hot spare/redundancy NOT supported. Default: True.",
     )
 
     parser.add_argument(
@@ -2296,6 +2444,43 @@ def get_args_parser() -> ArgumentParser:
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
         "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
+    )
+
+    parser.add_argument(
+        "--ft-domain-id-from-node-name",
+        "--ft-domain_id_from_node_name",
+        type=lambda x: str(x).lower() == 'true',
+        default=None,
+        dest="ft_domain_id_from_node_name",
+        help="Parse domain ID from node name for segment-aware rank assignment. "
+        "Node name format: <domain_id>-<node_id> where domain_id = <prefix><domain_number>. "
+        "Example: 'nvl72144-T01' with prefix 'nvl72' has domain_id='nvl72144', domain_number=144. "
+        "Default: True, but automatically set to False when --ft-segment is not specified.",
+    )
+
+    parser.add_argument(
+        "--ft-domain-id-prefix",
+        "--ft-domain_id_prefix",
+        type=str,
+        default=None,
+        dest="ft_domain_id_prefix",
+        help="Prefix to strip from domain_id to extract domain number. "
+        "Example: With prefix 'nvl72', domain_id 'nvl72144' yields domain_number 144. "
+        "Default: 'nvl72'.",
+    )
+
+    parser.add_argument(
+        "--ft-segment",
+        "--ft_segment",
+        type=int,
+        default=None,
+        dest="ft_segment",
+        help="Number of nodes to select from each domain when using segment-aware rank assignment. "
+        "If a domain has fewer nodes than this value, those nodes are excluded. "
+        "If a domain has more nodes, only the first N nodes are selected. "
+        "Nodes in the same segment get contiguous group ranks. "
+        "min_nodes must be divisible by segment. "
+        "Set to None or omit to disable segment awareness. Default: None.",
     )
 
     parser.add_argument(
@@ -2542,8 +2727,14 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
 
-    # Pass use_infra_group_rank from fault tolerance config to rendezvous config
-    rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
+    # Pass segment-related configs to rendezvous config
+    rdzv_configs['domain_id_from_node_name'] = fault_tol_cfg.domain_id_from_node_name
+    rdzv_configs['domain_id_prefix'] = fault_tol_cfg.domain_id_prefix
+    rdzv_configs['segment'] = fault_tol_cfg.segment
+
+    # Pass NIC health check configs to rendezvous config
+    rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
+    rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:

@@ -2,4 +2,3 @@ fault_tolerance:
     initial_rank_heartbeat_timeout: null
     rank_heartbeat_timeout: null
     log_level: "DEBUG"
-    # use_infra_group_rank: true  # Default: Use infrastructure ranks (SLURM_PROCID/GROUP_RANK) on initial rendezvous

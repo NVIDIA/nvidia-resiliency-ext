@@ -7,4 +7,3 @@ fault_tolerance:
         checkpoint: 30
     rank_out_of_section_timeout: 30
     log_level: "DEBUG"
-    # use_infra_group_rank: true  # Default: Use infrastructure ranks (SLURM_PROCID/GROUP_RANK) on initial rendezvous

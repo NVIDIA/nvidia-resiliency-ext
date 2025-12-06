@@ -399,6 +399,14 @@ class RankMonitorServer:
                 if msg == "close_worker_ipc_connection":
                     # Normal shutdown request - close worker connection
                     await self.close_current_connection()
+                elif msg == "cancel_periodic_restart_check":
+                    # Standby mode - cancel periodic restart check
+                    await self.stop_periodic_restart_check()
+                    self.logger.debug("Cancelled periodic restart check (standby mode)")
+                elif msg == "trigger_restart_completed":
+                    # Explicitly trigger HANDLING_COMPLETED transition (for standby nodes)
+                    self.state_machine.trigger_restart_completed()
+                    self.logger.debug("Triggered restart completed transition (standby node)")
                 elif msg == "shutdown":
                     # Shutdown request received (not logged - normal operation)
                     break

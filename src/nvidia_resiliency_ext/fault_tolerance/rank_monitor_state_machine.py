@@ -64,6 +64,23 @@ class RankMonitorStateMachine:
                 f"Unexpected periodic_restart_check all, current state: {self.state}"
             )
 
+    def trigger_restart_completed(self):
+        """Explicitly trigger restart completion (for standby nodes without workers).
+
+        This allows the launcher to trigger state transitions on standby nodes that
+        don't have workers but should still report restart lifecycle events.
+        """
+        if self.state in [RankMonitorState.HANDLING_START, RankMonitorState.HANDLING_PROCESSING]:
+            self.transition_to(RankMonitorState.HANDLING_COMPLETED)
+        elif self.state == RankMonitorState.HANDLING_COMPLETED:
+            # Already completed, this is idempotent - no-op
+            pass
+        else:
+            # Log warning but don't fail - may be called in edge cases
+            self.logger.log_restarter_event(
+                f"[WARNING] trigger_restart_completed called in unexpected state: {self.state}"
+            )
+
     def handle_ipc_connection_lost(self):
         if self.state in [RankMonitorState.INITIALIZE, RankMonitorState.HANDLING_COMPLETED]:
             self.transition_to(RankMonitorState.HANDLING_START)
