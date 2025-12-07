@@ -2012,16 +2012,6 @@ def get_args_parser() -> ArgumentParser:
         "rdzv_id as the prefix).",
     )
 
-    # Infra health check daemon (InfraHC) socket
-    parser.add_argument(
-        "--infrahc-socket",
-        "--infrahc_socket",
-        dest="infrahc_socket",
-        type=str,
-        default="/var/run/infrahc.sock",
-        help="Unix domain socket path for Infra health check service (infrahc), e.g., /var/run/infrahc.sock.",
-    )
-
     parser.add_argument(
         "--ft-base-logfile",
         "--ft_base_logfile",
@@ -2172,6 +2162,16 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_node_health_check_interval",
         help="Part of Fault Tolerance pkg config (node_health_check_interval). Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-node-health-check-endpoint",
+        "--ft-node_health_check_endpoint",
+        dest="ft_node_health_check_endpoint",
+        type=str,
+        default=None,
+        help="UDS endpoint for the node health check service used by InJob. "
+        "Examples: /var/run/infrahc.sock, unix:///var/run/infrahc.sock.",
     )
 
     parser.add_argument(
@@ -2539,6 +2539,10 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'legacy') == 'legacy':
         rdzv_configs['use_libuv'] = False
 
+    # Pass node health check endpoint to rendezvous config (consumed by FT handlers)
+    if getattr(args, "ft_node_health_check_endpoint", None):
+        rdzv_configs['node_health_check_endpoint'] = args.ft_node_health_check_endpoint
+
     if args.rdzv_backend == "static":
         rdzv_configs["rank"] = args.node_rank
 
@@ -2670,10 +2674,10 @@ def run(args):
     # Register the selected FT rendezvous implementation
     impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
     _register_ft_rdzv_handler(impl_type)
-    # Propagate InfraHCD socket path to environment for downstream components
-    infrahc_socket = getattr(args, "infrahc_socket", None)
-    if infrahc_socket:
-        os.environ["INFRAHCD_SOCKET"] = infrahc_socket
+    # Propagate health check endpoint to environment for downstream components
+    ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
+    if ft_hc_endpoint:
+        os.environ["FT_NODE_HEALTH_CHECK_ENDPOINT"] = ft_hc_endpoint
 
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(

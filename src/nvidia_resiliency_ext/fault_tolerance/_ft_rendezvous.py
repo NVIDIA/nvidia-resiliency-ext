@@ -59,7 +59,7 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck, InfraNodeHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, NodeHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1224,6 +1224,7 @@ class FtRendezvousHandler(RendezvousHandler):
         timeout: Optional[RendezvousTimeout] = None,
         upscaling_enabled: bool = True,
         use_infra_group_rank: bool = False,
+        node_health_check_endpoint: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousHandler`.
 
@@ -1263,7 +1264,7 @@ class FtRendezvousHandler(RendezvousHandler):
 
         state_holder = _BackendRendezvousStateHolder(backend, settings)
 
-        return cls(node, settings, backend.name, store, state_holder)
+        return cls(node, settings, backend.name, store, state_holder, node_health_check_endpoint)
 
     def __init__(
         self,
@@ -1272,6 +1273,7 @@ class FtRendezvousHandler(RendezvousHandler):
         backend_name: str,
         store: Store,
         state_holder: _RendezvousStateHolder,
+        node_health_check_endpoint: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1309,6 +1311,7 @@ class FtRendezvousHandler(RendezvousHandler):
         self._heartbeat_lock = threading.Lock()
 
         self._keep_alive_timer = None
+        self._node_health_check_endpoint = node_health_check_endpoint
 
     def _record(
         self,
@@ -1350,13 +1353,12 @@ class FtRendezvousHandler(RendezvousHandler):
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
-        # Perform GPU and Infra node health checks
+        # Perform GPU and Node health checks
         health_checker = GPUHealthCheck()
-        _infrahc_socket = os.environ.get("INFRAHCD_SOCKET") or os.environ.get("INFRAHC_SOCKET")
         infrahc_checker = (
-            InfraNodeHealthCheck(socket_path=_infrahc_socket)
-            if _infrahc_socket
-            else InfraNodeHealthCheck()
+            NodeHealthCheck(endpoint=self._node_health_check_endpoint)
+            if self._node_health_check_endpoint
+            else NodeHealthCheck()
         )
         try:
             health_status = health_checker()
@@ -1364,7 +1366,7 @@ class FtRendezvousHandler(RendezvousHandler):
             if not health_status:
                 raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
             if not infrahc_status:
-                raise UnhealthyNodeException(f"Node {self._this_node} failed Infra node health check.")
+                raise UnhealthyNodeException(f"Node {self._this_node} failed node health check.")
         except UnhealthyNodeException as e:
             # Log specific health check failure
             log.error(f"Health check failed for node {self._this_node}: {str(e)}")
@@ -1756,6 +1758,7 @@ def create_handler(
         # torchrun default behaviour if not specified otherwise
         upscale_completed = params.config.get('upscaling_enabled', True)
         use_infra_group_rank = params.config.get('use_infra_group_rank', True)
+        node_health_check_endpoint = params.config.get('node_health_check_endpoint', None)
 
         return FtRendezvousHandler.from_backend(
             params.run_id,
@@ -1767,6 +1770,7 @@ def create_handler(
             timeout,
             upscaling_enabled=upscale_completed,
             use_infra_group_rank=use_infra_group_rank,
+            node_health_check_endpoint=node_health_check_endpoint,
         )
     except Exception as e:
         construct_and_record_rdzv_event(
