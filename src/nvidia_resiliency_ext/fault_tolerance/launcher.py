@@ -349,6 +349,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec: WorkerSpec,
         log_msg: str,
         open_rendezvous: bool = False,
+        notify_peer: bool = False,
     ) -> bool:
         """Handle restart decision logic based on progress tracking and remaining restarts.
 
@@ -357,6 +358,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             spec: Worker specification
             log_msg: Custom log message for restart
             open_rendezvous: Whether to open rendezvous before restart (for barrier-based rendezvous)
+            notify_peer: Whether to notify peers to abort the workers in current cycle.
 
         Returns:
             True if restart was initiated (caller should continue monitoring loop)
@@ -375,6 +377,9 @@ class LocalElasticAgent(SimpleElasticAgent):
         elif self._remaining_restarts > 0:
             logger.info(log_msg, role)
             self._remaining_restarts -= 1
+            # Increment peer_aborted_count to notify other nodes (for barrier-based rendezvous)
+            if notify_peer and hasattr(self._rdzv_handler, '_barrier_state'):
+                self._rdzv_handler._barrier_state._increment_peer_aborted_count()
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
             self._restart_workers(self._worker_group)
@@ -439,7 +444,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     f"will restart worker group"
                 )
                 should_restart = self._handle_restart_decision(
-                    role, spec, log_msg, open_rendezvous=True
+                    role, spec, log_msg, open_rendezvous=True,
+                    notify_peer=True
                 )
 
                 if should_restart:
@@ -472,7 +478,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # Note: The node that triggered the change (unhealthy or new) already opened
                     # the rendezvous, so we don't need to open it again here.
                     should_restart = self._handle_restart_decision(
-                        role, spec, log_msg, open_rendezvous=False
+                        role, spec, log_msg, open_rendezvous=False,
+                        notify_peer=False
                     )
 
                     if not should_restart:
