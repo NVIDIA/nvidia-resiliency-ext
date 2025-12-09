@@ -50,9 +50,15 @@ class FaultToleranceConfig:
       that spans code not wrapped in any other section.
     * `restart_check_interval` - interval between checks if restart is in progress, needed for layered restart protocol
     * `enable_nic_monitor` - Enable NIC health monitoring in training. Default: False.
+    * `enable_nic_healthcheck` - Enable NIC link state health check before rendezvous. This checks if
+      network interface ports (RDMA/InfiniBand and Ethernet) are in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE.
+      Unlike enable_nic_monitor (which periodically monitors link_downed counters), this performs a one-time
+      state check during rendezvous. Can be used independently or together with enable_nic_monitor. Default: False.
     * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
     * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
       placeholder which will be replaced with actual NIC device name.
+    * `link_state_path_template` - Template path for NIC link state files. Should contain '{nic}'
+      placeholder which will be replaced with actual NIC device name. Default: /sys/class/infiniband/{nic}/ports/1/state
     * `skip_section_response` - If True, section and heartbeat messages are sent without waiting
       for server response (unidirectional communication). This significantly reduces latency for
       high-frequency operations. Server logs errors instead of sending them back.
@@ -85,8 +91,10 @@ class FaultToleranceConfig:
     log_level: int = logging.INFO
     restart_check_interval: float = 60.0
     enable_nic_monitor: bool = False
+    enable_nic_healthcheck: bool = False
     pci_topo_file: Optional[str] = None
     link_down_path_template: Optional[str] = None
+    link_state_path_template: Optional[str] = None
     skip_section_response: bool = True
     use_infra_group_rank: bool = True
     gpu_memory_reclaim_timeout: float = 50.0

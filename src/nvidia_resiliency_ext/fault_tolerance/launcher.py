@@ -2244,7 +2244,22 @@ def get_args_parser() -> ArgumentParser:
         type=lambda x: str(x).lower() not in ["false", "0", "no"],
         default=None,
         dest="ft_enable_nic_monitor",
-        help="Enable or Disable NIC health monitoring in training. Default: False.",
+        help="Enable or Disable NIC health monitoring in training. "
+        "This monitors link_downed counters periodically during training. Default: False.",
+    )
+
+    parser.add_argument(
+        "--ft-enable-nic-healthcheck",
+        "--ft-enable_nic_healthcheck",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_enable_nic_healthcheck",
+        help="Enable or Disable NIC link state health check before rendezvous. "
+        "This checks if network interface ports (RDMA/InfiniBand and Ethernet) are "
+        "in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE. "
+        "Unlike --ft-enable-nic-monitor (which periodically monitors link_downed counters), "
+        "this performs a one-time state check during rendezvous. Can be used independently "
+        "or together with --ft-enable-nic-monitor. Default: False.",
     )
 
     parser.add_argument(
@@ -2264,6 +2279,17 @@ def get_args_parser() -> ArgumentParser:
         dest="ft_link_down_path_template",
         help="Part of Fault Tolerance pkg config (link_down_path_template). "
         "Template path to check if a NIC link is down.",
+    )
+
+    parser.add_argument(
+        "--ft-link-state-path-template",
+        "--ft-link_state_path_template",
+        type=str,
+        default=None,
+        dest="ft_link_state_path_template",
+        help="Part of Fault Tolerance pkg config (link_state_path_template). "
+        "Template path to check NIC link state. Should contain {nic} placeholder. "
+        "Default: /sys/class/infiniband/{nic}/ports/1/state",
     )
 
     parser.add_argument(
@@ -2551,6 +2577,10 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     # Pass use_infra_group_rank from fault tolerance config to rendezvous config
     rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
+
+    # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
+    rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
+    rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
