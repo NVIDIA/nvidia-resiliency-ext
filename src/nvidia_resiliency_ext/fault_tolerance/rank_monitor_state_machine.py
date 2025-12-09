@@ -64,23 +64,6 @@ class RankMonitorStateMachine:
                 f"Unexpected periodic_restart_check all, current state: {self.state}"
             )
 
-    def trigger_restart_completed(self):
-        """Explicitly trigger restart completion (for standby nodes without workers).
-
-        This allows the launcher to trigger state transitions on standby nodes that
-        don't have workers but should still report restart lifecycle events.
-        """
-        if self.state in [RankMonitorState.HANDLING_START, RankMonitorState.HANDLING_PROCESSING]:
-            self.transition_to(RankMonitorState.HANDLING_COMPLETED)
-        elif self.state == RankMonitorState.HANDLING_COMPLETED:
-            # Already completed, this is idempotent - no-op
-            pass
-        else:
-            # Log warning but don't fail - may be called in edge cases
-            self.logger.log_restarter_event(
-                f"[WARNING] trigger_restart_completed called in unexpected state: {self.state}"
-            )
-
     def handle_ipc_connection_lost(self):
         if self.state in [RankMonitorState.INITIALIZE, RankMonitorState.HANDLING_COMPLETED]:
             self.transition_to(RankMonitorState.HANDLING_START)
@@ -146,21 +129,6 @@ class RankMonitorStateMachine:
         return new_state in allowed_transitions[self.state]
 
     def _log_state_transition(self, new_state):
-        if new_state == RankMonitorState.INITIALIZE:
-            self.logger.log_restarter_event("[NestedRestarter] name=[InJob] state=initialize")
-        elif new_state == RankMonitorState.HANDLING_START:
-            self.logger.log_restarter_event(
-                "[NestedRestarter] name=[InJob] state=handling stage=starting",
-            )
-        elif new_state == RankMonitorState.HANDLING_PROCESSING:
-            self.logger.log_restarter_event(
-                "[NestedRestarter] name=[InJob] state=handling stage=processing",
-            )
-        elif new_state == RankMonitorState.HANDLING_COMPLETED:
-            self.logger.log_restarter_event(
-                "[NestedRestarter] name=[InJob] state=handling stage=completed",
-            )
-        elif new_state == RankMonitorState.FINALIZED:
-            self.logger.log_restarter_event("[NestedRestarter] name=[InJob] state=finalized")
-        elif new_state == RankMonitorState.ABORTED:
-            self.logger.log_restarter_event("[NestedRestarter] name=[InJob] state=aborted")
+        # DEPRECATED: This method is disabled and will be removed in a future release.
+        # NestedRestarter logging is no longer needed.
+        return

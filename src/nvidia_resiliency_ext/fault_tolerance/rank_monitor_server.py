@@ -182,29 +182,16 @@ class RankMonitorServer:
             self.nic_health_checker = None
 
     def start_periodic_restart_check(self):
-        if self._periodic_restart_task and not self._periodic_restart_task.done():
-            self.logger.warning("Periodic restart check is already running.")
-            return
-        self._periodic_restart_task = asyncio.get_running_loop().create_task(
-            self._periodic_restart_check()
-        )
-        # Only log once from local rank 0 to reduce log spam
-        if (
-            self.rank_info is None or self.rank_info.local_rank == 0
-        ) and self._restart_check_log_count < 2:
-            self.logger.info("Started periodic restart check.")
-            self._restart_check_log_count += 1
+        # DEPRECATED: This method is disabled and will be removed in a future release.
+        # The periodic restart check only provided observability (state transition logging)
+        # without affecting core functionality.
+        return
 
     async def stop_periodic_restart_check(self):
-        if self._periodic_restart_task:
-            self._periodic_restart_task.cancel()
-            try:
-                await self._periodic_restart_task
-            except asyncio.CancelledError:
-                self.logger.debug("Periodic restart check task cancelled.")
-            self._periodic_restart_task = None
-            # Reset counter when restart completes successfully
-            self._restart_check_log_count = 0
+        # DEPRECATED: This method is disabled and will be removed in a future release.
+        # The periodic restart check only provided observability (state transition logging)
+        # without affecting core functionality.
+        return
 
     def _shutdown_rank(self):
         # First sends SIGCONT to wake up the process, then "rank_termination_signal" to terminate it
@@ -399,14 +386,6 @@ class RankMonitorServer:
                 if msg == "close_worker_ipc_connection":
                     # Normal shutdown request - close worker connection
                     await self.close_current_connection()
-                elif msg == "cancel_periodic_restart_check":
-                    # Standby mode - cancel periodic restart check
-                    await self.stop_periodic_restart_check()
-                    self.logger.debug("Cancelled periodic restart check (standby mode)")
-                elif msg == "trigger_restart_completed":
-                    # Explicitly trigger HANDLING_COMPLETED transition (for standby nodes)
-                    self.state_machine.trigger_restart_completed()
-                    self.logger.debug("Triggered restart completed transition (standby node)")
                 elif msg == "shutdown":
                     # Shutdown request received (not logged - normal operation)
                     break
@@ -527,6 +506,9 @@ class RankMonitorServer:
             await asyncio.sleep(self.cfg.workload_check_interval)
 
     async def _periodic_restart_check(self):
+        # DEPRECATED: This method is disabled and will be removed in a future release.
+        # The periodic restart check only provided observability (state transition logging)
+        # without affecting core functionality.
         await asyncio.sleep(self.cfg.restart_check_interval)
         while True:
             self.state_machine.periodic_restart_check()

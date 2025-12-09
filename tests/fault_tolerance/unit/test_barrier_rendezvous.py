@@ -264,8 +264,10 @@ class Step2CompletionTest(BaseRendezvousTest):
             )
             try:
                 node = self.node_desc_gen.generate()
+                # Test subsequent rendezvous behavior (not first rendezvous)
+                # where min_nodes + timeout allows completion
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
                 )
                 results.append((participant_id, rank, total))
             except Exception as e:
@@ -316,8 +318,10 @@ class Step2CompletionTest(BaseRendezvousTest):
                     time.sleep(delay)
                 node = self.node_desc_gen.generate()
                 start = time.time()
+                # Test subsequent rendezvous behavior (not first rendezvous)
+                # where min_nodes + timeout allows completion
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
                 )
                 elapsed = time.time() - start
                 results.append((participant_id, rank, total))
@@ -425,8 +429,10 @@ class RaceConditionTest(BaseRendezvousTest):
                 if delay > 0:
                     time.sleep(delay)
                 node = self.node_desc_gen.generate()
+                # Test subsequent rendezvous behavior (not first rendezvous)
+                # where min_nodes + timeout allows completion
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
                 )
                 results.append((participant_id, rank, total))
             except Exception as e:
@@ -502,8 +508,10 @@ class RaceConditionTest(BaseRendezvousTest):
 
                 state.assign_group_ranks = instrumented_assign
 
+                # Test subsequent rendezvous behavior (not first rendezvous)
+                # where min_nodes + timeout allows completion
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
                 )
                 results.append(('host', rank, total))
             except Exception as e:
@@ -518,8 +526,9 @@ class RaceConditionTest(BaseRendezvousTest):
             )
             try:
                 node = self.node_desc_gen.generate()
+                # Test subsequent rendezvous behavior (not first rendezvous)
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
                 )
                 results.append(('regular', rank, total))
             except Exception as e:
@@ -538,8 +547,9 @@ class RaceConditionTest(BaseRendezvousTest):
             )
             try:
                 node = self.node_desc_gen.generate()
+                # Test subsequent rendezvous behavior (not first rendezvous)
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
                 )
                 results.append(('late', rank, total))
             except Exception as e:

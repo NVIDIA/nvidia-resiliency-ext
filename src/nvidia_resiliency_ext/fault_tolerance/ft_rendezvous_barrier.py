@@ -685,7 +685,7 @@ class _RendezvousBarrierState:
         min_nodes: int,
         max_nodes: int,
         last_call_timeout: timedelta,
-        is_first_rendezvous: bool,
+        is_first_rendezvous: bool = True,
     ) -> Tuple[int, int]:
         """Perform the complete rendezvous process: join, wait for completion, acknowledge, and get rank.
 
@@ -1216,13 +1216,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._assigned_rank = None
         self._world_size = None
 
-        # Track whether first rendezvous has completed
-        # This flag is used to enforce max_nodes on first cycle, then allow graceful
-        # completion with min_nodes + timeout on subsequent cycles
-        self._first_rendezvous_completed = False
-
         # Track rendezvous round number in memory (increments on each next_rendezvous call)
         # Used to isolate MASTER_ADDR/MASTER_PORT between rendezvous rounds
+        # Round 0 indicates the first rendezvous (enforces max_nodes requirement)
         self._rendezvous_round = 0
 
         self._ranks_connector = IpcConnector(FT_LAUNCHER_IPC_SOCKET)
@@ -1336,8 +1332,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     def _perform_rendezvous(self) -> None:
         """Perform the complete rendezvous process."""
         # Perform complete rendezvous process
-        # Pass flag indicating if this is the first rendezvous
-        is_first_rendezvous = not self._first_rendezvous_completed
+        # Pass flag indicating if this is the first rendezvous (round 0)
+        is_first_rendezvous = self._rendezvous_round == 0
 
         group_rank, total_participants = self._barrier_state.perform_rendezvous(
             self._this_node,
@@ -1346,10 +1342,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             self._settings.timeout.last_call,
             is_first_rendezvous,
         )
-
-        # Mark that first rendezvous has completed
-        # This will be False for all subsequent rendezvous calls on this handler instance
-        self._first_rendezvous_completed = True
 
         # Increment round number for the next rendezvous
         # This ensures each rendezvous round uses an isolated namespace for MASTER_ADDR/MASTER_PORT

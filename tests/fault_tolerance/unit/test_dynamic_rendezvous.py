@@ -707,7 +707,8 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         """Test adding node to participants from both clean state and waitlist."""
         # Test 1: Clean state
         expected_state = _RendezvousState()
-        expected_state.participants[self._node] = 0
+        # Infrastructure rank is -1 initially (not yet assigned, will be assigned on completion)
+        expected_state.participants[self._node] = -1
         expected_state.last_heartbeats[self._node] = self._now
         self._min_nodes = 2
         self._max_nodes = 2
@@ -717,7 +718,7 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         self._mock_state_holder.reset_mock()
         self._state.wait_list.add(self._node)
         expected_state = _RendezvousState()
-        expected_state.participants[self._node] = 0
+        expected_state.participants[self._node] = -1
         expected_state.last_heartbeats[self._node] = self._now
         self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
 
@@ -748,7 +749,8 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
 
         expected_state = _RendezvousState()
         self._add_participants(num_participants, expected_state)
-        expected_state.participants[self._node] = 0
+        # Infrastructure rank is -1 initially (not yet assigned)
+        expected_state.participants[self._node] = -1
         expected_state.last_heartbeats[self._node] = self._now
         expected_state.deadline = self._now + self._timeout.last_call
 

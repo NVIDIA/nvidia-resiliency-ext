@@ -78,7 +78,6 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     patched_method,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
-    write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
@@ -157,7 +156,6 @@ class RankMonitorState:
     socket_path: str = ""
     listener_thread: Optional[threading.Thread] = None
     stop_event: Optional[threading.Event] = None
-    writer: Optional[Any] = None  # asyncio.StreamWriter for sending messages to rank monitor
 
 
 class LocalElasticAgent(SimpleElasticAgent):
@@ -297,27 +295,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
-        # Track if we've triggered restart completed for standby nodes (reset on each restart)
-        self._restart_completed_triggered = False
-        # Track previous standby state to detect transitions
-        self._was_standby_node = False
 
     DEFAULT_ROLE = "default"  # FIXME
-
-    def _is_standby_node(self, worker_group: WorkerGroup) -> bool:
-        """Check if this node is in standby mode.
-
-        A node is in standby mode when its group_rank >= min_nodes.
-        Standby nodes do not run workers and wait to replace failed active nodes.
-
-        Args:
-            worker_group: The worker group to check
-
-        Returns:
-            True if the node is in standby mode, False if it's an active node
-        """
-        min_nodes = worker_group.spec.rdzv_handler._settings.min_nodes
-        return worker_group.group_rank >= min_nodes
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -396,8 +375,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         elif self._remaining_restarts > 0:
             logger.info(log_msg, role)
             self._remaining_restarts -= 1
-            # Reset restart completed trigger flag for the new restart cycle
-            self._restart_completed_triggered = False
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
             self._restart_workers(self._worker_group)
@@ -473,12 +450,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
-                # If this is a standby node (no workers), trigger restart completed event
-                # so that the rank monitors (especially the restarter logger) can report lifecycle events
-                # Only trigger if there was an actual restart (not on first cycle)
-                if self._is_standby_node(self._worker_group) and self._remaining_restarts < spec.max_restarts:
-                    self._trigger_restart_completed_on_rank_monitors()
-
                 # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
                 unhealthy_count = self._check_cluster_unhealthy_count()
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
@@ -647,79 +618,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
             asyncio.run(connect_all())
 
-    def _cancel_periodic_restart_checks(self):
-        """Cancel periodic restart checks on all rank monitors (for standby mode)."""
-        async def send_cancel():
-            tasks = []
-            for local_rank, rmon_state in self._rank_monitors.items():
-                if rmon_state.writer is not None:
-                    try:
-                        tasks.append(
-                            write_obj_to_ipc_stream("cancel_periodic_restart_check", rmon_state.writer)
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to queue cancel message for rank monitor {local_rank}: {e}"
-                        )
-
-            if tasks:
-                # Send all cancel messages concurrently
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                # Log any errors
-                for local_rank, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        logger.warning(
-                            f"Failed to send cancel message to rank monitor {local_rank}: {result}"
-                        )
-
-        try:
-            asyncio.run(send_cancel())
-        except Exception as e:
-            logger.warning(f"Error cancelling periodic restart checks: {e}")
-
-    def _trigger_restart_completed_on_rank_monitors(self):
-        """Trigger restart completed state on rank monitors (for standby nodes).
-
-        This ensures standby nodes (like the store host when it's standby) continue
-        to report restart lifecycle events even though they have no active workers.
-
-        This is idempotent per restart cycle - only sends once per cycle.
-        """
-        # Only trigger once per restart cycle
-        if self._restart_completed_triggered:
-            return
-
-        async def send_trigger():
-            tasks = []
-            for local_rank, rmon_state in self._rank_monitors.items():
-                if rmon_state.writer is not None:
-                    try:
-                        tasks.append(
-                            write_obj_to_ipc_stream("trigger_restart_completed", rmon_state.writer)
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to queue trigger_restart_completed for rank monitor {local_rank}: {e}"
-                        )
-
-            if tasks:
-                # Send all trigger messages concurrently
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                # Log any errors
-                for local_rank, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        logger.warning(
-                            f"Failed to send trigger_restart_completed to rank monitor {local_rank}: {result}"
-                        )
-
-        try:
-            asyncio.run(send_trigger())
-            logger.debug("Triggered restart completed on rank monitors for standby node")
-            # Mark as triggered for this restart cycle
-            self._restart_completed_triggered = True
-        except Exception as e:
-            logger.warning(f"Error triggering restart completed: {e}")
-
     def shutdown_rank_monitors(self):
         # Stop listener threads and terminate rank monitor processes
         for local_rank, state in self._rank_monitors.items():
@@ -789,9 +687,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # Create connection in THIS thread's event loop
                 reader, writer = await asyncio.open_unix_connection(socket_path)
 
-                # Store writer on the state object so it can be used to send messages
-                self._rank_monitors[local_rank].writer = writer
-
                 try:
                     while not stop_event.is_set():
                         # Use wait_for with timeout to allow checking stop_event periodically
@@ -810,8 +705,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # Clean up connection
                     writer.close()
                     await writer.wait_closed()
-                    # Clear the writer reference
-                    self._rank_monitors[local_rank].writer = None
             except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
                 logger.debug(f"Rank monitor {local_rank} connection closed")
             except Exception as e:
@@ -1028,22 +921,9 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self.setup_rank_monitors(envs=envs)
 
-        # If this node is transitioning from active to standby mode, cancel periodic restart checks.
         # Standby nodes are those assigned a group_rank >= min_nodes after rendezvous.
         # The rendezvous handler sets local_world_size to 0 for standby nodes, so no workers are created.
         # Let the normal flow continue - PyTorch handles local_world_size=0 correctly.
-        is_standby = self._is_standby_node(worker_group)
-        if is_standby and not self._was_standby_node:
-            # Transitioning from active to standby - cancel periodic restart checks
-            min_nodes = spec.rdzv_handler._settings.min_nodes
-            logger.debug(
-                f"Node transitioning to standby mode (group_rank={worker_group.group_rank}, min_nodes={min_nodes}), "
-                "cancelling periodic restart checks on rank monitors"
-            )
-            self._cancel_periodic_restart_checks()
-
-        # Update the standby state tracker
-        self._was_standby_node = is_standby
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
