@@ -43,8 +43,8 @@ nvidia-ml-py = ">=12.570.86"
 defusedxml = "*"
 langchain-nvidia-ai-endpoints = ">=0.3.15"
 mcp = ">=1.15.0"
-grpcio = "*"
-grpcio-tools = "*"
+grpcio = "^1.76.0"
+grpcio-tools = "^1.76.0"
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
@@ -76,13 +76,15 @@ force-exclude = '''
 (
   ^\/setup.py\/
   | ^\/build.py\/
+  | src/.*/proto/.*_pb2(_grpc)?\.py
 )
 '''
 
 [tool.ruff]
 extend-exclude = [
     "setup.py",
-    "build.py"
+    "build.py",
+    "**/proto/*_pb2*.py",
 ]
 
 [tool.ruff.lint]

@@ -827,10 +827,14 @@ class NodeHealthCheck:
         self._pb2 = None
         self._pb2_grpc = None
         try:
+            import sys as _sys
+
             import grpc as _grpc_mod
 
             # Relative import from package
             from .proto import nvhcd_pb2 as _pb2_mod
+
+            _sys.modules.setdefault("nvhcd_pb2", _pb2_mod)
             from .proto import nvhcd_pb2_grpc as _pb2_grpc_mod
 
             self._grpc = _grpc_mod
@@ -879,7 +883,9 @@ class NodeHealthCheck:
                 target = f"unix://{target}"
             else:
                 # Non-UDS target not supported at this time
-                logger.debug(f"Health check endpoint '{target}' is not a UDS; skipping node health check.")
+                logger.debug(
+                    f"Health check endpoint '{target}' is not a UDS; skipping node health check."
+                )
                 return None
         return target
 
@@ -904,7 +910,9 @@ class NodeHealthCheck:
                 else:
                     response = stub.RunHealthCheck(request)
 
-                if not getattr(response, "success", False): # If the health check failed, return False
+                if not getattr(
+                    response, "success", False
+                ):  # If the health check failed, return False
                     exit_code = getattr(response, "exit_code", None)
                     output = getattr(response, "output", "")
                     error = getattr(response, "error", "")
@@ -917,7 +925,9 @@ class NodeHealthCheck:
                 return True
 
         except Exception as e:
-            logger.warning(f"Node health check gRPC connectivity error: {str(e)}; treating as healthy (skip).")
+            logger.warning(
+                f"Node health check gRPC connectivity error: {str(e)}; treating as healthy (skip)."
+            )
             return True
 
     def _validate_and_get_target(self) -> Optional[str]:
@@ -938,7 +948,9 @@ class NodeHealthCheck:
         if target.startswith("unix://"):
             uds_path = target[len("unix://") :]
             if not os.path.exists(uds_path):
-                logger.debug(f"Node health check socket not found at {uds_path}; skipping node health check.")
+                logger.debug(
+                    f"Node health check socket not found at {uds_path}; skipping node health check."
+                )
                 return None
 
         return target

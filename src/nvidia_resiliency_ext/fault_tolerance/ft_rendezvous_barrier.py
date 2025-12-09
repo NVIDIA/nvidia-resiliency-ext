@@ -1200,9 +1200,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             log.error(
                 f"Health check failed for node {self._this_node}: Node health check reported unhealthy."
             )
-            raise UnhealthyNodeException(
-                f"Node {self._this_node} failed node health check."
-            )
+            raise UnhealthyNodeException(f"Node {self._this_node} failed node health check.")
 
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
