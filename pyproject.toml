@@ -24,7 +24,7 @@ exclude = [
 ]
 
 [tool.poetry.build]
-script = "build.py"
+script = "cupti_build.py"
 generate-setup-file = true
 
 [build-system]
