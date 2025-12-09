@@ -20,10 +20,3 @@ try:
     __version__ = version("nvidia-resiliency-ext")
 except PackageNotFoundError:
     __version__ = "unknown"
-
-try:
-    # This file is generated during the build process
-    from ._git_info import GIT_COMMIT_HASH as __git_hash__
-    __version__ += f"+git.{__git_hash__[:7]}"
-except ImportError:
-    pass
