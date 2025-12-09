@@ -12,18 +12,19 @@ def generate_git_version_file():
     git_hash = "unknown"
     try:
         # Check if inside a git repository
-        git_hash = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], 
-            stderr=subprocess.DEVNULL
-        ).decode("utf-8").strip()
+        git_hash = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+            .decode("utf-8")
+            .strip()
+        )
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        pass # Remain "unknown" if git is not available (e.g., install from tarball)
+        pass  # Remain "unknown" if git is not available (e.g., install from tarball)
 
     # Path to where the file should be generated
     # Adjust this if your package structure is different, but based on your toml:
     output_dir = os.path.join("src", "nvidia_resiliency_ext")
     output_file = os.path.join(output_dir, "_git_info.py")
-    
+
     # Ensure directory exists (it should, but safety first)
     if os.path.exists(output_dir):
         with open(output_file, "w") as f:
