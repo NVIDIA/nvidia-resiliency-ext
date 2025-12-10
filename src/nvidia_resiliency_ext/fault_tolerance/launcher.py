@@ -456,13 +456,14 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
-                # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
-                unhealthy_count = self._check_cluster_unhealthy_count()
+                # Check for cluster-wide issues: new nodes waiting or peer aborts
+                # Note: unhealthy_count is now a global job-level counter and is not used here
+                # for failure detection. It's only used in the rendezvous for early termination.
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
 
-                if unhealthy_count > 0 or num_nodes_waiting > 0 or peer_aborted_count > 0:
+                if num_nodes_waiting > 0 or peer_aborted_count > 0:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -472,7 +473,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     log_msg = (
                         f"[%s] Detected cluster changes from group_rank={group_rank} "
-                        f"(unhealthy_nodes={unhealthy_count}, nodes_waiting={num_nodes_waiting}); "
+                        f"(nodes_waiting={num_nodes_waiting}, peer_aborted={peer_aborted_count}); "
                         f"will restart worker group"
                     )
                     # Note: The node that triggered the change (unhealthy or new) already opened
@@ -1123,21 +1124,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._pcontext is not None:
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
-
-    def _check_cluster_unhealthy_count(self) -> int:
-        """Check the cluster-wide unhealthy count from the rendezvous store.
-
-        Only supported for barrier-based rendezvous. Returns 0 for legacy rendezvous.
-
-        Returns:
-            The number of unhealthy nodes reported in the cluster, or 0 if not available.
-        """
-        # Only barrier-based rendezvous supports unhealthy_count
-        if hasattr(self._rdzv_handler, '_barrier_state'):
-            return self._rdzv_handler._barrier_state._get_unhealthy_count()
-
-        # Legacy rendezvous does not support unhealthy tracking
-        return 0
 
     def _check_cluster_peer_aborted_count(self) -> int:
         """Check the cluster-wide peer aborted count from the rendezvous store.

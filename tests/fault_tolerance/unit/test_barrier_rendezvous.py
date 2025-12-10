@@ -1719,9 +1719,10 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
     def test_barrier_keys_cleared_after_acknowledgment(self):
         """Test that barrier keys are cleared after all acknowledgments.
 
-        Note: last_participant_arrived_key is NOT cleared as it serves as the
-        open/close indicator for the rendezvous. It remains set to 1 (closed)
-        during training and is reset to 0 (open) by the launcher when needed.
+        Keys cleared: arrived_count_key, ack_count_key, peer_aborted_count_key
+        Keys NOT cleared:
+        - last_participant_arrived_key: serves as open/close indicator
+        - unhealthy_count_key: global job-level counter across all cycles
         """
         min_nodes = 2
         max_nodes = 2
@@ -1761,8 +1762,14 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
         # Barrier keys should be cleared by store host
         # Note: last_participant_arrived_key is intentionally NOT cleared as it
         # serves as the open/close indicator for the rendezvous
+        # Note: unhealthy_count_key is intentionally NOT cleared as it is a global
+        # job-level counter that tracks unhealthy nodes across the entire job lifetime
         self.assertFalse(self.store.check([check_state.arrived_count_key]))
         self.assertFalse(self.store.check([check_state.ack_count_key]))
+        self.assertFalse(self.store.check([check_state.peer_aborted_count_key]))
+
+        # Verify that unhealthy_count_key is NOT cleared (should remain absent if no unhealthy nodes)
+        # We don't assert its presence/absence since no health check failures occurred in this test
 
 
 class HandlerIntegrationTest(BaseRendezvousTest):

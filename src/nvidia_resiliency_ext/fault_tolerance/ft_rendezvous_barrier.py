@@ -585,10 +585,13 @@ class _RendezvousBarrierState:
         return result
 
     def _get_unhealthy_count(self) -> int:
-        """Get the current unhealthy node count.
+        """Get the global unhealthy node count.
+
+        This counter tracks unhealthy nodes across the entire job lifetime, not per cycle.
+        Once a node is marked unhealthy, it permanently reduces the effective max_nodes.
 
         Returns:
-            The number of unhealthy nodes reported so far, or 0 if the key doesn't exist
+            The total number of unhealthy nodes in the job, or 0 if the key doesn't exist
         """
         if not self.store.check([self.unhealthy_count_key]):
             return 0
@@ -890,8 +893,13 @@ class _RendezvousBarrierState:
             #   3. Grace period for restarting nodes to join before completion
             should_complete = False
 
-            if self._arrived_count >= max_nodes:
-                # Max nodes reached - immediate completion (both first and subsequent)
+            # Get unhealthy count to calculate effective max nodes
+            # Since unhealthy nodes won't participate, we should complete when all healthy nodes arrive
+            effective_max_nodes = max_nodes - self._get_unhealthy_count()
+
+            if self._arrived_count >= effective_max_nodes:
+                # Max healthy nodes reached - immediate completion (both first and subsequent)
+                # We don't wait for unhealthy nodes that will never join
                 should_complete = True
             elif (
                 not is_first_rendezvous
@@ -1026,16 +1034,19 @@ class _RendezvousBarrierState:
         open/close indicator for the rendezvous. It remains set to 1 (closed) during
         training and is reset to 0 (open) by the launcher when a failure is detected.
 
+        Note: We do NOT clear unhealthy_count_key because it is a global counter that
+        tracks unhealthy nodes across the entire job lifetime, not per cycle.
+
         This method is called by the last participant to acknowledge in Step 3b, BEFORE
         rank assignment. This ensures all participants are still waiting and cannot
         start the next cycle yet, making it safe to clear the global counters.
         """
         # Clear main keys - individual arrived_<count> keys don't need clearing
         # DO NOT clear last_participant_arrived_key - it indicates open/close state
+        # DO NOT clear unhealthy_count_key - it is a global job-level counter
         keys_to_clear = [
             self.arrived_count_key,
             self.ack_count_key,
-            self.unhealthy_count_key,  # Clear unhealthy counter for next round
             self.peer_aborted_count_key,  # Clear peer aborted counter for next round
         ]
 
