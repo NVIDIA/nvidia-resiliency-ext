@@ -2,13 +2,13 @@
 set -e
 
 # Extract git commit hash
-NVRX_COMMIT=$(git rev-parse HEAD)
+NVRX_COMMIT=$(git rev-parse --short HEAD)
 
 # Extract base version
 base_version=$(grep -Po '(?<=^version = ")[^"]+' pyproject.toml)
 
 # Compose local version segment
-local_version="${NVRX_COMMIT:0:8}"
+local_version="${NVRX_COMMIT}"
 
 
 # Function to revert version
