@@ -52,6 +52,11 @@ from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
 from .utils import get_infrastructure_rank
 
+# Conditionally import health check injector for testing/debugging
+# This only activates if NVRX_INJECT_GPU_FAILURE environment variable is set
+if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
+    from ..testing_utils import health_check_injector
+
 log = logging.getLogger(LogConfig.name)
 
 
@@ -1295,6 +1300,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
+
+        # Set current cycle for health check injection (if enabled)
+        if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
+            health_check_injector.set_current_cycle(self._rendezvous_round)
 
         # Perform GPU health check
         self._run_health_check(
