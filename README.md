@@ -37,7 +37,7 @@ For detailed documentation and usage information about each component, please re
 ### From sources
 - `git clone https://github.com/NVIDIA/nvidia-resiliency-ext`
 - `cd nvidia-resiliency-ext`
-- `pip install .`
+- `sh install.sh`
 
 
 ### From PyPI wheel
