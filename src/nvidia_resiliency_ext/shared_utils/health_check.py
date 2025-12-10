@@ -922,6 +922,7 @@ class NodeHealthCheck:
                     logger.warning(msg)
                     return False
 
+                logger.debug("Node health check: success")
                 return True
 
         except Exception as e:

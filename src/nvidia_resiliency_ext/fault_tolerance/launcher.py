@@ -79,10 +79,10 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     read_obj_from_ipc_stream,
     terminate_mp_processes,
 )
+from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
-from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:

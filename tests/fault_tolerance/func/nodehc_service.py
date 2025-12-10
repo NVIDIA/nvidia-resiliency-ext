@@ -9,10 +9,10 @@
 # and listens on a Unix domain socket (UDS), e.g. unix:///var/run/nvhcd.sock
 #
 # Example:
-#   PYTHONPATH=src python tests/fault_tolerance/func/nvhcd_server.py \
+#   PYTHONPATH=src python tests/fault_tolerance/func/nodehc_service.py \
 #       --socket /var/run/nvhcd.sock --success
 #
-#   PYTHONPATH=src python tests/fault_tolerance/func/nvhcd_server.py \
+#   PYTHONPATH=src python tests/fault_tolerance/func/nodehc_service.py \
 #       --socket /tmp/nvhcd.sock --fail --exit-code 42 --output '{"detail":"failed"}'
 #
 
@@ -139,7 +139,7 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGTERM, handle_signal)
 
     server.start()
-    print(f"[nvhcd_server] Listening on {target}")
+    print(f"[nodehc_service] Listening on {target}")
     try:
         server.wait_for_termination()
     finally:
