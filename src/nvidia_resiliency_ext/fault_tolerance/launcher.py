@@ -2559,9 +2559,7 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'legacy') == 'legacy':
         rdzv_configs['use_libuv'] = False
 
-    # Pass node health check endpoint to rendezvous config (consumed by FT handlers)
-    if getattr(args, "ft_node_health_check_endpoint", None):
-        rdzv_configs['node_health_check_endpoint'] = args.ft_node_health_check_endpoint
+    # Node health check endpoint is consumed by launcher to init singleton; not passed via rdzv configs
 
     if args.rdzv_backend == "static":
         rdzv_configs["rank"] = args.node_rank

@@ -74,8 +74,8 @@ The restart behavior depends on the ``--ft-restart-policy`` parameter, which sup
 Node health check service
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The launcher accepts an optional argument to point to the node health check service
-Unix domain socket. When provided, the launcher exports the socket path to child processes and
+The launcher accepts an optional argument to point to the node health check service endpoint.
+When provided, the launcher exports the socket path to child processes and
 the rendezvous handlers will use it in their node health checks.
 
 * ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint (UDS).

@@ -44,7 +44,7 @@ except ImportError:
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck, NodeHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1052,7 +1052,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         timeout: Optional[RendezvousTimeout] = None,
         is_store_host: bool = False,
         use_infra_group_rank: bool = True,
-        node_health_check_endpoint: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1089,7 +1088,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             use_infra_group_rank=use_infra_group_rank,
         )
 
-        return cls(node, settings, "c10d", store, is_store_host, node_health_check_endpoint)
+        return cls(node, settings, "c10d", store, is_store_host)
 
     def __init__(
         self,
@@ -1098,7 +1097,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         backend_name: str,
         store: Store,
         is_store_host: bool = False,
-        node_health_check_endpoint: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1130,7 +1128,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         self._ranks_connector = IpcConnector(FT_LAUNCHER_IPC_SOCKET)
         self._ranks_connector.start_receiving()
-        self._node_health_check_endpoint = node_health_check_endpoint
 
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
@@ -1176,8 +1173,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # Perform GPU and Node health checks
         health_checker = GPUHealthCheck()
         nodehealth_checker = get_node_health_check()
-        if nodehealth_checker is None and self._node_health_check_endpoint:
-            nodehealth_checker = NodeHealthCheck(endpoint=self._node_health_check_endpoint)
         try:
             health_status = health_checker()
             # If no endpoint specified and no global instance, skip node health check (treat as healthy)
@@ -1460,7 +1455,6 @@ def create_handler(
         # Get is_store_host from parameters
         is_store_host = params.config.get('is_store_host', False)
         use_infra_group_rank = params.config.get('use_infra_group_rank', True)
-        node_health_check_endpoint = params.config.get('node_health_check_endpoint', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -1472,7 +1466,6 @@ def create_handler(
             timeout,
             is_store_host=is_store_host,
             use_infra_group_rank=use_infra_group_rank,
-            node_health_check_endpoint=node_health_check_endpoint,
         )
     except Exception as e:
         construct_and_record_rdzv_event(
