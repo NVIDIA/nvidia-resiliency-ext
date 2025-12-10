@@ -82,6 +82,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
+from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -100,6 +101,18 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 # Setup the nvrx logger at module import time
 setup_logger(node_local_tmp_prefix="ftlauncher")
 logger = logging.getLogger(LogConfig.name)
+
+_NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
+
+def init_node_health_check(endpoint: Optional[str]) -> None:
+    global _NODE_HEALTH_CHECK_INSTANCE
+    if endpoint:
+        _NODE_HEALTH_CHECK_INSTANCE = NodeHealthCheck(endpoint=endpoint)
+    else:
+        _NODE_HEALTH_CHECK_INSTANCE = None
+
+def get_node_health_check() -> Optional[NodeHealthCheck]:
+    return _NODE_HEALTH_CHECK_INSTANCE
 
 def _register_ft_rdzv_handler(impl_type: str = "legacy"):
     """Register the fault-tolerant rendezvous handler.
@@ -2171,7 +2184,7 @@ def get_args_parser() -> ArgumentParser:
         type=str,
         default=None,
         help="UDS endpoint for the node health check service used by InJob. "
-        "Examples: /var/run/infrahc.sock, unix:///var/run/infrahc.sock.",
+        "Examples: /var/run/nvhcd.sock, unix:///var/run/nvhcd.sock.",
     )
 
     parser.add_argument(
@@ -2674,10 +2687,9 @@ def run(args):
     # Register the selected FT rendezvous implementation
     impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
     _register_ft_rdzv_handler(impl_type)
-    # Propagate health check endpoint to environment for downstream components
     ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
-    if ft_hc_endpoint:
-        os.environ["FT_NODE_HEALTH_CHECK_ENDPOINT"] = ft_hc_endpoint
+    # Initialize NodeHealthCheck singleton at launcher start
+    init_node_health_check(ft_hc_endpoint)
 
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(

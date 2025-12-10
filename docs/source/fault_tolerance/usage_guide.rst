@@ -55,8 +55,7 @@ using ``--ft-<parameter-name>``.
 Details:
 
 * ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint used by InJob.
-  Accepts Unix domain socket (UDS): ``/var/run/infrahc.sock`` or ``unix:///var/run/infrahc.sock``.
-* The launcher propagates this value via the ``FT_NODE_HEALTH_CHECK_ENDPOINT`` environment variable.
+  Accepts Unix domain socket (UDS): ``/var/run/nodehealth.sock`` or ``unix:///var/run/nodehealth.sock``.
 * The rendezvous implementations call ``NodeHealthCheck`` which will connect to the provided endpoint.
 * Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
 
@@ -80,7 +79,6 @@ Unix domain socket. When provided, the launcher exports the socket path to child
 the rendezvous handlers will use it in their node health checks.
 
 * ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint (UDS).
-* The launcher propagates this value via the ``FT_NODE_HEALTH_CHECK_ENDPOINT`` environment variable.
 * The rendezvous implementations call ``NodeHealthCheck`` which will connect to this UDS endpoint.
 * Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
 

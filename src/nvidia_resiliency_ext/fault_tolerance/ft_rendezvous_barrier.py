@@ -48,7 +48,7 @@ from ..shared_utils.health_check import GPUHealthCheck, NodeHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
-from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
+from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
 
 log = logging.getLogger(LogConfig.name)
 
@@ -1175,14 +1175,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         # Perform GPU and Node health checks
         health_checker = GPUHealthCheck()
-        nodehealth_checker = (
-            NodeHealthCheck(endpoint=self._node_health_check_endpoint)
-            if self._node_health_check_endpoint
-            else NodeHealthCheck()
-        )
+        nodehealth_checker = get_node_health_check()
+        if nodehealth_checker is None and self._node_health_check_endpoint:
+            nodehealth_checker = NodeHealthCheck(endpoint=self._node_health_check_endpoint)
         try:
             health_status = health_checker()
-            nodehealth_status = nodehealth_checker()
+            # If no endpoint specified and no global instance, skip node health check (treat as healthy)
+            nodehealth_status = nodehealth_checker() if nodehealth_checker is not None else True
         except Exception as e:
             # Unexpected error during health check
             self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)

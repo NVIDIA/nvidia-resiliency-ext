@@ -807,7 +807,7 @@ class NodeHealthCheck:
 
     def __init__(
         self,
-        socket_path: str = "/var/run/nvhcd.sock",
+        socket_path: Optional[str] = None,
         endpoint: Optional[str] = None,
         args: Optional[list] = None,
         interval: int = 60,
@@ -904,7 +904,7 @@ class NodeHealthCheck:
         try:
             with self._grpc.insecure_channel(target) as channel:
                 stub = self._pb2_grpc.HealthCheckServiceStub(channel)
-                request = self._pb2.HealthCheckRequest(args=["epilog"])
+                request = self._pb2.HealthCheckRequest(args=["--no-slurm"])
                 if self.request_timeout_sec is not None:
                     response = stub.RunHealthCheck(request, timeout=self.request_timeout_sec)
                 else:

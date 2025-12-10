@@ -63,7 +63,7 @@ from ..shared_utils.health_check import GPUHealthCheck, NodeHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
-from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
+from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
 
 log = logging.getLogger(LogConfig.name)
 
@@ -1355,17 +1355,16 @@ class FtRendezvousHandler(RendezvousHandler):
         self._record(message=msg)
         # Perform GPU and Node health checks
         health_checker = GPUHealthCheck()
-        infrahc_checker = (
-            NodeHealthCheck(endpoint=self._node_health_check_endpoint)
-            if self._node_health_check_endpoint
-            else NodeHealthCheck()
-        )
+        nodehealth_checker = get_node_health_check()
+        if nodehealth_checker is None and self._node_health_check_endpoint:
+            nodehealth_checker = NodeHealthCheck(endpoint=self._node_health_check_endpoint)
         try:
             health_status = health_checker()
-            infrahc_status = infrahc_checker()
+            # If no endpoint specified and no global instance, skip node health check (treat as healthy)
+            nodehealth_status = nodehealth_checker() if nodehealth_checker is not None else True
             if not health_status:
                 raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
-            if not infrahc_status:
+            if not nodehealth_status:
                 raise UnhealthyNodeException(f"Node {self._this_node} failed node health check.")
         except UnhealthyNodeException as e:
             # Log specific health check failure
