@@ -163,8 +163,6 @@ class RendezvousSettings:
             is considered dead.
         domain_id_from_node_name:
             Whether to parse domain ID from node name for segment-aware rank assignment.
-        domain_id_prefix:
-            Prefix to strip from domain_id to extract domain number.
         segment:
             Number of nodes to select from each domain. None disables segment awareness.
         nproc_per_node:
@@ -179,7 +177,6 @@ class RendezvousSettings:
     keep_alive_interval: timedelta
     keep_alive_max_attempt: int
     domain_id_from_node_name: bool = True
-    domain_id_prefix: str = "nvl72"
     segment: Optional[int] = None
     nproc_per_node: int = 1  # Default to 1 if not specified
 
@@ -277,46 +274,93 @@ class RendezvousParticipantInfo:
             raise ValueError(f"Invalid participant info data: {e}")
 
 
-def _parse_domain_number_from_node_name(node_name: str, domain_id_prefix: str) -> int:
-    """Parse domain number from node name by extracting domain_id and removing prefix.
+def _parse_domain_id_from_nvidia_smi() -> str:
+    """Parse domain ID from GPU using nvidia-smi to query ClusterUUID.
 
-    Expected format: <domain_id>-<node_id> where domain_id = <prefix><domain_number>
-    Example: "nvl72144-T01" with prefix "nvl72" -> domain_id="nvl72144", domain_number=144
+    The ClusterUUID serves as the domain identifier.
+    All GPUs in the same NVLink domain share the same ClusterUUID.
+
+    Returns:
+        The ClusterUUID as the domain ID string.
+
+    Raises:
+        RuntimeError: If ClusterUUID cannot be retrieved.
+
+    Example:
+        >>> domain_id = _parse_domain_id_from_nvidia_smi()
+        >>> # domain_id is "abc9829a-d4c8-491c-8da5-ad28fb34876b"
+    """
+    import subprocess
+
+    try:
+        # Run nvidia-smi to query ClusterUUID
+        result = subprocess.run(
+            ['nvidia-smi', '-q'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"nvidia-smi command failed with return code {result.returncode}. "
+                f"stderr: {result.stderr}"
+            )
+
+        # Parse output to find ClusterUUID
+        cluster_uuid = None
+        for line in result.stdout.split('\n'):
+            if 'ClusterUUID' in line:
+                # Format: "        ClusterUUID                       : abc9829a-d4c8-491c-8da5-ad28fb34876b"
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    cluster_uuid = parts[1].strip()
+                    break
+
+        if not cluster_uuid:
+            raise RuntimeError(
+                "ClusterUUID not found in nvidia-smi output. "
+                "This may indicate that GPU fabric (NVLink domain) is not configured on this system. "
+                "ClusterUUID is only available on systems with NVSwitch/NVLink fabrics (e.g., DGX, HGX systems)."
+            )
+
+        log.debug(f"Retrieved domain ID from nvidia-smi ClusterUUID: {cluster_uuid}")
+        return cluster_uuid
+
+    except FileNotFoundError:
+        raise RuntimeError("nvidia-smi command not found. Ensure NVIDIA drivers are installed.")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("nvidia-smi command timed out after 10 seconds")
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
+        raise RuntimeError(f"Failed to query domain ID from nvidia-smi: {e}")
+
+
+def _parse_domain_id_from_node_name(node_name: str) -> str:
+    """Parse domain ID from node name by extracting the part before the first hyphen.
+
+    Expected format: <domain_id>-<node_id>
+    Example: "nvl72144-T01" -> "nvl72144"
 
     Args:
         node_name: The node name to parse
-        domain_id_prefix: The prefix to strip from domain_id to get domain_number
 
     Returns:
-        The domain number parsed from the node name
+        The domain ID parsed from the node name
 
     Raises:
-        RuntimeError: If the domain number cannot be parsed from the node name
+        RuntimeError: If the domain ID cannot be parsed from the node name
     """
     # Extract domain_id (part before the first hyphen)
     parts = node_name.split('-', 1)
-    if not parts:
+    if len(parts) < 2:
         raise RuntimeError(f"Node name '{node_name}' does not contain a hyphen separator")
 
     domain_id = parts[0]
-
-    # Remove prefix to get domain_number
-    if not domain_id.startswith(domain_id_prefix):
-        raise RuntimeError(
-            f"Node name '{node_name}' has domain_id '{domain_id}' that doesn't start "
-            f"with expected prefix '{domain_id_prefix}'"
-        )
-
-    domain_number_str = domain_id[len(domain_id_prefix) :]
-
-    # Parse domain_number as integer
-    try:
-        return int(domain_number_str)
-    except ValueError:
-        raise RuntimeError(
-            f"Failed to parse domain number from node name '{node_name}': "
-            f"domain_id='{domain_id}', after removing prefix '{domain_id_prefix}' got '{domain_number_str}'"
-        )
+    log.debug(f"Parsed domain ID '{domain_id}' from node name '{node_name}'")
+    return domain_id
 
 
 class _RendezvousBarrierState:
@@ -352,7 +396,6 @@ class _RendezvousBarrierState:
         is_store_host: bool = False,
         join_timeout_seconds: float = 600.0,
         domain_id_from_node_name: bool = True,
-        domain_id_prefix: str = "nvl72",
         segment: Optional[int] = None,
     ):
         self.store = store
@@ -360,13 +403,12 @@ class _RendezvousBarrierState:
         self.is_store_host = is_store_host
         self.join_timeout_seconds = join_timeout_seconds
         self.domain_id_from_node_name = domain_id_from_node_name
-        self.domain_id_prefix = domain_id_prefix
         self.segment = segment
         self._rendezvous_start_time = None
         self._attempted_open = False  # Track if this node tried to open rendezvous
 
-        # Cache for node_name -> domain_number lookups to avoid repeated parsing
-        self._node_domain_cache: Dict[str, Optional[int]] = {}
+        # Cache for node_name -> domain_id lookups to avoid repeated parsing
+        self._node_domain_cache: Dict[str, Optional[str]] = {}
 
         # Key prefixes for the barrier
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
@@ -384,20 +426,26 @@ class _RendezvousBarrierState:
         if not self.store.check([self.last_participant_arrived_key]):
             self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
 
-    def _get_domain_number(self, node_name: str) -> Optional[int]:
-        """Get domain number for a node name using cache.
+    def _get_domain_id(self, node_name: str) -> Optional[str]:
+        """Get domain ID for a node name using cache.
+
+        When domain_id_from_node_name is True, parse from hostname.
+        When domain_id_from_node_name is False, use ClusterUUID from NVML as domain ID.
 
         Args:
             node_name: The node name to parse
 
         Returns:
-            The domain number if found and parsed successfully, None otherwise
+            The domain ID string if found and parsed successfully, None otherwise
         """
         if node_name not in self._node_domain_cache:
             # Parse and cache the result
-            self._node_domain_cache[node_name] = _parse_domain_number_from_node_name(
-                node_name, self.domain_id_prefix
-            )
+            if self.domain_id_from_node_name:
+                # Parse domain ID from node name
+                self._node_domain_cache[node_name] = _parse_domain_id_from_node_name(node_name)
+            else:
+                # Use ClusterUUID from nvidia-smi as domain ID
+                self._node_domain_cache[node_name] = _parse_domain_id_from_nvidia_smi()
         return self._node_domain_cache[node_name]
 
     def _assign_group_ranks(
@@ -456,15 +504,15 @@ class _RendezvousBarrierState:
 
         # Step 1: Group by domain
         # When segment is None, treat each node as its own domain (non-segmented deployment)
-        if self.domain_id_from_node_name and self.segment is not None:
-            domain_to_participants: Dict[int, List[Tuple[_NodeDesc, int]]] = defaultdict(list)
+        if self.segment is not None:
+            domain_to_participants: Dict[str, List[Tuple[_NodeDesc, int]]] = defaultdict(list)
             for node_desc, infra_rank in sorted_participants:
-                domain_num = self._get_domain_number(node_desc.addr)
-                domain_to_participants[domain_num].append((node_desc, infra_rank))
+                domain_id = self._get_domain_id(node_desc.addr)
+                domain_to_participants[domain_id].append((node_desc, infra_rank))
         else:
-            # Each node is its own domain
+            # Each node is its own domain (use infra_rank as domain key for consistent typing)
             domain_to_participants = {
-                infra_rank: [(node_desc, infra_rank)]
+                str(infra_rank): [(node_desc, infra_rank)]
                 for node_desc, infra_rank in sorted_participants
             }
 
@@ -482,7 +530,7 @@ class _RendezvousBarrierState:
         active_segments = 0
         standby_rank = world_size
 
-        for domain_num, domain_participants in sorted_domains:
+        for domain_id, domain_participants in sorted_domains:
             domain_segments = len(domain_participants) // segment
 
             # Calculate how many nodes to take for active ranks
@@ -513,11 +561,11 @@ class _RendezvousBarrierState:
 
             if nodes_to_take > 0:
                 log.debug(
-                    f"Domain {domain_num}: {segments_to_take} segments ({nodes_to_take} nodes) active, "
+                    f"Domain {domain_id}: {segments_to_take} segments ({nodes_to_take} nodes) active, "
                     f"{len(domain_participants) - nodes_to_take} standby"
                 )
             else:
-                log.debug(f"Domain {domain_num}: all {len(domain_participants)} nodes to standby")
+                log.debug(f"Domain {domain_id}: all {len(domain_participants)} nodes to standby")
 
         # Validate we have enough active segments
         if active_segments < num_segments:
@@ -1119,7 +1167,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         timeout: Optional[RendezvousTimeout] = None,
         is_store_host: bool = False,
         domain_id_from_node_name: bool = True,
-        domain_id_prefix: str = "nvl72",
         segment: Optional[int] = None,
         nproc_per_node: int = 1,  # Number of processes per node
         enable_nic_healthcheck: bool = False,
@@ -1146,8 +1193,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 Whether this node is the TCPStore host.
             domain_id_from_node_name:
                 Whether to parse domain ID from node name.
-            domain_id_prefix:
-                Prefix to strip from domain_id to extract domain number.
             segment:
                 Number of nodes to select from each domain.
             enable_nic_healthcheck:
@@ -1166,7 +1211,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             keep_alive_interval=timedelta(seconds=5),
             keep_alive_max_attempt=3,
             domain_id_from_node_name=domain_id_from_node_name,
-            domain_id_prefix=domain_id_prefix,
             segment=segment,
             nproc_per_node=nproc_per_node,
         )
@@ -1215,7 +1259,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             is_store_host,
             settings.timeout.join.total_seconds(),
             settings.domain_id_from_node_name,
-            settings.domain_id_prefix,
             settings.segment,
         )
         self._assigned_rank = None
@@ -1596,11 +1639,9 @@ def create_handler(
     |                            | 30 seconds.                                          |
     +----------------------------+------------------------------------------------------+
     | domain_id_from_node_name   | Whether to parse domain ID from node name for        |
-    |                            | segment-aware rank assignment. Defaults to True, but |
+    |                            | segment-aware rank assignment. When False, uses      |
+    |                            | ClusterUUID from NVML. Defaults to True, but         |
     |                            | automatically set to False when segment=None.        |
-    +----------------------------+------------------------------------------------------+
-    | domain_id_prefix           | Prefix to strip from domain_id to extract domain     |
-    |                            | number. Defaults to "nvl72".                         |
     +----------------------------+------------------------------------------------------+
     | segment                    | Minimum number of nodes required per domain for      |
     |                            | segment-aware rank assignment. Domains with fewer    |
@@ -1628,7 +1669,6 @@ def create_handler(
         # Get is_store_host from parameters
         is_store_host = params.config.get('is_store_host', False)
         domain_id_from_node_name = params.config.get('domain_id_from_node_name', True)
-        domain_id_prefix = params.config.get('domain_id_prefix', 'nvl72')
         segment = params.config.get('segment', None)
         nproc_per_node = params.config.get('nproc_per_node', 1)
         enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
@@ -1644,7 +1684,6 @@ def create_handler(
             timeout,
             is_store_host=is_store_host,
             domain_id_from_node_name=domain_id_from_node_name,
-            domain_id_prefix=domain_id_prefix,
             segment=segment,
             nproc_per_node=nproc_per_node,
             enable_nic_healthcheck=enable_nic_healthcheck,

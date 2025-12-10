@@ -2340,20 +2340,10 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_domain_id_from_node_name",
         help="Parse domain ID from node name for segment-aware rank assignment. "
-        "Node name format: <domain_id>-<node_id> where domain_id = <prefix><domain_number>. "
-        "Example: 'nvl72144-T01' with prefix 'nvl72' has domain_id='nvl72144', domain_number=144. "
+        "Node name format: <domain_id>-<node_id>. "
+        "Example: 'nvl72144-T01' has domain_id='nvl72144'. "
+        "When False and --ft-segment is specified, domain ID is parsed from GPU ClusterUUID via NVML. "
         "Default: True, but automatically set to False when --ft-segment is not specified.",
-    )
-
-    parser.add_argument(
-        "--ft-domain-id-prefix",
-        "--ft-domain_id_prefix",
-        type=str,
-        default=None,
-        dest="ft_domain_id_prefix",
-        help="Prefix to strip from domain_id to extract domain number. "
-        "Example: With prefix 'nvl72', domain_id 'nvl72144' yields domain_number 144. "
-        "Default: 'nvl72'.",
     )
 
     parser.add_argument(
@@ -2616,7 +2606,6 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     # Pass segment-related configs to rendezvous config
     rdzv_configs['domain_id_from_node_name'] = fault_tol_cfg.domain_id_from_node_name
-    rdzv_configs['domain_id_prefix'] = fault_tol_cfg.domain_id_prefix
     rdzv_configs['segment'] = fault_tol_cfg.segment
 
     # Pass NIC health check configs to rendezvous config

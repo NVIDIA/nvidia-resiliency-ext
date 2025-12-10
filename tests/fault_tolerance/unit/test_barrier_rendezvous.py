@@ -957,7 +957,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
@@ -1003,7 +1002,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=16,
         )
 
@@ -1039,7 +1037,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
@@ -1079,7 +1076,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
@@ -1126,7 +1122,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
@@ -1160,7 +1155,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
@@ -1258,7 +1252,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
@@ -1313,7 +1306,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
@@ -1441,7 +1433,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
@@ -1495,7 +1486,6 @@ class GroupRankAssignmentTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             domain_id_from_node_name=True,
-            domain_id_prefix="nvl72",
             segment=4,
         )
 
