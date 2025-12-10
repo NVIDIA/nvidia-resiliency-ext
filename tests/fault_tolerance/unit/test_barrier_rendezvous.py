@@ -774,9 +774,9 @@ class GroupRankAssignmentTest(TestCase):
 
         # Create participants
         participants = [
-            (_NodeDesc("node_a", 100, 0), -1),
-            (_NodeDesc("node_b", 101, 0), -1),
-            (_NodeDesc("node_c", 102, 0), -1),
+            (_NodeDesc("node_a", 100, 0), -1, None),
+            (_NodeDesc("node_b", 101, 0), -1, None),
+            (_NodeDesc("node_c", 102, 0), -1, None),
         ]
         min_nodes = 3
 
@@ -799,9 +799,9 @@ class GroupRankAssignmentTest(TestCase):
 
         # Create participants with infra ranks
         participants = [
-            (_NodeDesc("node_a", 100, 0), 0),
-            (_NodeDesc("node_b", 101, 0), 1),
-            (_NodeDesc("node_c", 102, 0), 2),
+            (_NodeDesc("node_a", 100, 0), 0, "none"),
+            (_NodeDesc("node_b", 101, 0), 1, "none"),
+            (_NodeDesc("node_c", 102, 0), 2, "none"),
         ]
         min_nodes = 3
 
@@ -823,11 +823,11 @@ class GroupRankAssignmentTest(TestCase):
 
         # 5 participants, min_nodes=3
         participants = [
-            (_NodeDesc("node_a", 100, 0), -1),
-            (_NodeDesc("node_b", 101, 0), -1),
-            (_NodeDesc("node_c", 102, 0), -1),
-            (_NodeDesc("node_d", 103, 0), -1),
-            (_NodeDesc("node_e", 104, 0), -1),
+            (_NodeDesc("node_a", 100, 0), -1, "none"),
+            (_NodeDesc("node_b", 101, 0), -1, "none"),
+            (_NodeDesc("node_c", 102, 0), -1, "none"),
+            (_NodeDesc("node_d", 103, 0), -1, "none"),
+            (_NodeDesc("node_e", 104, 0), -1, "none"),
         ]
         min_nodes = 3
 
@@ -863,9 +863,9 @@ class GroupRankAssignmentTest(TestCase):
         # Create participants list with infra ranks in reverse of alphabetical order
         # Simulating they arrived/joined out of order
         participants = [
-            (node_aaa, 102),  # Largest infra rank
-            (node_bbb, 101),  # Middle infra rank
-            (node_zzz, 100),  # Smallest infra rank
+            (node_aaa, 102, "none"),  # Largest infra rank
+            (node_bbb, 101, "none"),  # Middle infra rank
+            (node_zzz, 100, "none"),  # Smallest infra rank
         ]
         min_nodes = 3
 
@@ -892,11 +892,11 @@ class GroupRankAssignmentTest(TestCase):
 
         # 5 nodes, world_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
         participants = [
-            (_NodeDesc("node0", 100, 0), 0),  # Active
-            (_NodeDesc("node1", 101, 0), 1),  # Active
-            (_NodeDesc("node2", 102, 0), 2),  # Active
-            (_NodeDesc("node3", 103, 0), 3),  # Hot spare
-            (_NodeDesc("node4", 104, 0), 4),  # Hot spare
+            (_NodeDesc("node0", 100, 0), 0, "none"),  # Active
+            (_NodeDesc("node1", 101, 0), 1, "none"),  # Active
+            (_NodeDesc("node2", 102, 0), 2, "none"),  # Active
+            (_NodeDesc("node3", 103, 0), 3, "none"),  # Hot spare
+            (_NodeDesc("node4", 104, 0), 4, "none"),  # Hot spare
         ]
         world_size = 3
 
@@ -920,30 +920,31 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=False,  # Disable domain parsing for this test
+            domain_id_from_node_name=True,  # Use domain from node name
             segment=1,
         )
 
         # 5 nodes, world_size=3, segment=1 -> first 3 active, remaining 2 hot spares
+        # Each node has its own domain (simulated with node names like "domain0")
         participants = [
-            (_NodeDesc("node0", 100, 0), 0),
-            (_NodeDesc("node1", 101, 0), 1),
-            (_NodeDesc("node2", 102, 0), 2),
-            (_NodeDesc("node3", 103, 0), 3),  # Hot spare
-            (_NodeDesc("node4", 104, 0), 4),  # Hot spare
+            (_NodeDesc("domain0-node", 100, 0), 0, "domain0"),
+            (_NodeDesc("domain1-node", 101, 0), 1, "domain1"),
+            (_NodeDesc("domain2-node", 102, 0), 2, "domain2"),
+            (_NodeDesc("domain3-node", 103, 0), 3, "domain3"),  # Hot spare
+            (_NodeDesc("domain4-node", 104, 0), 4, "domain4"),  # Hot spare
         ]
         world_size = 3
 
         result = state._assign_group_ranks(participants, world_size)
 
         # Active ranks
-        self.assertEqual(result[_NodeDesc("node0", 100, 0)], 0)
-        self.assertEqual(result[_NodeDesc("node1", 101, 0)], 1)
-        self.assertEqual(result[_NodeDesc("node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("domain0-node", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("domain1-node", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("domain2-node", 102, 0)], 2)
 
         # Hot spares
-        self.assertEqual(result[_NodeDesc("node3", 103, 0)], 3)
-        self.assertEqual(result[_NodeDesc("node4", 104, 0)], 4)
+        self.assertEqual(result[_NodeDesc("domain3-node", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("domain4-node", 104, 0)], 4)
 
     def test_rank_assignment_segment_4_with_hot_spare(self):
         """Test rank assignment with segment=4 and hot spare nodes.
@@ -965,19 +966,19 @@ class GroupRankAssignmentTest(TestCase):
         # Total 12 nodes, world_size=8 (2 segments)
         participants = [
             # Domain 100: 8 nodes
-            (_NodeDesc("nvl72100-node0", 100, 0), 0),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5),
-            (_NodeDesc("nvl72100-node6", 106, 0), 6),
-            (_NodeDesc("nvl72100-node7", 107, 0), 7),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
             # Domain 101: 4 nodes
-            (_NodeDesc("nvl72101-node0", 108, 0), 8),
-            (_NodeDesc("nvl72101-node1", 109, 0), 9),
-            (_NodeDesc("nvl72101-node2", 110, 0), 10),
-            (_NodeDesc("nvl72101-node3", 111, 0), 11),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
         ]
         world_size = 8
 
@@ -1010,9 +1011,9 @@ class GroupRankAssignmentTest(TestCase):
         # Total 20 nodes, world_size=16 (1 segment)
         participants = [
             # Domain 100: 16 nodes
-            *[(_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i) for i in range(16)],
+            *[(_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i, "nvl72100") for i in range(16)],
             # Domain 101: 4 nodes
-            *[(_NodeDesc(f"nvl72101-node{i}", 116 + i, 0), 16 + i) for i in range(4)],
+            *[(_NodeDesc(f"nvl72101-node{i}", 116 + i, 0), 16 + i, "nvl72101") for i in range(4)],
         ]
         world_size = 16
 
@@ -1045,14 +1046,14 @@ class GroupRankAssignmentTest(TestCase):
         # World_size=4 requires 1 segment
         participants = [
             # Domain 100: 4 nodes
-            (_NodeDesc("nvl72100-node0", 100, 0), 0),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
             # Domain 101: 3 nodes (incomplete segment)
-            (_NodeDesc("nvl72101-node0", 104, 0), 4),
-            (_NodeDesc("nvl72101-node1", 105, 0), 5),
-            (_NodeDesc("nvl72101-node2", 106, 0), 6),
+            (_NodeDesc("nvl72101-node0", 104, 0), 4, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 105, 0), 5, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 106, 0), 6, "nvl72101"),
         ]
         world_size = 4
 
@@ -1084,15 +1085,15 @@ class GroupRankAssignmentTest(TestCase):
         # World_size=8 requires 2 segments, both domains contribute 1 segment
         participants = [
             # Domain 100
-            (_NodeDesc("nvl72100-node0", 100, 0), 0),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
             # Domain 101
-            (_NodeDesc("nvl72101-node0", 104, 0), 4),
-            (_NodeDesc("nvl72101-node1", 105, 0), 5),
-            (_NodeDesc("nvl72101-node2", 106, 0), 6),
-            (_NodeDesc("nvl72101-node3", 107, 0), 7),
+            (_NodeDesc("nvl72101-node0", 104, 0), 4, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 105, 0), 5, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 106, 0), 6, "nvl72101"),
+            (_NodeDesc("nvl72101-node3", 107, 0), 7, "nvl72101"),
         ]
         world_size = 8
 
@@ -1128,7 +1129,9 @@ class GroupRankAssignmentTest(TestCase):
         # Domain 100: 12 nodes (3 complete segments)
         # World_size=4 requires 1 segment
         # -> First 4 nodes active, remaining 8 standby
-        participants = [(_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i) for i in range(12)]
+        participants = [
+            (_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i, "nvl72100") for i in range(12)
+        ]
         world_size = 4
 
         result = state._assign_group_ranks(participants, world_size)
@@ -1160,26 +1163,24 @@ class GroupRankAssignmentTest(TestCase):
 
         participants = [
             # Domain 100: 8 nodes (2 segments) - lower infra_rank comes first
-            (_NodeDesc("nvl72100-node0", 100, 0), 0),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5),
-            (_NodeDesc("nvl72100-node6", 106, 0), 6),
-            (_NodeDesc("nvl72100-node7", 107, 0), 7),
-            # Domain 101: 6 nodes (1 segment + 2 incomplete)
-            (_NodeDesc("nvl72101-node0", 108, 0), 8),
-            (_NodeDesc("nvl72101-node1", 109, 0), 9),
-            (_NodeDesc("nvl72101-node2", 110, 0), 10),
-            (_NodeDesc("nvl72101-node3", 111, 0), 11),
-            (_NodeDesc("nvl72101-node4", 112, 0), 12),
-            (_NodeDesc("nvl72101-node5", 113, 0), 13),
-            # Domain 102: 4 nodes (1 segment)
-            (_NodeDesc("nvl72102-node0", 114, 0), 14),
-            (_NodeDesc("nvl72102-node1", 115, 0), 15),
-            (_NodeDesc("nvl72102-node2", 116, 0), 16),
-            (_NodeDesc("nvl72102-node3", 117, 0), 17),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
+            (_NodeDesc("nvl72101-node4", 112, 0), 12, "nvl72101"),
+            (_NodeDesc("nvl72101-node5", 113, 0), 13, "nvl72101"),
+            (_NodeDesc("nvl72102-node0", 114, 0), 14, "nvl72102"),
+            (_NodeDesc("nvl72102-node1", 115, 0), 15, "nvl72102"),
+            (_NodeDesc("nvl72102-node2", 116, 0), 16, "nvl72102"),
+            (_NodeDesc("nvl72102-node3", 117, 0), 17, "nvl72102"),
         ]
         world_size = 8  # Need 2 segments
 
@@ -1214,11 +1215,11 @@ class GroupRankAssignmentTest(TestCase):
         # After sorting by infra_rank: 0, 1, 2, 3, 4
         # World_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
         participants = [
-            (_NodeDesc("node4", 104, 0), 4),  # Out-of-order
-            (_NodeDesc("node1", 101, 0), 1),
-            (_NodeDesc("node3", 103, 0), 3),
-            (_NodeDesc("node0", 100, 0), 0),
-            (_NodeDesc("node2", 102, 0), 2),
+            (_NodeDesc("node4", 104, 0), 4, "none"),
+            (_NodeDesc("node1", 101, 0), 1, "none"),
+            (_NodeDesc("node3", 103, 0), 3, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none"),
+            (_NodeDesc("node2", 102, 0), 2, "none"),
         ]
         world_size = 3
 
@@ -1260,19 +1261,18 @@ class GroupRankAssignmentTest(TestCase):
         # Listed in reverse order to test sorting
         participants = [
             # Domain 101 nodes (listed first, but have higher infra_ranks)
-            (_NodeDesc("nvl72101-node3", 111, 0), 11),
-            (_NodeDesc("nvl72101-node2", 110, 0), 10),
-            (_NodeDesc("nvl72101-node1", 109, 0), 9),
-            (_NodeDesc("nvl72101-node0", 108, 0), 8),
-            # Domain 100 nodes (listed second, in reverse order)
-            (_NodeDesc("nvl72100-node7", 107, 0), 7),
-            (_NodeDesc("nvl72100-node6", 106, 0), 6),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1),
-            (_NodeDesc("nvl72100-node0", 100, 0), 0),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
         ]
         world_size = 8  # Need 2 segments
 
@@ -1314,19 +1314,19 @@ class GroupRankAssignmentTest(TestCase):
         # Domain 102: infra_ranks [10-12] (0 complete segments)
         # Listed in completely arbitrary order
         participants = [
-            (_NodeDesc("nvl72102-node2", 112, 0), 12),  # Domain 102
-            (_NodeDesc("nvl72100-node3", 103, 0), 3),  # Domain 100
-            (_NodeDesc("nvl72101-node1", 107, 0), 7),  # Domain 101
-            (_NodeDesc("nvl72102-node0", 110, 0), 10),  # Domain 102
-            (_NodeDesc("nvl72100-node5", 105, 0), 5),  # Domain 100
-            (_NodeDesc("nvl72101-node3", 109, 0), 9),  # Domain 101
-            (_NodeDesc("nvl72100-node0", 100, 0), 0),  # Domain 100
-            (_NodeDesc("nvl72101-node2", 108, 0), 8),  # Domain 101
-            (_NodeDesc("nvl72102-node1", 111, 0), 11),  # Domain 102
-            (_NodeDesc("nvl72100-node4", 104, 0), 4),  # Domain 100
-            (_NodeDesc("nvl72100-node1", 101, 0), 1),  # Domain 100
-            (_NodeDesc("nvl72101-node0", 106, 0), 6),  # Domain 101
-            (_NodeDesc("nvl72100-node2", 102, 0), 2),  # Domain 100
+            (_NodeDesc("nvl72102-node2", 112, 0), 12, "nvl72102"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72101-node1", 107, 0), 7, "nvl72101"),
+            (_NodeDesc("nvl72102-node0", 110, 0), 10, "nvl72102"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72101-node3", 109, 0), 9, "nvl72101"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72101-node2", 108, 0), 8, "nvl72101"),
+            (_NodeDesc("nvl72102-node1", 111, 0), 11, "nvl72102"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72101-node0", 106, 0), 6, "nvl72101"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
         ]
         world_size = 8  # Need 2 segments
 
@@ -1369,11 +1369,11 @@ class GroupRankAssignmentTest(TestCase):
         # Missing nodes: 2, 4, 5 (failed to join)
         # World_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
         participants = [
-            (_NodeDesc("node0", 100, 0), 0),  # infra_rank 0
-            (_NodeDesc("node1", 101, 0), 1),  # infra_rank 1
-            (_NodeDesc("node3", 103, 0), 3),  # infra_rank 3 (2 failed)
-            (_NodeDesc("node6", 106, 0), 6),  # infra_rank 6 (4,5 failed)
-            (_NodeDesc("node7", 107, 0), 7),  # infra_rank 7
+            (_NodeDesc("node0", 100, 0), 0, "none"),
+            (_NodeDesc("node1", 101, 0), 1, "none"),
+            (_NodeDesc("node3", 103, 0), 3, "none"),
+            (_NodeDesc("node6", 106, 0), 6, "none"),
+            (_NodeDesc("node7", 107, 0), 7, "none"),
         ]
         world_size = 3
 
@@ -1401,13 +1401,13 @@ class GroupRankAssignmentTest(TestCase):
 
         # Large gaps in infra_ranks
         participants = [
-            (_NodeDesc("node0", 100, 0), 0),
-            (_NodeDesc("node5", 105, 0), 5),
-            (_NodeDesc("node10", 110, 0), 10),
-            (_NodeDesc("node15", 115, 0), 15),
-            (_NodeDesc("node20", 120, 0), 20),
-            (_NodeDesc("node22", 122, 0), 22),
-            (_NodeDesc("node24", 124, 0), 24),
+            (_NodeDesc("node0", 100, 0), 0, "none"),
+            (_NodeDesc("node5", 105, 0), 5, "none"),
+            (_NodeDesc("node10", 110, 0), 10, "none"),
+            (_NodeDesc("node15", 115, 0), 15, "none"),
+            (_NodeDesc("node20", 120, 0), 20, "none"),
+            (_NodeDesc("node22", 122, 0), 22, "none"),
+            (_NodeDesc("node24", 124, 0), 24, "none"),
         ]
         world_size = 4  # Need 4 active nodes
 
@@ -1443,17 +1443,16 @@ class GroupRankAssignmentTest(TestCase):
         # World_size=8 requires 2 segments
         participants = [
             # Domain 100 (with gaps)
-            (_NodeDesc("nvl72100-node0", 100, 0), 0),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4),
-            (_NodeDesc("nvl72100-node6", 106, 0), 6),
-            (_NodeDesc("nvl72100-node8", 108, 0), 8),
-            (_NodeDesc("nvl72100-node10", 110, 0), 10),
-            # Domain 101 (with gaps)
-            (_NodeDesc("nvl72101-node0", 112, 0), 12),
-            (_NodeDesc("nvl72101-node2", 114, 0), 14),
-            (_NodeDesc("nvl72101-node5", 117, 0), 17),
-            (_NodeDesc("nvl72101-node7", 119, 0), 19),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
+            (_NodeDesc("nvl72100-node8", 108, 0), 8, "nvl72100"),
+            (_NodeDesc("nvl72100-node10", 110, 0), 10, "nvl72100"),
+            (_NodeDesc("nvl72101-node0", 112, 0), 12, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 114, 0), 14, "nvl72101"),
+            (_NodeDesc("nvl72101-node5", 117, 0), 17, "nvl72101"),
+            (_NodeDesc("nvl72101-node7", 119, 0), 19, "nvl72101"),
         ]
         world_size = 8
 
@@ -1494,16 +1493,15 @@ class GroupRankAssignmentTest(TestCase):
         # Listed in reverse order to test sorting
         participants = [
             # Domain 101 first, in reverse
-            (_NodeDesc("nvl72101-node7", 117, 0), 17),
-            (_NodeDesc("nvl72101-node5", 115, 0), 15),
-            (_NodeDesc("nvl72101-node3", 113, 0), 13),
-            (_NodeDesc("nvl72101-node1", 111, 0), 11),
-            # Domain 100 second, in reverse
-            (_NodeDesc("nvl72100-node9", 109, 0), 9),
-            (_NodeDesc("nvl72100-node7", 107, 0), 7),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1),
+            (_NodeDesc("nvl72101-node7", 117, 0), 17, "nvl72101"),
+            (_NodeDesc("nvl72101-node5", 115, 0), 15, "nvl72101"),
+            (_NodeDesc("nvl72101-node3", 113, 0), 13, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 111, 0), 11, "nvl72101"),
+            (_NodeDesc("nvl72100-node9", 109, 0), 9, "nvl72100"),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
         ]
         world_size = 8
 
@@ -1644,8 +1642,8 @@ class ErrorCaseTest(BaseRendezvousTest):
 
         # Create participants with duplicate infra_rank
         participants = [
-            (_NodeDesc("node_a", 100, 0), 0),
-            (_NodeDesc("node_b", 101, 0), 0),  # Duplicate!
+            (_NodeDesc("node_a", 100, 0), 0, "none"),
+            (_NodeDesc("node_b", 101, 0), 0, "none"),
         ]
         min_nodes = 2
 
@@ -1874,8 +1872,8 @@ class InfrastructureRankTest(TestCase):
 
         # Create participants with infra ranks
         participants = [
-            (_NodeDesc("node_0", 100, 0), 0),  # infra_rank=0
-            (_NodeDesc("node_1", 101, 0), 1),  # infra_rank=1
+            (_NodeDesc("node_0", 100, 0), 0, "none"),
+            (_NodeDesc("node_1", 101, 0), 1, "none"),
         ]
         min_nodes = 2
 

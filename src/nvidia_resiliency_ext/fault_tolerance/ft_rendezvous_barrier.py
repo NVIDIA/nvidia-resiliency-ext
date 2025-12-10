@@ -241,35 +241,46 @@ class RendezvousParticipantInfo:
     in the simulation case. This class provides a JSON-based format that can store:
     - NodeDesc (addr, pid, local_id)
     - Infrastructure rank (from SLURM_PROCID/GROUP_RANK or deterministically assigned)
+    - Domain ID (from node name or ClusterUUID, "none" if segment not configured)
 
     The format is designed to support up to 4K participants efficiently.
     In future, this can be changed to Protobuf for better efficiency and performance.
     """
 
     @staticmethod
-    def pack(node_desc: _NodeDesc, infra_rank: int = -1) -> str:
-        """Pack participant information into JSON format."""
+    def pack(node_desc: _NodeDesc, infra_rank: int = -1, domain_id: str = "none") -> str:
+        """Pack participant information into JSON format.
+
+        Args:
+            node_desc: Node descriptor
+            infra_rank: Infrastructure rank (-1 if not assigned)
+            domain_id: Domain ID string, or "none" if segment not configured
+        """
         data = {
             "addr": node_desc.addr,
             "pid": node_desc.pid,
             "local_id": node_desc.local_id,
             "infra_rank": infra_rank,
+            "domain_id": domain_id,
         }
         return json.dumps(data)
 
     @staticmethod
-    def unpack(data: str) -> Tuple[_NodeDesc, int]:
+    def unpack(data: str) -> Tuple[_NodeDesc, int, str]:
         """Unpack participant information from JSON format.
 
         Returns:
-            Tuple of (node_desc, infra_rank)
+            Tuple of (node_desc, infra_rank, domain_id)
+            domain_id will be "none" if not present (backward compatibility)
         """
         try:
             info = json.loads(data)
             node_desc = _NodeDesc(addr=info["addr"], pid=info["pid"], local_id=info["local_id"])
             # Support old format without infra_rank field
             infra_rank = info.get("infra_rank", -1)
-            return node_desc, infra_rank
+            # Support old format without domain_id field - default to "none"
+            domain_id = info.get("domain_id", "none")
+            return node_desc, infra_rank, domain_id
         except (json.JSONDecodeError, KeyError) as e:
             raise ValueError(f"Invalid participant info data: {e}")
 
@@ -407,8 +418,9 @@ class _RendezvousBarrierState:
         self._rendezvous_start_time = None
         self._attempted_open = False  # Track if this node tried to open rendezvous
 
-        # Cache for node_name -> domain_id lookups to avoid repeated parsing
-        self._node_domain_cache: Dict[str, Optional[str]] = {}
+        # Cache for domain_id to avoid re-parsing on every rendezvous
+        # Only populated if segment is configured
+        self._cached_domain_id: Optional[str] = None
 
         # Key prefixes for the barrier
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
@@ -426,31 +438,9 @@ class _RendezvousBarrierState:
         if not self.store.check([self.last_participant_arrived_key]):
             self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
 
-    def _get_domain_id(self, node_name: str) -> Optional[str]:
-        """Get domain ID for a node name using cache.
-
-        When domain_id_from_node_name is True, parse from hostname.
-        When domain_id_from_node_name is False, use ClusterUUID from NVML as domain ID.
-
-        Args:
-            node_name: The node name to parse
-
-        Returns:
-            The domain ID string if found and parsed successfully, None otherwise
-        """
-        if node_name not in self._node_domain_cache:
-            # Parse and cache the result
-            if self.domain_id_from_node_name:
-                # Parse domain ID from node name
-                self._node_domain_cache[node_name] = _parse_domain_id_from_node_name(node_name)
-            else:
-                # Use ClusterUUID from nvidia-smi as domain ID
-                self._node_domain_cache[node_name] = _parse_domain_id_from_nvidia_smi()
-        return self._node_domain_cache[node_name]
-
     def _assign_group_ranks(
         self,
-        participants: List[Tuple[_NodeDesc, int]],
+        participants: List[Tuple[_NodeDesc, int, str]],
         world_size: int,
     ) -> Dict[_NodeDesc, int]:
         """Assign group ranks using infrastructure ranks with hardware failure resilience.
@@ -465,7 +455,8 @@ class _RendezvousBarrierState:
         4. Treat segment=None as segment=1 (every node is its own segment)
 
         Args:
-            participants: List of (node_desc, infra_rank) tuples
+            participants: List of (node_desc, infra_rank, domain_id) tuples
+                         domain_id is "none" if segment not configured
             world_size: Target number of active nodes (training world size)
 
         Returns:
@@ -481,21 +472,22 @@ class _RendezvousBarrierState:
             raise ValueError(f"world_size ({world_size}) must be divisible by segment ({segment})")
 
         # Handle unassigned infra_ranks and sort by infra_rank (SLURM topology order)
-        has_unassigned = any(infra_rank == -1 for _, infra_rank in participants)
+        has_unassigned = any(infra_rank == -1 for _, infra_rank, _ in participants)
         if has_unassigned:
             # Sort by node_desc and assign sequential infra_ranks [0, 1, 2, ...]
             # No need to sort again - already in infra_rank order
             # No duplicates possible since we assign sequential indices
             sorted_by_node = sorted(participants, key=lambda x: x[0])
             sorted_participants = [
-                (node_desc, idx) for idx, (node_desc, _) in enumerate(sorted_by_node)
+                (node_desc, idx, domain_id)
+                for idx, (node_desc, _, domain_id) in enumerate(sorted_by_node)
             ]
         else:
             # Sort by existing infra_rank
             sorted_participants = sorted(participants, key=lambda x: x[1])
 
             # Check for duplicate infra_ranks early (deployment error)
-            infra_ranks = {infra_rank for _, infra_rank in sorted_participants}
+            infra_ranks = {infra_rank for _, infra_rank, _ in sorted_participants}
             if len(infra_ranks) != len(sorted_participants):
                 raise RuntimeError(
                     "Duplicate infrastructure ranks detected. "
@@ -506,14 +498,18 @@ class _RendezvousBarrierState:
         # When segment is None, treat each node as its own domain (non-segmented deployment)
         if self.segment is not None:
             domain_to_participants: Dict[str, List[Tuple[_NodeDesc, int]]] = defaultdict(list)
-            for node_desc, infra_rank in sorted_participants:
-                domain_id = self._get_domain_id(node_desc.addr)
+            for node_desc, infra_rank, domain_id in sorted_participants:
+                # Validate that domain_id is not "none" when segment is configured
+                if domain_id == "none":
+                    raise RuntimeError(
+                        f"Domain ID is required when segment is configured, but got 'none' for node {node_desc.addr}"
+                    )
                 domain_to_participants[domain_id].append((node_desc, infra_rank))
         else:
             # Each node is its own domain (use infra_rank as domain key for consistent typing)
             domain_to_participants = {
                 str(infra_rank): [(node_desc, infra_rank)]
-                for node_desc, infra_rank in sorted_participants
+                for node_desc, infra_rank, _ in sorted_participants
             }
 
         # Step 2: Sort domains by SLURM topology (first node's infra_rank in each domain)
@@ -815,9 +811,28 @@ class _RendezvousBarrierState:
         # Determine infrastructure rank
         infra_rank = get_infrastructure_rank()
 
+        # Determine domain ID (with caching to avoid re-parsing on every rendezvous)
+        if self._cached_domain_id is None:
+            if self.segment is not None:
+                # Segment is configured - domain_id is required
+                try:
+                    if self.domain_id_from_node_name:
+                        self._cached_domain_id = _parse_domain_id_from_node_name(node_desc.addr)
+                    else:
+                        self._cached_domain_id = _parse_domain_id_from_nvidia_smi()
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Domain ID is required when --ft-segment is specified, but failed to parse: {e}"
+                    )
+            else:
+                # Segment not configured - domain_id not needed
+                self._cached_domain_id = "none"
+
+        domain_id = self._cached_domain_id
+
         # Store participant information in arrived_<count> key using the unique identifier
         arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
-        participant_data = RendezvousParticipantInfo.pack(node_desc, infra_rank)
+        participant_data = RendezvousParticipantInfo.pack(node_desc, infra_rank, domain_id)
         self.store.set(arrived_key, participant_data)
 
         # Set initial group rank (unassigned)
@@ -969,14 +984,15 @@ class _RendezvousBarrierState:
             # Delay before next check
             time.sleep(1)
 
-    def get_all_participants(self, total_participants: int) -> List[Tuple[_NodeDesc, int]]:
+    def get_all_participants(self, total_participants: int) -> List[Tuple[_NodeDesc, int, str]]:
         """Get all participants that have arrived using multi_get.
 
         Args:
             total_participants: Total number of participants
 
         Returns:
-            List of tuples: (node_desc, infra_rank) in arrival order.
+            List of tuples: (node_desc, infra_rank, domain_id) in arrival order.
+            domain_id is "none" if segment not configured.
             Note: Consumers of this method sort the list according to their needs.
         """
         arrived_count = total_participants
@@ -994,8 +1010,10 @@ class _RendezvousBarrierState:
                 try:
                     # Handle bytes to string conversion
                     participant_data = participant_data_list[i].decode('utf-8')
-                    node_desc, infra_rank = RendezvousParticipantInfo.unpack(participant_data)
-                    participants.append((node_desc, infra_rank))
+                    node_desc, infra_rank, domain_id = RendezvousParticipantInfo.unpack(
+                        participant_data
+                    )
+                    participants.append((node_desc, infra_rank, domain_id))
                 except Exception as e:
                     log.warning(f"Failed to unpack participant data for arrived_{i+1}: {e}")
 
@@ -1063,7 +1081,7 @@ class _RendezvousBarrierState:
         assigned_group_ranks = self._assign_group_ranks(all_participants, world_size)
 
         # Store the assigned ranks and total participants in the store
-        for i, (node_desc_item, infra_rank) in enumerate(all_participants):
+        for i, (node_desc_item, infra_rank, _) in enumerate(all_participants):
             rank_key = f"{self.prefix}:arrived_{i+1}_group_rank"
             assigned_group_rank = assigned_group_ranks.get(node_desc_item, -1)
 

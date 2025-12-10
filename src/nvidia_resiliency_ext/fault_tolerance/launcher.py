@@ -743,7 +743,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._worker_watchdog.start()
             logger.info("FileTimerServer started")
         else:
-            logger.info(
+            logger.debug(
                 "Environment variable '%s' not found. Do not start FileTimerServer.",
                 enable_watchdog_env_name,
             )
