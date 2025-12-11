@@ -1410,9 +1410,13 @@ class FtRendezvousHandler(RendezvousHandler):
             )
 
         # Perform Node health check
-        self._run_health_check(
-            get_node_health_check(), "Node health check", f"Node {self._this_node} is unhealthy."
-        )
+        _nodehealth_checker = get_node_health_check()
+        if _nodehealth_checker is not None:
+            self._run_health_check(
+                _nodehealth_checker,
+                "Node health check",
+                f"Node {self._this_node} is unhealthy.",
+            )
 
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
