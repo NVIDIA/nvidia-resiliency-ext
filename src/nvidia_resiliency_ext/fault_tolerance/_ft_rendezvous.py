@@ -59,7 +59,7 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1224,6 +1224,8 @@ class FtRendezvousHandler(RendezvousHandler):
         timeout: Optional[RendezvousTimeout] = None,
         upscaling_enabled: bool = True,
         use_infra_group_rank: bool = False,
+        enable_nic_healthcheck: bool = False,
+        link_state_path_template: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousHandler`.
 
@@ -1246,6 +1248,10 @@ class FtRendezvousHandler(RendezvousHandler):
                 Whether to enable upscaling of a completed rendezvous with redundant or new nodes.
             use_infra_group_rank:
                 Whether to use infrastructure group rank for rank assignment.
+            enable_nic_healthcheck:
+                Whether to enable all NIC link state health check before rendezvous.
+            link_state_path_template:
+                Template path for NIC link state files.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1263,7 +1269,15 @@ class FtRendezvousHandler(RendezvousHandler):
 
         state_holder = _BackendRendezvousStateHolder(backend, settings)
 
-        return cls(node, settings, backend.name, store, state_holder)
+        return cls(
+            node,
+            settings,
+            backend.name,
+            store,
+            state_holder,
+            enable_nic_healthcheck=enable_nic_healthcheck,
+            link_state_path_template=link_state_path_template,
+        )
 
     def __init__(
         self,
@@ -1272,6 +1286,8 @@ class FtRendezvousHandler(RendezvousHandler):
         backend_name: str,
         store: Store,
         state_holder: _RendezvousStateHolder,
+        enable_nic_healthcheck: bool = False,
+        link_state_path_template: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1310,6 +1326,17 @@ class FtRendezvousHandler(RendezvousHandler):
 
         self._keep_alive_timer = None
 
+        # Store NIC health check configuration
+        self._enable_nic_healthcheck = enable_nic_healthcheck
+        self._link_state_path_template = link_state_path_template
+
+        # Initialize NIC link state health checker (single instance to maintain baseline)
+        self._nic_link_state_checker = None
+        if self._enable_nic_healthcheck:
+            self._nic_link_state_checker = NicLinkStateHealthCheck(
+                link_state_path_template=self._link_state_path_template
+            )
+
     def _record(
         self,
         message: str,
@@ -1345,30 +1372,47 @@ class FtRendezvousHandler(RendezvousHandler):
         """See base class."""
         return False
 
+    def _run_health_check(self, health_checker, check_name: str, failure_message: str) -> None:
+        """Helper method to run a health check with consistent error handling.
+
+        Args:
+            health_checker: Health checker instance to call
+            check_name: Name of the health check (for logging)
+            failure_message: Error message to use if health check fails
+        """
+        try:
+            if not health_checker():
+                raise UnhealthyNodeException(failure_message)
+        except UnhealthyNodeException:
+            log.error(f"{check_name} failed for node {self._this_node}: {failure_message}")
+            raise
+        except Exception as e:
+            log.error(f"Unexpected error during {check_name} for node {self._this_node}: {str(e)}")
+            raise UnhealthyNodeException(str(e)) from e
+
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU health check for this node."""
+        """Perform GPU, NIC link state, and Node health checks for this node."""
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
-        # Perform GPU and Node health checks
-        health_checker = GPUHealthCheck()
-        nodehealth_checker = get_node_health_check()
-        try:
-            health_status = health_checker()
-            # If no endpoint specified and no global instance, skip node health check (treat as healthy)
-            nodehealth_status = nodehealth_checker() if nodehealth_checker is not None else True
-            if not health_status:
-                raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
-            if not nodehealth_status:
-                raise UnhealthyNodeException(f"Node {self._this_node} failed node health check.")
-        except UnhealthyNodeException as e:
-            # Log specific health check failure
-            log.error(f"Health check failed for node {self._this_node}: {str(e)}")
-            raise
-        except Exception as e:
-            # General exception for unexpected issues during health check
-            log.error(f"Unexpected error during health check for node {self._this_node}: {str(e)}")
-            raise UnhealthyNodeException(str(e))
+
+        # Perform GPU health check
+        self._run_health_check(
+            GPUHealthCheck(), "GPU health check", f"Node {self._this_node} has an unhealthy GPU."
+        )
+
+        # Perform NIC link state health check if enabled
+        if self._nic_link_state_checker is not None:
+            self._run_health_check(
+                self._nic_link_state_checker,
+                "NIC link state health check",
+                f"Node {self._this_node} has unhealthy NIC link(s).",
+            )
+
+        # Perform Node health check
+        self._run_health_check(
+            get_node_health_check(), "Node health check", f"Node {self._this_node} is unhealthy."
+        )
 
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
@@ -1741,6 +1785,13 @@ def create_handler(
     | rank              | rank assignment. Previous assignments are ignored.   |
     |                   | Hot spare/redundancy NOT supported. Defaults to True.|
     +-------------------+------------------------------------------------------+
+    | enable_nic_       | Whether to enable NIC link state health check before |
+    | healthcheck       | rendezvous. Defaults to False.                       |
+    +-------------------+------------------------------------------------------+
+    | link_state_path_  | Template path for NIC link state files. Should       |
+    | template          | contain {nic} placeholder. Defaults to None (uses    |
+    |                   | default).                                            |
+    +-------------------+------------------------------------------------------+
     """
     try:
         timeout = RendezvousTimeout(
@@ -1752,6 +1803,8 @@ def create_handler(
         # torchrun default behaviour if not specified otherwise
         upscale_completed = params.config.get('upscaling_enabled', True)
         use_infra_group_rank = params.config.get('use_infra_group_rank', True)
+        enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
+        link_state_path_template = params.config.get('link_state_path_template', None)
 
         return FtRendezvousHandler.from_backend(
             params.run_id,
@@ -1763,6 +1816,8 @@ def create_handler(
             timeout,
             upscaling_enabled=upscale_completed,
             use_infra_group_rank=use_infra_group_rank,
+            enable_nic_healthcheck=enable_nic_healthcheck,
+            link_state_path_template=link_state_path_template,
         )
     except Exception as e:
         construct_and_record_rdzv_event(
