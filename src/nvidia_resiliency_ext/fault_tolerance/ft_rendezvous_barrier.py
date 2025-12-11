@@ -45,6 +45,7 @@ except ImportError:
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
+from ..inprocess.utils import format_rank_set_verbose
 from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
@@ -525,6 +526,7 @@ class _RendezvousBarrierState:
         active_rank = 0
         active_segments = 0
         standby_rank = world_size
+        standby_infra_ranks = []  # Collect infra_ranks of standby ranks
 
         for domain_id, domain_participants in sorted_domains:
             domain_segments = len(domain_participants) // segment
@@ -550,6 +552,7 @@ class _RendezvousBarrierState:
             # Assign standby ranks to rest from this domain
             for node_desc, infra_rank in domain_participants[nodes_to_take:]:
                 result[node_desc] = standby_rank
+                standby_infra_ranks.append(infra_rank)  # Collect standby infra_rank
                 log.debug(
                     f"Rank: {node_desc.addr} (infra={infra_rank}) -> group_rank={standby_rank} (standby)"
                 )
@@ -573,14 +576,12 @@ class _RendezvousBarrierState:
 
         standby_info = ""
         if standby_rank > world_size:
-            standby_info = (
-                f" and {standby_rank - world_size} standby ranks [{world_size}..{standby_rank-1}]"
-            )
+            # Format standby infra_ranks as ranges
+            # Strip the outer curly braces from format_rank_set_verbose output
+            infra_range_str = format_rank_set_verbose(standby_infra_ranks).strip('{}')
+            standby_info = f" and {standby_rank - world_size} standby ranks [{infra_range_str}]"
 
-        log.info(
-            f"Assigned {active_segments} segments ({active_rank} active ranks [0..{world_size-1}]){standby_info} "
-            f"(segment={segment})"
-        )
+        log.info(f"Assigned segments(segment={segment}): {active_segments} segments{standby_info}")
 
         return result
 
