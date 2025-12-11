@@ -2598,6 +2598,10 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
 
+    # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
+    rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
+    rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
         try:

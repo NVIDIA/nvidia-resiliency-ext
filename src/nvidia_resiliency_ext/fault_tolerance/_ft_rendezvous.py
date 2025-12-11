@@ -1281,6 +1281,13 @@ class FtRendezvousHandler(RendezvousHandler):
         self._enable_nic_healthcheck = enable_nic_healthcheck
         self._link_state_path_template = link_state_path_template
 
+        # Initialize NIC link state health checker (single instance to maintain baseline)
+        self._nic_link_state_checker = None
+        if self._enable_nic_healthcheck:
+            self._nic_link_state_checker = NicLinkStateHealthCheck(
+                link_state_path_template=self._link_state_path_template
+            )
+
     def _record(
         self,
         message: str,
@@ -1346,9 +1353,9 @@ class FtRendezvousHandler(RendezvousHandler):
         )
 
         # Perform NIC link state health check if enabled
-        if self._enable_nic_healthcheck:
+        if self._nic_link_state_checker is not None:
             self._run_health_check(
-                NicLinkStateHealthCheck(link_state_path_template=self._link_state_path_template),
+                self._nic_link_state_checker,
                 "NIC link state health check",
                 f"Node {self._this_node} has unhealthy NIC link(s).",
             )
