@@ -44,7 +44,7 @@ except ImportError:
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck
+from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1052,6 +1052,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         timeout: Optional[RendezvousTimeout] = None,
         is_store_host: bool = False,
         use_infra_group_rank: bool = True,
+        enable_nic_healthcheck: bool = False,
+        link_state_path_template: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1074,6 +1076,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 Whether this node is the TCPStore host.
             use_infra_group_rank:
                 Whether to use infrastructure group rank for rank assignment.
+            enable_nic_healthcheck:
+                Whether to enable all NIC link state health check before rendezvous.
+            link_state_path_template:
+                Template path for NIC link state files.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1088,7 +1094,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             use_infra_group_rank=use_infra_group_rank,
         )
 
-        return cls(node, settings, "c10d", store, is_store_host)
+        return cls(
+            node,
+            settings,
+            "c10d",
+            store,
+            is_store_host,
+            enable_nic_healthcheck=enable_nic_healthcheck,
+            link_state_path_template=link_state_path_template,
+        )
 
     def __init__(
         self,
@@ -1097,6 +1111,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         backend_name: str,
         store: Store,
         is_store_host: bool = False,
+        enable_nic_healthcheck: bool = False,
+        link_state_path_template: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1128,6 +1144,17 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         self._ranks_connector = IpcConnector(FT_LAUNCHER_IPC_SOCKET)
         self._ranks_connector.start_receiving()
+
+        # Store NIC health check configuration
+        self._enable_nic_healthcheck = enable_nic_healthcheck
+        self._link_state_path_template = link_state_path_template
+
+        # Initialize NIC link state health checker (single instance to maintain baseline)
+        self._nic_link_state_checker = None
+        if self._enable_nic_healthcheck:
+            self._nic_link_state_checker = NicLinkStateHealthCheck(
+                link_state_path_template=self._link_state_path_template
+            )
 
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
@@ -1164,27 +1191,44 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """See base class."""
         return False
 
+    def _run_health_check(self, health_checker, check_name: str, failure_message: str) -> None:
+        """Helper method to run a health check with consistent error handling.
+
+        Args:
+            health_checker: Health checker instance to call
+            check_name: Name of the health check (for logging)
+            failure_message: Error message to use if health check fails
+        """
+        try:
+            if not health_checker():
+                self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+                log.error(f"{check_name} failed for node {self._this_node}: {failure_message}")
+                raise UnhealthyNodeException(failure_message)
+        except UnhealthyNodeException:
+            raise
+        except Exception as e:
+            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+            log.error(f"Unexpected error during {check_name} for node {self._this_node}: {str(e)}")
+            raise UnhealthyNodeException(str(e)) from e
+
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU health check for this node."""
+        """Perform GPU and NIC link state health checks for this node."""
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
 
         # Perform GPU health check
-        health_checker = GPUHealthCheck()
-        try:
-            health_status = health_checker()
-        except Exception as e:
-            # Unexpected error during health check
-            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
-            log.error(f"Unexpected error during health check for node {self._this_node}: {str(e)}")
-            raise UnhealthyNodeException(str(e)) from e
+        self._run_health_check(
+            GPUHealthCheck(), "GPU health check", f"Node {self._this_node} has an unhealthy GPU."
+        )
 
-        if not health_status:
-            # Health check failed
-            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
-            log.error(f"Health check failed for node {self._this_node}: Node has an unhealthy GPU.")
-            raise UnhealthyNodeException(f"Node {self._this_node} has an unhealthy GPU.")
+        # Perform NIC link state health check if enabled
+        if self._nic_link_state_checker is not None:
+            self._run_health_check(
+                self._nic_link_state_checker,
+                "NIC link state health check",
+                f"Node {self._this_node} has unhealthy NIC link(s).",
+            )
 
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
@@ -1434,6 +1478,14 @@ def create_handler(
     | use_infra_group_  | Whether to use infrastructure group rank for rank    |
     | rank              | assignment. Defaults to True.                        |
     +-------------------+------------------------------------------------------+
+    | enable_nic_       | Whether to enable NIC link state health check before |
+    | healthcheck       | rendezvous. Defaults to False.                       |
+    +-------------------+------------------------------------------------------+
+    | link_state_path_  | Template path for NIC link state files. Should       |
+    | template          | contain {nic} placeholder. Defaults to None (uses    |
+    |                   | default path /sys/class/infiniband/{nic}/ports/1/    |
+    |                   | state).                                              |
+    +-------------------+------------------------------------------------------+
     """
     try:
         timeout = RendezvousTimeout(
@@ -1445,6 +1497,8 @@ def create_handler(
         # Get is_store_host from parameters
         is_store_host = params.config.get('is_store_host', False)
         use_infra_group_rank = params.config.get('use_infra_group_rank', True)
+        enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
+        link_state_path_template = params.config.get('link_state_path_template', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -1456,6 +1510,8 @@ def create_handler(
             timeout,
             is_store_host=is_store_host,
             use_infra_group_rank=use_infra_group_rank,
+            enable_nic_healthcheck=enable_nic_healthcheck,
+            link_state_path_template=link_state_path_template,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

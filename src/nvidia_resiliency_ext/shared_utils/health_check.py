@@ -21,7 +21,7 @@ import threading
 import traceback
 from collections import defaultdict
 from functools import wraps
-from typing import Callable, Optional, Union
+from typing import Callable, Dict, Optional, Union
 
 import defusedxml.ElementTree as ET
 
@@ -666,6 +666,147 @@ class NicHealthCheck(PynvmlMixin, PciMixin):
             )
 
         return True
+
+
+class NicLinkStateHealthCheck(PciMixin):
+    """Health check for NIC link state monitoring (RDMA and Ethernet).
+
+    This class monitors the state of network interface ports (both RDMA/InfiniBand
+    and Ethernet) to detect when ports transition from ACTIVE to non-ACTIVE states.
+    It takes a baseline snapshot of all port states during initialization and compares
+    against this baseline during health checks.
+    """
+
+    # Default path template for NIC link state
+    DEFAULT_LINK_STATE_PATH = "/sys/class/infiniband/{nic}/ports/1/state"
+
+    def __init__(
+        self,
+        link_state_path_template: Optional[str] = None,
+        on_failure: Optional[Callable] = None,
+    ):
+        """
+        Initializes the NicLinkStateHealthCheck class.
+
+        Args:
+            link_state_path_template (Optional[str]): Template string for the link state path.
+                                                      Use {nic} as placeholder for NIC name.
+            on_failure (Optional[Callable]): Callback function to handle health check failures.
+        """
+        super().__init__()
+        self.link_state_path_template = link_state_path_template or self.DEFAULT_LINK_STATE_PATH
+        self.on_failure = on_failure
+
+        # Snapshot of initial port states: {nic_name: state_string}
+        self._baseline_port_states: Dict[str, str] = {}
+
+        # Initialize baseline by scanning all network devices
+        self._initialize_baseline()
+
+    def _initialize_baseline(self):
+        """
+        Initialize the baseline snapshot of all NIC port states.
+
+        This scans all available network devices (RDMA/InfiniBand and Ethernet) and
+        records their current port states as the baseline for future comparisons.
+        """
+        infiniband_path = "/sys/class/infiniband"
+
+        if not os.path.exists(infiniband_path):
+            logger.warning(f"InfiniBand path does not exist: {infiniband_path}")
+            return
+
+        try:
+            for ib_device in sorted(os.listdir(infiniband_path)):
+                state_path = self.link_state_path_template.format(nic=ib_device)
+
+                if not os.path.exists(state_path):
+                    logger.debug(f"NIC link state path not found: {state_path}")
+                    continue
+
+                try:
+                    with open(state_path, 'r') as f:
+                        state = f.read().strip()
+                        # Parse state - format is usually like "4: ACTIVE" or just "ACTIVE"
+                        # We want to extract the state name after any colon
+                        if ':' in state:
+                            state = state.split(':', 1)[1].strip()
+                        self._baseline_port_states[ib_device] = state
+                except Exception as e:
+                    logger.warning(f"Failed to read baseline state for {ib_device}: {str(e)}")
+        except Exception as e:
+            logger.warning(f"Failed to scan network devices: {str(e)}")
+
+        if not self._baseline_port_states:
+            logger.warning("No network devices found for baseline initialization")
+        else:
+            # Log all baseline states in a single consolidated message
+            devices_summary = ", ".join(
+                [f"{dev}={state}" for dev, state in self._baseline_port_states.items()]
+            )
+            logger.debug(f"NIC baseline states: {devices_summary}")
+
+    def __call__(self) -> bool:
+        """
+        Synchronous NIC link state health check callable.
+
+        Returns:
+            bool: Returns True if all ports remain in their baseline state (or ACTIVE),
+                  False if any port has transitioned from ACTIVE to non-ACTIVE.
+        """
+        return self._perform_health_check()
+
+    def _perform_health_check(self) -> bool:
+        """
+        Core method to perform NIC link state health check.
+
+        Compares current port states against the baseline. If any port that was
+        initially ACTIVE is now in a different (non-ACTIVE) state, this is
+        considered a health check failure.
+
+        Returns:
+            bool: True if all ports are healthy, False otherwise.
+        """
+        if not self._baseline_port_states:
+            # No baseline established, skip the check
+            logger.debug("No baseline port states available, skipping NIC link state check")
+            return True
+
+        all_healthy = True
+
+        for ib_device, baseline_state in self._baseline_port_states.items():
+            state_path = self.link_state_path_template.format(nic=ib_device)
+
+            if not os.path.exists(state_path):
+                logger.debug(f"NIC link state path no longer exists: {state_path}")
+                continue
+
+            try:
+                with open(state_path, 'r') as f:
+                    current_state = f.read().strip()
+                    # Parse state - format is usually like "4: ACTIVE" or just "ACTIVE"
+                    if ':' in current_state:
+                        current_state = current_state.split(':', 1)[1].strip()
+
+                    # Check if port transitioned from ACTIVE to non-ACTIVE
+                    if baseline_state == "ACTIVE" and current_state != "ACTIVE":
+                        logger.error(
+                            f"NIC device {ib_device}: Port state changed from "
+                            f"{baseline_state} to {current_state}. Health check FAILED."
+                        )
+                        all_healthy = False
+                    elif current_state != baseline_state:
+                        logger.warning(
+                            f"NIC device {ib_device}: Port state changed from "
+                            f"{baseline_state} to {current_state}"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Exception while reading link state for {ib_device}: {str(e)}\n"
+                    f"{traceback.format_exc()}"
+                )
+
+        return all_healthy
 
 
 class NVLHealthCheck(PynvmlMixin):
