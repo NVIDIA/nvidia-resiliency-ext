@@ -63,10 +63,16 @@ class FaultToleranceConfig:
       for server response (unidirectional communication). This significantly reduces latency for
       high-frequency operations. Server logs errors instead of sending them back.
       Default: True (recommended for production). Set to False during development to catch errors immediately.
-    * `use_infra_group_rank` - If True, always use infrastructure group rank for rank assignment.
-      Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
-      rank assignments are ignored to ensure consistency with infrastructure's rank assignment.
-      Note: Hot spare/redundancy is NOT supported with this setting. Default: True.
+    * `domain_id_from_node_name` - If True, parse domain ID from node name for segment-aware rank assignment.
+      Node name format: <domain_id>-<node_id>.
+      Example: "nvl72144-T01" → domain_id="nvl72144".
+      When False and segment is specified, uses ClusterUUID from NVML as domain ID.
+      Default: True, but automatically set to False when segment=None to avoid hostname parsing issues.
+    * `segment` - Minimum number of nodes required per domain for segment-aware rank assignment.
+      Domains with fewer nodes are excluded. From each valid domain, as many complete segments
+      as possible are selected (e.g., 12 nodes with segment=4 → use 12 nodes = 3 segments).
+      Domains are selected in SLURM topology order. min_nodes must be divisible by segment.
+      Set to None to disable segment awareness (simple first-N selection). Default: None.
     * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed
       after worker shutdown before starting new workers. Default: 50.0.
     * `gpu_memory_tolerance_mb` [float] maximum allowed GPU memory usage (in MB) when checking if
@@ -96,7 +102,8 @@ class FaultToleranceConfig:
     link_down_path_template: Optional[str] = None
     link_state_path_template: Optional[str] = None
     skip_section_response: bool = True
-    use_infra_group_rank: bool = True
+    domain_id_from_node_name: bool = True
+    segment: Optional[int] = None
     gpu_memory_reclaim_timeout: float = 50.0
     gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
     gpu_memory_poll_interval: float = 2.0  # Poll interval for GPU memory check (in seconds)

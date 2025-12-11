@@ -456,13 +456,14 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
-                # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
-                unhealthy_count = self._check_cluster_unhealthy_count()
+                # Check for cluster-wide issues: new nodes waiting or peer aborts
+                # Note: unhealthy_count is now a global job-level counter and is not used here
+                # for failure detection. It's only used in the rendezvous for early termination.
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
 
-                if unhealthy_count > 0 or num_nodes_waiting > 0 or peer_aborted_count > 0:
+                if num_nodes_waiting > 0 or peer_aborted_count > 0:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -472,7 +473,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     log_msg = (
                         f"[%s] Detected cluster changes from group_rank={group_rank} "
-                        f"(unhealthy_nodes={unhealthy_count}, nodes_waiting={num_nodes_waiting}); "
+                        f"(nodes_waiting={num_nodes_waiting}, peer_aborted={peer_aborted_count}); "
                         f"will restart worker group"
                     )
                     # Note: The node that triggered the change (unhealthy or new) already opened
@@ -743,7 +744,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._worker_watchdog.start()
             logger.info("FileTimerServer started")
         else:
-            logger.info(
+            logger.debug(
                 "Environment variable '%s' not found. Do not start FileTimerServer.",
                 enable_watchdog_env_name,
             )
@@ -867,15 +868,24 @@ class LocalElasticAgent(SimpleElasticAgent):
         args: Dict[int, Tuple] = {}
         envs: Dict[int, Dict[str, str]] = {}
         log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
+
+        # Get master_addr and master_port, handling compatibility with older PyTorch versions
+        try:
+            master_addr = worker_group.master_addr
+            master_port = worker_group.master_port
+        except AttributeError:
+            # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
+            master_addr, master_port = super()._get_master_addr_port(store)
+
+        # Debug logging: Log worker start info once for all workers
+        logger.debug(
+            f"Starting {len(worker_group.workers)} worker(s) "
+            f"[group_rank={worker_group.group_rank}] with "
+            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
+        )
+
         for worker in worker_group.workers:
             local_rank = worker.local_rank
-            # Get master_addr and master_port, handling compatibility with older PyTorch versions
-            try:
-                master_addr = worker_group.master_addr
-                master_port = worker_group.master_port
-            except AttributeError:
-                # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
-                master_addr, master_port = super()._get_master_addr_port(store)
 
             worker_env = {
                 "LOCAL_RANK": str(local_rank),
@@ -918,6 +928,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._setup_local_watchdog(envs=envs)
 
         self.setup_rank_monitors(envs=envs)
+
+        # Standby nodes are those assigned a group_rank >= min_nodes after rendezvous.
+        # The rendezvous handler sets local_world_size to 0 for standby nodes, so no workers are created.
+        # Let the normal flow continue - PyTorch handles local_world_size=0 correctly.
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
@@ -1110,21 +1124,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._pcontext is not None:
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
-
-    def _check_cluster_unhealthy_count(self) -> int:
-        """Check the cluster-wide unhealthy count from the rendezvous store.
-
-        Only supported for barrier-based rendezvous. Returns 0 for legacy rendezvous.
-
-        Returns:
-            The number of unhealthy nodes reported in the cluster, or 0 if not available.
-        """
-        # Only barrier-based rendezvous supports unhealthy_count
-        if hasattr(self._rdzv_handler, '_barrier_state'):
-            return self._rdzv_handler._barrier_state._get_unhealthy_count()
-
-        # Legacy rendezvous does not support unhealthy tracking
-        return 0
 
     def _check_cluster_peer_aborted_count(self) -> int:
         """Check the cluster-wide peer aborted count from the rendezvous store.
@@ -1390,6 +1389,8 @@ def launch_agent(
 
     # Add is_store_host to rdzv_parameters
     rdzv_parameters.config["is_store_host"] = is_store_host
+    # Add nproc_per_node so the rendezvous handler can restore local_world_size for standby->active transitions
+    rdzv_parameters.config["nproc_per_node"] = config.nproc_per_node
 
     spec = WorkerSpec(
         role=config.role,
@@ -2305,19 +2306,6 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-use-infra-group-rank",
-        "--ft-use_infra_group_rank",
-        type=lambda x: str(x).lower() not in ["false", "0", "no"],
-        default=None,
-        dest="ft_use_infra_group_rank",
-        help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
-        "If enabled, always use infrastructure group rank for rank assignment. "
-        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). Previous assignments "
-        "are ignored to ensure consistency with infrastructure rank assignment. "
-        "Note: Hot spare/redundancy NOT supported. Default: True.",
-    )
-
-    parser.add_argument(
         "--ft-rdzv-impl",
         "--ft-rdzv_impl",
         type=str,
@@ -2329,6 +2317,33 @@ def get_args_parser() -> ArgumentParser:
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
         "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
+    )
+
+    parser.add_argument(
+        "--ft-domain-id-from-node-name",
+        "--ft-domain_id_from_node_name",
+        type=lambda x: str(x).lower() == 'true',
+        default=None,
+        dest="ft_domain_id_from_node_name",
+        help="Parse domain ID from node name for segment-aware rank assignment. "
+        "Node name format: <domain_id>-<node_id>. "
+        "Example: 'nvl72144-T01' has domain_id='nvl72144'. "
+        "When False and --ft-segment is specified, domain ID is parsed from GPU ClusterUUID via NVML. "
+        "Default: True, but automatically set to False when --ft-segment is not specified.",
+    )
+
+    parser.add_argument(
+        "--ft-segment",
+        "--ft_segment",
+        type=int,
+        default=None,
+        dest="ft_segment",
+        help="Number of nodes to select from each domain when using segment-aware rank assignment. "
+        "If a domain has fewer nodes than this value, those nodes are excluded. "
+        "If a domain has more nodes, only the first N nodes are selected. "
+        "Nodes in the same segment get contiguous group ranks. "
+        "min_nodes must be divisible by segment. "
+        "Set to None or omit to disable segment awareness. Default: None.",
     )
 
     parser.add_argument(
@@ -2575,8 +2590,13 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
 
-    # Pass use_infra_group_rank from fault tolerance config to rendezvous config
-    rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
+    # Pass segment-related configs to rendezvous config
+    rdzv_configs['domain_id_from_node_name'] = fault_tol_cfg.domain_id_from_node_name
+    rdzv_configs['segment'] = fault_tol_cfg.segment
+
+    # Pass NIC health check configs to rendezvous config
+    rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
+    rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
 
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck

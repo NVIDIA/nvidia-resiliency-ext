@@ -130,7 +130,7 @@ class PerCycleLogsSpecs(LogsSpecs):
         """
         nprocs = len(envs)
         if nprocs == 0:
-            self.logger.warning("Empty envs map provided when defining logging destinations.")
+            self.logger.debug("Empty envs map provided when defining logging destinations.")
             return LogsDest({}, {}, {}, {}, {})
 
         # Get restart count from environment
