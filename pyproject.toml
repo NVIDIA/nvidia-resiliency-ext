@@ -24,11 +24,17 @@ exclude = [
 ]
 
 [tool.poetry.build]
-script = "cupti_build.py"
+script = "build.py"
 generate-setup-file = true
 
 [build-system]
-requires = ["poetry-core>=1.0.0", "pybind11", "setuptools", "wheel"]
+requires = [
+    "poetry-core>=1.0.0",
+    "pybind11",
+    "setuptools",
+    "wheel",
+    "grpcio-tools>=1.56.0"
+]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.dependencies]
