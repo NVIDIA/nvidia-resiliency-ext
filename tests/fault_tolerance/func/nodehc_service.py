@@ -15,12 +15,17 @@
 #   PYTHONPATH=src python tests/fault_tolerance/func/nodehc_service.py \
 #       --socket /tmp/nvhcd.sock --fail --exit-code 42 --output '{"detail":"failed"}'
 #
+#   # Simulate slow/timeout response (e.g., client timeout set to 60s, sleep 65s)
+#   PYTHONPATH=src python tests/fault_tolerance/func/nodehc_service.py \
+#       --socket /tmp/nvhcd.sock --success --sleep-seconds 65
+#
 
 import argparse
 import json
 import os
 import signal
 import sys
+import time
 from concurrent import futures
 from importlib import import_module
 
@@ -33,14 +38,27 @@ nvhcd_pb2_grpc = import_module("nvidia_resiliency_ext.shared_utils.proto.nvhcd_p
 
 
 class HealthCheckService(nvhcd_pb2_grpc.HealthCheckServiceServicer):
-    def __init__(self, success: bool, exit_code: int, output: str, error: str, echo_args: bool):
+    def __init__(
+        self,
+        success: bool,
+        exit_code: int,
+        output: str,
+        error: str,
+        echo_args: bool,
+        sleep_seconds: int,
+    ):
         self._success = success
         self._exit_code = exit_code
         self._output = output
         self._error = error
         self._echo_args = echo_args
+        self._sleep_seconds = max(0, int(sleep_seconds or 0))
 
     def RunHealthCheck(self, request, context):
+        print(f"Recvd request {request}")
+        # Optional artificial delay to simulate slow/timeout responses
+        if self._sleep_seconds > 0:
+            time.sleep(self._sleep_seconds)
         # Optionally echo back args in the output for visibility
         output = self._output
         if self._echo_args:
@@ -95,6 +113,12 @@ def parse_args(argv):
         action="store_true",
         help="Include received request.args in the response JSON under 'received_args'.",
     )
+    p.add_argument(
+        "--sleep-seconds",
+        type=int,
+        default=0,
+        help="Sleep for N seconds before responding (simulate slow/timeout). Default: 0 (no delay).",
+    )
     return p.parse_args(argv)
 
 
@@ -121,6 +145,7 @@ def main(argv=None) -> int:
         output=args.output,
         error=args.error,
         echo_args=bool(args.echo_args),
+        sleep_seconds=int(args.sleep_seconds or 0),
     )
     nvhcd_pb2_grpc.add_HealthCheckServiceServicer_to_server(servicer, server)
 
