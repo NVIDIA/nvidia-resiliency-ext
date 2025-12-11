@@ -25,11 +25,16 @@ This module monkey-patches GPUHealthCheck when NVRX_INJECT_GPU_FAILURE is set.
 
 Environment Variables:
     NVRX_INJECT_GPU_FAILURE: Format "cycle:infra_rank,cycle:infra_rank,..."
-        - Specify which infrastructure group rank should fail at which cycle
-        - Example: "1:1,3:17,5:33" means:
-          * Cycle 1: infrastructure rank 1 fails
-          * Cycle 3: infrastructure rank 17 fails  
-          * Cycle 5: infrastructure rank 33 fails
+        - Specify which infrastructure group rank(s) should fail at which cycle
+        - Multiple ranks can fail in the same cycle by repeating the cycle number
+        - Examples: 
+          * "1:1,3:17,5:33" means:
+            - Cycle 1: infrastructure rank 1 fails
+            - Cycle 3: infrastructure rank 17 fails  
+            - Cycle 5: infrastructure rank 33 fails
+          * "1:1,1:2,1:5,3:17,3:18" means:
+            - Cycle 1: infrastructure ranks 1, 2, and 5 fail
+            - Cycle 3: infrastructure ranks 17 and 18 fail
     
     SLURM_PROCID: SLURM process ID within the job (required)
         - Used to determine infrastructure rank
@@ -92,7 +97,11 @@ class HealthCheckInjector:
         Parse the failure specification from environment variable.
 
         Format: "cycle:infra_rank,cycle:infra_rank,..."
-        Example: "1:1,3:17,5:33" means cycle 1 group rank 1, cycle 3 rank 17, cycle 5 rank 33
+        Multiple ranks can fail in the same cycle by repeating the cycle number.
+
+        Examples:
+            "1:1,3:17,5:33" - Single rank per cycle
+            "1:1,1:2,1:5,3:17,3:18" - Multiple ranks in cycles 1 and 3
 
         Returns:
             Dict mapping cycle number to set of infrastructure ranks that should fail
@@ -227,7 +236,7 @@ def _monkey_patch_gpu_health_check():
 
     # Apply the monkey patch
     GPUHealthCheck.__call__ = _wrapped_call
-    logger.info("GPU health check has been monkey-patched for failure injection")
+    logger.debug("GPU health check has been monkey-patched for failure injection")
 
 
 # Automatically apply monkey patch if injection is enabled
