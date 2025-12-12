@@ -203,6 +203,43 @@ deterministic sorted assignment based on node descriptors. In this mode:</p>
 <li><p>Ranks are reassigned based on sorted node descriptors</p></li>
 </ul>
 </section>
+<section id="numa-binding">
+<h4>NUMA binding<a class="headerlink" href="#numa-binding" title="Link to this heading"></a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> supports automatic NUMA node binding for workers through the <code class="docutils literal notranslate"><span class="pre">NVRX_GPUS_PER_NUMA</span></code>
+environment variable. When set, the launcher automatically wraps each worker process with <code class="docutils literal notranslate"><span class="pre">numactl</span></code>
+to bind it to the appropriate NUMA node based on its local rank.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><strong>Prerequisites:</strong> This feature requires the <code class="docutils literal notranslate"><span class="pre">numactl</span></code> command-line tool to be installed and
+available in the system PATH. The launcher will fail to start workers if <code class="docutils literal notranslate"><span class="pre">numactl</span></code> is not found.</p>
+<p>To install on common Linux distributions:</p>
+<ul class="simple">
+<li><p><strong>Ubuntu/Debian:</strong> <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">numactl</span></code></p></li>
+<li><p><strong>RHEL/CentOS/Rocky:</strong> <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">yum</span> <span class="pre">install</span> <span class="pre">numactl</span></code></p></li>
+</ul>
+</div>
+<p><strong>How it works:</strong></p>
+<ul class="simple">
+<li><p>Set <code class="docutils literal notranslate"><span class="pre">NVRX_GPUS_PER_NUMA</span></code> to the number of GPUs per NUMA node on your system</p></li>
+<li><p>The launcher calculates the NUMA node as: <code class="docutils literal notranslate"><span class="pre">numa_node</span> <span class="pre">=</span> <span class="pre">local_rank</span> <span class="pre">//</span> <span class="pre">gpus_per_numa</span></code></p></li>
+<li><p>Each worker is automatically wrapped with: <code class="docutils literal notranslate"><span class="pre">numactl</span> <span class="pre">--cpunodebind=&lt;numa_node&gt;</span> <span class="pre">--membind=&lt;numa_node&gt;</span></code></p></li>
+<li><p>This applies only to binary/script entrypoints (not Python function entrypoints)</p></li>
+</ul>
+<p><strong>Example usage:</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># For a system with 4 GPUs per NUMA node (8 GPUs total, 2 NUMA nodes)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_GPUS_PER_NUMA</span><span class="o">=</span><span class="m">4</span>
+ft_launcher<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span>train.py
+
+<span class="c1"># In this configuration:</span>
+<span class="c1"># - Ranks 0-3 will be bound to NUMA node 0</span>
+<span class="c1"># - Ranks 4-7 will be bound to NUMA node 1</span>
+</pre></div>
+</div>
+<p><strong>Benefits:</strong></p>
+<p>Proper NUMA binding can significantly improve performance by ensuring memory locality
+and reducing cross-NUMA memory access overhead, which is especially important for
+multi-GPU training workloads.</p>
+</section>
 </section>
 <section id="hang-detection">
 <h3>Hang detection<a class="headerlink" href="#hang-detection" title="Link to this heading"></a></h3>
