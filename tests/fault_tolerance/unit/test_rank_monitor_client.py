@@ -16,11 +16,7 @@
 import sys
 import unittest
 from types import SimpleNamespace
-<<<<<<< HEAD
-from unittest.mock import MagicMock, patch
-=======
 from unittest.mock import patch
->>>>>>> origin/main
 
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_client import RankMonitorClient
 
@@ -44,19 +40,6 @@ class TestRankMonitorClient(unittest.TestCase):
     def test_no_megatron_detection(self, mock_get_rank):
         """Test that client works without Megatron-LM."""
         mock_get_rank.return_value = 0
-<<<<<<< HEAD
-        
-        # Create client without Megatron module
-        client = RankMonitorClient()
-        
-        # Should not detect workload module
-        self.assertIsNone(client._workload_global_vars_module)
-        self.assertIsNone(client._cached_workload_args)
-        
-        # Should not be able to report iterations
-        self.assertFalse(client._can_report_iterations())
-        
-=======
 
         # Create client without Megatron module
         client = RankMonitorClient()
@@ -68,7 +51,6 @@ class TestRankMonitorClient(unittest.TestCase):
         # Should not be able to report iterations
         self.assertFalse(client._can_report_iterations())
 
->>>>>>> origin/main
         # _get_current_iteration should return None
         self.assertIsNone(client._get_current_iteration())
 
@@ -76,23 +58,6 @@ class TestRankMonitorClient(unittest.TestCase):
     def test_megatron_detection_without_global_args(self, mock_get_rank):
         """Test Megatron detection when _GLOBAL_ARGS is not yet initialized."""
         mock_get_rank.return_value = 0
-<<<<<<< HEAD
-        
-        # Create mock Megatron module without _GLOBAL_ARGS
-        mock_megatron_module = SimpleNamespace()
-        sys.modules['megatron.training.global_vars'] = mock_megatron_module
-        
-        # Create client
-        client = RankMonitorClient()
-        
-        # Should detect workload module
-        self.assertIsNotNone(client._workload_global_vars_module)
-        self.assertEqual(client._workload_global_vars_module, mock_megatron_module)
-        
-        # Should indicate it can report iterations (framework detected)
-        self.assertTrue(client._can_report_iterations())
-        
-=======
 
         # Create mock Megatron module without _GLOBAL_ARGS
         mock_megatron_module = SimpleNamespace()
@@ -108,7 +73,6 @@ class TestRankMonitorClient(unittest.TestCase):
         # Should indicate it can report iterations (framework detected)
         self.assertTrue(client._can_report_iterations())
 
->>>>>>> origin/main
         # But _get_current_iteration should return None (args not initialized)
         self.assertIsNone(client._get_current_iteration())
         self.assertIsNone(client._cached_workload_args)
@@ -117,29 +81,11 @@ class TestRankMonitorClient(unittest.TestCase):
     def test_megatron_detection_with_global_args(self, mock_get_rank):
         """Test Megatron detection when _GLOBAL_ARGS is initialized."""
         mock_get_rank.return_value = 0
-<<<<<<< HEAD
-        
-=======
 
->>>>>>> origin/main
         # Create mock Megatron module with _GLOBAL_ARGS
         mock_args = SimpleNamespace(curr_iteration=100)
         mock_megatron_module = SimpleNamespace(_GLOBAL_ARGS=mock_args)
         sys.modules['megatron.training.global_vars'] = mock_megatron_module
-<<<<<<< HEAD
-        
-        # Create client
-        client = RankMonitorClient()
-        
-        # Should detect workload module and args
-        self.assertIsNotNone(client._workload_global_vars_module)
-        self.assertTrue(client._can_report_iterations())
-        
-        # Should return current iteration
-        iteration = client._get_current_iteration()
-        self.assertEqual(iteration, 100)
-        
-=======
 
         # Create client
         client = RankMonitorClient()
@@ -152,7 +98,6 @@ class TestRankMonitorClient(unittest.TestCase):
         iteration = client._get_current_iteration()
         self.assertEqual(iteration, 100)
 
->>>>>>> origin/main
         # Should cache the args
         self.assertIsNotNone(client._cached_workload_args)
         self.assertEqual(client._cached_workload_args, mock_args)

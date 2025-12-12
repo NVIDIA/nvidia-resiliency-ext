@@ -353,7 +353,7 @@ class TestLauncherIterationAggregation(unittest.TestCase):
         self.assertEqual(self.launcher._rank_iterations[0], 100)
         self.assertEqual(self.launcher._rank_iterations[1], 95)
         self.assertEqual(self.launcher._rank_iterations[2], 105)
-        
+
         # Progress tracker receives MAX of all MINs seen (defensive against out-of-order)
         # First update with rank 0 (100), then updates with lower MINs are ignored by tracker
         self.assertEqual(self.progress_tracker.current_max_iteration, 100)

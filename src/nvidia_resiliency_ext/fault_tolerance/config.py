@@ -67,11 +67,9 @@ class FaultToleranceConfig:
       Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
       rank assignments are ignored to ensure consistency with infrastructure's rank assignment.
       Note: Hot spare/redundancy is NOT supported with this setting. Default: True.
-<<<<<<< HEAD
     * `numa_bind_strict` - If True, use strict NUMA binding with both CPU and memory bound to the
       same NUMA node (--cpunodebind=N --membind=N). If False (default), only bind CPU to NUMA node
       and allow local memory allocation (--cpunodebind=N --localalloc). Default: False.
-=======
     * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed
       after worker shutdown before starting new workers. Default: 50.0.
     * `gpu_memory_tolerance_mb` [float] maximum allowed GPU memory usage (in MB) when checking if
@@ -80,7 +78,6 @@ class FaultToleranceConfig:
       reclaim process. Default: 2.0.
     * `check_remaining_processes` [bool] if True, check for and log any remaining worker processes
       after termination. Useful for debugging process cleanup issues. Default: False.
->>>>>>> origin/main
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
