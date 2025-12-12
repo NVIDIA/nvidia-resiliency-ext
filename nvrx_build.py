@@ -18,6 +18,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 
 
@@ -94,7 +96,28 @@ def get_cuda_path():
 
 
 def build(setup_kwargs):
+    # Generate gRPC Python files from .proto
+    try:
+        proto_dir = os.path.join("src", "nvidia_resiliency_ext", "shared_utils", "proto")
+        proto_file = os.path.join(proto_dir, "nvhcd.proto")
+        if os.path.exists(proto_file):
+            # Invoke the protoc compiler provided by grpcio-tools
+            cmd = [
+                sys.executable,
+                "-m",
+                "grpc_tools.protoc",
+                f"-I{proto_dir}",
+                f"--python_out={proto_dir}",
+                f"--pyi_out={proto_dir}",
+                f"--grpc_python_out={proto_dir}",
+                proto_file,
+            ]
+            subprocess.run(cmd, check=True)
+    except Exception as e:
+        print(f"ERROR: Failed to generate gRPC python files from protos: {e}")
+        raise
 
+    # Optionally build the CUPTI extension
     if _skip_ext_build():
         print(
             "WARNING! CUPTI extension wont be build due to STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD flag."

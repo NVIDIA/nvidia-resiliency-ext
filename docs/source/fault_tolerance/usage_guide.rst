@@ -52,6 +52,13 @@ and supports most ``torchrun`` command-line parameters. FT configuration can be 
 via a YAML file using ``--ft-cfg-path`` or through command-line parameters
 using ``--ft-<parameter-name>``.
 
+Details:
+
+* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint used by InJob.
+  Accepts Unix domain socket (UDS): ``/var/run/nodehealth.sock`` or ``unix:///var/run/nodehealth.sock``.
+* The rendezvous implementations call ``NodeHealthCheck`` which will connect to the provided endpoint.
+* Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
+
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
 The restart behavior depends on the ``--ft-restart-policy`` parameter, which supports two modes:
 
@@ -63,6 +70,17 @@ The restart behavior depends on the ``--ft-restart-policy`` parameter, which sup
   falls below the minimum specified in ``--nnodes``. This allows for some worker failures to be handled
   without restarting remaining workers, e.g., with the :doc:`../inprocess/index`.
   For details on how ``min-healthy`` policy interacts with :doc:`../inprocess/index` see :doc:`integration/inprocess`.
+
+Node health check service
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The launcher accepts an optional argument to point to the node health check service endpoint.
+When provided, the launcher exports the socket path to child processes and
+the rendezvous handlers will use it in their node health checks.
+
+* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint (UDS).
+* The rendezvous implementations call ``NodeHealthCheck`` which will connect to this UDS endpoint.
+* Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
 
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^

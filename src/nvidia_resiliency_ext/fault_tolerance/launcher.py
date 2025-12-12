@@ -79,6 +79,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     read_obj_from_ipc_stream,
     terminate_mp_processes,
 )
+from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
@@ -100,6 +101,18 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 # Setup the nvrx logger at module import time
 setup_logger(node_local_tmp_prefix="ftlauncher")
 logger = logging.getLogger(LogConfig.name)
+
+_NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
+
+def init_node_health_check(endpoint: Optional[str]) -> None:
+    global _NODE_HEALTH_CHECK_INSTANCE
+    if endpoint:
+        _NODE_HEALTH_CHECK_INSTANCE = NodeHealthCheck(endpoint=endpoint)
+    else:
+        _NODE_HEALTH_CHECK_INSTANCE = None
+
+def get_node_health_check() -> Optional[NodeHealthCheck]:
+    return _NODE_HEALTH_CHECK_INSTANCE
 
 def _register_ft_rdzv_handler(impl_type: str = "legacy"):
     """Register the fault-tolerant rendezvous handler.
@@ -2172,6 +2185,16 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-node-health-check-endpoint",
+        "--ft-node_health_check_endpoint",
+        dest="ft_node_health_check_endpoint",
+        type=str,
+        default=None,
+        help="UDS endpoint for the node health check service used by InJob. "
+        "Examples: /var/run/nvhcd.sock, unix:///var/run/nvhcd.sock.",
+    )
+
+    parser.add_argument(
         "--ft-safety-factor",
         "--ft-safety_factor",
         type=str,
@@ -2562,6 +2585,8 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'legacy') == 'legacy':
         rdzv_configs['use_libuv'] = False
 
+    # Node health check endpoint is consumed by launcher to init singleton; not passed via rdzv configs
+
     if args.rdzv_backend == "static":
         rdzv_configs["rank"] = args.node_rank
 
@@ -2697,6 +2722,10 @@ def run(args):
     # Register the selected FT rendezvous implementation
     impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
     _register_ft_rdzv_handler(impl_type)
+    ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
+    # Initialize NodeHealthCheck singleton at launcher start
+    init_node_health_check(ft_hc_endpoint)
+
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(
         config=config,
