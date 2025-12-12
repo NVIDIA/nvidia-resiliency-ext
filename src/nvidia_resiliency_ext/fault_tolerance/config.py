@@ -73,6 +73,9 @@ class FaultToleranceConfig:
       as possible are selected (e.g., 12 nodes with segment=4 → use 12 nodes = 3 segments).
       Domains are selected in SLURM topology order. min_nodes must be divisible by segment.
       Set to None to disable segment awareness (simple first-N selection). Default: None.
+    * `numa_bind_strict` - If True, use strict NUMA binding with both CPU and memory bound to the
+      same NUMA node (--cpunodebind=N --membind=N). If False (default), only bind CPU to NUMA node
+      and allow local memory allocation (--cpunodebind=N --localalloc). Default: False.
     * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed
       after worker shutdown before starting new workers. Default: 50.0.
     * `gpu_memory_tolerance_mb` [float] maximum allowed GPU memory usage (in MB) when checking if
@@ -104,6 +107,7 @@ class FaultToleranceConfig:
     skip_section_response: bool = True
     domain_id_from_node_name: bool = True
     segment: Optional[int] = None
+    numa_bind_strict: bool = False
     gpu_memory_reclaim_timeout: float = 50.0
     gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
     gpu_memory_poll_interval: float = 2.0  # Poll interval for GPU memory check (in seconds)
