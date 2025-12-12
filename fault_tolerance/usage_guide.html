@@ -147,6 +147,13 @@
 and supports most <code class="docutils literal notranslate"><span class="pre">torchrun</span></code> command-line parameters. FT configuration can be specified either
 via a YAML file using <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code> or through command-line parameters
 using <code class="docutils literal notranslate"><span class="pre">--ft-&lt;parameter-name&gt;</span></code>.</p>
+<p>Details:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>) sets the node health check service endpoint used by InJob.
+Accepts Unix domain socket (UDS): <code class="docutils literal notranslate"><span class="pre">/var/run/nodehealth.sock</span></code> or <code class="docutils literal notranslate"><span class="pre">unix:///var/run/nodehealth.sock</span></code>.</p></li>
+<li><p>The rendezvous implementations call <code class="docutils literal notranslate"><span class="pre">NodeHealthCheck</span></code> which will connect to the provided endpoint.</p></li>
+<li><p>Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.</p></li>
+</ul>
 <p>If <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, the launcher restarts failed workers.
 The restart behavior depends on the <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> parameter, which supports two modes:</p>
 <ul class="simple">
@@ -158,6 +165,17 @@ falls below the minimum specified in <code class="docutils literal notranslate">
 without restarting remaining workers, e.g., with the <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a>.
 For details on how <code class="docutils literal notranslate"><span class="pre">min-healthy</span></code> policy interacts with <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a> see <a class="reference internal" href="integration/inprocess.html"><span class="doc">FT Launcher &amp; Inprocess integration</span></a>.</p></li>
 </ul>
+<section id="node-health-check-service">
+<h4>Node health check service<a class="headerlink" href="#node-health-check-service" title="Link to this heading"></a></h4>
+<p>The launcher accepts an optional argument to point to the node health check service endpoint.
+When provided, the launcher exports the socket path to child processes and
+the rendezvous handlers will use it in their node health checks.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>) sets the node health check service endpoint (UDS).</p></li>
+<li><p>The rendezvous implementations call <code class="docutils literal notranslate"><span class="pre">NodeHealthCheck</span></code> which will connect to this UDS endpoint.</p></li>
+<li><p>Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.</p></li>
+</ul>
+</section>
 <section id="gpu-memory-reclaim">
 <h4>GPU Memory Reclaim<a class="headerlink" href="#gpu-memory-reclaim" title="Link to this heading"></a></h4>
 <p>When <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can optionally wait for GPU memory to be
