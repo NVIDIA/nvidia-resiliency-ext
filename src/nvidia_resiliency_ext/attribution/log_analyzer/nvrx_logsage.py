@@ -31,7 +31,6 @@ def chunk_logs_strict(lines):
     for index, line in enumerate(lines):
         match = cycle_pattern.search(line)
         if match:
-            print(line)
             cycle_num = int(match.group(1))
             last_cycle_indices[cycle_num] = index
 
