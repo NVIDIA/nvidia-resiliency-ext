@@ -63,7 +63,7 @@ from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
-from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
+from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
 
 log = logging.getLogger(LogConfig.name)
 
@@ -1391,7 +1391,7 @@ class FtRendezvousHandler(RendezvousHandler):
             raise UnhealthyNodeException(str(e)) from e
 
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU and NIC link state health checks for this node."""
+        """Perform GPU, NIC link state, and Node health checks for this node."""
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
@@ -1407,6 +1407,15 @@ class FtRendezvousHandler(RendezvousHandler):
                 self._nic_link_state_checker,
                 "NIC link state health check",
                 f"Node {self._this_node} has unhealthy NIC link(s).",
+            )
+
+        # Perform Node health check
+        _nodehealth_checker = get_node_health_check()
+        if _nodehealth_checker is not None:
+            self._run_health_check(
+                _nodehealth_checker,
+                "Node health check",
+                f"Node {self._this_node} is unhealthy.",
             )
 
     def handle_control_requests_from_rank(self) -> None:
