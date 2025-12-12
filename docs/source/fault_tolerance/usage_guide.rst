@@ -117,6 +117,48 @@ deterministic sorted assignment based on node descriptors. In this mode:
 * Ranks are reassigned based on sorted node descriptors
 
 
+NUMA binding
+^^^^^^^^^^^^
+
+The ``ft_launcher`` supports automatic NUMA node binding for workers through the ``NVRX_GPUS_PER_NUMA``
+environment variable. When set, the launcher automatically wraps each worker process with ``numactl``
+to bind it to the appropriate NUMA node based on its local rank.
+
+.. important::
+   **Prerequisites:** This feature requires the ``numactl`` command-line tool to be installed and
+   available in the system PATH. The launcher will fail to start workers if ``numactl`` is not found.
+
+   To install on common Linux distributions:
+
+   * **Ubuntu/Debian:** ``sudo apt-get install numactl``
+   * **RHEL/CentOS/Rocky:** ``sudo yum install numactl``
+
+**How it works:**
+
+* Set ``NVRX_GPUS_PER_NUMA`` to the number of GPUs per NUMA node on your system
+* The launcher calculates the NUMA node as: ``numa_node = local_rank // gpus_per_numa``
+* Each worker is automatically wrapped with: ``numactl --cpunodebind=<numa_node> --membind=<numa_node>``
+* This applies only to binary/script entrypoints (not Python function entrypoints)
+
+**Example usage:**
+
+.. code-block:: bash
+
+    # For a system with 4 GPUs per NUMA node (8 GPUs total, 2 NUMA nodes)
+    export NVRX_GPUS_PER_NUMA=4
+    ft_launcher --nproc-per-node=8 train.py
+
+    # In this configuration:
+    # - Ranks 0-3 will be bound to NUMA node 0
+    # - Ranks 4-7 will be bound to NUMA node 1
+
+**Benefits:**
+
+Proper NUMA binding can significantly improve performance by ensuring memory locality
+and reducing cross-NUMA memory access overhead, which is especially important for
+multi-GPU training workloads.
+
+
 Hang detection
 --------------
 
