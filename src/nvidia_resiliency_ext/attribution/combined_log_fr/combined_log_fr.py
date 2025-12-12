@@ -50,7 +50,7 @@ class CombinedLogFR(NVRxAttribution):
         You need to analyze the application logs and collective operations analysis and return the proposed solution.
         Summary of the log result: <application log summary> 
         Summary of the fr result: <collective operations analysis summary> 
-        
+
         The proposed solution should be in the following format: (one line only, if you have extra information, you can add it in the proposed solution with ranks)
         - List of ranks to be excluded: <identified ranks to be excluded, you can use comma to separate multiple ranks without space>
         - Proposed Solution with Ranks: <proposed solution with ranks>
