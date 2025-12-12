@@ -50,9 +50,15 @@ class FaultToleranceConfig:
       that spans code not wrapped in any other section.
     * `restart_check_interval` - interval between checks if restart is in progress, needed for layered restart protocol
     * `enable_nic_monitor` - Enable NIC health monitoring in training. Default: False.
+    * `enable_nic_healthcheck` - Enable NIC link state health check before rendezvous. This checks if
+      network interface ports (RDMA/InfiniBand and Ethernet) are in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE.
+      Unlike enable_nic_monitor (which periodically monitors link_downed counters), this performs a one-time
+      state check during rendezvous. Can be used independently or together with enable_nic_monitor. Default: False.
     * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
     * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
       placeholder which will be replaced with actual NIC device name.
+    * `link_state_path_template` - Template path for NIC link state files. Should contain '{nic}'
+      placeholder which will be replaced with actual NIC device name. Default: /sys/class/infiniband/{nic}/ports/1/state
     * `skip_section_response` - If True, section and heartbeat messages are sent without waiting
       for server response (unidirectional communication). This significantly reduces latency for
       high-frequency operations. Server logs errors instead of sending them back.
@@ -61,9 +67,20 @@ class FaultToleranceConfig:
       Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
       rank assignments are ignored to ensure consistency with infrastructure's rank assignment.
       Note: Hot spare/redundancy is NOT supported with this setting. Default: True.
+<<<<<<< HEAD
     * `numa_bind_strict` - If True, use strict NUMA binding with both CPU and memory bound to the
       same NUMA node (--cpunodebind=N --membind=N). If False (default), only bind CPU to NUMA node
       and allow local memory allocation (--cpunodebind=N --localalloc). Default: False.
+=======
+    * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed
+      after worker shutdown before starting new workers. Default: 50.0.
+    * `gpu_memory_tolerance_mb` [float] maximum allowed GPU memory usage (in MB) when checking if
+      memory has been reclaimed. Default: 512.0.
+    * `gpu_memory_poll_interval` [float] poll interval (in seconds) for checking GPU memory during
+      reclaim process. Default: 2.0.
+    * `check_remaining_processes` [bool] if True, check for and log any remaining worker processes
+      after termination. Useful for debugging process cleanup issues. Default: False.
+>>>>>>> origin/main
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -80,11 +97,17 @@ class FaultToleranceConfig:
     log_level: int = logging.INFO
     restart_check_interval: float = 60.0
     enable_nic_monitor: bool = False
+    enable_nic_healthcheck: bool = False
     pci_topo_file: Optional[str] = None
     link_down_path_template: Optional[str] = None
+    link_state_path_template: Optional[str] = None
     skip_section_response: bool = True
     use_infra_group_rank: bool = True
     numa_bind_strict: bool = False
+    gpu_memory_reclaim_timeout: float = 50.0
+    gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
+    gpu_memory_poll_interval: float = 2.0  # Poll interval for GPU memory check (in seconds)
+    check_remaining_processes: bool = False
     # Progress tracking configuration (controlled by max_no_progress_restarts)
     max_no_progress_restarts: int = 3
     min_progress_iterations: int = 200
@@ -223,6 +246,9 @@ class FaultToleranceConfig:
             'node_health_check_interval',
             'safety_factor',
             'restart_check_interval',
+            'gpu_memory_reclaim_timeout',
+            'gpu_memory_tolerance_mb',
+            'gpu_memory_poll_interval',
         ]
         for field in fields(FaultToleranceConfig):
             cli_field_name = f"ft_{field.name}"
@@ -241,10 +267,6 @@ class FaultToleranceConfig:
         # Fix any type issues
         ft_cfg._fix_log_level_type()
         ft_cfg._fix_rank_termination_signal_type()
-
-        # If we didn't read from file and no CLI args were provided, raise an error
-        if not (is_read_from_file or cli_ft_args):
-            raise ValueError("No fault tolerance configuration provided.")
 
         return ft_cfg
 

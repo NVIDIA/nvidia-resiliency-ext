@@ -3,7 +3,12 @@ import glob
 import json
 import logging
 import os
-import pickle
+
+# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
+# Severity: Low   Confidence: High
+# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+# More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_imports.html#b403-import-pickle
+import pickle  # nosec
 import re
 import sys
 from collections import Counter, defaultdict
@@ -12,10 +17,16 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
 from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
-from nvidia_resiliency_ext.attribution.utils import capture_stdout
+from nvidia_resiliency_ext.attribution.utils import capture_logs
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
+
+
+# Helper to print to stderr instead of stdout (for MCP compatibility)
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
 
 # This mapping is made with reference to the description in Megatron Core
 DEFAULT_PG_ORDER = {
@@ -98,6 +109,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         # the data structure to store the node health status per rank
         self.node_health_status: Dict[int, Dict[str, Dict[str, str]]] = {}
         self.args = args
+        eprint(f"args: {args}")
         self.llm = None
         self.type_to_order = None
         self.set_type_to_order()
@@ -137,7 +149,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         return f"hanging ranks: {hanging_ranks_list}", AttributionState.CONTINUE
 
     # preprocess input to analyze the collective operations
-    async def preprocess_FR_dumps(self, input_data: List[str]) -> str:
+    async def preprocess_FR_dumps(self) -> str:
         """
         Analyzes the collective operations across multiple JSON files.
 
@@ -148,17 +160,20 @@ class CollectiveAnalyzer(NVRxAttribution):
         - Prints the analysis output
         - Uses LLM to analyze the output if requested
         """
-        file_paths = input_data
-        logger.info(file_paths)
+        logger.info(f"FR args: {self.args}")
+        file_paths = [self.args.fr_path]
+        logger.info(f"file_paths: {file_paths}, pattern: {self.args.pattern}")
         processed_files = 0
         # Process all input paths
         # read files from file_paths and prepare data structure for collective analysis
         for path in file_paths:
+            logger.info(f"path: {path}")
             json_files = (
                 glob.glob(os.path.join(path, self.args.pattern))
                 if os.path.isdir(path)
                 else glob.glob(path)
             )
+            logger.info(f"json_files: {json_files}")
             json_files.sort()
             for filepath in json_files:
                 if self.args.verbose:
@@ -169,8 +184,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                 self.print_pg_configs(verbose=self.args.verbose)
 
         if processed_files == 0:
-            logger.error(f"No files at {file_paths} were processed successfully.")
-            sys.exit(1)
+            raise ValueError(f"No files at {file_paths} were processed successfully.")
 
         logger.info(f"\nSuccessfully processed {processed_files} files.")
         missing_pg = None
@@ -211,10 +225,10 @@ class CollectiveAnalyzer(NVRxAttribution):
             head_nodes_completed = gather_head_nodes(grouped_completed_pgs)
             logger.debug(f"head_nodes of completed_pg: {head_nodes_completed}")
         # Print the analysis output
-        with capture_stdout() as output:
+        with capture_logs() as output:
 
             def print_ranks_in_pgs(head_nodes, pg_dict, missing_or_completed="Missing"):
-                print(
+                logger.info(
                     f"{'PGID':<6} | {'Process Group Desc':<25} | {'Op Type':<10} | {'Size':<8} \
                         | {'Dtype':<8} | {missing_or_completed} Ranks"
                 )
@@ -225,7 +239,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                         ranks_to_print = entry[6]
                     else:
                         ranks_to_print = entry[5]
-                    print(
+                    logger.info(
                         f"{entry[0]:<6} | {entry[1]:<25} | {entry[2]:<10} | {entry[3]:<8} \
                             | {entry[4]:<8} | {ranks_to_print}"
                     )
@@ -239,7 +253,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         analysis_output = output.getvalue()
         return analysis_output
 
-    async def collective_analysis(self, analysis_output: str, **kwargs) -> str:
+    async def collective_analysis(self, analysis_output: str) -> str:
         """
         Analyze the collective operations using a Large Language Model (LLM).
 
@@ -259,8 +273,9 @@ class CollectiveAnalyzer(NVRxAttribution):
         """
         result = analysis_output
         if self.args.llm_analyze:
-            model = kwargs["model"]
-            verbose = kwargs["verbose"]
+            logger.info(f"Using LLM to analyze the output: {analysis_output}")
+            model = self.args.model
+            verbose = self.args.verbose
             try:
                 from langchain_core.output_parsers import StrOutputParser
                 from langchain_core.prompts import PromptTemplate
@@ -293,7 +308,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                 # Check for API key in environment variables
                 api_key = os.getenv("NVIDIA_API_KEY")
                 if not api_key:
-                    print("NVIDIA_API_KEY environment variable not set. Cannot use AI analysis.")
+                    eprint("NVIDIA_API_KEY environment variable not set. Cannot use AI analysis.")
                     return
 
                 default_values = {
@@ -311,11 +326,11 @@ class CollectiveAnalyzer(NVRxAttribution):
                 result = await chain.ainvoke(input=default_values)
                 return result
             except ImportError:
-                print("LangChain is not installed. Please install it with:")
-                print("pip install langchain langchain-nvidia-ai-endpoints")
+                eprint("LangChain is not installed. Please install it with:")
+                eprint("pip install langchain langchain-nvidia-ai-endpoints")
             except Exception as e:
-                print(f"\nError using LangChain: {e}")
-                print("Make sure you have set the NVIDIA_API_KEY environment variable.")
+                eprint(f"\nError using LangChain: {e}")
+                eprint("Make sure you have set the NVIDIA_API_KEY environment variable.")
         return result
 
     """
@@ -814,10 +829,14 @@ class CollectiveAnalyzer(NVRxAttribution):
             else:
                 try:
                     with open(filename, 'rb') as f:
-                        data = pickle.load(f)
+                        # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
+                        # Severity: Medium   Confidence: High
+                        # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+                        # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
+                        data = pickle.load(f)  # nosec
                         # Convert pickle data to JSON-compatible format
                         converted_data = json.loads(json.dumps(data))
-                    if self.args.debug:
+                    if getattr(self.args, 'debug', False):
                         with open(filename + '.json', 'w') as f:
                             f.write(json.dumps(converted_data, indent=2))
                             f.write('\n')
@@ -898,14 +917,14 @@ class CollectiveAnalyzer(NVRxAttribution):
                 self.collective_groups[key].append(collective)
             return True
         except Exception as e:
-            print(f"Error processing {filepath}: {str(e)}")
+            eprint(f"Error processing {filepath}: {str(e)}")
             return False
 
     def print_node_health_status(self, verbose: bool = False):
         """
         Print the node health status of the ranks
         """
-        print("\n=== Node Health Status ===\n")
+        eprint("\n=== Node Health Status ===\n")
         healthy_ranks = defaultdict(list)
         unhealthy_ranks = defaultdict(list)
         status_parts = defaultdict(list)
@@ -919,24 +938,24 @@ class CollectiveAnalyzer(NVRxAttribution):
                     if verbose:
                         status_parts[device].append(f"({rank_id}: {result['output'].strip()})")
         for device, ranks in healthy_ranks.items():
-            print(f"Healthy ranks {device}: {sorted(map(int, healthy_ranks[device]))}")
-            print(f"Unhealthy ranks {device}: {sorted(map(int, unhealthy_ranks[device]))}")
+            eprint(f"Healthy ranks {device}: {sorted(map(int, healthy_ranks[device]))}")
+            eprint(f"Unhealthy ranks {device}: {sorted(map(int, unhealthy_ranks[device]))}")
             if len(unhealthy_ranks[device]) > 0:
                 for status in status_parts[device]:
-                    print(f"Unhealthy, {status}")
+                    eprint(f"Unhealthy, {status}")
 
     def print_pg_configs(self, verbose: bool = False):
         """Print process group configurations in a more readable format."""
-        print("\n=== Process Group Configurations ===\n")
+        eprint("\n=== Process Group Configurations ===\n")
 
         # Table header
-        print(f"{'Group ID':<10} {'Description':<35} {'Ranks':<50}")
-        print("-" * 95)
+        eprint(f"{'Group ID':<10} {'Description':<35} {'Ranks':<50}")
+        eprint("-" * 95)
         # Sort by group ID numerically
         for group_id in sorted(self.pg_configs.keys(), key=lambda x: int(x)):
             group = self.pg_configs[group_id]
             ranks = str(group['ranks'])
-            print(f"{group_id:<10} {group['desc']:<35} {ranks:<50}")
+            eprint(f"{group_id:<10} {group['desc']:<35} {ranks:<50}")
 
 
 def main():
@@ -944,7 +963,7 @@ def main():
         description='Analyze collective operations across JSON dump files.'
     )
     parser.add_argument(
-        'paths', nargs='+', help='Path to JSON files or directories containing JSON files'
+        '--fr-path', type=str, help='Path to JSON files or directories containing JSON files'
     )
     parser.add_argument(
         '-p', '--pattern', default="*.json", help='File pattern to match (default: *.json)'
@@ -978,7 +997,7 @@ def main():
     args = parser.parse_args()
 
     analyzer = CollectiveAnalyzer(args)
-    analyzer.run_sync(args.paths)
+    analyzer.run_sync(args)
 
 
 if __name__ == "__main__":

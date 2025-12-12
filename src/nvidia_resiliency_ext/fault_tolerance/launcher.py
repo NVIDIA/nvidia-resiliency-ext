@@ -70,14 +70,17 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
+from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PerCycleLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
+    get_processes_by_pgids,
     patched_method,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
 )
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
@@ -388,6 +391,51 @@ class LocalElasticAgent(SimpleElasticAgent):
                 logger.error(f"Failed to open rendezvous: {e}")
         # For legacy rendezvous, no action needed - it uses different mechanism
 
+    def _handle_restart_decision(
+        self,
+        role: str,
+        spec: WorkerSpec,
+        log_msg: str,
+        open_rendezvous: bool = False,
+        notify_peer: bool = False,
+    ) -> bool:
+        """Handle restart decision logic based on progress tracking and remaining restarts.
+
+        Args:
+            role: The role name for logging
+            spec: Worker specification
+            log_msg: Custom log message for restart
+            open_rendezvous: Whether to open rendezvous before restart (for barrier-based rendezvous)
+            notify_peer: Whether to notify peers to abort the workers in current cycle.
+
+        Returns:
+            True if restart was initiated (caller should continue monitoring loop)
+            False if no restart (caller should stop workers and return failure)
+        """
+        self._progress_tracker.analyze_previous_cycle()
+        should_terminate_early = self._progress_tracker.should_terminate_early()
+
+        if should_terminate_early:
+            logger.error(
+                "[%s] Progress tracker detected no progress across restarts. "
+                "No more restarts will be attempted.",
+                role
+            )
+            return False
+        elif self._remaining_restarts > 0:
+            logger.info(log_msg, role)
+            self._remaining_restarts -= 1
+            # Increment peer_aborted_count to notify other nodes (for barrier-based rendezvous)
+            if notify_peer and hasattr(self._rdzv_handler, '_barrier_state'):
+                self._rdzv_handler._barrier_state._increment_peer_aborted_count()
+            if open_rendezvous:
+                self._open_rendezvous_for_restart()
+            self._restart_workers(self._worker_group)
+            return True
+        else:
+            # No more restarts available
+            return False
+
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         if self._restart_policy == 'any-failed':
             return self._invoke_run_with_any_failed_policy(role)
@@ -438,43 +486,31 @@ class LocalElasticAgent(SimpleElasticAgent):
                     rank=self._worker_group.group_rank,
                 )
 
-                self._progress_tracker.analyze_previous_cycle()
-                should_terminate_early = self._progress_tracker.should_terminate_early()
+                log_msg = (
+                    f"[%s] Worker group {state.name}. "
+                    f"{self._remaining_restarts}/{spec.max_restarts} attempts left; "
+                    f"will restart worker group"
+                )
+                should_restart = self._handle_restart_decision(
+                    role, spec, log_msg, open_rendezvous=True,
+                    notify_peer=True
+                )
 
-                if should_terminate_early:
-                    logger.error(
-                        "[%s] Progress tracker detected no progress across restarts. "
-                        "No more restarts will be attempted.",
-                        role
-                    )
-                elif self._remaining_restarts > 0:
-                    logger.info(
-                        "[%s] Worker group %s. "
-                        "%s/%s attempts left;"
-                        " will restart worker group",
-                        role,
-                        state.name,
-                        self._remaining_restarts,
-                        spec.max_restarts,
-                    )
-                    self._remaining_restarts -= 1
-                    # Open rendezvous before restarting (for barrier-based rendezvous)
-                    self._open_rendezvous_for_restart()
-                    self._restart_workers(self._worker_group)
+                if should_restart:
                     continue  # Continue monitoring after restart
 
                 # No more restarts (either exhausted or early termination)
                 self._stop_workers(self._worker_group)
                 self._worker_group.state = WorkerState.FAILED
-                run_result = self._monitor_workers(self._worker_group)
-                return run_result
+                return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
-                # Check for cluster-wide issues: unhealthy nodes or new nodes waiting
+                # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
                 unhealthy_count = self._check_cluster_unhealthy_count()
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
+                peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
 
-                if unhealthy_count > 0 or num_nodes_waiting > 0:
+                if unhealthy_count > 0 or num_nodes_waiting > 0 or peer_aborted_count > 0:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -482,18 +518,22 @@ class LocalElasticAgent(SimpleElasticAgent):
                         rank=self._worker_group.group_rank,
                     )
 
-                    logger.info(
-                        "[%s] Detected cluster changes from group_rank=%s "
-                        "(unhealthy_nodes=%s, nodes_waiting=%s); will restart worker group",
-                        role,
-                        group_rank,
-                        unhealthy_count,
-                        num_nodes_waiting,
+                    log_msg = (
+                        f"[%s] Detected cluster changes from group_rank={group_rank} "
+                        f"(unhealthy_nodes={unhealthy_count}, nodes_waiting={num_nodes_waiting}); "
+                        f"will restart worker group"
                     )
-
                     # Note: The node that triggered the change (unhealthy or new) already opened
                     # the rendezvous, so we don't need to open it again here.
-                    self._restart_workers(self._worker_group)
+                    should_restart = self._handle_restart_decision(
+                        role, spec, log_msg, open_rendezvous=False,
+                        notify_peer=False
+                    )
+
+                    if not should_restart:
+                        self._stop_workers(self._worker_group)
+                        self._worker_group.state = WorkerState.FAILED
+                        return RunResult(state=WorkerState.FAILED)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
 
@@ -812,12 +852,43 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Rank monitors will detect worker shutdown when worker processes disconnect
         self._shutdown(timeout=self._workers_stop_timeout)
 
+        # Check for remaining processes if configured
+        if self._ft_cfg.check_remaining_processes and self._children_pgids:
+            remaining = get_processes_by_pgids(self._children_pgids)
+
+            if remaining:
+                logger.warning(
+                    f"Found {len(remaining)} remaining processes in worker PGIDs after termination:"
+                )
+                for proc_info in remaining[:20]:  # Limit output to first 20
+                    logger.warning(
+                        f"  PID={proc_info['pid']}, PPID={proc_info['ppid']}, "
+                        f"PGID={proc_info['pgid']}, name={proc_info['name']}, "
+                        f"status={proc_info['status']}, cmdline={proc_info['cmdline'][:100] if proc_info['cmdline'] else 'N/A'}"
+                    )
+                if len(remaining) > 20:
+                    logger.warning(f"  ... and {len(remaining) - 20} more")
+            else:
+                logger.debug("All worker processes and descendants terminated successfully")
+
+        # Wait for GPU memory to be reclaimed BEFORE returning control
+        # This ensures the node doesn't proceed to the next rendezvous cycle while memory is still tied up
+        if self._ft_cfg.gpu_memory_reclaim_timeout > 0:
+            logger.debug(
+                "Waiting for GPU memory to be reclaimed (timeout: %ds, tolerance: %d MB, poll interval: %ds)...",
+                int(self._ft_cfg.gpu_memory_reclaim_timeout),
+                int(self._ft_cfg.gpu_memory_tolerance_mb),
+                int(self._ft_cfg.gpu_memory_poll_interval),
+            )
+            self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
+
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
             node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
         )
+
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -826,6 +897,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec = worker_group.spec
         store = worker_group.store
         assert store is not None
+
+        # TODO: Consider using self._rdzv_handler.round() instead of calculating from _remaining_restarts
+        # Using rdzv.round() would be more robust for hot spare scenarios and provide a single source
+        # of truth for the restart cycle number.
         restart_count = spec.max_restarts - self._remaining_restarts
 
         # Record worker start start event
@@ -931,6 +1006,94 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         return self._pcontext.pids()
 
+    def _wait_for_gpu_memory_reclaim(self, num_gpus: int) -> None:
+        """
+        Wait for GPU memory to be reclaimed below the tolerance threshold before starting new workers.
+        This is called on restarts (not on initial start) to ensure memory has been cleaned up.
+
+        Polls GPU memory usage and waits until it drops below the tolerance threshold or timeout.
+
+        Args:
+            num_gpus: Number of GPUs on this node
+        """
+        def log_memory_stats(memory_stats, num_gpus, log_func, message_template, *args):
+            """Helper to log GPU memory statistics."""
+            for device_idx in range(num_gpus):
+                if memory_stats[device_idx]:
+                    # Show the first sample and the last 10 samples
+                    if len(memory_stats[device_idx]) > 11:
+                        samples_to_show = [memory_stats[device_idx][0]] + memory_stats[device_idx][-10:]
+                    else:
+                        samples_to_show = memory_stats[device_idx]
+                    samples_str = ", ".join([
+                        f"{int(s['used_mb'])}MB@{int(s['timestamp'])}s"
+                        for s in samples_to_show
+                    ])
+                    log_func(
+                        message_template,
+                        device_idx,
+                        *args,
+                        len(memory_stats[device_idx]),
+                        samples_str,
+                    )
+
+        memory_logger = GPUMemoryLogger()
+        timeout = self._ft_cfg.gpu_memory_reclaim_timeout
+        tolerance_mb = self._ft_cfg.gpu_memory_tolerance_mb
+        poll_interval = self._ft_cfg.gpu_memory_poll_interval
+
+        start_time = time.time()
+        all_devices_ok = False
+
+        # Store memory stats per GPU per poll for logging
+        memory_stats = {device_idx: [] for device_idx in range(num_gpus)}
+
+        while time.time() - start_time < timeout:
+            all_devices_ok = True
+
+            for device_idx in range(num_gpus):
+                mem_info = memory_logger.get_gpu_memory(device_index=device_idx)
+                if mem_info is None:
+                    # Error already logged by get_gpu_memory()
+                    continue
+
+                current_mb = mem_info['used_mb']
+                # Save stats for logging
+                memory_stats[device_idx].append({
+                    'timestamp': time.time() - start_time,
+                    'used_mb': current_mb,
+                })
+
+                # Check if memory is below tolerance
+                if current_mb > tolerance_mb:
+                    all_devices_ok = False
+
+            if all_devices_ok:
+                elapsed_time = time.time() - start_time
+                log_memory_stats(
+                    memory_stats,
+                    num_gpus,
+                    logger.info,
+                    "GPU %d memory reclaimed in %ds (%d samples): %s",
+                    int(elapsed_time),
+                )
+                return
+
+            time.sleep(poll_interval)
+
+        # Timeout reached - log final memory stats per GPU
+        logger.error(
+            "Timeout waiting for GPU memory to be reclaimed after %.1fs. "
+            "Memory may not have been fully cleaned up. Proceeding anyway as best effort.",
+            timeout,
+        )
+        log_memory_stats(
+            memory_stats,
+            num_gpus,
+            logger.warning,
+            "GPU %d memory usage history (%d samples): %s",
+        )
+
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
         if self._worker_watchdog is not None:
@@ -1025,6 +1188,24 @@ class LocalElasticAgent(SimpleElasticAgent):
             return self._rdzv_handler._barrier_state._get_unhealthy_count()
 
         # Legacy rendezvous does not support unhealthy tracking
+        return 0
+
+    def _check_cluster_peer_aborted_count(self) -> int:
+        """Check the cluster-wide peer aborted count from the rendezvous store.
+
+        This tracks how many peers have detected local failures and decided to restart,
+        enabling faster failure propagation across the cluster.
+
+        Only supported for barrier-based rendezvous. Returns 0 for legacy rendezvous.
+
+        Returns:
+            The number of peers that have aborted in this cycle, or 0 if not available.
+        """
+        # Only barrier-based rendezvous supports peer_aborted_count
+        if hasattr(self._rdzv_handler, '_barrier_state'):
+            return self._rdzv_handler._barrier_state._get_peer_aborted_count()
+
+        # Legacy rendezvous does not support peer aborted tracking
         return 0
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
@@ -1187,6 +1368,7 @@ def _get_entrypoint_name(entrypoint: Union[Callable, str, None], args: List[Any]
 def _get_addr_and_port(
     rdzv_parameters: RendezvousParameters,
 ) -> Tuple[Optional[str], Optional[int]]:
+
     if rdzv_parameters.backend != "static":
         return (None, None)
     endpoint = rdzv_parameters.endpoint
@@ -1900,6 +2082,24 @@ def get_args_parser() -> ArgumentParser:
         "directory is re-used for multiple runs (a unique job-level sub-directory is created with "
         "rdzv_id as the prefix).",
     )
+
+    parser.add_argument(
+        "--ft-base-logfile",
+        "--ft_base_logfile",
+        action=env,
+        type=str,
+        default=None,
+        dest="ft_base_logfile",
+        help="Base log file path for per-cycle logging (e.g. /lustre/logs/job_12345.log). "
+        "Automatically enables per-cycle consolidated logging with flat file structure: "
+        "/lustre/logs/job_12345_cycle0.log, /lustre/logs/job_12345_cycle1.log, etc. "
+        "All ranks' stdout and stderr go to the same file per cycle (truly consolidated). "
+        "Each line is automatically prefixed with [global_rank]: (like 'srun -l') for easy identification. "
+        "Uses O_APPEND flag for safe concurrent writes from multiple ranks. "
+        "Avoids filesystem pressure at scale (1 file instead of N*ranks files). "
+        "Ideal for SLURM jobs with thousands of ranks.",
+    )
+
     parser.add_argument(
         "-r",
         "--redirects",
@@ -1978,8 +2178,10 @@ def get_args_parser() -> ArgumentParser:
         "--logs_specs",
         default=None,
         type=str,
-        help="torchrun.logs_specs group entrypoint name, value must be type of LogsSpecs. "
-        "Can be used to override custom logging behavior.",
+        help="Logging behavior configuration. Options: "
+        "(1) None (default): Creates separate log files per rank per restart cycle. "
+        "(2) 'per_cycle': Consolidates all ranks' logs into a single log file per restart cycle. "
+        "(3) Custom entrypoint name from torchrun.logs_specs group for advanced customization.",
     )
 
     #
@@ -2106,7 +2308,22 @@ def get_args_parser() -> ArgumentParser:
         type=lambda x: str(x).lower() not in ["false", "0", "no"],
         default=None,
         dest="ft_enable_nic_monitor",
-        help="Enable or Disable NIC health monitoring in training. Default: False.",
+        help="Enable or Disable NIC health monitoring in training. "
+        "This monitors link_downed counters periodically during training. Default: False.",
+    )
+
+    parser.add_argument(
+        "--ft-enable-nic-healthcheck",
+        "--ft-enable_nic_healthcheck",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_enable_nic_healthcheck",
+        help="Enable or Disable NIC link state health check before rendezvous. "
+        "This checks if network interface ports (RDMA/InfiniBand and Ethernet) are "
+        "in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE. "
+        "Unlike --ft-enable-nic-monitor (which periodically monitors link_downed counters), "
+        "this performs a one-time state check during rendezvous. Can be used independently "
+        "or together with --ft-enable-nic-monitor. Default: False.",
     )
 
     parser.add_argument(
@@ -2126,6 +2343,17 @@ def get_args_parser() -> ArgumentParser:
         dest="ft_link_down_path_template",
         help="Part of Fault Tolerance pkg config (link_down_path_template). "
         "Template path to check if a NIC link is down.",
+    )
+
+    parser.add_argument(
+        "--ft-link-state-path-template",
+        "--ft-link_state_path_template",
+        type=str,
+        default=None,
+        dest="ft_link_state_path_template",
+        help="Part of Fault Tolerance pkg config (link_state_path_template). "
+        "Template path to check NIC link state. Should contain {nic} placeholder. "
+        "Default: /sys/class/infiniband/{nic}/ports/1/state",
     )
 
     parser.add_argument(
@@ -2158,12 +2386,12 @@ def get_args_parser() -> ArgumentParser:
         "--ft-rdzv_impl",
         type=str,
         choices=["barrier", "legacy"],
-        default="legacy",
+        default="barrier",
         dest="ft_rdzv_impl",
         help="FT rendezvous implementation to use. "
         "'barrier' uses the new atomic barrier-based algorithm (ft_rendezvous_barrier.py), "
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
-        "Default: legacy. Note: This is independent of --rdzv-backend (which specifies "
+        "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
     )
 
@@ -2177,6 +2405,50 @@ def get_args_parser() -> ArgumentParser:
         "(--cpunodebind=N --membind=N). By default, only CPU is bound to NUMA node with local "
         "memory allocation (--cpunodebind=N --localalloc). This option only affects behavior when "
         "NVRX_GPUS_PER_NUMA environment variable is set. Default: False.",
+    )
+
+    parser.add_argument(
+        "--ft-gpu-memory-reclaim-timeout",
+        "--ft-gpu_memory_reclaim_timeout",
+        type=str,
+        default=None,
+        dest="ft_gpu_memory_reclaim_timeout",
+        help="Part of Fault Tolerance pkg config (gpu_memory_reclaim_timeout). "
+        "Timeout (in seconds) to wait for GPU memory to be reclaimed after worker shutdown "
+        "before starting new workers. Default: 50.0. Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-gpu-memory-tolerance-mb",
+        "--ft-gpu_memory_tolerance_mb",
+        type=str,
+        default=None,
+        dest="ft_gpu_memory_tolerance_mb",
+        help="Part of Fault Tolerance pkg config (gpu_memory_tolerance_mb). "
+        "Maximum allowed GPU memory usage (in MB) when checking if memory has been "
+        "reclaimed. Default: 512.0. Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-gpu-memory-poll-interval",
+        "--ft-gpu_memory_poll_interval",
+        type=str,
+        default=None,
+        dest="ft_gpu_memory_poll_interval",
+        help="Part of Fault Tolerance pkg config (gpu_memory_poll_interval). "
+        "Poll interval (in seconds) for checking GPU memory during reclaim process. "
+        "Default: 2.0. Use 'null'|'none'|'' for None.",
+    )
+
+    parser.add_argument(
+        "--ft-check-remaining-processes",
+        "--ft-check_remaining_processes",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_check_remaining_processes",
+        help="Part of Fault Tolerance pkg config (check_remaining_processes). "
+        "If enabled, check for and log any remaining worker processes after termination. "
+        "Useful for debugging process cleanup issues. Default: False.",
     )
 
     parser.add_argument(
@@ -2299,9 +2571,18 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
 
     Returns `DefaultLogsSpecs` when logs_spec_name is None.
     Raises ValueError when entrypoint for `logs_spec_name` can't be found in entrypoints.
+
+    Built-in options:
+    - None (default): Uses DefaultLogsSpecs (per-rank log files per cycle)
+    - 'per_cycle': Uses PerCycleLogsSpecs (single log file per cycle for all ranks)
     """
     logs_specs_cls = None
-    if logs_specs_name is not None:
+
+    # Handle built-in per_cycle option
+    if logs_specs_name == "per_cycle":
+        logs_specs_cls = PerCycleLogsSpecs
+    elif logs_specs_name is not None:
+        # Try to load from entrypoints
         eps = metadata.entry_points()
         if hasattr(eps, "select"):  # >= 3.10
             group = eps.select(group="torchrun.logs_specs")
@@ -2316,8 +2597,6 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
             raise ValueError(
                 f"Could not find entrypoint under 'torchrun.logs_specs[{logs_specs_name}]' key"
             )
-
-        logger.info("Using logs_spec '%s' mapped to %s", logs_specs_name, str(logs_specs_cls))
     else:
         logs_specs_cls = DefaultLogsSpecs
 
@@ -2375,6 +2654,10 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     # Pass use_infra_group_rank from fault tolerance config to rendezvous config
     rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
 
+    # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
+    rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
+    rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
         try:
@@ -2385,13 +2668,28 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
                 "--local_ranks_filter must be a comma-separated list of integers e.g. --local_ranks_filter=0,1,2"
             ) from e
 
-    logs_specs_cls: Type[LogsSpecs] = _get_logs_specs_class(args.logs_specs)
-    logs_specs = logs_specs_cls(
-        log_dir=args.log_dir,
-        redirects=Std.from_str(args.redirects),
-        tee=Std.from_str(args.tee),
-        local_ranks_filter=ranks,
-    )
+    # Determine logs_specs based on ft_base_logfile or logs_specs argument
+    base_log_file = getattr(args, 'ft_base_logfile', None)
+
+    if base_log_file:
+        # If --ft-base-logfile is specified, automatically use PerCycleLogsSpecs
+        # This provides a simple interface: just specify the base log file and get per-cycle logging
+        if args.logs_specs is not None:
+            logger.warning(
+                "--logs-specs is ignored when --ft-base-logfile is specified. "
+                "Using PerCycleLogsSpecs automatically."
+            )
+        logs_specs = PerCycleLogsSpecs(base_log_file=base_log_file)
+        # Note: PerCycleLogsSpecs handles rank prefixing internally via sitecustomize.py
+    else:
+        # Standard logs_specs creation for other cases
+        logs_specs_cls: Type[LogsSpecs] = _get_logs_specs_class(args.logs_specs)
+        logs_specs = logs_specs_cls(
+            log_dir=args.log_dir,
+            redirects=Std.from_str(args.redirects),
+            tee=Std.from_str(args.tee),
+            local_ranks_filter=ranks,
+        )
 
     config = LaunchConfig(
         min_nodes=min_nodes,
