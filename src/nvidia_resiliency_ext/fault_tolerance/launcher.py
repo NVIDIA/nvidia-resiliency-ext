@@ -2474,7 +2474,7 @@ def get_args_parser() -> ArgumentParser:
         dest="ft_install_exception_hook",
         help="Part of Fault Tolerance pkg config (install_exception_hook). "
         "If enabled, installs sys.excepthook to capture uncaught exceptions in training worker processes, "
-        "format and log the traceback, and use os._exit() to exit the process reliably. Default: True.",
+        "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
     )
 
     parser.add_argument(
