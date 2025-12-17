@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import re
 
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
@@ -11,6 +12,59 @@ from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribu
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+
+def chunk_logs_strict(lines):
+    """
+    Chunks logs strictly between:
+    - START: The LAST occurrence of Cycle N
+    - END: The LAST occurrence of Cycle N+1
+
+    Lines after the highest Cycle number are ignored.
+    If no 'Cycle' markers are found, returns all lines as Cycle 0.
+    """
+    # Regex to match the profiling line
+    cycle_pattern = re.compile(r"profiling\.py:.*Cycle:\s*(\d+)")
+
+    # Step 1: Find the LAST index for every cycle number
+    last_cycle_indices = {}
+    for index, line in enumerate(lines):
+        match = cycle_pattern.search(line)
+        if match:
+            cycle_num = int(match.group(1))
+            last_cycle_indices[cycle_num] = index
+
+    # Sort cycles (0, 1, 2...)
+    sorted_cycles = sorted(last_cycle_indices.keys())
+
+    final_chunks = {}
+
+    # --- NEW LOGIC START ---
+    # If no cycles were found, return all lines as Cycle 0
+    if not sorted_cycles:
+        final_chunks[0] = lines
+        return final_chunks
+    # --- NEW LOGIC END ---
+
+    # Step 2: Create chunks ONLY when we have both a Start (N) and an End (N+1)
+    # We iterate up to len() - 1 because the last cycle in the list
+    # serves only as the end boundary for the previous one.
+    for i in range(len(sorted_cycles) - 1):
+        curr_cycle = sorted_cycles[i]
+        next_cycle = sorted_cycles[i + 1]  # This is N+1
+
+        start_index = last_cycle_indices[curr_cycle]
+        end_index = last_cycle_indices[next_cycle]
+
+        # Extract lines between LAST Cycle N and LAST Cycle N+1
+        raw_chunk = lines[start_index:end_index]
+
+        # Step 3: Remove marker lines
+        clean_chunk = [line for line in raw_chunk if not cycle_pattern.search(line)]
+
+        final_chunks[curr_cycle] = clean_chunk
+
+    return final_chunks
 
 
 class NVRxLogAnalyzer(NVRxAttribution):
@@ -38,7 +92,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
             output_handler=self.print_output,
         )
 
-    async def analyze_logs(self) -> ApplicationData:
+    async def analyze_logs(self) -> list[ApplicationData]:
         """
         Analyzes the logs and returns the application errors.
 
@@ -62,26 +116,52 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         if self.exclude_nvrx_logs:
             input_data = [line for line in input_data if "nvidia_resiliency_ext" not in line]
+            input_data = [
+                line for line in input_data if "[workload:" not in line or 'Cycle:' in line
+            ]
             logger.info(f"Excluded {len(input_data)} lines from the input data")
             with open(os.path.join(os.path.dirname(path), "nvrx_logs_edited.txt"), 'w') as f:
                 f.writelines(input_data)
-        output = return_application_errors(self.llm, input_data, self.lru_cache)
-        return output
+        chunks = chunk_logs_strict(input_data)  # Splitting the app log to cycles
+        output_list = [
+            return_application_errors(self.llm, lines, self.lru_cache)
+            for cycle, lines in chunks.items()
+        ]
+        return output_list
 
-    async def llm_analyze(self, output: ApplicationData) -> str:
-        return get_proposed_solution_cat(self.llm, output)
+    async def llm_analyze(self, output_list: list[ApplicationData]) -> list[str]:
+        return [
+            (
+                get_proposed_solution_cat(self.llm, output)
+                if len(output.application_errors_list_full) > 0
+                else "No error found from application logs"
+            )
+            for output in output_list
+        ]
 
-    async def print_output(self, attribution_result: str) -> tuple[str, AttributionState]:
-        # Concatenate all strings in attribution_result if it's a list/tuple
-        logger.info(f"attribution_result: {attribution_result}")
-        attr_state = (
-            AttributionState.STOP if 'STOP' in attribution_result[0] else AttributionState.CONTINUE
-        )
-        if isinstance(attribution_result, (list, tuple)):
-            concatenated_result = '\n'.join(str(item) for item in attribution_result)
-        else:
-            concatenated_result = str(attribution_result)
-        return concatenated_result, attr_state
+    async def print_output(
+        self, attribution_results: list[str]
+    ) -> list[tuple[str, AttributionState]]:
+        output_list = []
+        for attribution_result in attribution_results:
+            if attribution_result != "No error found from application logs":
+                # Concatenate all strings in attribution_result if it's a list/tuple
+                logger.info(f"attribution_result: {attribution_result}")
+                attr_state = (
+                    AttributionState.STOP
+                    if 'STOP' in attribution_result[0]
+                    else AttributionState.CONTINUE
+                )
+                if isinstance(attribution_result, (list, tuple)):
+                    concatenated_result = '\n'.join(str(item) for item in attribution_result)
+                else:
+                    concatenated_result = str(attribution_result)
+                output_list.append((concatenated_result, attr_state))
+            else:
+                output_list.append(
+                    ("No error found from application logs", AttributionState.CONTINUE)
+                )
+        return output_list
 
 
 def main():
