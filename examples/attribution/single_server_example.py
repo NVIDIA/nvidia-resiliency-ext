@@ -56,7 +56,21 @@ async def main(args: argparse.Namespace):
         for tool in tools:
             logger.info(f"  - {tool['name']}: {tool['description']}")
 
-        # 3. Run FR analyzer
+        # 3. Run log analyzer
+        logger.info("\n3. Running Log Analyzer:")
+        logger.info("-" * 80)
+        log_result = await client.run_module(
+            module_name="log_analyzer",
+            log_path=args.log_path,
+            model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+            temperature=0.2,
+            exclude_nvrx_logs=True,
+            top_p=0.7,
+            max_tokens=8192,
+        )
+        logger.info(f"Result preview: {str(log_result)[:200]}...")
+
+        # 4. Run FR analyzer
         logger.info("\n4. Running FR Analyzer:")
         logger.info("-" * 80)
         fr_result = await client.run_module(
@@ -72,9 +86,37 @@ async def main(args: argparse.Namespace):
             llm_analyze=False,
             pattern="_dump_*",
         )
-        logger.info(f"Result: {fr_result}")
+        logger.info(f"Result preview: {str(fr_result)[:200]}...")
 
-        # 4. List and access cached resources
+        # 5. Run combined_log_fr with cached results
+        logger.info("\n5. Running Combined Analysis with Cached Results:")
+        logger.info("-" * 80)
+
+        # Extract the actual result data from the previous runs
+        log_analysis_result = (
+            log_result.get("result") if isinstance(log_result, dict) else log_result
+        )
+        fr_analysis_result = fr_result.get("result") if isinstance(fr_result, dict) else fr_result
+
+        # Run combined_log_fr with the cached results
+        combined_result = await client.run_module(
+            module_name="combined_log_fr",
+            input_data=[
+                (log_analysis_result, log_result['state']),
+                (fr_analysis_result, fr_result['state']),
+            ],
+            model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+            threshold=5,
+        )
+        logger.info(f"Combined Result: {combined_result}")
+        logger.info(f"Combined Result ID: {combined_result.get('result_id')}")
+        logger.info(
+            f"Combined Result: {combined_result.get('result')[:500]}..."
+            if isinstance(combined_result.get('result'), str)
+            else combined_result
+        )
+
+        # 6. List and access cached resources
         logger.info("\n6. Cached Resources:")
         logger.info("-" * 80)
         resources = await client.list_resources()
@@ -82,7 +124,7 @@ async def main(args: argparse.Namespace):
         for resource in resources[:3]:  # Show first 3
             logger.info(f"  - {resource['uri']}: {resource['name']}")
 
-        # 5. Retrieve a specific cached result
+        # 7. Retrieve a specific cached result
         if resources:
             logger.info("\n7. Retrieving Cached Result:")
             logger.info("-" * 80)
@@ -97,7 +139,10 @@ async def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run MCP client with SSE transport')
+    parser = argparse.ArgumentParser(
+        description='Single MCP Server with Multiple Attribution Modules'
+    )
+    parser.add_argument('--log-path', type=str, help='Path to log file')
     parser.add_argument('--fr-path', type=str, help='Path to FR dumps')
     args = parser.parse_args()
 
