@@ -37,7 +37,12 @@ from .data import (
 )
 from .ipc_connector import IpcConnector
 from .timeouts_calc import TimeoutsCalc
-from .utils import get_rank, read_obj_from_ipc_socket, write_object_to_ipc_socket
+from .utils import (
+    get_rank,
+    install_exception_handler,
+    read_obj_from_ipc_socket,
+    write_object_to_ipc_socket,
+)
 
 
 class RankMonitorClientError(Exception):
@@ -401,6 +406,10 @@ class RankMonitorClient:
         self.rank_info = RankInfo.get_for_current_rank()
 
         self._connect_to_rmon_server()
+
+        # Install exception handler if configured
+        if self.cfg.install_exception_hook:
+            install_exception_handler()
 
         sections = self.cfg.rank_section_timeouts.keys()
         self.timeouts_calc = TimeoutsCalc(sections=sections, safety_factor=self.cfg.safety_factor)

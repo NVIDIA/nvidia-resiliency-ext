@@ -2475,6 +2475,17 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-install-exception-hook",
+        "--ft-install_exception_hook",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_install_exception_hook",
+        help="Part of Fault Tolerance pkg config (install_exception_hook). "
+        "If enabled, installs sys.excepthook to capture uncaught exceptions in training worker processes, "
+        "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
