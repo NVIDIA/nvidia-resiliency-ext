@@ -100,7 +100,60 @@ Rank assignments always use infrastructure-based ordering when available:
 
 This ensures consistency with the infrastructure's rank assignment, which is important 
 for static deployments and proper resource allocation.
-  
+
+Hot Spare Nodes and Segment-Aware Rank Assignment
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``ft_launcher`` supports hot spare nodes, which are standby nodes that can replace failed nodes
+during restart. Hot spare functionality is always enabled and works with ``--max-restarts``.
+
+By default (``--ft-segment=None``), the launcher uses **simple hot spare mode**, which is suitable 
+for most deployments including H100-based systems where NVLink domain segmentation is not required:
+
+* The first ``min_nodes`` (from ``--nnodes``) are assigned as active workers
+* Any additional nodes beyond ``min_nodes`` become hot spares with standby ranks
+* Hot spares do not require GPU ClusterUUID or NVLink domain awareness
+* This mode effectively treats each node independently for rank assignment
+
+For large-scale NVSwitch-based systems (e.g., DGX H200, HGX B200), you can enable 
+**segment-aware hot spare mode** using ``--ft-segment=N``:
+
+* ``N`` specifies the minimum number of nodes required per NVLink domain (identified by GPU ClusterUUID)
+* Only domains with at least ``N`` nodes participate in training
+* From each valid domain, as many complete segments as possible are selected
+* Nodes in the same segment receive contiguous group ranks for optimal performance
+* The ``min_nodes`` parameter (from ``--nnodes``) must be divisible by ``segment``
+* GPU ClusterUUID is automatically queried via nvidia-smi to identify NVLink domains
+
+**Key Differences:**
+
+* ``--ft-segment=None`` (default): Simple mode without domain awareness, suitable for H100 systems
+* ``--ft-segment=1``: Each node is a segment, similar to simple mode but requires ClusterUUID
+* ``--ft-segment=4`` or higher: Multi-node segments for NVSwitch-based systems
+
+Example for H100 deployment (8 nodes requested, 6 needed for training):
+
+.. code-block:: bash
+
+   ft_launcher --nnodes=6:8 --nproc-per-node=8 \
+               --max-restarts=3 \
+               training_script.py
+
+   # Nodes 0-5: Active workers (ranks 0-47)
+   # Nodes 6-7: Hot spares (standby ranks 48-63)
+
+Example for NVSwitch deployment with segment=4 (12 nodes requested, 8 needed):
+
+.. code-block:: bash
+
+   ft_launcher --nnodes=8:12 --nproc-per-node=8 \
+               --ft-segment=4 --max-restarts=3 \
+               training_script.py
+
+   # Requires domains with at least 4 nodes each
+   # 8 active nodes = 2 complete segments
+   # 4 hot spare nodes available for restart
+
 Hang detection
 --------------
 

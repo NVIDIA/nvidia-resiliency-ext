@@ -920,7 +920,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,  # Use domain from node name
             segment=1,
         )
 
@@ -957,7 +956,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 
@@ -1002,7 +1000,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=16,
         )
 
@@ -1037,7 +1034,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 
@@ -1076,7 +1072,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 
@@ -1122,7 +1117,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 
@@ -1157,7 +1151,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 
@@ -1252,7 +1245,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 
@@ -1305,7 +1297,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 
@@ -1432,7 +1423,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 
@@ -1484,7 +1474,6 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            domain_id_from_node_name=True,
             segment=4,
         )
 

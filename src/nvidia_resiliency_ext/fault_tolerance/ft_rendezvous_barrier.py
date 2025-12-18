@@ -162,8 +162,6 @@ class RendezvousSettings:
         keep_alive_max_attempt:
             The maximum number of failed heartbeat attempts after which a node
             is considered dead.
-        domain_id_from_node_name:
-            Whether to parse domain ID from node name for segment-aware rank assignment.
         segment:
             Number of nodes to select from each domain. None disables segment awareness.
         nproc_per_node:
@@ -177,7 +175,6 @@ class RendezvousSettings:
     timeout: RendezvousTimeout
     keep_alive_interval: timedelta
     keep_alive_max_attempt: int
-    domain_id_from_node_name: bool = True
     segment: Optional[int] = None
     nproc_per_node: int = 1  # Default to 1 if not specified
 
@@ -350,31 +347,6 @@ def _parse_domain_id_from_nvidia_smi() -> str:
         raise RuntimeError(f"Failed to query domain ID from nvidia-smi: {e}")
 
 
-def _parse_domain_id_from_node_name(node_name: str) -> str:
-    """Parse domain ID from node name by extracting the part before the first hyphen.
-
-    Expected format: <domain_id>-<node_id>
-    Example: "nvl72144-T01" -> "nvl72144"
-
-    Args:
-        node_name: The node name to parse
-
-    Returns:
-        The domain ID parsed from the node name
-
-    Raises:
-        RuntimeError: If the domain ID cannot be parsed from the node name
-    """
-    # Extract domain_id (part before the first hyphen)
-    parts = node_name.split('-', 1)
-    if len(parts) < 2:
-        raise RuntimeError(f"Node name '{node_name}' does not contain a hyphen separator")
-
-    domain_id = parts[0]
-    log.debug(f"Parsed domain ID '{domain_id}' from node name '{node_name}'")
-    return domain_id
-
-
 class _RendezvousBarrierState:
     """Hold the state of a rendezvous barrier.
 
@@ -407,14 +379,12 @@ class _RendezvousBarrierState:
         run_id: str,
         is_store_host: bool = False,
         join_timeout_seconds: float = 600.0,
-        domain_id_from_node_name: bool = True,
         segment: Optional[int] = None,
     ):
         self.store = store
         self.run_id = run_id
         self.is_store_host = is_store_host
         self.join_timeout_seconds = join_timeout_seconds
-        self.domain_id_from_node_name = domain_id_from_node_name
         self.segment = segment
         self._rendezvous_start_time = None
         self._attempted_open = False  # Track if this node tried to open rendezvous
@@ -818,12 +788,9 @@ class _RendezvousBarrierState:
         # Determine domain ID (with caching to avoid re-parsing on every rendezvous)
         if self._cached_domain_id is None:
             if self.segment is not None:
-                # Segment is configured - domain_id is required
+                # Segment is configured - domain_id is required, always use ClusterUUID
                 try:
-                    if self.domain_id_from_node_name:
-                        self._cached_domain_id = _parse_domain_id_from_node_name(node_desc.addr)
-                    else:
-                        self._cached_domain_id = _parse_domain_id_from_nvidia_smi()
+                    self._cached_domain_id = _parse_domain_id_from_nvidia_smi()
                 except Exception as e:
                     raise RuntimeError(
                         f"Domain ID is required when --ft-segment is specified, but failed to parse: {e}"
@@ -1196,7 +1163,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         local_addr: Optional[str] = None,
         timeout: Optional[RendezvousTimeout] = None,
         is_store_host: bool = False,
-        domain_id_from_node_name: bool = True,
         segment: Optional[int] = None,
         nproc_per_node: int = 1,  # Number of processes per node
         enable_nic_healthcheck: bool = False,
@@ -1221,8 +1187,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 The timeout configuration of the rendezvous.
             is_store_host:
                 Whether this node is the TCPStore host.
-            domain_id_from_node_name:
-                Whether to parse domain ID from node name.
             segment:
                 Number of nodes to select from each domain.
             enable_nic_healthcheck:
@@ -1240,7 +1204,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             timeout or RendezvousTimeout(),
             keep_alive_interval=timedelta(seconds=5),
             keep_alive_max_attempt=3,
-            domain_id_from_node_name=domain_id_from_node_name,
             segment=segment,
             nproc_per_node=nproc_per_node,
         )
@@ -1288,7 +1251,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             settings.run_id,
             is_store_host,
             settings.timeout.join.total_seconds(),
-            settings.domain_id_from_node_name,
             settings.segment,
         )
         self._assigned_rank = None
@@ -1668,11 +1630,6 @@ def create_handler(
     |                            | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
     |                            | 30 seconds.                                          |
     +----------------------------+------------------------------------------------------+
-    | domain_id_from_node_name   | Whether to parse domain ID from node name for        |
-    |                            | segment-aware rank assignment. When False, uses      |
-    |                            | ClusterUUID from NVML. Defaults to True, but         |
-    |                            | automatically set to False when segment=None.        |
-    +----------------------------+------------------------------------------------------+
     | segment                    | Minimum number of nodes required per domain for      |
     |                            | segment-aware rank assignment. Domains with fewer    |
     |                            | nodes are excluded. As many complete segments as     |
@@ -1698,7 +1655,6 @@ def create_handler(
 
         # Get is_store_host from parameters
         is_store_host = params.config.get('is_store_host', False)
-        domain_id_from_node_name = params.config.get('domain_id_from_node_name', True)
         segment = params.config.get('segment', None)
         nproc_per_node = params.config.get('nproc_per_node', 1)
         enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
@@ -1713,7 +1669,6 @@ def create_handler(
             params.local_addr,
             timeout,
             is_store_host=is_store_host,
-            domain_id_from_node_name=domain_id_from_node_name,
             segment=segment,
             nproc_per_node=nproc_per_node,
             enable_nic_healthcheck=enable_nic_healthcheck,

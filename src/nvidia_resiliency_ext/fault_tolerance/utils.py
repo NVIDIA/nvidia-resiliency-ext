@@ -37,16 +37,27 @@ _IPC_PICKLER = multiprocessing.reduction.ForkingPickler(open(os.devnull, mode='w
 def get_infrastructure_rank() -> int:
     """Get infrastructure rank from environment variables with SLURM validation.
 
-    Returns infrastructure rank from SLURM_PROCID (preferred) or GROUP_RANK (fallback).
-    If neither is set, returns -1 to indicate it should be assigned deterministically.
+    Returns infrastructure rank with the following precedence:
+    1. CROSS_SLURM_PROCID (for multi-job coordination)
+    2. SLURM_PROCID (set by SLURM)
+    3. GROUP_RANK (fallback, set by launcher)
+
+    If none are set, returns -1 to indicate it should be assigned deterministically.
 
     Returns:
         int: Infrastructure rank (>=0) or -1 if not set
 
     Raises:
-        RuntimeError: If SLURM_JOB_ID is set but SLURM_PROCID is missing
+        RuntimeError: If SLURM_JOB_ID is set but neither CROSS_SLURM_PROCID nor SLURM_PROCID is defined
     """
-    # Try SLURM_PROCID first (set by SLURM), then fall back to GROUP_RANK (set by launcher)
+    # Check CROSS_SLURM_PROCID first (for multi-job scenarios)
+    cross_slurm_procid = os.getenv('CROSS_SLURM_PROCID')
+    if cross_slurm_procid is not None:
+        infra_rank = int(cross_slurm_procid)
+        logger.debug(f"Using infrastructure rank {infra_rank} from CROSS_SLURM_PROCID")
+        return infra_rank
+
+    # Try SLURM_PROCID (set by SLURM), then fall back to GROUP_RANK (set by launcher)
     infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', None))
 
     if infra_rank_str is not None:
@@ -55,9 +66,10 @@ def get_infrastructure_rank() -> int:
         return infra_rank
 
     # Check if we're running under SLURM - if so, SLURM_PROCID should be defined
+    # (unless CROSS_SLURM_PROCID was set, which we already handled)
     if os.getenv('SLURM_JOB_ID') is not None:
         raise RuntimeError(
-            "SLURM_JOB_ID is set but SLURM_PROCID is not defined. "
+            "SLURM_JOB_ID is set but neither CROSS_SLURM_PROCID nor SLURM_PROCID is defined. "
             "This indicates a SLURM deployment error. "
             "SLURM_PROCID should be automatically set by SLURM for each task."
         )
