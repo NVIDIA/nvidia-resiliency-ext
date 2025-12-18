@@ -59,6 +59,10 @@ class FaultToleranceConfig:
       placeholder which will be replaced with actual NIC device name.
     * `link_state_path_template` - Template path for NIC link state files. Should contain '{nic}'
       placeholder which will be replaced with actual NIC device name. Default: /sys/class/infiniband/{nic}/ports/1/state
+    * `enable_dist_storage_healthcheck` - Enable distributed storage health check (Lustre + NFS)
+      before rendezvous. Checks Lustre health and reachability of Lustre/NFS mounts. Default: False.
+    * `storage_healthcheck_path` - Comma-separated absolute paths to validate for existence/readability
+      before rendezvous. Used by the storage path health check. Default: None.
     * `skip_section_response` - If True, section and heartbeat messages are sent without waiting
       for server response (unidirectional communication). This significantly reduces latency for
       high-frequency operations. Server logs errors instead of sending them back.
@@ -95,6 +99,8 @@ class FaultToleranceConfig:
     restart_check_interval: float = 60.0
     enable_nic_monitor: bool = False
     enable_nic_healthcheck: bool = False
+    enable_dist_storage_healthcheck: bool = False
+    storage_healthcheck_path: Optional[str] = None
     pci_topo_file: Optional[str] = None
     link_down_path_template: Optional[str] = None
     link_state_path_template: Optional[str] = None
