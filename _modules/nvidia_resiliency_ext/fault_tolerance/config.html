@@ -159,6 +159,9 @@
 <span class="sd">      reclaim process. Default: 2.0.</span>
 <span class="sd">    * `check_remaining_processes` [bool] if True, check for and log any remaining worker processes</span>
 <span class="sd">      after termination. Useful for debugging process cleanup issues. Default: False.</span>
+<span class="sd">    * `install_exception_hook` [bool] if True, installs sys.excepthook to capture uncaught exceptions</span>
+<span class="sd">      in training worker processes, format and log the traceback, and use os._exit() to exit the</span>
+<span class="sd">      process reliably. Default: False.</span>
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
@@ -190,6 +193,7 @@
     <span class="n">max_no_progress_restarts</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span>
     <span class="n">min_progress_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">200</span>
     <span class="n">progress_update_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>  <span class="c1"># Seconds between sending progress updates to launcher</span>
+    <span class="n">install_exception_hook</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_progress_tracking_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>

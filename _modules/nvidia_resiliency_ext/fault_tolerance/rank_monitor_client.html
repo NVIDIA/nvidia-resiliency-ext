@@ -116,7 +116,12 @@
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.ipc_connector</span><span class="w"> </span><span class="kn">import</span> <span class="n">IpcConnector</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.timeouts_calc</span><span class="w"> </span><span class="kn">import</span> <span class="n">TimeoutsCalc</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_rank</span><span class="p">,</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">,</span> <span class="n">write_object_to_ipc_socket</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">get_rank</span><span class="p">,</span>
+    <span class="n">install_exception_handler</span><span class="p">,</span>
+    <span class="n">read_obj_from_ipc_socket</span><span class="p">,</span>
+    <span class="n">write_object_to_ipc_socket</span><span class="p">,</span>
+<span class="p">)</span>
 
 
 <div class="viewcode-block" id="RankMonitorClientError">
@@ -493,6 +498,10 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="o">=</span> <span class="n">RankInfo</span><span class="o">.</span><span class="n">get_for_current_rank</span><span class="p">()</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_connect_to_rmon_server</span><span class="p">()</span>
+
+        <span class="c1"># Install exception handler if configured</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">install_exception_hook</span><span class="p">:</span>
+            <span class="n">install_exception_handler</span><span class="p">()</span>
 
         <span class="n">sections</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_section_timeouts</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">timeouts_calc</span> <span class="o">=</span> <span class="n">TimeoutsCalc</span><span class="p">(</span><span class="n">sections</span><span class="o">=</span><span class="n">sections</span><span class="p">,</span> <span class="n">safety_factor</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">safety_factor</span><span class="p">)</span>
