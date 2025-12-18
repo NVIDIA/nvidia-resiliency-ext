@@ -2320,30 +2320,18 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-domain-id-from-node-name",
-        "--ft-domain_id_from_node_name",
-        type=lambda x: str(x).lower() == 'true',
-        default=None,
-        dest="ft_domain_id_from_node_name",
-        help="Parse domain ID from node name for segment-aware rank assignment. "
-        "Node name format: <domain_id>-<node_id>. "
-        "Example: 'nvl72144-T01' has domain_id='nvl72144'. "
-        "When False and --ft-segment is specified, domain ID is parsed from GPU ClusterUUID via NVML. "
-        "Default: True, but automatically set to False when --ft-segment is not specified.",
-    )
-
-    parser.add_argument(
         "--ft-segment",
         "--ft_segment",
         type=int,
         default=None,
         dest="ft_segment",
-        help="Number of nodes to select from each domain when using segment-aware rank assignment. "
-        "If a domain has fewer nodes than this value, those nodes are excluded. "
-        "If a domain has more nodes, only the first N nodes are selected. "
-        "Nodes in the same segment get contiguous group ranks. "
+        help="Controls hot spare node behavior and segment-aware rank assignment. "
+        "Default: None (simple hot spare mode for H100 and non-NVSwitch systems, no ClusterUUID required). "
+        "When set to N: Enables segment-aware mode for NVSwitch systems (DGX H200, HGX B200). "
+        "Specifies minimum nodes per NVLink domain (identified by GPU ClusterUUID via nvidia-smi). "
+        "Domains with fewer than N nodes are excluded. From valid domains, complete segments are selected. "
         "min_nodes must be divisible by segment. "
-        "Set to None or omit to disable segment awareness. Default: None.",
+        "Note: segment=None (default) is suitable for H100; segment=1 is similar but requires ClusterUUID.",
     )
 
     parser.add_argument(
@@ -2591,7 +2579,6 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
 
     # Pass segment-related configs to rendezvous config
-    rdzv_configs['domain_id_from_node_name'] = fault_tol_cfg.domain_id_from_node_name
     rdzv_configs['segment'] = fault_tol_cfg.segment
 
     # Pass NIC health check configs to rendezvous config
