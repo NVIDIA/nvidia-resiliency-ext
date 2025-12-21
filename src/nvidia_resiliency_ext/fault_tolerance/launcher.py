@@ -70,7 +70,10 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
-from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PerCycleLogsSpecs
+from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
+    PerCycleLogsSpecs,
+    PipeBasedLogsSpecs,
+)
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
@@ -1009,6 +1012,20 @@ class LocalElasticAgent(SimpleElasticAgent):
         )
 
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
+
+        # Start reader thread for pipe-based logging if using PipeBasedLogsSpecs
+        if isinstance(self._logs_specs, PipeBasedLogsSpecs):
+            # PipeBasedLogsSpecs requires SubprocessContext (binary entrypoints)
+            # MultiprocessContext (function entrypoints) is not supported
+            if not hasattr(self._pcontext, 'subprocess_handlers'):
+                raise RuntimeError(
+                    "PipeBasedLogsSpecs requires SubprocessContext but got "
+                    f"{type(self._pcontext).__name__}. This usually means the entrypoint "
+                    "is a Python function instead of a script path. PipeBasedLogsSpecs only "
+                    "works with script/binary entrypoints (e.g., 'python train.py')."
+                )
+
+            self._logs_specs.start_reader(self._pcontext.subprocess_handlers)
 
         # Record worker start completion event
         record_profiling_event(
@@ -2708,15 +2725,15 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     base_log_file = getattr(args, 'ft_base_logfile', None)
 
     if base_log_file:
-        # If --ft-base-logfile is specified, automatically use PerCycleLogsSpecs
-        # This provides a simple interface: just specify the base log file and get per-cycle logging
+        # If --ft-base-logfile is specified, automatically use PipeBasedLogsSpecs
+        # This provides pipe-based logging (like srun --output) to prevent log loss
         if args.logs_specs is not None:
             logger.warning(
                 "--logs-specs is ignored when --ft-base-logfile is specified. "
-                "Using PerCycleLogsSpecs automatically."
+                "Using PipeBasedLogsSpecs automatically."
             )
-        logs_specs = PerCycleLogsSpecs(base_log_file=base_log_file)
-        # Note: PerCycleLogsSpecs handles rank prefixing internally via sitecustomize.py
+        logs_specs = PipeBasedLogsSpecs(base_log_file=base_log_file)
+        # Note: PipeBasedLogsSpecs handles rank prefixing in parent process
     else:
         # Standard logs_specs creation for other cases
         logs_specs_cls: Type[LogsSpecs] = _get_logs_specs_class(args.logs_specs)
