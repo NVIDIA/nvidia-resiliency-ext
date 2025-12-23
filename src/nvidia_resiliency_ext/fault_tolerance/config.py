@@ -82,6 +82,9 @@ class FaultToleranceConfig:
       reclaim process. Default: 2.0.
     * `check_remaining_processes` [bool] if True, check for and log any remaining worker processes
       after termination. Useful for debugging process cleanup issues. Default: False.
+    * `install_exception_hook` [bool] if True, installs sys.excepthook to capture uncaught exceptions
+      in training worker processes, format and log the traceback, and use os._exit() to exit the
+      process reliably. Default: False.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -115,6 +118,7 @@ class FaultToleranceConfig:
     max_no_progress_restarts: int = 3
     min_progress_iterations: int = 200
     progress_update_interval: float = 30.0  # Seconds between sending progress updates to launcher
+    install_exception_hook: bool = False
 
     @property
     def is_progress_tracking_enabled(self) -> bool:
