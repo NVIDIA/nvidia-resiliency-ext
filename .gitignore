@@ -3,4 +3,8 @@ dist
 *.egg-info
 __pycache__
 cupti_module.*.so
+ft_state.json
 .pytest_cache
+*_pb2.py
+*_pb2.pyi
+*_pb2_grpc.py
