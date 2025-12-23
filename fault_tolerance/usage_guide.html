@@ -176,6 +176,44 @@ the rendezvous handlers will use it in their node health checks.</p>
 <li><p>Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.</p></li>
 </ul>
 </section>
+<section id="distributed-storage-health-check-lustre-nfs">
+<h4>Distributed storage health check (Lustre + NFS)<a class="headerlink" href="#distributed-storage-health-check-lustre-nfs" title="Link to this heading"></a></h4>
+<p>The launcher can perform a distributed storage health check before rendezvous.
+By default it is disabled. When enabled (via CLI or YAML), it:</p>
+<ul>
+<li><p>Verifies Lustre health via <code class="docutils literal notranslate"><span class="pre">/sys/fs/lustre/health_check</span></code> (fails if not healthy).</p></li>
+<li><p>Discovers distributed mount targets and checks that each mount is reachable.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-enable-dist-storage-healthcheck</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_enable_dist_storage_healthcheck</span></code>)
+- Accepts a boolean-like value only to enable the mount checks</p>
+<blockquote>
+<div><p>(e.g., <code class="docutils literal notranslate"><span class="pre">--ft-enable-dist-storage-healthcheck</span> <span class="pre">true</span></code>).</p>
+</div></blockquote>
+</li>
+</ul>
+</section>
+<section id="storage-path-health-check">
+<h4>Storage path health check<a class="headerlink" href="#storage-path-health-check" title="Link to this heading"></a></h4>
+<p>Validate specific absolute paths for existence and basic readability before rendezvous.</p>
+<ul class="simple">
+<li><p>CLI: <code class="docutils literal notranslate"><span class="pre">--ft-storage-health-check-path</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_storage_health_check_path</span></code>)
+- Accepts a comma-separated list of absolute paths (each starting with <code class="docutils literal notranslate"><span class="pre">/</span></code>).
+- Example: <code class="docutils literal notranslate"><span class="pre">--ft-storage-health-check-path</span> <span class="pre">'/data/checkpoints,/mnt/dataset'</span></code></p></li>
+<li><p>YAML: <code class="docutils literal notranslate"><span class="pre">storage_healthcheck_path</span></code> under the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> section</p></li>
+</ul>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">fault_tolerance</span><span class="p">:</span>
+<span class="w">  </span><span class="c1"># Comma-separated absolute paths</span>
+<span class="w">  </span><span class="nt">storage_healthcheck_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/data/checkpoints,/mnt/dataset&quot;</span>
+</pre></div>
+</div>
+<dl class="simple">
+<dt>Validation behavior:</dt><dd><ul class="simple">
+<li><p>Files: attempts to read a small block (up to 4KB)</p></li>
+<li><p>Directories: lists directory contents</p></li>
+<li><p>Other existing types (e.g., devices/symlinks): performs <code class="docutils literal notranslate"><span class="pre">stat</span></code> access</p></li>
+</ul>
+</dd>
+</dl>
+</section>
 <section id="gpu-memory-reclaim">
 <h4>GPU Memory Reclaim<a class="headerlink" href="#gpu-memory-reclaim" title="Link to this heading"></a></h4>
 <p>When <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can optionally wait for GPU memory to be
