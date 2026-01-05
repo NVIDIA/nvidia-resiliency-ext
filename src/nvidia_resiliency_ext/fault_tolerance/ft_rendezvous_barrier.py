@@ -44,7 +44,12 @@ except ImportError:
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
+from ..shared_utils.health_check import (
+    DistributedStorageHealthCheck,
+    GPUHealthCheck,
+    NicLinkStateHealthCheck,
+    StoragePathHealthCheck,
+)
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1053,7 +1058,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         is_store_host: bool = False,
         use_infra_group_rank: bool = True,
         enable_nic_healthcheck: bool = False,
+        enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
+        storage_healthcheck_paths: Optional[list] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1101,7 +1108,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             store,
             is_store_host,
             enable_nic_healthcheck=enable_nic_healthcheck,
+            enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
+            storage_healthcheck_paths=storage_healthcheck_paths,
         )
 
     def __init__(
@@ -1112,7 +1121,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         store: Store,
         is_store_host: bool = False,
         enable_nic_healthcheck: bool = False,
+        enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
+        storage_healthcheck_paths: Optional[list] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1155,6 +1166,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             self._nic_link_state_checker = NicLinkStateHealthCheck(
                 link_state_path_template=self._link_state_path_template
             )
+
+        # Distributed storage health checker instance (enabled via boolean flag)
+        self._dist_storage_state_checker = (
+            DistributedStorageHealthCheck() if enable_dist_storage_healthcheck else None
+        )
+        # Storage path health checker instance
+        self._storage_path_checker = (
+            StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
+        )
 
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
@@ -1229,7 +1249,22 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 "NIC link state health check",
                 f"Node {self._this_node} has unhealthy NIC link(s).",
             )
-        # Perform Node health check
+        # Perform distributed storage (Lustre/NFS) health check if enabled
+        if self._dist_storage_state_checker is not None:
+            self._run_health_check(
+                self._dist_storage_state_checker,
+                "Storage health check",
+                f"Node {self._this_node} has unhealthy storage state.",
+            )
+        # Perform storage path health check if paths were provided
+        if self._storage_path_checker is not None:
+            self._run_health_check(
+                self._storage_path_checker,
+                "Storage path health check",
+                f"Node {self._this_node} has invalid or unreadable paths.",
+            )
+
+        # Perform Node health check (external service if available)
         _nodehealth_checker = get_node_health_check()
         if _nodehealth_checker is not None:
             self._run_health_check(
@@ -1506,6 +1541,10 @@ def create_handler(
         is_store_host = params.config.get('is_store_host', False)
         use_infra_group_rank = params.config.get('use_infra_group_rank', True)
         enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
+        enable_dist_storage_healthcheck = params.config.get(
+            'enable_dist_storage_healthcheck', False
+        )
+        storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
 
         return FtRendezvousBarrierHandler.from_backend(
@@ -1519,7 +1558,9 @@ def create_handler(
             is_store_host=is_store_host,
             use_infra_group_rank=use_infra_group_rank,
             enable_nic_healthcheck=enable_nic_healthcheck,
+            enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
+            storage_healthcheck_paths=storage_healthcheck_paths,
         )
     except Exception as e:
         construct_and_record_rdzv_event(
