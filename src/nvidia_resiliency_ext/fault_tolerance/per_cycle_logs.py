@@ -141,11 +141,7 @@ class PerCycleLogsSpecs(LogsSpecs):
             cycle_idx = int(restart_count)
         except (TypeError, ValueError):
             cycle_idx = 0
-
-        # Create per-cycle log file
-        cycle_log_file = PerCycleLogsSpecs.make_cycle_log_file(
-            base_log_file=self._base_log_file, cycle_index=cycle_idx
-        )
+        cycle_log_file = self.get_cycle_log_file(cycle_idx)
 
         # Create the consolidated log file if it doesn't exist
         # This serves two purposes:
@@ -243,11 +239,10 @@ class PerCycleLogsSpecs(LogsSpecs):
             return False
         return self._base_log_file == other._base_log_file
 
-    @staticmethod
-    def make_cycle_log_file(base_log_file: str, cycle_index: int) -> str:
+    def get_cycle_log_file(self, cycle_index: int) -> str:
         """
-        Build the per-cycle consolidated logfile path from a base logfile path and cycle index.
+        Instance helper to build cycle logfile for this spec's base path.
         """
-        base_without_ext = os.path.splitext(base_log_file)[0]
-        ext = os.path.splitext(base_log_file)[1] or ".log"
+        base_without_ext = os.path.splitext(self._base_log_file)[0]
+        ext = os.path.splitext(self._base_log_file)[1] or ".log"
         return f"{base_without_ext}_cycle{cycle_index}{ext}"
