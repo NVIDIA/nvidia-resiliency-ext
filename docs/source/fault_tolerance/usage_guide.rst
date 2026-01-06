@@ -117,6 +117,34 @@ Validation behavior:
   - Other existing types (e.g., devices/symlinks): performs ``stat`` access
 
 
+Logs attribution service integration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Enable log analysis during rendezvous health checks by pointing to a running logs attribution service.
+The feature auto-enables when both host, port, and log path are provided.
+
+* CLI:
+
+  - ``--ft-logs-attrsvc-host <HOST>`` (alias: ``--ft-logs_attrsvc_host``)
+  - ``--ft-logs-attrsvc-port <PORT>`` (alias: ``--ft-logs_attrsvc_port``)
+
+  Example:
+
+  .. code-block:: bash
+
+     ft_launcher \
+       --ft-logs-attrsvc-host 127.0.0.1 \
+       --ft-logs-attrsvc-port 8000 \
+       train.py
+
+* YAML: under the ``fault_tolerance`` section
+
+  .. code-block:: yaml
+
+     fault_tolerance:
+       logs_attrsvc_host: "127.0.0.1"
+       logs_attrsvc_port: 8000
+
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^
 

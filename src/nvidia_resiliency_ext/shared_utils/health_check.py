@@ -24,9 +24,12 @@ import threading
 import traceback
 from collections import defaultdict
 from functools import wraps
-from typing import Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
+from urllib.parse import quote_plus
 
 import defusedxml.ElementTree as ET
+import httpx
+from pydantic import BaseModel
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
@@ -1297,3 +1300,76 @@ class StoragePathHealthCheck:
         if self.paths:
             logger.debug("all storage paths accessible:\n" + "\n".join(self.paths))
         return True
+
+
+class JobLogsResult(BaseModel):
+    result: Any
+    status: str = "completed"
+
+
+class LogsAttributionService:
+    """
+    Client that queries an external attribution FastAPI to return JobLogsResult by analyzing logs.
+    """
+
+    def __init__(
+        self,
+        log_path: Optional[str],
+        host: str,
+        port: int,
+    ):
+        self.host = host
+        self.port = port
+        self.log_path = log_path
+
+    def __call__(self, log_path: Optional[str] = None) -> None:
+        """
+        Fire-and-forget entrypoint.
+        - If an event loop is running, schedules the request with create_task and returns the Task.
+        - If no event loop is running, runs in a background thread and returns None.
+        """
+        effective_path = log_path if log_path else self.log_path
+        if effective_path is None:
+            raise ValueError("log_path is required (provide at init or call time)")
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.get_job_logs_result_async(effective_path))
+        except RuntimeError:
+            # No running event loop; run in a background thread without blocking
+            threading.Thread(
+                target=lambda: asyncio.run(self.get_job_logs_result_async(effective_path)),
+                daemon=True,
+            ).start()
+        return None
+
+    async def get_job_logs_result_async(self, log_path: str) -> None:
+        """
+        Async caller for _get_job_logs_result.
+        """
+        await self._get_job_logs_result(log_path)
+
+    async def _get_job_logs_result(self, log_path: str) -> None:
+        """
+        Internal async method that queries an external attribution service, logs JobLogsResult.
+        """
+        try:
+            # Build target URL for external attribution service
+            q = quote_plus(log_path)
+            url = f"http://{self.host}:{self.port}/logs?log_path={q}"
+
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(url, headers={"accept": "application/json"})
+                text = resp.text or ""
+                payload = resp.json() if text else {}
+            # Expecting a JobLogsResult-like payload; pass through fields if present
+            result = payload.get("result", payload)
+            status = payload.get("status", "completed")
+            job_result = JobLogsResult(result=result, status=status)
+            # Log entire JobLogsResult (with preview for large payloads)
+            logger.info("JobLogsResult status=%s", job_result.status)
+            logger.info("JobLogsResult result preview: %s", str(job_result.result)[:200])
+            return None
+        except Exception as e:
+            # Logging is sufficient; do not propagate exceptions
+            logger.warning(f"LogsAttributionService request failed: {e}")
+            return None
