@@ -55,7 +55,6 @@ from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
-from .per_cycle_logs import PerCycleLogsSpecs
 
 log = logging.getLogger(LogConfig.name)
 
@@ -1284,15 +1283,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         # Perform optional log analysis (non-fatal); rely on service to log errors internally
         if self._logs_attr_service is not None:
-            # Prefer cycle logfile pre-exposed on handler by launcher; fallback to LogsSpecs if present
+            # Use cycle logfile pre-exposed on handler by launcher
             cycle_log_file = getattr(self, "_current_cycle_log_file", None)
-            if cycle_log_file is None and (
-                getattr(self, "_worker_group", None) is not None
-                and getattr(self._worker_group, "spec", None) is not None
-            ):
-                logs_specs = getattr(self._worker_group.spec, "logs_specs", None)
-                if isinstance(logs_specs, PerCycleLogsSpecs):
-                    cycle_log_file = getattr(logs_specs, "current_cycle_log_file", None)
             if cycle_log_file:
                 self._logs_attr_service(cycle_log_file)
                 log.debug(f"Scheduled LogsAttributionService for path: {cycle_log_file}")

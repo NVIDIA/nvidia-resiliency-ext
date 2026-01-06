@@ -1239,17 +1239,13 @@ class LocalElasticAgent(SimpleElasticAgent):
             if isinstance(self._logs_specs, _PCS):
                 base_log_file = getattr(self._logs_specs, "_base_log_file", None)
                 if base_log_file:
-                    base_without_ext = os.path.splitext(base_log_file)[0]
-                    ext = os.path.splitext(base_log_file)[1] or ".log"
                     # Compute same restart_count used for naming in _start_workers
                     restart_count = spec.max_restarts - self._remaining_restarts
-                    cycle_log_file = f"{base_without_ext}_cycle{restart_count}{ext}"
-                    setattr(self._logs_specs, "_current_cycle_log_file", cycle_log_file)
-                    # Also expose directly on the rendezvous handler for early access
-                    try:
-                        setattr(spec.rdzv_handler, "_current_cycle_log_file", cycle_log_file)
-                    except Exception:
-                        pass
+                    cycle_log_file = _PCS.make_cycle_log_file(
+                        base_log_file=base_log_file, cycle_index=restart_count
+                    )
+                    # Expose directly on the rendezvous handler
+                    setattr(spec.rdzv_handler, "_current_cycle_log_file", cycle_log_file)
         except Exception:
             # Best-effort; do not disrupt rendezvous if any issue occurs
             pass

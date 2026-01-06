@@ -94,8 +94,6 @@ class PerCycleLogsSpecs(LogsSpecs):
 
         # Convert to absolute path for multi-node safety (all nodes must access same path)
         self._base_log_file = os.path.abspath(base_log_file)
-        # Exposed after reify(): the exact per-cycle consolidated logfile path
-        self._current_cycle_log_file: str | None = None
 
         # Extract directory and ensure it exists
         log_dir = os.path.dirname(self._base_log_file) or "."
@@ -139,13 +137,15 @@ class PerCycleLogsSpecs(LogsSpecs):
         global_env = envs[0]
         run_id = global_env.get("TORCHELASTIC_RUN_ID", "test_run_id")
         restart_count = global_env.get("TORCHELASTIC_RESTART_COUNT", "0")
+        try:
+            cycle_idx = int(restart_count)
+        except (TypeError, ValueError):
+            cycle_idx = 0
 
         # Create per-cycle log file
-        base_without_ext = os.path.splitext(self._base_log_file)[0]
-        ext = os.path.splitext(self._base_log_file)[1] or ".log"
-        cycle_log_file = f"{base_without_ext}_cycle{restart_count}{ext}"
-        # Expose computed cycle logfile for external consumers (e.g., attribution)
-        self._current_cycle_log_file = cycle_log_file
+        cycle_log_file = PerCycleLogsSpecs.make_cycle_log_file(
+            base_log_file=self._base_log_file, cycle_index=cycle_idx
+        )
 
         # Create the consolidated log file if it doesn't exist
         # This serves two purposes:
@@ -243,10 +243,11 @@ class PerCycleLogsSpecs(LogsSpecs):
             return False
         return self._base_log_file == other._base_log_file
 
-    @property
-    def current_cycle_log_file(self) -> str | None:
+    @staticmethod
+    def make_cycle_log_file(base_log_file: str, cycle_index: int) -> str:
         """
-        Returns the most recent per-cycle consolidated logfile path computed in reify(), or None
-        if reify() hasn't been called yet.
+        Build the per-cycle consolidated logfile path from a base logfile path and cycle index.
         """
-        return self._current_cycle_log_file
+        base_without_ext = os.path.splitext(base_log_file)[0]
+        ext = os.path.splitext(base_log_file)[1] or ".log"
+        return f"{base_without_ext}_cycle{cycle_index}{ext}"
