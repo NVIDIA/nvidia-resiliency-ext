@@ -85,6 +85,9 @@ class FaultToleranceConfig:
     * `install_exception_hook` [bool] if True, installs sys.excepthook to capture uncaught exceptions
       in training worker processes, format and log the traceback, and use os._exit() to exit the
       process reliably. Default: False.
+    * Attribution service (optional):
+      - `attrsvc_host` [str] hostname/IP of the attribution service
+      - `attrsvc_port` [int] port of the attribution service
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -119,6 +122,9 @@ class FaultToleranceConfig:
     min_progress_iterations: int = 200
     progress_update_interval: float = 30.0  # Seconds between sending progress updates to launcher
     install_exception_hook: bool = False
+    # Attribution service configuration (optional)
+    attrsvc_host: Optional[str] = None
+    attrsvc_port: Optional[int] = None
 
     @property
     def is_progress_tracking_enabled(self) -> bool:

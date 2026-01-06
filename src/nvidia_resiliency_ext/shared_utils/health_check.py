@@ -24,9 +24,12 @@ import threading
 import traceback
 from collections import defaultdict
 from functools import wraps
-from typing import Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
+from urllib.parse import quote_plus
 
 import defusedxml.ElementTree as ET
+import httpx
+from pydantic import BaseModel
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
@@ -1297,3 +1300,99 @@ class StoragePathHealthCheck:
         if self.paths:
             logger.debug("all storage paths accessible:\n" + "\n".join(self.paths))
         return True
+
+
+class AttrSvcResult(BaseModel):
+    result: Any
+    status: str = "completed"
+
+
+class AttributionService:
+    """
+    Client that queries an external attribution service to analyze artifacts (e.g., logs).
+    Behavior:
+      - POSTs to submit for log analysis
+      - GETs results by the last submitted log_path
+    """
+
+    def __init__(
+        self,
+        log_path: Optional[str],
+        host: str,
+        port: int,
+    ):
+        self.host = host
+        self.port = port
+        self.log_path = log_path
+        # Track the most recent log_path we submitted
+        self._last_submitted: Optional[str] = None
+
+    def __call__(self, log_path: Optional[str] = None) -> None:
+        """
+        Fire-and-forget entrypoint.
+        - If an event loop is running, schedules the request with create_task and returns the Task.
+        - If no event loop is running, runs in a background thread and returns None.
+        """
+        effective_path = log_path if log_path else self.log_path
+        if effective_path is None:
+            raise ValueError("log_path is required (provide at init or call time)")
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.get_attrsvc_result_async(effective_path))
+        except RuntimeError:
+            # No running event loop; run in a background thread without blocking
+            threading.Thread(
+                target=lambda: asyncio.run(self.get_attrsvc_result_async(effective_path)),
+                daemon=True,
+            ).start()
+        return None
+
+    async def get_attrsvc_result_async(self, log_path: str) -> None:
+        """
+        Async caller for _get_attrsvc_result.
+        """
+        await self._get_attrsvc_result(log_path)
+
+    async def _get_attrsvc_result(self, log_path: str) -> None:
+        """
+        Internal async method that interacts with the external attribution service:
+          - If a prior submission exists, GET results for the last submitted path
+          - Then, POST the new log_path to submit for analysis
+        """
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                create_url = f"http://{self.host}:{self.port}/logs"
+
+                # 1) If we previously submitted a path, GET its results
+                if self._last_submitted:
+                    q_last = quote_plus(self._last_submitted)
+                    get_url = f"{create_url}?log_path={q_last}"
+                    try:
+                        resp = await client.get(get_url, headers={"accept": "application/json"})
+                        if resp.status_code == 200:
+                            payload = resp.json() if resp.text else {}
+                            result = payload.get("result", payload)
+                            status = payload.get("status", "completed")
+                            attrsvc_result = AttrSvcResult(result=result, status=status)
+                            logger.info("AttrSvcResult status=%s", attrsvc_result.status)
+                            logger.info(
+                                "AttrSvcResult result preview: %s", str(attrsvc_result.result)[:200]
+                            )
+                        else:
+                            logger.warning(f"AttributionService GET returned {resp.status_code}")
+                    except Exception as e:
+                        logger.warning(f"AttributionService GET failed: {e}")
+
+                # 2) Submit the new path for analysis
+                await client.post(
+                    create_url,
+                    json={"log_path": log_path},
+                    headers={"accept": "application/json"},
+                )
+                self._last_submitted = log_path
+                logger.debug(f"AttributionService submitted: {log_path}")
+
+        except Exception as e:
+            # Logging is sufficient; do not propagate exceptions
+            logger.warning(f"AttributionService request failed: {e}")
+            return None

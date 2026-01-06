@@ -1230,6 +1230,22 @@ class LocalElasticAgent(SimpleElasticAgent):
         # this will always be FtRendezvousBarrierHandler or FtRendezvousHandler (legacy)
         spec.rdzv_handler.set_worker_group(worker_group)
 
+        # Precompute and expose the per-cycle consolidated logfile on the LogsSpecs so that
+        # rendezvous handlers can consume it during ensure_node_is_healthy() (which runs before
+        # workers are started and before LogsSpecs.reify()).
+        try:
+            from .per_cycle_logs import PerCycleLogsSpecs as _PCS
+
+            if isinstance(self._logs_specs, _PCS):
+                # Compute same restart_count used for naming in _start_workers
+                restart_count = spec.max_restarts - self._remaining_restarts
+                cycle_log_file = self._logs_specs.get_cycle_log_file(restart_count)
+                # Expose directly on the rendezvous handler
+                setattr(spec.rdzv_handler, "_current_cycle_log_file", cycle_log_file)
+        except Exception:
+            # Best-effort; do not disrupt rendezvous if any issue occurs
+            pass
+
         # Call the parent class _rendezvous method
         super()._rendezvous(worker_group)
 
@@ -2506,6 +2522,24 @@ def get_args_parser() -> ArgumentParser:
         "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
     )
 
+    # Attribution service configuration (optional)
+    parser.add_argument(
+        "--ft-attrsvc-host",
+        "--ft_attrsvc_host",
+        type=str,
+        default=None,
+        dest="ft_attrsvc_host",
+        help="Hostname or IP for the attribution service (e.g., 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--ft-attrsvc-port",
+        "--ft_attrsvc_port",
+        type=int,
+        default=None,
+        dest="ft_attrsvc_port",
+        help="Port for the attribution service (e.g., 8000).",
+    )
+
     parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
@@ -2714,6 +2748,12 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+    # Pass attribution service configuration if provided
+    if getattr(fault_tol_cfg, 'attrsvc_host', None):
+        rdzv_configs['attrsvc_host'] = fault_tol_cfg.attrsvc_host
+    if getattr(fault_tol_cfg, 'attrsvc_port', None) is not None:
+        rdzv_configs['attrsvc_port'] = int(fault_tol_cfg.attrsvc_port)
+    # Removed legacy logs_fastapi_enabled - presence of host/port auto-enables
     # Pass distributed storage health check configuration
     cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)
     if cli_dist_storage is not None:
