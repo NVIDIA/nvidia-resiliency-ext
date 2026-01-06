@@ -70,6 +70,7 @@ from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
+from .per_cycle_logs import PerCycleLogsSpecs
 
 log = logging.getLogger(LogConfig.name)
 
@@ -1461,22 +1462,19 @@ class FtRendezvousHandler(RendezvousHandler):
                 f"Node {self._this_node} has invalid or unreadable paths.",
             )
 
-        # Optional: run log analysis via LogsAttributionService if configured (non-fatal)
+        # Perform optional log analysis (non-fatal); rely on service to log errors internally
         if self._logs_attr_service is not None:
-            # Try to derive base log file from PerCycleLogsSpecs if configured
-            base_log_file = None
-            if getattr(self, "_worker_group", None) is not None:
+            # Prefer exact cycle logfile exposed by PerCycleLogsSpecs.reify()
+            if (
+                getattr(self, "_worker_group", None) is not None
+                and getattr(self._worker_group, "spec", None) is not None
+            ):
                 logs_specs = getattr(self._worker_group.spec, "logs_specs", None)
-                try:
-                    from .per_cycle_logs import PerCycleLogsSpecs as _PCS
-
-                    if isinstance(logs_specs, _PCS):
-                        base_log_file = getattr(logs_specs, "_base_log_file", None)
-                except Exception:
-                    pass
-            if base_log_file:
-                self._logs_attr_service(base_log_file)
-                log.debug(f"Scheduled LogsAttributionService for path: {base_log_file}")
+                if isinstance(logs_specs, PerCycleLogsSpecs):
+                    cycle_log_file = getattr(logs_specs, "current_cycle_log_file", None)
+                    if cycle_log_file:
+                        self._logs_attr_service(cycle_log_file)
+                        log.debug(f"Scheduled LogsAttributionService for path: {cycle_log_file}")
 
         # Perform Node health check
         _nodehealth_checker = get_node_health_check()

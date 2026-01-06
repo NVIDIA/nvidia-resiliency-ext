@@ -94,6 +94,8 @@ class PerCycleLogsSpecs(LogsSpecs):
 
         # Convert to absolute path for multi-node safety (all nodes must access same path)
         self._base_log_file = os.path.abspath(base_log_file)
+        # Exposed after reify(): the exact per-cycle consolidated logfile path
+        self._current_cycle_log_file: str | None = None
 
         # Extract directory and ensure it exists
         log_dir = os.path.dirname(self._base_log_file) or "."
@@ -142,6 +144,8 @@ class PerCycleLogsSpecs(LogsSpecs):
         base_without_ext = os.path.splitext(self._base_log_file)[0]
         ext = os.path.splitext(self._base_log_file)[1] or ".log"
         cycle_log_file = f"{base_without_ext}_cycle{restart_count}{ext}"
+        # Expose computed cycle logfile for external consumers (e.g., attribution)
+        self._current_cycle_log_file = cycle_log_file
 
         # Create the consolidated log file if it doesn't exist
         # This serves two purposes:
@@ -238,3 +242,11 @@ class PerCycleLogsSpecs(LogsSpecs):
         if not isinstance(other, PerCycleLogsSpecs):
             return False
         return self._base_log_file == other._base_log_file
+
+    @property
+    def current_cycle_log_file(self) -> str | None:
+        """
+        Returns the most recent per-cycle consolidated logfile path computed in reify(), or None
+        if reify() hasn't been called yet.
+        """
+        return self._current_cycle_log_file
