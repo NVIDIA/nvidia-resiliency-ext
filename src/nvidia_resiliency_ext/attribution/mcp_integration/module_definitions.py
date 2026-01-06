@@ -48,6 +48,11 @@ def register_all_modules():
                     "description": "Exclude NVRX internal logs",
                     "default": False,
                 },
+                "is_per_cycle": {
+                    "type": "boolean",
+                    "description": "Input is already per-cycle data (skip filtering and chunking)",
+                    "default": False,
+                },
             },
             "required": ["log_path"],
         },

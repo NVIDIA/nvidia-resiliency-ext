@@ -24,9 +24,12 @@ import threading
 import traceback
 from collections import defaultdict
 from functools import wraps
-from typing import Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
+from urllib.parse import quote_plus
 
 import defusedxml.ElementTree as ET
+import httpx
+from pydantic import BaseModel
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
@@ -1297,3 +1300,99 @@ class StoragePathHealthCheck:
         if self.paths:
             logger.debug("all storage paths accessible:\n" + "\n".join(self.paths))
         return True
+
+
+class AttrSvcResult(BaseModel):
+    result: Any
+    status: str = "completed"
+
+
+class AttributionService:
+    """
+    Client that queries an external attribution service to analyze artifacts (e.g., logs).
+    Behavior:
+      - POSTs to submit for log analysis
+      - GETs results by the last submitted log_path
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+    ):
+        self.host = host
+        self.port = port
+        # Track the most recent log_path we submitted
+        self._last_submitted: Optional[str] = None
+
+    def __call__(self, log_path: str) -> None:
+        """
+        Fire-and-forget entrypoint. Runs HTTP request in a background daemon thread.
+        """
+        threading.Thread(
+            target=self._get_attrsvc_result,
+            args=(log_path,),
+            daemon=True,
+        ).start()
+
+    def _get_attrsvc_result(self, log_path: str) -> None:
+        """
+        Internal method that interacts with the external attribution service:
+          - First, POST the new log_path to submit for analysis (non-blocking submission)
+          - Then, GET results for the previously submitted path (if any)
+        """
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                create_url = f"http://{self.host}:{self.port}/logs"
+
+                # 1) Submit the new path for analysis first (ensures prompt submission)
+                logger.debug("AttributionService POST: %s (log_path=%s)", create_url, log_path)
+                client.post(
+                    create_url,
+                    json={"log_path": log_path},
+                    headers={"accept": "application/json"},
+                )
+                prev_submitted = self._last_submitted
+                self._last_submitted = log_path
+
+                # 2) If we previously submitted a path, GET its results
+                if prev_submitted:
+                    q_last = quote_plus(prev_submitted)
+                    get_url = f"{create_url}?log_path={q_last}"
+                    logger.debug(
+                        "AttributionService GET: %s (log_path=%s)", get_url, prev_submitted
+                    )
+                    try:
+                        resp = client.get(get_url, headers={"accept": "application/json"})
+                        if resp.status_code == 200:
+                            payload = resp.json() if resp.text else {}
+                            result = payload.get("result", payload)
+                            status = payload.get("status", "completed")
+                            attrsvc_result = AttrSvcResult(result=result, status=status)
+                            logger.info(
+                                "AttrSvcResult for %s: status=%s",
+                                prev_submitted,
+                                attrsvc_result.status,
+                            )
+                            logger.info(
+                                "AttrSvcResult for %s: result preview: %s",
+                                prev_submitted,
+                                str(attrsvc_result.result)[:200],
+                            )
+                        else:
+                            logger.warning(
+                                "AttributionService GET for %s returned %d",
+                                prev_submitted,
+                                resp.status_code,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "AttributionService GET for %s failed: %s: %s",
+                            prev_submitted,
+                            type(e).__name__,
+                            e,
+                        )
+
+        except Exception as e:
+            # Logging is sufficient; do not propagate exceptions
+            logger.warning(f"AttributionService request failed: {type(e).__name__}: {e}")
