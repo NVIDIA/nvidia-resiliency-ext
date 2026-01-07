@@ -1183,15 +1183,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
         )
 
-        # Logs attribution client (optional)
+        # Attribution client (optional)
         if attrsvc_host and attrsvc_port is not None:
-            self._logs_attr_service = AttributionService(
+            self._attr_service = AttributionService(
                 log_path=None,
                 host=attrsvc_host,
                 port=int(attrsvc_port),
             )
         else:
-            self._logs_attr_service = None
+            self._attr_service = None
 
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
@@ -1282,11 +1282,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             )
 
         # Perform optional log analysis (non-fatal); rely on service to log errors internally
-        if self._logs_attr_service is not None:
+        if self._attr_service is not None:
             # Use cycle logfile pre-exposed on handler by launcher
             cycle_log_file = getattr(self, "_current_cycle_log_file", None)
             if cycle_log_file:
-                self._logs_attr_service(cycle_log_file)
+                self._attr_service(cycle_log_file)
                 log.debug(f"Scheduled AttributionService for path: {cycle_log_file}")
 
         # Perform Node health check (external service if available)

@@ -1302,7 +1302,7 @@ class StoragePathHealthCheck:
         return True
 
 
-class JobLogsResult(BaseModel):
+class AttrSvcResult(BaseModel):
     result: Any
     status: str = "completed"
 
@@ -1347,13 +1347,13 @@ class AttributionService:
             ).start()
         return None
 
-    async def get_job_logs_result_async(self, log_path: str) -> None:
+    async def get_attrsvc_result_async(self, log_path: str) -> None:
         """
-        Async caller for _get_job_logs_result.
+        Async caller for _get_attrsvc_result.
         """
-        await self._get_job_logs_result(log_path)
+        await self._get_attrsvc_result(log_path)
 
-    async def _get_job_logs_result(self, log_path: str) -> None:
+    async def _get_attrsvc_result(self, log_path: str) -> None:
         """
         Internal async method that interacts with the external attribution service:
           - If a submission exists, GET using the last submitted path
@@ -1378,10 +1378,10 @@ class AttributionService:
                 payload = resp.json() if text else {}
             result = payload.get("result", payload)
             status = payload.get("status", "completed")
-            job_result = JobLogsResult(result=result, status=status)
-            # Log entire JobLogsResult (with preview for large payloads)
-            logger.info("JobLogsResult status=%s", job_result.status)
-            logger.info("JobLogsResult result preview: %s", str(job_result.result)[:200])
+            attrsvc_result = AttrSvcResult(result=result, status=status)
+            # Log entire AttrSvcResult (with preview for large payloads)
+            logger.info("AttrSvcResult status=%s", attrsvc_result.status)
+            logger.info("AttrSvcResult result preview: %s", str(attrsvc_result.result)[:200])
             return None
         except Exception as e:
             # Logging is sufficient; do not propagate exceptions
