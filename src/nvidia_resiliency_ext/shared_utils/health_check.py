@@ -1309,7 +1309,10 @@ class JobLogsResult(BaseModel):
 
 class LogsAttributionService:
     """
-    Client that queries an external attribution FastAPI to return JobLogsResult by analyzing logs.
+    Client that queries an external attribution service to analyze logs.
+    Behavior:
+      - POSTs to submit for log analysis
+      - GETs results by the last submitted log_path
     """
 
     def __init__(
@@ -1321,6 +1324,8 @@ class LogsAttributionService:
         self.host = host
         self.port = port
         self.log_path = log_path
+        # Track the most recent log_path we submitted
+        self._last_submitted: Optional[str] = None
 
     def __call__(self, log_path: Optional[str] = None) -> None:
         """
@@ -1350,18 +1355,27 @@ class LogsAttributionService:
 
     async def _get_job_logs_result(self, log_path: str) -> None:
         """
-        Internal async method that queries an external attribution service, logs JobLogsResult.
+        Internal async method that interacts with the external attribution service:
+          - If a submission exists, GET using the last submitted path
+          - Then, POST with the new log_path to submit the next analysis
         """
         try:
-            # Build target URL for external attribution service
-            q = quote_plus(log_path)
-            url = f"http://{self.host}:{self.port}/logs?log_path={q}"
-
             async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.get(url, headers={"accept": "application/json"})
+                create_url = f"http://{self.host}:{self.port}/logs"
+                if self._last_submitted:
+                    # 1) Poll only the last submitted path
+                    q_last = quote_plus(self._last_submitted)
+                    get_url_last = f"{create_url}?log_path={q_last}"
+                    resp = await client.get(get_url_last, headers={"accept": "application/json"})
+                # Submit new path
+                await client.post(
+                    create_url,
+                    json={"log_path": log_path},
+                    headers={"accept": "application/json"},
+                )
+                self._last_submitted = log_path
                 text = resp.text or ""
                 payload = resp.json() if text else {}
-            # Expecting a JobLogsResult-like payload; pass through fields if present
             result = payload.get("result", payload)
             status = payload.get("status", "completed")
             job_result = JobLogsResult(result=result, status=status)
