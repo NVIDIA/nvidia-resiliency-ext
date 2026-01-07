@@ -2522,22 +2522,22 @@ def get_args_parser() -> ArgumentParser:
         "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
     )
 
-    # Logs attribution service configuration (optional)
+    # Attribution service configuration (optional)
     parser.add_argument(
-        "--ft-logs-attrsvc-host",
-        "--ft-logs_attrsvc_host",
+        "--ft-attrsvc-host",
+        "--ft_attrsvc_host",
         type=str,
         default=None,
-        dest="ft_logs_attrsvc_host",
-        help="Hostname or IP for the logs attribution service (e.g., 127.0.0.1).",
+        dest="ft_attrsvc_host",
+        help="Hostname or IP for the attribution service (e.g., 127.0.0.1).",
     )
     parser.add_argument(
-        "--ft-logs-attrsvc-port",
-        "--ft-logs_attrsvc_port",
+        "--ft-attrsvc-port",
+        "--ft_attrsvc_port",
         type=int,
         default=None,
-        dest="ft_logs_attrsvc_port",
-        help="Port for the logs attribution service (e.g., 8000).",
+        dest="ft_attrsvc_port",
+        help="Port for the attribution service (e.g., 8000).",
     )
 
     parser.add_argument(
@@ -2748,11 +2748,11 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
-    # Pass logs attribution service configuration if provided
-    if getattr(fault_tol_cfg, 'logs_attrsvc_host', None):
-        rdzv_configs['logs_attrsvc_host'] = fault_tol_cfg.logs_attrsvc_host
-    if getattr(fault_tol_cfg, 'logs_attrsvc_port', None) is not None:
-        rdzv_configs['logs_attrsvc_port'] = int(fault_tol_cfg.logs_attrsvc_port)
+    # Pass attribution service configuration if provided
+    if getattr(fault_tol_cfg, 'attrsvc_host', None):
+        rdzv_configs['attrsvc_host'] = fault_tol_cfg.attrsvc_host
+    if getattr(fault_tol_cfg, 'attrsvc_port', None) is not None:
+        rdzv_configs['attrsvc_port'] = int(fault_tol_cfg.attrsvc_port)
     # Removed legacy logs_fastapi_enabled - presence of host/port auto-enables
     # Pass distributed storage health check configuration
     cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)

@@ -45,9 +45,9 @@ except ImportError:
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import (
+    AttributionService,
     DistributedStorageHealthCheck,
     GPUHealthCheck,
-    LogsAttributionService,
     NicLinkStateHealthCheck,
     StoragePathHealthCheck,
 )
@@ -1062,8 +1062,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
-        logs_attrsvc_host: Optional[str] = None,
-        logs_attrsvc_port: Optional[int] = None,
+        attrsvc_host: Optional[str] = None,
+        attrsvc_port: Optional[int] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1114,8 +1114,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
-            logs_attrsvc_host=logs_attrsvc_host,
-            logs_attrsvc_port=logs_attrsvc_port,
+            attrsvc_host=attrsvc_host,
+            attrsvc_port=attrsvc_port,
         )
 
     def __init__(
@@ -1129,8 +1129,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
-        logs_attrsvc_host: Optional[str] = None,
-        logs_attrsvc_port: Optional[int] = None,
+        attrsvc_host: Optional[str] = None,
+        attrsvc_port: Optional[int] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1184,11 +1184,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         )
 
         # Logs attribution client (optional)
-        if logs_attrsvc_host and logs_attrsvc_port is not None:
-            self._logs_attr_service = LogsAttributionService(
+        if attrsvc_host and attrsvc_port is not None:
+            self._logs_attr_service = AttributionService(
                 log_path=None,
-                host=logs_attrsvc_host,
-                port=int(logs_attrsvc_port),
+                host=attrsvc_host,
+                port=int(attrsvc_port),
             )
         else:
             self._logs_attr_service = None
@@ -1287,7 +1287,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             cycle_log_file = getattr(self, "_current_cycle_log_file", None)
             if cycle_log_file:
                 self._logs_attr_service(cycle_log_file)
-                log.debug(f"Scheduled LogsAttributionService for path: {cycle_log_file}")
+                log.debug(f"Scheduled AttributionService for path: {cycle_log_file}")
 
         # Perform Node health check (external service if available)
         _nodehealth_checker = get_node_health_check()
@@ -1572,8 +1572,8 @@ def create_handler(
         storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
         logs_analysis_log_path = params.config.get('logs_analysis_log_path', None)
-        logs_attrsvc_host = params.config.get('logs_attrsvc_host', None)
-        logs_attrsvc_port = params.config.get('logs_attrsvc_port', None)
+        attrsvc_host = params.config.get('attrsvc_host', None)
+        attrsvc_port = params.config.get('attrsvc_port', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -1589,8 +1589,8 @@ def create_handler(
             enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
-            logs_attrsvc_host=logs_attrsvc_host,
-            logs_attrsvc_port=logs_attrsvc_port,
+            attrsvc_host=attrsvc_host,
+            attrsvc_port=attrsvc_port,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

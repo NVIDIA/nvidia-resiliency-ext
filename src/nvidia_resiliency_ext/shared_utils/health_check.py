@@ -1307,9 +1307,9 @@ class JobLogsResult(BaseModel):
     status: str = "completed"
 
 
-class LogsAttributionService:
+class AttributionService:
     """
-    Client that queries an external attribution service to analyze logs.
+    Client that queries an external attribution service to analyze artifacts (e.g., logs).
     Behavior:
       - POSTs to submit for log analysis
       - GETs results by the last submitted log_path
@@ -1385,5 +1385,5 @@ class LogsAttributionService:
             return None
         except Exception as e:
             # Logging is sufficient; do not propagate exceptions
-            logger.warning(f"LogsAttributionService request failed: {e}")
+            logger.warning(f"AttributionService request failed: {e}")
             return None
