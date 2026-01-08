@@ -170,7 +170,7 @@ def create_app(cfg: Settings) -> FastAPI:
                 status_code=400,
                 detail={"error_code": "invalid_request", "message": "log_path is required"},
             )
-        # Log the request first (before validation, so we see what was submitted)
+        # Log the request (file may not exist yet - validation happens at GET time)
         logger.info(f"POST /logs - received: {req.log_path}")
         # Validate the path exists and is accessible
         _normalize_and_validate_path(req.log_path, cfg, require_regular_file=True)

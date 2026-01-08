@@ -1356,33 +1356,42 @@ class AttributionService:
     async def _get_attrsvc_result(self, log_path: str) -> None:
         """
         Internal async method that interacts with the external attribution service:
-          - If a submission exists, GET using the last submitted path
-          - Then, POST with the new log_path to submit the next analysis
+          - If a prior submission exists, GET results for the last submitted path
+          - Then, POST the new log_path to submit for analysis
         """
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 create_url = f"http://{self.host}:{self.port}/logs"
+
+                # 1) If we previously submitted a path, GET its results
                 if self._last_submitted:
-                    # 1) Poll only the last submitted path
                     q_last = quote_plus(self._last_submitted)
-                    get_url_last = f"{create_url}?log_path={q_last}"
-                    resp = await client.get(get_url_last, headers={"accept": "application/json"})
-                # Submit new path
+                    get_url = f"{create_url}?log_path={q_last}"
+                    try:
+                        resp = await client.get(get_url, headers={"accept": "application/json"})
+                        if resp.status_code == 200:
+                            payload = resp.json() if resp.text else {}
+                            result = payload.get("result", payload)
+                            status = payload.get("status", "completed")
+                            attrsvc_result = AttrSvcResult(result=result, status=status)
+                            logger.info("AttrSvcResult status=%s", attrsvc_result.status)
+                            logger.info(
+                                "AttrSvcResult result preview: %s", str(attrsvc_result.result)[:200]
+                            )
+                        else:
+                            logger.warning(f"AttributionService GET returned {resp.status_code}")
+                    except Exception as e:
+                        logger.warning(f"AttributionService GET failed: {e}")
+
+                # 2) Submit the new path for analysis
                 await client.post(
                     create_url,
                     json={"log_path": log_path},
                     headers={"accept": "application/json"},
                 )
                 self._last_submitted = log_path
-                text = resp.text or ""
-                payload = resp.json() if text else {}
-            result = payload.get("result", payload)
-            status = payload.get("status", "completed")
-            attrsvc_result = AttrSvcResult(result=result, status=status)
-            # Log entire AttrSvcResult (with preview for large payloads)
-            logger.info("AttrSvcResult status=%s", attrsvc_result.status)
-            logger.info("AttrSvcResult result preview: %s", str(attrsvc_result.result)[:200])
-            return None
+                logger.debug(f"AttributionService submitted: {log_path}")
+
         except Exception as e:
             # Logging is sufficient; do not propagate exceptions
             logger.warning(f"AttributionService request failed: {e}")
