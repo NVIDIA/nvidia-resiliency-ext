@@ -169,9 +169,10 @@ def create_app(cfg: Settings) -> FastAPI:
                 status_code=400,
                 detail={"error_code": "invalid_request", "message": "log_path is required"},
             )
+        # Log the request first (before validation, so we see what was submitted)
+        logger.info(f"POST /logs - received: {req.log_path}")
         # Validate the path exists and is accessible
-        normalized = _normalize_and_validate_path(req.log_path, cfg, require_regular_file=True)
-        logger.info(f"POST /logs - submitted: {normalized}")
+        _normalize_and_validate_path(req.log_path, cfg, require_regular_file=True)
         return SubmitResponse(submitted=True)
 
     @app.get(
@@ -255,9 +256,10 @@ def create_app(cfg: Settings) -> FastAPI:
             - 400 invalid path (relative, outside ALLOWED_ROOT, symlink, unreadable, not regular file)
             - 404 path not found
         """
+        # Log the request first (before validation, so we see what was requested)
+        logger.info(f"GET /logs - received: {log_path}")
         try:
             normalized = _normalize_and_validate_path(log_path, cfg, require_regular_file=True)
-            logger.info("NVRX Attribution Service - Log Analysis")
             logger.info(f"Analyzing log: {normalized}")
 
             # Connect to the MCP server and run analysis
