@@ -57,23 +57,21 @@ enroot start --rw --root "${CONTAINER_NAME}" bash -c '
 '
 
 # Step 4: Copy source code and install packages
-# Mount the current directory into the container and install from there
 echo "=== Step 4: Installing nvidia_resiliency_ext (no-deps) and nvrx-attrsvc ==="
 REPO_ROOT="$(pwd)"
-enroot start --rw --root "${CONTAINER_NAME}" --mount "${REPO_ROOT}:/mnt/repo:ro" bash -c '
+
+# Echo the command for debugging
+echo "Running: enroot start --rw --root --mount ${REPO_ROOT}:/tmp/repo ${CONTAINER_NAME} bash -c '...'"
+
+enroot start --rw --root --mount "${REPO_ROOT}:/tmp/repo" "${CONTAINER_NAME}" bash -c '
     set -e
-    # Create /app and copy source code
-    mkdir -p /app
-    cp -r /mnt/repo/src /app/
-    cp -r /mnt/repo/examples /app/
-    cp /mnt/repo/pyproject.toml /app/
+    cd /tmp/repo
     
-    # Install main library without deps (skips torch)
-    cd /app
-    pip install --no-cache-dir --no-deps -e .
+    # Install main library without CUDA extensions (skip CUPTI build)
+    STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install --no-cache-dir --no-deps .
     
-    # Install attribution service from its pyproject.toml
-    pip install --no-cache-dir -e ./examples/attribution
+    # Install attribution service (installs fastapi, uvicorn, mcp, logsage, etc.)
+    pip install --no-cache-dir ./examples/attribution
 '
 
 # Step 5: Set environment variables
