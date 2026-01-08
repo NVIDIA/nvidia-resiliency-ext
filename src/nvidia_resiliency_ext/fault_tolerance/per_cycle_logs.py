@@ -137,11 +137,11 @@ class PerCycleLogsSpecs(LogsSpecs):
         global_env = envs[0]
         run_id = global_env.get("TORCHELASTIC_RUN_ID", "test_run_id")
         restart_count = global_env.get("TORCHELASTIC_RESTART_COUNT", "0")
-
-        # Create per-cycle log file
-        base_without_ext = os.path.splitext(self._base_log_file)[0]
-        ext = os.path.splitext(self._base_log_file)[1] or ".log"
-        cycle_log_file = f"{base_without_ext}_cycle{restart_count}{ext}"
+        try:
+            cycle_idx = int(restart_count)
+        except (TypeError, ValueError):
+            cycle_idx = 0
+        cycle_log_file = self.get_cycle_log_file(cycle_idx)
 
         # Create the consolidated log file if it doesn't exist
         # This serves two purposes:
@@ -238,3 +238,11 @@ class PerCycleLogsSpecs(LogsSpecs):
         if not isinstance(other, PerCycleLogsSpecs):
             return False
         return self._base_log_file == other._base_log_file
+
+    def get_cycle_log_file(self, cycle_index: int) -> str:
+        """
+        Instance helper to build cycle logfile for this spec's base path.
+        """
+        base_without_ext = os.path.splitext(self._base_log_file)[0]
+        ext = os.path.splitext(self._base_log_file)[1] or ".log"
+        return f"{base_without_ext}_cycle{cycle_index}{ext}"
