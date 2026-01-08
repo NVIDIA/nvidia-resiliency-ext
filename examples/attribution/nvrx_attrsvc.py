@@ -12,6 +12,7 @@ import stat
 from importlib.resources import files as pkg_files
 from typing import Any
 
+import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -385,10 +386,13 @@ def _normalize_and_validate_path(
     return real
 
 
-if __name__ == "__main__":
-    import uvicorn
-
+def main():
+    """Entry point for the NVRX Attribution Service."""
     cfg = setup()
     logger.info(f"Starting NVRX Attribution Service (nvrx_attrsvc) on {cfg.HOST}:{cfg.PORT}")
     logger.info(f"nvrx_attrsvc API Documentation: http://{cfg.HOST}:{cfg.PORT}/docs")
     uvicorn.run(create_app(cfg), host=cfg.HOST, port=cfg.PORT)
+
+
+if __name__ == "__main__":
+    main()

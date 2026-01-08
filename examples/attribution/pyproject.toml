@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nvrx-attrsvc"
+version = "0.1.0"
+description = "NVRX Attribution Service - FastAPI server for log analysis and attribution"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "NVIDIA Corporation"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: FastAPI",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    # Web framework
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "httpx>=0.24.0",
+    # Attribution library (MCP client, analyzers)
+    "langchain-nvidia-ai-endpoints>=0.3.15",
+    "mcp>=1.15.0",
+    "logsage==0.1.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.24.0",
+]
+
+[project.scripts]
+nvrx-attrsvc = "nvrx_attrsvc:main"
+
+[project.urls]
+Homepage = "https://github.com/NVIDIA/nvidia-resiliency-ext"
+Repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
+
+[tool.setuptools]
+py-modules = ["nvrx_attrsvc"]
