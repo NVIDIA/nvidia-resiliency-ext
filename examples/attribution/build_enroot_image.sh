@@ -56,30 +56,28 @@ enroot start --rw --root "${CONTAINER_NAME}" bash -c '
     pip install --no-cache-dir --upgrade pip
 '
 
-# Step 4: Copy source code into container
-echo "=== Step 4: Copying source code ==="
-CONTAINER_ROOT=$(enroot list -f "${CONTAINER_NAME}" | head -1)
-mkdir -p "${CONTAINER_ROOT}/app"
-cp -r src "${CONTAINER_ROOT}/app/"
-cp -r examples "${CONTAINER_ROOT}/app/"
-cp pyproject.toml "${CONTAINER_ROOT}/app/"
-
-# Step 5: Install main library without deps (skips torch)
-echo "=== Step 5: Installing nvidia_resiliency_ext (no-deps) ==="
-enroot start --rw --root "${CONTAINER_NAME}" bash -c '
+# Step 4: Copy source code and install packages
+# Mount the current directory into the container and install from there
+echo "=== Step 4: Installing nvidia_resiliency_ext (no-deps) and nvrx-attrsvc ==="
+REPO_ROOT="$(pwd)"
+enroot start --rw --root "${CONTAINER_NAME}" --mount "${REPO_ROOT}:/mnt/repo:ro" bash -c '
+    set -e
+    # Create /app and copy source code
+    mkdir -p /app
+    cp -r /mnt/repo/src /app/
+    cp -r /mnt/repo/examples /app/
+    cp /mnt/repo/pyproject.toml /app/
+    
+    # Install main library without deps (skips torch)
     cd /app
     pip install --no-cache-dir --no-deps -e .
-'
-
-# Step 6: Install attribution service from its pyproject.toml
-echo "=== Step 6: Installing nvrx-attrsvc service ==="
-enroot start --rw --root "${CONTAINER_NAME}" bash -c '
-    cd /app
+    
+    # Install attribution service from its pyproject.toml
     pip install --no-cache-dir -e ./examples/attribution
 '
 
-# Step 7: Set environment variables
-echo "=== Step 7: Setting environment variables ==="
+# Step 5: Set environment variables
+echo "=== Step 5: Setting environment variables ==="
 enroot start --rw --root "${CONTAINER_NAME}" bash -c '
     cat >> /etc/environment << EOF
 NVRX_ATTRSVC_HOST=0.0.0.0
@@ -89,8 +87,8 @@ NVRX_ATTRSVC_ALLOWED_ROOT=/data
 EOF
 '
 
-# Step 8: Export as squash file
-echo "=== Step 8: Exporting squash image ==="
+# Step 6: Export as squash file
+echo "=== Step 6: Exporting squash image ==="
 enroot export -o "${OUTPUT_PATH}" "${CONTAINER_NAME}"
 
 # Cleanup
