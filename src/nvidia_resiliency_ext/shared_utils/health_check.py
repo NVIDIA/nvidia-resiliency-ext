@@ -1338,11 +1338,11 @@ class AttributionService:
             raise ValueError("log_path is required (provide at init or call time)")
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self.get_job_logs_result_async(effective_path))
+            loop.create_task(self.get_attrsvc_result_async(effective_path))
         except RuntimeError:
             # No running event loop; run in a background thread without blocking
             threading.Thread(
-                target=lambda: asyncio.run(self.get_job_logs_result_async(effective_path)),
+                target=lambda: asyncio.run(self.get_attrsvc_result_async(effective_path)),
                 daemon=True,
             ).start()
         return None
