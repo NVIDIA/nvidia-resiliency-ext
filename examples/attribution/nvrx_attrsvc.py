@@ -169,6 +169,9 @@ def create_app(cfg: Settings) -> FastAPI:
                 status_code=400,
                 detail={"error_code": "invalid_request", "message": "log_path is required"},
             )
+        # Validate the path exists and is accessible
+        normalized = _normalize_and_validate_path(req.log_path, cfg, require_regular_file=True)
+        logger.info(f"POST /logs - submitted: {normalized}")
         return SubmitResponse(submitted=True)
 
     @app.get(
