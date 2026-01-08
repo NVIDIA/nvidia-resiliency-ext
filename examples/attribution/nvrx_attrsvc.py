@@ -19,7 +19,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
 
-# Setup logging (configurable via NVRX_ATTRSVC_LOG_LEVEL env: DEBUG|INFO|WARNING|ERROR|CRITICAL)
+# Setup logging (configurable via NVRX_ATTRSVC_LOG_LEVEL_NAME env: DEBUG|INFO|WARNING|ERROR|CRITICAL)
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +41,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        env_prefix="NVRX_ATTRSVC_",
     )
 
 
