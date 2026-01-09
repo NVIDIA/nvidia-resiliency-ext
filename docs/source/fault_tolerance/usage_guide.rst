@@ -82,6 +82,41 @@ the rendezvous handlers will use it in their node health checks.
 * The rendezvous implementations call ``NodeHealthCheck`` which will connect to this UDS endpoint.
 * Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
 
+Distributed storage health check (Lustre + NFS)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The launcher can perform a distributed storage health check before rendezvous. 
+By default it is disabled. When enabled (via CLI or YAML), it:
+
+* Verifies Lustre health via ``/sys/fs/lustre/health_check`` (fails if not healthy).
+* Discovers distributed mount targets and checks that each mount is reachable.
+
+* ``--ft-enable-dist-storage-healthcheck`` (alias: ``--ft_enable_dist_storage_healthcheck``)
+  - Accepts a boolean-like value only to enable the mount checks
+    (e.g., ``--ft-enable-dist-storage-healthcheck true``).
+
+Storage path health check
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Validate specific absolute paths for existence and basic readability before rendezvous.
+
+* CLI: ``--ft-storage-health-check-path`` (alias: ``--ft_storage_health_check_path``)
+  - Accepts a comma-separated list of absolute paths (each starting with ``/``).
+  - Example: ``--ft-storage-health-check-path '/data/checkpoints,/mnt/dataset'``
+* YAML: ``storage_healthcheck_path`` under the ``fault_tolerance`` section
+
+.. code-block:: yaml
+
+   fault_tolerance:
+     # Comma-separated absolute paths
+     storage_healthcheck_path: "/data/checkpoints,/mnt/dataset"
+
+Validation behavior:
+  - Files: attempts to read a small block (up to 4KB)
+  - Directories: lists directory contents
+  - Other existing types (e.g., devices/symlinks): performs ``stat`` access
+
+
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^
 

@@ -2397,6 +2397,27 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-enable-dist-storage-healthcheck",
+        "--ft_enable_dist_storage_healthcheck",
+        type=str,
+        default=None,
+        dest="ft_enable_dist_storage_healthcheck",
+        help="Enable distributed storage health check (Lustre + NFS) before rendezvous. "
+        "Accepts a boolean-like value only (e.g., 'true'/'false'). Example: "
+        "--ft-enable-dist-storage-healthcheck true",
+    )
+
+    parser.add_argument(
+        "--ft-storage-health-check-path",
+        "--ft_storage_health_check_path",
+        type=str,
+        default=None,
+        dest="ft_storage_healthcheck_path",
+        help="Comma-separated list of absolute paths to validate for existence and readability "
+        "before rendezvous. Example: --ft-storage-health-check-path '/data/a,/mnt/b'.",
+    )
+
+    parser.add_argument(
         "--ft-skip-section-response",
         "--ft-skip_section_response",
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
@@ -2710,6 +2731,47 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+    # Pass distributed storage health check configuration
+    cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)
+    if cli_dist_storage is not None:
+        val = cli_dist_storage
+    else:
+        val = fault_tol_cfg.enable_dist_storage_healthcheck
+    if val is not None:
+        if isinstance(val, str):
+            lower = val.strip().lower()
+            if lower in ("true", "1", "yes"):
+                rdzv_configs['enable_dist_storage_healthcheck'] = True
+            elif lower in ("false", "0", "no", ""):
+                # explicitly disabled; do not set the key
+                pass
+            else:
+                raise ValueError(
+                    "--ft-dist-storage-health-check accepts boolean-like values only: "
+                    "'true'/'false', '1'/'0', 'yes'/'no'"
+                )
+        elif isinstance(val, bool):
+            if val:
+                rdzv_configs['enable_dist_storage_healthcheck'] = True
+
+    # Pass file path health check configuration (comma-separated absolute paths)
+    cli_storage_paths = getattr(args, 'ft_storage_healthcheck_path', None)
+    cfg_storage_paths = getattr(fault_tol_cfg, 'storage_healthcheck_path', None)
+    chosen_storage_paths = cli_storage_paths if cli_storage_paths else cfg_storage_paths
+    if chosen_storage_paths:
+        if isinstance(chosen_storage_paths, str):
+            parts = [p.strip() for p in chosen_storage_paths.split(",") if p.strip()]
+        elif isinstance(chosen_storage_paths, list):
+            parts = [str(p).strip() for p in chosen_storage_paths if str(p).strip()]
+        else:
+            raise ValueError(
+                "storage health check paths must be a comma-separated string or a list of strings"
+            )
+        for p in parts:
+            if not p.startswith("/"):
+                raise ValueError(f"--ft-storage-health-check-path: path must be absolute starting with '/': {p}")
+        if parts:
+            rdzv_configs['storage_healthcheck_paths'] = parts
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
