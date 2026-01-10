@@ -39,8 +39,12 @@ def get_infrastructure_rank() -> int:
 
     Returns infrastructure rank with the following precedence:
     1. CROSS_SLURM_PROCID (for multi-job coordination)
-    2. SLURM_PROCID (set by SLURM)
+    2. SLURM_PROCID (set by SLURM), with job array support
     3. GROUP_RANK (fallback, set by launcher)
+
+    For SLURM job arrays with one task per node, the infrastructure rank is calculated as:
+        array_task_id * nnodes_per_array_task + slurm_procid
+    This ensures unique ranks across all nodes in all array tasks.
 
     If none are set, returns -1 to indicate it should be assigned deterministically.
 
@@ -57,8 +61,43 @@ def get_infrastructure_rank() -> int:
         logger.debug(f"Using infrastructure rank {infra_rank} from CROSS_SLURM_PROCID")
         return infra_rank
 
-    # Try SLURM_PROCID (set by SLURM), then fall back to GROUP_RANK (set by launcher)
-    infra_rank_str = os.getenv('SLURM_PROCID', os.getenv('GROUP_RANK', None))
+    # Get SLURM_PROCID once and reuse it
+    slurm_procid = os.getenv('SLURM_PROCID')
+
+    # Check if we're running in a SLURM job array
+    slurm_array_task_id = os.getenv('SLURM_ARRAY_TASK_ID')
+
+    if slurm_array_task_id is not None and slurm_procid is not None:
+        # In a SLURM job array with one task per node, calculate global rank across all array tasks
+        # based on node count rather than process count
+        array_task_id = int(slurm_array_task_id)
+        proc_id = int(slurm_procid)
+
+        # Get the number of nodes per array task
+        # SLURM_NNODES is the number of nodes allocated to the current job step
+        nnodes_per_array = os.getenv('SLURM_NNODES', os.getenv('SLURM_JOB_NUM_NODES'))
+        if nnodes_per_array is None:
+            # If SLURM_NNODES is not set, we can't compute the offset
+            # This should not happen in a properly configured SLURM array job
+            raise RuntimeError(
+                "SLURM_ARRAY_TASK_ID is set but SLURM_NNODES/SLURM_JOB_NUM_NODES is not defined. "
+                "Cannot calculate infrastructure rank for job array. "
+                "Ensure the job array is properly configured."
+            )
+
+        nnodes = int(nnodes_per_array)
+
+        # For one launcher per node, SLURM_PROCID should match SLURM_NODEID (local node ID within job)
+        # Calculate global infrastructure rank: array_task_id * nodes_per_task + local_node_id
+        infra_rank = array_task_id * nnodes + proc_id
+        logger.debug(
+            f"Using infrastructure rank {infra_rank} from SLURM job array "
+            f"(array_task_id={array_task_id}, nnodes={nnodes}, procid={proc_id})"
+        )
+        return infra_rank
+
+    # Try SLURM_PROCID (already retrieved), then fall back to GROUP_RANK (set by launcher)
+    infra_rank_str = slurm_procid if slurm_procid is not None else os.getenv('GROUP_RANK')
 
     if infra_rank_str is not None:
         infra_rank = int(infra_rank_str)
@@ -79,6 +118,15 @@ def get_infrastructure_rank() -> int:
         "Neither SLURM_PROCID nor GROUP_RANK is set. Infrastructure rank will be assigned deterministically."
     )
     return -1
+
+
+def is_slurm_job_array() -> bool:
+    """Check if the current job is running in a SLURM job array.
+
+    Returns:
+        bool: True if running in a SLURM job array (SLURM_ARRAY_TASK_ID is set), False otherwise
+    """
+    return os.getenv('SLURM_ARRAY_TASK_ID') is not None
 
 
 def is_process_alive(pid):

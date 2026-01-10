@@ -51,7 +51,7 @@ from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
-from .utils import get_infrastructure_rank
+from .utils import get_infrastructure_rank, is_slurm_job_array
 
 # Conditionally import health check injector for testing/debugging
 # This only activates if NVRX_INJECT_GPU_FAILURE environment variable is set
@@ -1310,6 +1310,24 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """See base class."""
         return False
 
+    def _maybe_increment_unhealthy_count(self) -> None:
+        """Increment unhealthy count in the store, but skip if in SLURM job array.
+
+        In SLURM job array deployments, we rely on SLURM to quickly restart/requeue
+        failing job array elements. The unhealthy_count logic should not kick in for
+        job array deployments:
+        1) A node failing health check will exit the ft_launcher itself. The srun will
+           run with "--kill-on-bad-exit" to kill the job array element.
+        2) No unhealthy count should be increased. So the rest of the nodes will proceed
+           to wait for rendezvous and eventually timeout on rendezvous if worst case we
+           don't have refill coming in.
+        """
+        if is_slurm_job_array():
+            return
+
+        # Normal case: increment unhealthy count
+        self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+
     def _run_health_check(self, health_checker, check_name: str, failure_message: str) -> None:
         """Helper method to run a health check with consistent error handling.
 
@@ -1320,13 +1338,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """
         try:
             if not health_checker():
-                self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+                self._maybe_increment_unhealthy_count()
                 log.error(f"{check_name} failed for node {self._this_node}: {failure_message}")
                 raise UnhealthyNodeException(failure_message)
         except UnhealthyNodeException:
             raise
         except Exception as e:
-            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+            self._maybe_increment_unhealthy_count()
             log.error(f"Unexpected error during {check_name} for node {self._this_node}: {str(e)}")
             raise UnhealthyNodeException(str(e)) from e
 
@@ -1368,7 +1386,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             self._close()
         if excl_this_node:
             # Report unhealthy to the store before raising exception
-            self._barrier_state.store.add(self._barrier_state.unhealthy_count_key, 1)
+            self._maybe_increment_unhealthy_count()
             raise UnhealthyNodeException(
                 f"Node {self._this_node} is excluded from the training due to an user request."
             )
