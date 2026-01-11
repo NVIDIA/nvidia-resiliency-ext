@@ -287,6 +287,37 @@ def create_app(cfg: Settings) -> FastAPI:
                 )
                 logger.info(f"Result preview: {str(log_result)[:200]}...")
 
+                # 1. Access the main text blob inside the nested list
+                # data['result'] is a list, the first item is a list, and the text is the first item of that.
+                if 'result' in log_result and len(log_result['result']) > 0:
+                    for item in log_result['result']:
+                        raw_text = item[0]
+
+                        # 2. Extract the First Line
+                        # Split by newlines and take the first element
+                        first_line = raw_text.split('\n')[0]
+
+                        # 3. Extract text after 'Attribution:'
+                        # Split the text by the specific key "Attribution:" and take the second part
+                        # We use .strip() to remove the leading newline character
+                        attribution_text = raw_text.split('Attribution:')
+                        if len(attribution_text) > 1:
+                            attribution_text = attribution_text[1].strip()
+                            attribution_text = attribution_text.replace('"\\', "").replace('\"', "").split("\n\n")[0]
+                        else:
+                            attribution_text = ""
+                        data = {
+                            "s_cluster": "oci-hsg",
+                            "s_user": "nvrx_attr",
+                            "s_attribution": attribution_text,
+                            "s_auto_resume": first_line,
+                            "s_auto_resume_explanation": "",
+                            "s_jobid": "111",
+                            "ts_current_time": round(datetime.now().timestamp() * 1000),
+                        }
+                        post(data=data, project="df-nvrxattr-test1")
+                
+
             return AttrSvcResult(result=log_result, status="completed")
         except HTTPException:
             raise
