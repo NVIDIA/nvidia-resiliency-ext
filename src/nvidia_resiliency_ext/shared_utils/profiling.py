@@ -160,6 +160,24 @@ class FaultToleranceProfiler:
             :-3
         ]  # Remove last 3 digits for milliseconds
 
+    def set_cycle(self, cycle: int) -> None:
+        """Set the current cycle number.
+
+        Called by the rendezvous handler when a newly joining node syncs its cycle number
+        from the global_cycle_key in the store. This ensures newly joining nodes (e.g.,
+        replacement array tasks) continue with the correct cycle number instead of starting from 0.
+
+        Args:
+            cycle: The cycle number to set. Only sets if >= current cycle to prevent backward jumps.
+        """
+        if cycle >= self._current_cycle:
+            self._current_cycle = cycle
+        else:
+            self._logger.warning(
+                f"Attempted to set profiler cycle to {cycle}, which is less than "
+                f"current cycle {self._current_cycle}. Ignoring to prevent backward cycle jumps."
+            )
+
     def _publish_metrics(
         self, event: ProfilingEvent, timestamp: float, node_id: Optional[Any], rank: Optional[int]
     ) -> None:
@@ -239,3 +257,16 @@ def record_profiling_event(
         Event ID string
     """
     return _global_profiler.record_event(event, node_id, rank)
+
+
+def set_profiling_cycle(cycle: int) -> None:
+    """Set the current cycle number in the global profiler.
+
+    Called by the rendezvous handler when a newly joining node syncs its cycle number
+    from the global_cycle_key in the store. This ensures newly joining nodes (e.g.,
+    replacement array tasks) continue with the correct cycle number instead of starting from 0.
+
+    Args:
+        cycle: The cycle number to set. Only sets if >= current cycle to prevent backward jumps.
+    """
+    _global_profiler.set_cycle(cycle)

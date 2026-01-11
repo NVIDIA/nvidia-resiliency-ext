@@ -851,10 +851,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
 
-        # TODO: Consider using self._rdzv_handler.round() instead of calculating from _remaining_restarts
-        # Using rdzv.round() would be more robust for hot spare scenarios and provide a single source
-        # of truth for the restart cycle number.
-        restart_count = spec.max_restarts - self._remaining_restarts
+        # Use rendezvous round directly as the restart count
+        # This provides a single global source of truth for the cycle number
+        # Note: _remaining_restarts is derived from round() at line 580, so this is equivalent
+        # to the previous calculation but more direct and clear
+        restart_count = self._rdzv_handler.round()
 
         # Record worker start start event
         record_profiling_event(
