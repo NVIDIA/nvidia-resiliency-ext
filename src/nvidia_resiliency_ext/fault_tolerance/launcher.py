@@ -97,8 +97,7 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
-# Setup the nvrx logger at module import time
-setup_logger(node_local_tmp_prefix="ftlauncher")
+# Logger will be configured in run() after parsing args
 logger = logging.getLogger(LogConfig.name)
 
 def _register_ft_rdzv_handler(impl_type: str = "legacy"):
@@ -851,10 +850,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
 
-        # TODO: Consider using self._rdzv_handler.round() instead of calculating from _remaining_restarts
-        # Using rdzv.round() would be more robust for hot spare scenarios and provide a single source
-        # of truth for the restart cycle number.
-        restart_count = spec.max_restarts - self._remaining_restarts
+        # Use rendezvous round directly as the restart count
+        # This provides a single global source of truth for the cycle number
+        # Note: _remaining_restarts is derived from round() at line 580, so this is equivalent
+        # to the previous calculation but more direct and clear
+        restart_count = self._rdzv_handler.round()
 
         # Record worker start start event
         record_profiling_event(
@@ -2027,14 +2027,14 @@ def get_args_parser() -> ArgumentParser:
         type=str,
         default=None,
         dest="ft_base_logfile",
-        help="Base log file path for per-cycle logging (e.g. /lustre/logs/job_12345.log). "
-        "Automatically enables per-cycle consolidated logging with flat file structure: "
-        "/lustre/logs/job_12345_cycle0.log, /lustre/logs/job_12345_cycle1.log, etc. "
-        "All ranks' stdout and stderr go to the same file per cycle (truly consolidated). "
-        "Each line is automatically prefixed with [global_rank]: (like 'srun -l') for easy identification. "
-        "Uses O_APPEND flag for safe concurrent writes from multiple ranks. "
-        "Avoids filesystem pressure at scale (1 file instead of N*ranks files). "
-        "Ideal for SLURM jobs with thousands of ranks.",
+        help="Base log file path for consolidated logging (e.g. /lustre/logs/job_12345.log). "
+        "Creates two types of log files: "
+        "(1) InJob launcher logs: /lustre/logs/job_12345.log (all launcher instances from all nodes), "
+        "(2) Training worker logs per cycle: /lustre/logs/job_12345_cycle0.log, job_12345_cycle1.log, etc. "
+        "All ranks/nodes write to the same files with automatic rank prefixes (like 'srun -l'). "
+        "Uses O_APPEND flag for safe concurrent writes from multiple processes. "
+        "Avoids filesystem pressure at scale (2 files per cycle instead of N*ranks files). "
+        "Ideal for SLURM job arrays with thousands of ranks across multiple nodes.",
     )
 
     parser.add_argument(
@@ -2685,6 +2685,15 @@ def run_script_path(training_script: str, *training_script_args: str):
 
 
 def run(args):
+    # Configure logger based on whether --ft-base-logfile is specified
+    base_log_file = getattr(args, 'ft_base_logfile', None)
+    if base_log_file:
+        # Log to file with rank prefixes (like srun -l)
+        setup_logger(log_file=base_log_file)
+    else:
+        # Log to console with standard prefix
+        setup_logger(node_local_tmp_prefix="ftlauncher")
+
     if args.standalone:
         args.rdzv_backend = "c10d"
         args.rdzv_endpoint = "localhost:0"

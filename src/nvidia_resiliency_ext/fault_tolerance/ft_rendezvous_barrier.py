@@ -47,7 +47,7 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..inprocess.utils import format_rank_set_verbose
 from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
-from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
+from ..shared_utils.profiling import ProfilingEvent, record_profiling_event, set_profiling_cycle
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
@@ -401,6 +401,7 @@ class _RendezvousBarrierState:
         self.closed_key = f"{self.prefix}:closed"
         self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
         self.peer_aborted_count_key = f"{self.prefix}:peer_aborted_count"
+        self.global_cycle_key = f"{self.prefix}:global_cycle"
 
         # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist
         # This key is always present and serves as the open/close indicator:
@@ -1261,6 +1262,24 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # Round 0 indicates the first rendezvous (enforces max_nodes requirement)
         self._rendezvous_round = 0
 
+        # Sync with global cycle for cross-array task coordination
+        # This ensures all nodes (including newly joined nodes from different array tasks)
+        # use the same cycle number, which is critical for PyTorch's role_info coordination
+        if self._barrier_state.store.check([self._barrier_state.global_cycle_key]):
+            stored_cycle_bytes = self._barrier_state.store.get(self._barrier_state.global_cycle_key)
+            stored_cycle = int(stored_cycle_bytes.decode('utf-8'))
+            if stored_cycle > self._rendezvous_round:
+                log.info(
+                    f"Syncing _rendezvous_round from {self._rendezvous_round} to {stored_cycle} "
+                    f"(cross-array task coordination during initialization)"
+                )
+                self._rendezvous_round = stored_cycle
+
+                # Also sync the profiling cycle to match
+                # This ensures newly joining nodes (e.g., replacement array tasks) continue
+                # with the correct cycle number instead of restarting from 0
+                set_profiling_cycle(self._rendezvous_round)
+
         self._ranks_connector = IpcConnector(FT_LAUNCHER_IPC_SOCKET)
         self._ranks_connector.start_receiving()
 
@@ -1408,6 +1427,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # Increment round number for the next rendezvous
         # This ensures each rendezvous round uses an isolated namespace for MASTER_ADDR/MASTER_PORT
         self._rendezvous_round += 1
+
+        # AFTER rendezvous: Store host updates global cycle
+        # This allows new nodes to sync to the current cycle before their first rendezvous
+        if self._barrier_state.is_store_host:
+            self._barrier_state.store.set(
+                self._barrier_state.global_cycle_key, str(self._rendezvous_round).encode('utf-8')
+            )
 
         # Store the assigned rank and world size
         self._assigned_rank = group_rank

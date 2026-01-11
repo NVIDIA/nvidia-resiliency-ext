@@ -38,9 +38,10 @@ def get_infrastructure_rank() -> int:
     """Get infrastructure rank from environment variables with SLURM validation.
 
     Returns infrastructure rank with the following precedence:
-    1. CROSS_SLURM_PROCID (for multi-job coordination)
-    2. SLURM_PROCID (set by SLURM), with job array support
-    3. GROUP_RANK (fallback, set by launcher)
+    1. NVRX_INFRA_RANK_FROM_NODENAME (if set) - calculate rank by extracting digits from SLURMD_NODENAME
+    2. CROSS_SLURM_PROCID (for multi-job coordination)
+    3. SLURM_PROCID (set by SLURM), with job array support
+    4. GROUP_RANK (fallback, set by launcher)
 
     For SLURM job arrays with one task per node, the infrastructure rank is calculated as:
         array_task_id * nnodes_per_array_task + slurm_procid
@@ -53,7 +54,25 @@ def get_infrastructure_rank() -> int:
 
     Raises:
         RuntimeError: If SLURM_JOB_ID is set but neither CROSS_SLURM_PROCID nor SLURM_PROCID is defined
+        ValueError: If NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME is not set or contains no digits
     """
+    # Check NVRX_INFRA_RANK_FROM_NODENAME first (for nodename-based rank calculation)
+    if os.getenv('NVRX_INFRA_RANK_FROM_NODENAME') is not None:
+        nodename = os.getenv('SLURMD_NODENAME')
+        if nodename is None:
+            raise ValueError(
+                "NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME environment variable is not set"
+            )
+        # Extract all digits from nodename
+        digits = ''.join(c for c in nodename if c.isdigit())
+        if not digits:
+            raise ValueError(
+                f"NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME '{nodename}' contains no digits"
+            )
+        infra_rank = int(digits)
+        logger.debug(f"Using infrastructure rank {infra_rank} from SLURMD_NODENAME '{nodename}'")
+        return infra_rank
+
     # Check CROSS_SLURM_PROCID first (for multi-job scenarios)
     cross_slurm_procid = os.getenv('CROSS_SLURM_PROCID')
     if cross_slurm_procid is not None:

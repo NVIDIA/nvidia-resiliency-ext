@@ -35,13 +35,11 @@ Environment Variables:
           * "1:1,1:2,1:5,3:17,3:18" means:
             - Cycle 1: infrastructure ranks 1, 2, and 5 fail
             - Cycle 3: infrastructure ranks 17 and 18 fail
-    
-    SLURM_PROCID: SLURM process ID within the job (required)
-        - Used to determine infrastructure rank
-        - Automatically set by SLURM (0, 1, 2, ... for each node)
 
 Note:
-    - Infrastructure rank comes from SLURM_PROCID environment variable
+    - Infrastructure rank is calculated using get_infrastructure_rank() from utils.py
+    - Supports both regular SLURM deployments and SLURM job array deployments
+    - For job arrays: infra_rank = array_task_id * nnodes_per_task + slurm_procid
     - Cycle number is passed from the rendezvous round counter
     - The rendezvous runs once per node, not per rank
     - This module automatically activates when imported if NVRX_INJECT_GPU_FAILURE is set
@@ -52,6 +50,7 @@ import os
 import socket
 from typing import Dict, Optional, Set
 
+from nvidia_resiliency_ext.fault_tolerance.utils import get_infrastructure_rank
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 logger = logging.getLogger(LogConfig.name)
@@ -142,23 +141,18 @@ class HealthCheckInjector:
 
     def _get_infra_rank(self) -> Optional[int]:
         """
-        Get the infrastructure rank of this node from SLURM_PROCID.
+        Get the infrastructure rank of this node.
 
-        Infrastructure rank represents the node's position in the cluster.
-        SLURM_PROCID is the process ID within the SLURM job allocation.
+        Uses get_infrastructure_rank() which handles both regular SLURM deployments
+        and SLURM job array deployments correctly.
 
         Returns:
-            Infrastructure rank (0, 1, 2, ...) or None if SLURM_PROCID is not available.
+            Infrastructure rank or None if it cannot be determined.
         """
-        infra_rank_str = os.environ.get("SLURM_PROCID")
-        if infra_rank_str is None:
-            logger.warning("SLURM_PROCID not found. Cannot determine infrastructure rank.")
-            return None
-
         try:
-            return int(infra_rank_str)
-        except ValueError:
-            logger.error(f"Invalid SLURM_PROCID value: {infra_rank_str}")
+            return get_infrastructure_rank()
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error(f"Failed to get infrastructure rank: {e}")
             return None
 
     def should_inject_gpu_failure(self, cycle: int) -> bool:
