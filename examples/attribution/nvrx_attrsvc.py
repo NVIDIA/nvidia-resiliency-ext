@@ -285,7 +285,7 @@ def create_app(cfg: Settings) -> FastAPI:
                     top_p=0.7,
                     max_tokens=8192,
                 )
-                logger.info(f"Result preview: {str(log_result)[:200]}...")
+                logger.info(f"Result preview: {str(log_result)}...")
 
                 # 1. Access the main text blob inside the nested list
                 # data['result'] is a list, the first item is a list, and the text is the first item of that.
