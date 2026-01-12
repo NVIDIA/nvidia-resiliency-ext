@@ -35,7 +35,7 @@ dependencies = [
     # Attribution library (MCP client, analyzers)
     "langchain-nvidia-ai-endpoints>=0.3.15",
     "mcp>=1.15.0",
-    "logsage==0.1.3",
+    "logsage==0.1.4",
 ]
 
 [project.optional-dependencies]
