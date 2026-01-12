@@ -327,11 +327,11 @@ def create_app(cfg: Settings) -> FastAPI:
                             jobid = ""
                             logger.info(f"Failed to extract job ID: {e}")
 
-                        logger.info("jobid:", jobid)
-                        logger.info("log_path:",normalized)
-                        logger.info("auto_resume:", auto_resume)
-                        logger.info("auto_resume_explanation:", auto_resume_explanation)
-                        logger.info("attribution_text:", attribution_text)
+                        logger.info("jobid: %s", jobid)
+                        logger.info("log_path: %s",normalized)
+                        logger.info("auto_resume: %s", auto_resume)
+                        logger.info("auto_resume_explanation: %s", auto_resume_explanation)
+                        logger.info("attribution_text: %s", attribution_text)
                         data = {
                         "s_cluster": "oci-hsg",
                         "s_user": "nvrx_attr",
