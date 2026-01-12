@@ -10,6 +10,7 @@ import logging
 import os
 import stat
 import sys
+import re
 from importlib.resources import files as pkg_files
 from typing import Any
 from datetime import datetime
@@ -19,8 +20,6 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-from nvdataflow import post
 
 from nvdataflow import post
 
@@ -301,7 +300,12 @@ def create_app(cfg: Settings) -> FastAPI:
 
                         # 2. Extract the First Line
                         # Split by newlines and take the first element
-                        first_line = raw_text.split('\n')[0]
+                        auto_resume = raw_text.split('\n')[0]
+                        try:
+                            auto_resume_explanation = raw_text.split('\n')[1]
+                        except Exception as e:
+                            auto_resume_explanation = ""
+                            print(f"Failed to extract auto resume explanation: {e}")
 
                         # 3. Extract text after 'Attribution:'
                         # Split the text by the specific key "Attribution:" and take the second part
@@ -312,16 +316,30 @@ def create_app(cfg: Settings) -> FastAPI:
                             attribution_text = attribution_text.replace('"\\',"").replace('\"',"").split("\n\n")[0]
                         else:
                             attribution_text = ""
+                        try:
+                            match = re.search(r"_(\d+)_date_", normalized)
+                            if not match:
+                                raise ValueError("Job ID not found in path")
+                            jobid = match.group(1)
+                        except Exception as e:
+                            jobid = ""
+                            print(f"Failed to extract job ID: {e}")
+
+                        print("jobid:", jobid)
+                        print("auto_resume:", auto_resume)
+                        print("auto_resume_explanation:", auto_resume_explanation)
+                        print("attribution_text:", attribution_text)
                         data = {
                         "s_cluster": "oci-hsg",
                         "s_user": "nvrx_attr",
                         "s_attribution": attribution_text,
-                        "s_auto_resume": first_line,
-                        "s_auto_resume_explanation": "",
-                        "s_jobid": "111",
+                        "s_auto_resume": auto_resume,
+                        "s_auto_resume_explanation": auto_resume_explanation,
+                        "s_jobid": jobid,
+                        "s_logpath": normalized,
                         "ts_current_time": round(datetime.now().timestamp() * 1000),
                         }
-                        result = post(data=data, project="df-nvrxattr-test1")
+                        result = post(data=data, project="aidot-fact-logsage")
 
             return AttrSvcResult(result=log_result, status="completed")
         except HTTPException:
