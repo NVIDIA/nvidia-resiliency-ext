@@ -1,0 +1,6 @@
+# 1. Point to the internal NVIDIA Artifactory
+--extra-index-url https://sc-hw-artf.nvidia.com/artifactory/api/pypi/hwinf-gpuwa-pypi/simple
+
+# 2. Install this component in editable mode
+# This tells pip to read the local pyproject.toml dependencies
+-e .

@@ -137,21 +137,26 @@ class NVRxLogAnalyzer(NVRxAttribution):
         return output_list
 
     async def llm_analyze(self, output_list: list[ApplicationData]) -> list[str]:
-        return [
-            (
-                get_proposed_solution_cat(self.llm, output)
-                if len(output.application_errors_list_full) > 0
-                else "No error found from application logs"
-            )
-            for output in output_list
-        ]
+
+        result = []
+        for output in output_list:
+            if len(output.application_errors_list_full):
+                result.append(get_proposed_solution_cat(self.llm, output))
+            else:
+                if output.finished == "LLM_FAILURE":
+                    result.append(("LLM FAILURE","LLM FAILURE","LLM FAILURE","LLM FAILURE",""))
+                if output.finished != "SLURM_CANCELLED":
+                    result.append(("ERRORS NOT FOUND","ERRORS NOT FOUND","ERRORS NOT FOUND","ERRORS NOT FOUND",""))
+                result.append(("RESTART IMMEDIATE","","""Attribution: Primary issues: ["SLURM STEP CANCELLED"], Secondary issues: []""","",""))
+
+        return result
 
     async def print_output(
         self, attribution_results: list[str]
     ) -> list[tuple[str, AttributionState]]:
         output_list = []
         for attribution_result in attribution_results:
-            if attribution_result != "No error found from application logs":
+            if attribution_result:
                 # Concatenate all strings in attribution_result if it's a list/tuple
                 logger.info(f"attribution_result: {attribution_result}")
                 attr_state = (
@@ -164,10 +169,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 else:
                     concatenated_result = str(attribution_result)
                 output_list.append((concatenated_result, attr_state))
-            else:
-                output_list.append(
-                    ("No error found from application logs", AttributionState.CONTINUE)
-                )
         return output_list
 
 
