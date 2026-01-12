@@ -11,6 +11,7 @@ import os
 import stat
 import sys
 import re
+import time
 from importlib.resources import files as pkg_files
 from typing import Any
 from datetime import datetime
@@ -280,18 +281,19 @@ def create_app(cfg: Settings) -> FastAPI:
                     },
                 )
             async with client:
+                s_time = time.time()
                 log_result = await client.run_module(
                     module_name="log_analyzer",
                     log_path=normalized,
                     model=cfg.LLM_MODEL,
-                    temperature=0.2,
+                    temperature=0.0,
+                    top_p=1,
                     exclude_nvrx_logs=False,
                     is_per_cycle=True,
-                    top_p=0.7,
                     max_tokens=8192,
                 )
                 logger.info(f"Result preview: {str(log_result)}...")
-
+                e_time = time.time()
                 # 1. Access the main text blob inside the nested list
                 # data['result'] is a list, the first item is a list, and the text is the first item of that.
                 if 'result' in log_result and len(log_result['result'])>0:
@@ -305,7 +307,7 @@ def create_app(cfg: Settings) -> FastAPI:
                             auto_resume_explanation = raw_text.split('\n')[1]
                         except Exception as e:
                             auto_resume_explanation = ""
-                            print(f"Failed to extract auto resume explanation: {e}")
+                            logger.info(f"Failed to extract auto resume explanation: {e}")
 
                         # 3. Extract text after 'Attribution:'
                         # Split the text by the specific key "Attribution:" and take the second part
@@ -323,12 +325,13 @@ def create_app(cfg: Settings) -> FastAPI:
                             jobid = match.group(1)
                         except Exception as e:
                             jobid = ""
-                            print(f"Failed to extract job ID: {e}")
+                            logger.info(f"Failed to extract job ID: {e}")
 
-                        print("jobid:", jobid)
-                        print("auto_resume:", auto_resume)
-                        print("auto_resume_explanation:", auto_resume_explanation)
-                        print("attribution_text:", attribution_text)
+                        logger.info("jobid:", jobid)
+                        logger.info("log_path:",normalized)
+                        logger.info("auto_resume:", auto_resume)
+                        logger.info("auto_resume_explanation:", auto_resume_explanation)
+                        logger.info("attribution_text:", attribution_text)
                         data = {
                         "s_cluster": "oci-hsg",
                         "s_user": "nvrx_attr",
@@ -337,6 +340,7 @@ def create_app(cfg: Settings) -> FastAPI:
                         "s_auto_resume_explanation": auto_resume_explanation,
                         "s_jobid": jobid,
                         "s_logpath": normalized,
+                        "d_processing_time":round(e_time-s_time,2),
                         "ts_current_time": round(datetime.now().timestamp() * 1000),
                         }
                         result = post(data=data, project="aidot-fact-logsage")
