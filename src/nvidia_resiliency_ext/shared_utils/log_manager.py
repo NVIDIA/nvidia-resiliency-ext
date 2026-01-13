@@ -144,7 +144,33 @@ class LogConfig:
 
     @classmethod
     def get_infra_rank(cls):
-        return int(os.environ.get("SLURM_PROCID", "0")) if os.environ.get("SLURM_PROCID") else None
+        """
+        Get infrastructure rank with SLURM job array support.
+
+        For SLURM job arrays, calculates rank as:
+            array_task_id * nnodes_per_array_task + slurm_procid
+
+        Returns:
+            Infrastructure rank or None if not available
+        """
+        # Check if we're in a SLURM job array
+        slurm_array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+        slurm_procid = os.environ.get("SLURM_PROCID")
+
+        if slurm_array_task_id is not None and slurm_procid is not None:
+            # SLURM job array deployment
+            array_task_id = int(slurm_array_task_id)
+            proc_id = int(slurm_procid)
+
+            # Get number of nodes per array task
+            nnodes_per_array = os.environ.get("SLURM_NNODES", os.environ.get("SLURM_JOB_NUM_NODES"))
+            if nnodes_per_array is not None:
+                nnodes = int(nnodes_per_array)
+                return array_task_id * nnodes + proc_id
+            # If we can't get nnodes, fall through to regular SLURM_PROCID
+
+        # Regular SLURM deployment or fallback
+        return int(slurm_procid) if slurm_procid else None
 
     @classmethod
     def get_infra_local_rank(cls):
@@ -270,9 +296,6 @@ class LogManager:
         # Create handler: file, node-local-tmp, or console (mutually exclusive)
         if self._log_file:
             # File handler
-            log_dir = os.path.dirname(self._log_file)
-            if log_dir and not os.path.exists(log_dir):
-                os.makedirs(log_dir, exist_ok=True)
             handler = logging.FileHandler(self._log_file, mode='a')
         elif self.node_local_tmp_logging_enabled:
             # Node-local temporary logging

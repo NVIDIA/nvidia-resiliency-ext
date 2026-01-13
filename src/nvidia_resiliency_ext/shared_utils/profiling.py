@@ -237,8 +237,16 @@ class FaultToleranceProfiler:
         return event_id
 
 
-# Global profiler instance
-_global_profiler = FaultToleranceProfiler()
+# Global profiler instance (lazy-initialized to avoid stdout output at import time)
+_global_profiler: Optional[FaultToleranceProfiler] = None
+
+
+def _get_global_profiler() -> FaultToleranceProfiler:
+    """Get or create the global profiler instance."""
+    global _global_profiler
+    if _global_profiler is None:
+        _global_profiler = FaultToleranceProfiler()
+    return _global_profiler
 
 
 def record_profiling_event(
@@ -256,7 +264,7 @@ def record_profiling_event(
     Returns:
         Event ID string
     """
-    return _global_profiler.record_event(event, node_id, rank)
+    return _get_global_profiler().record_event(event, node_id, rank)
 
 
 def set_profiling_cycle(cycle: int) -> None:
@@ -269,4 +277,4 @@ def set_profiling_cycle(cycle: int) -> None:
     Args:
         cycle: The cycle number to set. Only sets if >= current cycle to prevent backward jumps.
     """
-    _global_profiler.set_cycle(cycle)
+    _get_global_profiler().set_cycle(cycle)

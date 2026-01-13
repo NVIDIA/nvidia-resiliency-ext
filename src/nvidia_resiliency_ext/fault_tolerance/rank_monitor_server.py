@@ -78,6 +78,11 @@ class RankMonitorLogger(logging.Logger):
         self.restarter_logger.log(logging.DEBUG, message, *args, **kwargs)
 
     def _setup_logger(self):
+        """Setup logger with stderr stream handler.
+
+        Note: stderr is inherited from parent (launcher). If launcher redirected
+        stderr to base logfile, logs will automatically go there.
+        """
         self.setLevel(self.level)
         ch = logging.StreamHandler(sys.stderr)
         ch.setLevel(self.level)
@@ -85,6 +90,11 @@ class RankMonitorLogger(logging.Logger):
         self.propagate = False
 
     def _create_restarter_sublogger(self):
+        """Create restarter sublogger (writes [ALWAYS] messages to stdout).
+
+        Note: stdout is inherited from parent (launcher). If launcher redirected
+        stdout to base logfile, logs will automatically go there.
+        """
         self.restarter_logger = logging.getLogger(f"{self.name}.Restarter")
         self.restarter_logger.setLevel(
             logging.DEBUG if self.is_restarter_logger else logging.CRITICAL
@@ -620,6 +630,8 @@ class RankMonitorServer:
 
         # Set up the nvrx logger for subprocess
         # Use force_reset=True to ensure fresh logger setup with correct rank info
+        # Note: stdout/stderr are inherited from parent (launcher), so if launcher
+        # redirected them to base logfile, rank monitor logs will go there too
         from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
         try:

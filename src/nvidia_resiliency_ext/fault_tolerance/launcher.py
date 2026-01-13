@@ -914,11 +914,12 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
 
-        # Use rendezvous round directly as the restart count
+        # Get the current rendezvous round from the handler
+        # Round is incremented AFTER rendezvous completes but BEFORE workers start,
+        # so round 1 = first attempt (cycle 0), round 2 = first restart (cycle 1), etc.
+        # Subtract 1 to get the actual restart count (number of times we've restarted, not including initial start)
         # This provides a single global source of truth for the cycle number
-        # Note: _remaining_restarts is derived from round() at line 580, so this is equivalent
-        # to the previous calculation but more direct and clear
-        restart_count = self._rdzv_handler.round()
+        restart_count = self._rdzv_handler.round() - 1
 
         # Record worker start start event
         record_profiling_event(
@@ -2881,6 +2882,26 @@ def run(args):
     if base_log_file:
         # Log to file with rank prefixes (like srun -l)
         setup_logger(log_file=base_log_file)
+
+        # Redirect launcher's stdout and stderr to the base logfile
+        # This catches:
+        # - PyTorch's C++ logs: E0112, W0112 format from torch elastic
+        # - RankMonitorLogger stderr output
+        # - NestedRestarter stdout output ([ALWAYS] messages)
+
+        # Open base logfile in append mode
+        log_fd = os.open(base_log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+
+        # Redirect both stdout (fd 1) and stderr (fd 2) to the log file
+        os.dup2(log_fd, sys.stdout.fileno())
+        os.dup2(log_fd, sys.stderr.fileno())
+
+        # Close the extra fd (stdout/stderr now point to it via dup2)
+        os.close(log_fd)
+
+        # Reopen Python's stdout/stderr handles with line buffering
+        sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+        sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
     else:
         # Log to console with standard prefix
         setup_logger(node_local_tmp_prefix="ftlauncher")

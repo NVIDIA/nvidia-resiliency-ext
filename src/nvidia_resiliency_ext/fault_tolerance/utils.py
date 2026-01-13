@@ -35,11 +35,11 @@ logger = logging.getLogger(LogConfig.name)
 _IPC_PICKLER = multiprocessing.reduction.ForkingPickler(open(os.devnull, mode='wb'))
 
 
-def get_infrastructure_rank() -> int:
+def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
     """Get infrastructure rank from environment variables with SLURM validation.
 
     Returns infrastructure rank with the following precedence:
-    1. NVRX_INFRA_RANK_FROM_NODENAME (if set) - calculate rank by extracting digits from SLURMD_NODENAME
+    1. NVRX_INFRA_RANK_FROM_NODENAME (if set and not skipped) - calculate rank by extracting digits from SLURMD_NODENAME
     2. CROSS_SLURM_PROCID (for multi-job coordination)
     3. SLURM_PROCID (set by SLURM), with job array support
     4. GROUP_RANK (fallback, set by launcher)
@@ -50,15 +50,20 @@ def get_infrastructure_rank() -> int:
 
     If none are set, returns -1 to indicate it should be assigned deterministically.
 
+    Args:
+        skip_nodename_logic: If True, skip the NVRX_INFRA_RANK_FROM_NODENAME logic and fall through
+                           to SLURM array task ID calculation. Default is False.
+
     Returns:
         int: Infrastructure rank (>=0) or -1 if not set
 
     Raises:
         RuntimeError: If SLURM_JOB_ID is set but neither CROSS_SLURM_PROCID nor SLURM_PROCID is defined
-        ValueError: If NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME is not set or contains no digits
+        ValueError: If NVRX_INFRA_RANK_FROM_NODENAME is set (and not skipped) but SLURMD_NODENAME
+                   is not set or contains no digits
     """
     # Check NVRX_INFRA_RANK_FROM_NODENAME first (for nodename-based rank calculation)
-    if os.getenv('NVRX_INFRA_RANK_FROM_NODENAME') is not None:
+    if not skip_nodename_logic and os.getenv('NVRX_INFRA_RANK_FROM_NODENAME') is not None:
         nodename = os.getenv('SLURMD_NODENAME')
         if nodename is None:
             raise ValueError(

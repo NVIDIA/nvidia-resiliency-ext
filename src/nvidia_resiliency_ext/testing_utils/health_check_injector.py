@@ -146,11 +146,14 @@ class HealthCheckInjector:
         Uses get_infrastructure_rank() which handles both regular SLURM deployments
         and SLURM job array deployments correctly.
 
+        For testing purposes, this skips the nodename-based logic to prefer the SLURM
+        array task ID calculation, which is more predictable for test scenarios.
+
         Returns:
             Infrastructure rank or None if it cannot be determined.
         """
         try:
-            return get_infrastructure_rank()
+            return get_infrastructure_rank(skip_nodename_logic=True)
         except (ValueError, KeyError, TypeError) as e:
             logger.error(f"Failed to get infrastructure rank: {e}")
             return None
