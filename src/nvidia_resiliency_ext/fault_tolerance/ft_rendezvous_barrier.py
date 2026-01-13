@@ -100,7 +100,7 @@ class RendezvousTimeout:
 
     _DEFAULT_TIMEOUTS = {
         "join": timedelta(seconds=600),
-        "last_call": timedelta(seconds=10),
+        "last_call": timedelta(seconds=70),
         "close": timedelta(seconds=30),
         "heartbeat": timedelta(seconds=5),
     }
@@ -1705,7 +1705,7 @@ def create_handler(
     +----------------------------+------------------------------------------------------+
     | last_call_timeout          | An additional wait amount, in seconds, before        |
     |                            | completing the rendezvous once the minimum number of |
-    |                            | nodes has been reached. Defaults to 10 seconds.      |
+    |                            | nodes has been reached. Defaults to 70 seconds.      |
     |                            | NOTE: This only applies to SUBSEQUENT rendezvous     |
     |                            | after the first one. The FIRST rendezvous always     |
     |                            | waits for max_nodes to ensure all nodes join during  |
