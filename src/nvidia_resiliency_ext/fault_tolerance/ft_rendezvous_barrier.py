@@ -1276,6 +1276,33 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # Sync with global cycle for cross-array task coordination
         # This ensures all nodes (including newly joined nodes from different array tasks)
         # use the same cycle number, which is critical for PyTorch's role_info coordination
+        #
+        # RACE CONDITION ANALYSIS:
+        # Replacement nodes can arrive in three scenarios:
+        #
+        # 1. Required Replacement (rendezvous waiting):
+        #    - Current rendezvous is waiting to reach min_nodes
+        #    - Replacement is REQUIRED to complete the rendezvous
+        #    - Replacement reads global_cycle_key = K (current value, correct)
+        #    - Rendezvous CANNOT complete without the replacement
+        #    - When rendezvous completes, global_cycle_key is updated to K+1
+        #    - ✅ NO RACE: Replacement reads correct value because rendezvous waits for it
+        #
+        # 2. Hot Spare (after rendezvous completes):
+        #    - Current rendezvous completes and updates global_cycle_key = K+1
+        #    - Replacement arrives later and reads global_cycle_key = K+1 (new value, correct)
+        #    - Replacement waits at Step 0 for next failure to open new rendezvous
+        #    - ✅ NO RACE: Replacement reads already-updated value
+        #
+        # 3. Hot Spare (narrow race window):
+        #    - Current rendezvous completes (last_participant_arrived_key = 1)
+        #    - Replacement arrives and reads global_cycle_key = K (old value, STALE)
+        #    - BEFORE global_cycle_key is updated to K+1 (couple-seconds window)
+        #    - Replacement has stale _rendezvous_round and will wait at Step 0
+        #    - ⚠️ RACE EXISTS: Replacement has stale value for this initialization
+        #
+        # We accept this narrow race window because:
+        # - Occurs only for hot spares in a couple-seconds window
         if self._barrier_state.store.check([self._barrier_state.global_cycle_key]):
             stored_cycle_bytes = self._barrier_state.store.get(self._barrier_state.global_cycle_key)
             stored_cycle = int(stored_cycle_bytes.decode('utf-8'))

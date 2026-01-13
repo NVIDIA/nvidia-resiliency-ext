@@ -39,7 +39,7 @@ class TestTrainingProgressTracker(unittest.TestCase):
         self.assertEqual(tracker.current_max_iteration, 0)
         self.assertEqual(tracker.last_restart_iteration, 0)
         self.assertEqual(tracker.no_progress_count, 0)
-        self.assertEqual(tracker.restart_count, 0)
+        self.assertEqual(tracker.cycle_number, 0)
         self.assertFalse(tracker._iterations_not_reported_warned)
 
     def test_update_iteration(self):
@@ -75,8 +75,8 @@ class TestTrainingProgressTracker(unittest.TestCase):
         # Initial run - no analysis should happen
         tracker.analyze_previous_cycle()
 
-        # Verify restart_count incremented but no progress check
-        self.assertEqual(tracker.restart_count, 1)
+        # Verify cycle_number incremented but no progress check
+        self.assertEqual(tracker.cycle_number, 1)
         self.assertEqual(tracker.no_progress_count, 0)
         # No INFO or WARNING logs should be generated for initial run
         mock_logger.info.assert_not_called()
@@ -99,11 +99,11 @@ class TestTrainingProgressTracker(unittest.TestCase):
         tracker.analyze_previous_cycle()
 
         # Verify progress detected
-        self.assertEqual(tracker.restart_count, 2)
+        self.assertEqual(tracker.cycle_number, 2)
         self.assertEqual(tracker.no_progress_count, 0)
         self.assertEqual(tracker.last_restart_iteration, 800)
 
-        # Check INFO log was generated (logs as #1 since restart_count=1 when check happens)
+        # Check INFO log was generated (logs as #1 since cycle_number=1 when check happens)
         mock_logger.info.assert_called_once()
         log_message = mock_logger.info.call_args[0][0]
         self.assertIn("Training cycle #1 made progress", log_message)
@@ -127,10 +127,10 @@ class TestTrainingProgressTracker(unittest.TestCase):
         tracker.analyze_previous_cycle()
 
         # Verify no progress detected
-        self.assertEqual(tracker.restart_count, 2)
+        self.assertEqual(tracker.cycle_number, 2)
         self.assertEqual(tracker.no_progress_count, 1)
 
-        # Check WARNING log was generated (logs as #1 since restart_count=1 when check happens)
+        # Check WARNING log was generated (logs as #1 since cycle_number=1 when check happens)
         mock_logger.warning.assert_called_once()
         log_message = mock_logger.warning.call_args[0][0]
         self.assertIn("Training cycle #1 made NO progress", log_message)
@@ -153,7 +153,7 @@ class TestTrainingProgressTracker(unittest.TestCase):
         tracker.analyze_previous_cycle()
 
         # Verify warning logged once and no_progress_count not incremented
-        self.assertEqual(tracker.restart_count, 2)
+        self.assertEqual(tracker.cycle_number, 2)
         self.assertEqual(tracker.no_progress_count, 0)
         self.assertTrue(tracker._iterations_not_reported_warned)
 
