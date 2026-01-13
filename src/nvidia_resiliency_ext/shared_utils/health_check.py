@@ -17,6 +17,9 @@
 import asyncio
 import logging
 import os
+import shlex
+import subprocess
+import sys
 import threading
 import traceback
 from collections import defaultdict
@@ -29,6 +32,20 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 # Get the nvrx logger
 logger = logging.getLogger(LogConfig.name)
+
+
+# -----------------------------
+# Local utility helpers
+# -----------------------------
+def _run_shell(cmd: str, timeout: int = 55) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except subprocess.TimeoutExpired as e:
+        return -9, e.stdout or "", e.stderr or "timeout"
+    except Exception as e:
+        return -1, "", str(e)
+
 
 # Adds basic thread safety, allowing to run health checks from multiple threads.
 # This is needed for rendezvous unit tests. NOTE: It will work as long as each
@@ -939,3 +956,344 @@ class NVLHealthCheck(PynvmlMixin):
         except Exception as e:
             logger.warning(f"Unexpected Error checking GPU {device_index}: {str(e)}")
             return False
+
+
+class NodeHealthCheck:
+    """
+    Node-level health check that queries the node health check service used by InJob via gRPC over a Unix domain socket (UDS).
+    """
+
+    def __init__(
+        self,
+        socket_path: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        args: Optional[list] = None,
+        interval: int = 60,
+        on_failure: Optional[Callable] = None,
+        request_timeout_sec: Optional[float] = 60,
+    ):
+        self.socket_path = socket_path
+        self.endpoint = endpoint
+        self.args = args or []
+        self.interval = interval
+        self.on_failure = on_failure
+        self.request_timeout_sec = request_timeout_sec
+        self._channel_target: Optional[str] = None
+
+        # Optional imports; health check becomes a no-op if gRPC/protos aren't available
+        self._grpc = None
+        self._pb2 = None
+        self._pb2_grpc = None
+        try:
+            import sys as _sys
+
+            import grpc as _grpc_mod
+
+            # Relative import from package
+            from .proto import nvhcd_pb2 as _pb2_mod
+
+            _sys.modules.setdefault("nvhcd_pb2", _pb2_mod)
+            from .proto import nvhcd_pb2_grpc as _pb2_grpc_mod
+
+            self._grpc = _grpc_mod
+            self._pb2 = _pb2_mod
+            self._pb2_grpc = _pb2_grpc_mod
+        except Exception as e:
+            logger.debug(f"Node health check gRPC client unavailable: {e}")
+        finally:
+            # Pre-validate and cache a usable channel target (or None to skip)
+            self._channel_target = self._validate_and_get_target()
+
+    async def async_check(self) -> None:
+        while True:
+            await asyncio.sleep(self.interval)
+            result = await self._check_health()
+            if not result and self.on_failure:
+                await self.on_failure()
+
+    async def _check_health(self) -> bool:
+        return self._perform_health_check()
+
+    def __call__(self) -> Union[Optional[Exception], bool]:
+        return self._perform_health_check()
+
+    def _resolve_channel_target(self) -> Optional[str]:
+        """
+        Resolve endpoint into a gRPC channel target (UDS only).
+        - If endpoint is a path (starts with '/' or './'), prefix with unix://
+        - If endpoint already starts with 'unix://', use as is
+        - If no endpoint provided, fall back to socket_path
+        - Any non-UDS formats are ignored (return None)
+        """
+        target = self.endpoint
+        if not target:
+            # Backward compatibility: use socket_path
+            if self.socket_path:
+                if self.socket_path.startswith("unix://"):
+                    target = self.socket_path
+                else:
+                    target = f"unix://{self.socket_path}"
+        else:
+            if target.startswith("unix://"):
+                # Already UDS
+                pass
+            elif target.startswith("/") or target.startswith("./"):
+                target = f"unix://{target}"
+            else:
+                # Non-UDS target not supported at this time
+                logger.debug(
+                    f"Health check endpoint '{target}' is not a UDS; skipping node health check."
+                )
+                return None
+        return target
+
+    def _perform_health_check(self) -> bool:
+        """
+        Query node health check service over UDS and interpret success as healthy.
+        Behavior:
+          - If gRPC/protos are unavailable, or UDS socket is missing, return True (non-fatal/optional check).
+          - On gRPC connectivity errors, return False.
+        """
+        # Use pre-validated target computed during initialization
+        target = self._channel_target
+        if not target:
+            return True
+
+        try:
+            with self._grpc.insecure_channel(target) as channel:
+                stub = self._pb2_grpc.HealthCheckServiceStub(channel)
+                request = self._pb2.HealthCheckRequest(args=["--no-slurm"])
+                if self.request_timeout_sec is not None:
+                    response = stub.RunHealthCheck(request, timeout=self.request_timeout_sec)
+                else:
+                    response = stub.RunHealthCheck(request)
+
+                if not getattr(
+                    response, "success", False
+                ):  # If the health check failed, return False
+                    exit_code = getattr(response, "exit_code", None)
+                    output = getattr(response, "output", "")
+                    error = getattr(response, "error", "")
+                    msg = f"Node health check failed (exit_code={exit_code}). Output: {output}"
+                    if error:
+                        msg += f" Error: {error}"
+                    logger.warning(msg)
+                    return False
+
+                logger.debug("Node health check: success")
+                return True
+
+        except Exception as e:
+            logger.warning(
+                f"Node health check gRPC connectivity error: {str(e)}; treating as healthy (skip)."
+            )
+            return True
+
+    def _validate_and_get_target(self) -> Optional[str]:
+        """
+        Validate gRPC/proto availability and UDS target before making RPC call.
+        Returns a usable channel target string or None to indicate skipping the check.
+        """
+        # If gRPC client cannot be constructed, return None (non-fatal/optional check)
+        if self._grpc is None or self._pb2 is None or self._pb2_grpc is None:
+            return None
+
+        # Resolve endpoint/target
+        target = self._resolve_channel_target()
+        if not target:
+            return None
+
+        # If using UDS and socket does not exist, assume service not deployed and skip
+        if target.startswith("unix://"):
+            uds_path = target[len("unix://") :]
+            if not os.path.exists(uds_path):
+                logger.debug(
+                    f"Node health check socket not found at {uds_path}; skipping node health check."
+                )
+                return None
+
+        return target
+
+
+# -----------------------------
+# Distributed storage checks integration (Lustre + NFS)
+# -----------------------------
+"""
+Distributed Storage Health + Mounts Check
+
+1) Lustre health verification via /sys/fs/lustre/health_check
+2) Filesystem mounts verification (Lustre and NFS)
+"""
+
+
+class DistributedStorageHealthCheck:
+    def __init__(
+        self,
+        interval: int = 60,
+        on_failure: Optional[Callable] = None,
+    ):
+        self.interval = interval
+        self.on_failure = on_failure
+
+    async def async_check(self) -> None:
+        """
+        Periodically runs distributed storage checks and invokes on_failure when a failure is detected.
+        """
+        while True:
+            await asyncio.sleep(self.interval)
+            result = await self._check_health()
+            if not result and self.on_failure:
+                await self.on_failure()
+
+    async def _check_health(self) -> bool:
+        """
+        Asynchronous wrapper for the health check call.
+        """
+        return self._perform_health_check()
+
+    def __call__(self) -> bool:
+        """
+        Synchronous distributed storage health check callable.
+        """
+        return self._perform_health_check()
+
+    def _perform_health_check(self) -> bool:
+        """
+        Execute distributed storage checks; returns True if all selected checks pass.
+        """
+        try:
+            return self.run_storage_checks()
+        except Exception as e:
+            logger.warning(f"distributed storage health checks execution error: {e}")
+            return False
+
+    def _check_lustre_health(self) -> bool:
+        """
+        Check Lustre health status file. Returns:
+          - True on success (status 'healthy' or file missing)
+          - False on failure (read error or status not 'healthy')
+        """
+        health_path = "/sys/fs/lustre/health_check"
+        if os.path.exists(health_path):
+            try:
+                with open(health_path, "r") as fh:
+                    status = fh.read().strip()
+                if status == "healthy":
+                    logger.debug("lustre health_check OK: healthy")
+                    return True
+                logger.warning(f"lustre health_check not healthy: '{status}'")
+                return False
+            except Exception as exc:
+                logger.warning(f"error reading {health_path}: {exc}")
+                return False
+        # File missing is non-fatal since might not be container mounted
+        logger.debug(f"{health_path} not found, skipping health status check")
+        return True
+
+    def run_storage_checks(self):
+        """Run distributed storage health checks and mounts validation (Lustre + NFS)"""
+        ok = True
+
+        # 1) Lustre health; if it fails, skip mounts and return False
+        if not self._check_lustre_health():
+            return False
+
+        # 2) Mounts reachability validation: discover mounts and verify their directories are reachable
+        fs_types = ["lustre", "nfs", "nfs4"]
+        types_str = ",".join(fs_types)
+        # Discover mount targets within the current namespace (container-aware)
+        rc, out, err = _run_shell(
+            f"findmnt --noheadings --type={types_str} --output=target", timeout=55
+        )
+        if rc != 0:
+            logger.warning(f"error running findmnt for types {types_str}: {err}")
+            ok = False
+            mount_dirs: list[str] = []
+        else:
+            # Extract target mount directories directly (container mount points)
+            mount_dirs = [line.strip() for line in out.splitlines() if line.strip()]
+            logger.debug(
+                f"findmnt succeeded for types {types_str}: discovered {len(mount_dirs)} target(s)"
+            )
+            if not mount_dirs:
+                logger.debug(f"no {types_str} mount directories discovered")
+
+        if mount_dirs:
+            # First, verify reachability of mount roots via timed shell ops
+            unreachable = []
+            for d in mount_dirs:
+                q = shlex.quote(d)
+                # Check directory type
+                rc_d, _, _ = _run_shell(f"test -d {q}", timeout=15)
+                if rc_d != 0:
+                    unreachable.append(f"{d} (not a directory)")
+                    continue
+                # Attempt to list directory to ensure it is reachable
+                rc_list, out_list, err_list = _run_shell(f"ls -1 -- {q}", timeout=15)
+                if rc_list != 0:
+                    msg = err_list or out_list or "list error"
+                    unreachable.append(f"{d} ({msg.strip()})")
+            if unreachable:
+                logger.warning("unreachable mount directories:\n" + "\n".join(unreachable))
+                ok = False
+            else:
+                logger.debug("all mount directories reachable:\n" + "\n".join(mount_dirs))
+
+        return ok
+
+
+# -----------------------------
+# Storage path health checks
+# -----------------------------
+
+
+class StoragePathHealthCheck:
+    """
+    Validate a list of absolute paths by checking existence.
+    - Input: list of absolute paths (e.g., ["/data/a", "/mnt/b"])
+    - Behavior: logs invalid (non-absolute) and missing paths; returns False if any issue.
+    """
+
+    def __init__(self, paths: list[str], on_failure: Optional[Callable] = None):
+        self.paths = paths
+        self.on_failure = on_failure
+
+    def __call__(self) -> bool:
+        return self._perform_health_check()
+
+    def _perform_health_check(self) -> bool:
+        """
+        Execute path probes in a separate Python subprocess to avoid hangs on remote
+        filesystems.
+        """
+        args = [
+            sys.executable,
+            "-m",
+            "nvidia_resiliency_ext.shared_utils.storage_probe",
+        ] + self.paths
+
+        # Timeout: 5s per path (conservative)
+        timeout = 5 * max(1, len(self.paths))
+
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning("StoragePathHealthCheck probe timed out")
+            return False
+        except Exception as e:
+            logger.warning(f"StoragePathHealthCheck probe failed: {e}")
+            return False
+
+        if proc.returncode != 0:
+            # Probe subprocess signalled failure via non-zero exit code.
+            stderr = (proc.stderr or "").strip()
+            logger.warning(
+                f"StoragePathHealthCheck probe subprocess failed (rc={proc.returncode}): {stderr}"
+            )
+            return False
+
+        # Success: returncode == 0
+        logger.debug("StoragePathHealthCheck probe subprocess exited with rc=0")
+        if self.paths:
+            logger.debug("all storage paths accessible:\n" + "\n".join(self.paths))
+        return True

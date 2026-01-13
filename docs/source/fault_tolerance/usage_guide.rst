@@ -52,6 +52,13 @@ and supports most ``torchrun`` command-line parameters. FT configuration can be 
 via a YAML file using ``--ft-cfg-path`` or through command-line parameters
 using ``--ft-<parameter-name>``.
 
+Details:
+
+* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint used by InJob.
+  Accepts Unix domain socket (UDS): ``/var/run/nodehealth.sock`` or ``unix:///var/run/nodehealth.sock``.
+* The rendezvous implementations call ``NodeHealthCheck`` which will connect to the provided endpoint.
+* Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
+
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
 The restart behavior depends on the ``--ft-restart-policy`` parameter, which supports two modes:
 
@@ -63,6 +70,52 @@ The restart behavior depends on the ``--ft-restart-policy`` parameter, which sup
   falls below the minimum specified in ``--nnodes``. This allows for some worker failures to be handled
   without restarting remaining workers, e.g., with the :doc:`../inprocess/index`.
   For details on how ``min-healthy`` policy interacts with :doc:`../inprocess/index` see :doc:`integration/inprocess`.
+
+Node health check service
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The launcher accepts an optional argument to point to the node health check service endpoint.
+When provided, the launcher exports the socket path to child processes and
+the rendezvous handlers will use it in their node health checks.
+
+* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint (UDS).
+* The rendezvous implementations call ``NodeHealthCheck`` which will connect to this UDS endpoint.
+* Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
+
+Distributed storage health check (Lustre + NFS)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The launcher can perform a distributed storage health check before rendezvous. 
+By default it is disabled. When enabled (via CLI or YAML), it:
+
+* Verifies Lustre health via ``/sys/fs/lustre/health_check`` (fails if not healthy).
+* Discovers distributed mount targets and checks that each mount is reachable.
+
+* ``--ft-enable-dist-storage-healthcheck`` (alias: ``--ft_enable_dist_storage_healthcheck``)
+  - Accepts a boolean-like value only to enable the mount checks
+    (e.g., ``--ft-enable-dist-storage-healthcheck true``).
+
+Storage path health check
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Validate specific absolute paths for existence and basic readability before rendezvous.
+
+* CLI: ``--ft-storage-health-check-path`` (alias: ``--ft_storage_health_check_path``)
+  - Accepts a comma-separated list of absolute paths (each starting with ``/``).
+  - Example: ``--ft-storage-health-check-path '/data/checkpoints,/mnt/dataset'``
+* YAML: ``storage_healthcheck_path`` under the ``fault_tolerance`` section
+
+.. code-block:: yaml
+
+   fault_tolerance:
+     # Comma-separated absolute paths
+     storage_healthcheck_path: "/data/checkpoints,/mnt/dataset"
+
+Validation behavior:
+  - Files: attempts to read a small block (up to 4KB)
+  - Directories: lists directory contents
+  - Other existing types (e.g., devices/symlinks): performs ``stat`` access
+
 
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^
@@ -153,6 +206,48 @@ Example for NVSwitch deployment with segment=4 (12 nodes requested, 8 needed):
    # Requires domains with at least 4 nodes each
    # 8 active nodes = 2 complete segments
    # 4 hot spare nodes available for restart
+
+NUMA binding
+^^^^^^^^^^^^
+
+The ``ft_launcher`` supports automatic NUMA node binding for workers through the ``NVRX_GPUS_PER_NUMA``
+environment variable. When set, the launcher automatically wraps each worker process with ``numactl``
+to bind it to the appropriate NUMA node based on its local rank.
+
+.. important::
+   **Prerequisites:** This feature requires the ``numactl`` command-line tool to be installed and
+   available in the system PATH. The launcher will fail to start workers if ``numactl`` is not found.
+
+   To install on common Linux distributions:
+
+   * **Ubuntu/Debian:** ``sudo apt-get install numactl``
+   * **RHEL/CentOS/Rocky:** ``sudo yum install numactl``
+
+**How it works:**
+
+* Set ``NVRX_GPUS_PER_NUMA`` to the number of GPUs per NUMA node on your system
+* The launcher calculates the NUMA node as: ``numa_node = local_rank // gpus_per_numa``
+* Each worker is automatically wrapped with: ``numactl --cpunodebind=<numa_node> --membind=<numa_node>``
+* This applies only to binary/script entrypoints (not Python function entrypoints)
+
+**Example usage:**
+
+.. code-block:: bash
+
+    # For a system with 4 GPUs per NUMA node (8 GPUs total, 2 NUMA nodes)
+    export NVRX_GPUS_PER_NUMA=4
+    ft_launcher --nproc-per-node=8 train.py
+
+    # In this configuration:
+    # - Ranks 0-3 will be bound to NUMA node 0
+    # - Ranks 4-7 will be bound to NUMA node 1
+
+**Benefits:**
+
+Proper NUMA binding can significantly improve performance by ensuring memory locality
+and reducing cross-NUMA memory access overhead, which is especially important for
+multi-GPU training workloads.
+
 
 Hang detection
 --------------

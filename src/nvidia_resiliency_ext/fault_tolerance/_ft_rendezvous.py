@@ -59,11 +59,16 @@ from torch.distributed.elastic.rendezvous.utils import _delay, _PeriodicTimer
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..shared_utils.health_check import GPUHealthCheck, NicLinkStateHealthCheck
+from ..shared_utils.health_check import (
+    DistributedStorageHealthCheck,
+    GPUHealthCheck,
+    NicLinkStateHealthCheck,
+    StoragePathHealthCheck,
+)
 from ..shared_utils.profiling import ProfilingEvent, record_profiling_event
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
-from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException
+from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
 from .utils import get_infrastructure_rank
 
 log = logging.getLogger(LogConfig.name)
@@ -1179,7 +1184,9 @@ class FtRendezvousHandler(RendezvousHandler):
         timeout: Optional[RendezvousTimeout] = None,
         upscaling_enabled: bool = True,
         enable_nic_healthcheck: bool = False,
+        enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
+        storage_healthcheck_paths: Optional[list] = None,
     ):
         """Create a new :py:class:`FtRendezvousHandler`.
 
@@ -1227,7 +1234,9 @@ class FtRendezvousHandler(RendezvousHandler):
             store,
             state_holder,
             enable_nic_healthcheck=enable_nic_healthcheck,
+            enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
+            storage_healthcheck_paths=storage_healthcheck_paths,
         )
 
     def __init__(
@@ -1238,7 +1247,9 @@ class FtRendezvousHandler(RendezvousHandler):
         store: Store,
         state_holder: _RendezvousStateHolder,
         enable_nic_healthcheck: bool = False,
+        enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
+        storage_healthcheck_paths: Optional[list] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1287,6 +1298,15 @@ class FtRendezvousHandler(RendezvousHandler):
             self._nic_link_state_checker = NicLinkStateHealthCheck(
                 link_state_path_template=self._link_state_path_template
             )
+
+        # Distributed storage health checker instance (enabled via boolean flag)
+        self._dist_storage_state_checker = (
+            DistributedStorageHealthCheck() if enable_dist_storage_healthcheck else None
+        )
+        # Storage path health checker instance
+        self._storage_path_checker = (
+            StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
+        )
 
     def _record(
         self,
@@ -1342,7 +1362,7 @@ class FtRendezvousHandler(RendezvousHandler):
             raise UnhealthyNodeException(str(e)) from e
 
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU and NIC link state health checks for this node."""
+        """Perform GPU, NIC link state, and Node health checks for this node."""
         # Record the health check message
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
@@ -1358,6 +1378,30 @@ class FtRendezvousHandler(RendezvousHandler):
                 self._nic_link_state_checker,
                 "NIC link state health check",
                 f"Node {self._this_node} has unhealthy NIC link(s).",
+            )
+
+        # Perform distributed storage (Lustre/NFS) health check if enabled
+        if self._dist_storage_state_checker is not None:
+            self._run_health_check(
+                self._dist_storage_state_checker,
+                "Storage health check",
+                f"Node {self._this_node} has unhealthy storage state.",
+            )
+        # Perform storage path health check if paths were provided
+        if self._storage_path_checker is not None:
+            self._run_health_check(
+                self._storage_path_checker,
+                "Storage path health check",
+                f"Node {self._this_node} has invalid or unreadable paths.",
+            )
+
+        # Perform Node health check
+        _nodehealth_checker = get_node_health_check()
+        if _nodehealth_checker is not None:
+            self._run_health_check(
+                _nodehealth_checker,
+                "Node health check",
+                f"Node {self._this_node} is unhealthy.",
             )
 
     def handle_control_requests_from_rank(self) -> None:
@@ -1749,6 +1793,10 @@ def create_handler(
         # torchrun default behaviour if not specified otherwise
         upscale_completed = params.config.get('upscaling_enabled', True)
         enable_nic_healthcheck = params.config.get('enable_nic_healthcheck', False)
+        enable_dist_storage_healthcheck = params.config.get(
+            'enable_dist_storage_healthcheck', False
+        )
+        storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
 
         return FtRendezvousHandler.from_backend(
@@ -1761,7 +1809,9 @@ def create_handler(
             timeout,
             upscaling_enabled=upscale_completed,
             enable_nic_healthcheck=enable_nic_healthcheck,
+            enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
+            storage_healthcheck_paths=storage_healthcheck_paths,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

@@ -23,6 +23,7 @@ import socket
 import struct
 import sys
 import time
+import traceback
 
 import psutil
 import torch
@@ -379,3 +380,61 @@ def patched_method(obj, method_name, new_method):
     finally:
         # Restore the original method
         setattr(obj, method_name, original_method)
+
+
+def install_exception_handler():
+    """
+    Install a custom exception handler to capture uncaught exceptions in training worker processes.
+
+    When an uncaught exception occurs:
+    1. Formats and logs the complete traceback
+    2. Uses os._exit() to reliably terminate the process
+
+    This ensures that exceptions are properly captured and logged, and the process exits
+    reliably without running cleanup handlers that might hang or interfere with fault tolerance.
+    """
+
+    def exception_handler(exc_type, exc_value, exc_traceback):
+        """
+        Custom exception handler that logs the exception and exits reliably.
+
+        Args:
+            exc_type: The type of the exception
+            exc_value: The exception instance
+            exc_traceback: The traceback object
+        """
+        # Don't log KeyboardInterrupt - these are intentional
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+
+        # Format the complete traceback
+        tb_lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
+        tb_text = ''.join(tb_lines)
+
+        # Get rank information for better debugging
+        rank = get_rank()
+        rank_str = f"Rank {rank}" if rank is not None else "Unknown rank"
+
+        # Log the exception with full traceback
+        error_msg = (
+            f"\n{rank_str}: UNCAUGHT EXCEPTION in training worker process\n"
+            f"{tb_text}"
+            f"{rank_str}: Process will exit with code 1\n"
+        )
+
+        # Get logger from application context (not module-level logger)
+        # Use root logger to ensure we capture in application's logging context
+        app_logger = logging.getLogger()
+        app_logger.error(error_msg)
+
+        # Also print to stderr to ensure visibility
+        print(error_msg, file=sys.stderr, flush=True)
+
+        # Use os._exit() to terminate immediately without cleanup
+        # This is more reliable than sys.exit() which raises SystemExit
+        # and can be caught by exception handlers
+        os._exit(1)
+
+    # Install the custom exception handler
+    sys.excepthook = exception_handler

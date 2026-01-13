@@ -70,7 +70,10 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
-from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PerCycleLogsSpecs
+from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
+    PerCycleLogsSpecs,
+    PipeBasedLogsSpecs,
+)
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
@@ -79,6 +82,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     read_obj_from_ipc_stream,
     terminate_mp_processes,
 )
+from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
@@ -99,6 +103,18 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 
 # Logger will be configured in run() after parsing args
 logger = logging.getLogger(LogConfig.name)
+
+_NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
+
+def init_node_health_check(endpoint: Optional[str]) -> None:
+    global _NODE_HEALTH_CHECK_INSTANCE
+    if endpoint:
+        _NODE_HEALTH_CHECK_INSTANCE = NodeHealthCheck(endpoint=endpoint)
+    else:
+        _NODE_HEALTH_CHECK_INSTANCE = None
+
+def get_node_health_check() -> Optional[NodeHealthCheck]:
+    return _NODE_HEALTH_CHECK_INSTANCE
 
 def _register_ft_rdzv_handler(impl_type: str = "legacy"):
     """Register the fault-tolerant rendezvous handler.
@@ -142,6 +158,54 @@ class UnhealthyNodeException(Exception):
     def __init__(self, message="A node in the cluster is unhealthy"):
         self.message = message
         super().__init__(self.message)
+
+
+def _wrap_entrypoint_with_numactl(
+    entrypoint: str,
+    args: Tuple,
+    local_rank: int,
+    numa_bind_strict: bool = False,
+) -> Tuple:
+    """
+    Wrap a binary entrypoint with numactl command for NUMA binding.
+
+    This function should only be called when NVRX_GPUS_PER_NUMA is set and
+    entrypoint is a binary/script path (string).
+
+    Args:
+        entrypoint: The worker entrypoint binary/script path
+        args: Original arguments for the worker
+        local_rank: Local rank of the worker
+        numa_bind_strict: If True, use strict binding with --membind. If False, use --localalloc.
+
+    Returns:
+        Tuple of wrapped arguments with numactl prepended
+    """
+    gpus_per_numa = int(os.getenv("NVRX_GPUS_PER_NUMA"))
+    numa_node = local_rank // gpus_per_numa
+
+    # Choose memory binding strategy based on numa_bind_strict
+    if numa_bind_strict:
+        memory_args = ("--membind", str(numa_node))
+        logger.debug(
+            f"Wrapping rank {local_rank} with numactl (strict mode): node={numa_node}, "
+            f"NVRX_GPUS_PER_NUMA={gpus_per_numa}"
+        )
+    else:
+        memory_args = ("--localalloc",)
+        logger.debug(
+            f"Wrapping rank {local_rank} with numactl (local alloc): node={numa_node}, "
+            f"NVRX_GPUS_PER_NUMA={gpus_per_numa}"
+        )
+
+    # Wrap the command with numactl
+    wrapped_args = (
+        "--cpunodebind", str(numa_node),
+    ) + memory_args + (
+        entrypoint,
+    ) + args
+
+    return wrapped_args
 
 
 # LocalElasticAgent source
@@ -935,10 +999,26 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
+
+        # Wrap entrypoint with numactl if needed (for binary entrypoints only)
+        entrypoint_to_use = spec.entrypoint
+        args_to_use = args
+
+        # Only wrap if entrypoint is a string (binary), not a function
+        if isinstance(spec.entrypoint, str) and os.getenv("NVRX_GPUS_PER_NUMA") is not None:
+            # Wrap each worker's arguments with numactl
+            wrapped_args = {}
+            for local_rank, worker_args in args.items():
+                wrapped_args[local_rank] = _wrap_entrypoint_with_numactl(
+                    spec.entrypoint, worker_args, local_rank, self._ft_cfg.numa_bind_strict
+                )
+            entrypoint_to_use = "numactl"
+            args_to_use = wrapped_args
+
         self._pcontext = start_processes(
             name=spec.role,
-            entrypoint=spec.entrypoint,
-            args=args,
+            entrypoint=entrypoint_to_use,
+            args=args_to_use,
             envs=envs,
             logs_specs=self._logs_specs,
             log_line_prefixes=log_line_prefixes,
@@ -946,6 +1026,20 @@ class LocalElasticAgent(SimpleElasticAgent):
         )
 
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
+
+        # Start reader thread for pipe-based logging if using PipeBasedLogsSpecs
+        if isinstance(self._logs_specs, PipeBasedLogsSpecs):
+            # PipeBasedLogsSpecs requires SubprocessContext (binary entrypoints)
+            # MultiprocessContext (function entrypoints) is not supported
+            if not hasattr(self._pcontext, 'subprocess_handlers'):
+                raise RuntimeError(
+                    "PipeBasedLogsSpecs requires SubprocessContext but got "
+                    f"{type(self._pcontext).__name__}. This usually means the entrypoint "
+                    "is a Python function instead of a script path. PipeBasedLogsSpecs only "
+                    "works with script/binary entrypoints (e.g., 'python train.py')."
+                )
+
+            self._logs_specs.start_reader(self._pcontext.subprocess_handlers)
 
         # Record worker start completion event
         record_profiling_event(
@@ -2173,6 +2267,16 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-node-health-check-endpoint",
+        "--ft-node_health_check_endpoint",
+        dest="ft_node_health_check_endpoint",
+        type=str,
+        default=None,
+        help="UDS endpoint for the node health check service used by InJob. "
+        "Examples: /var/run/nvhcd.sock, unix:///var/run/nvhcd.sock.",
+    )
+
+    parser.add_argument(
         "--ft-safety-factor",
         "--ft-safety_factor",
         type=str,
@@ -2294,6 +2398,27 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-enable-dist-storage-healthcheck",
+        "--ft_enable_dist_storage_healthcheck",
+        type=str,
+        default=None,
+        dest="ft_enable_dist_storage_healthcheck",
+        help="Enable distributed storage health check (Lustre + NFS) before rendezvous. "
+        "Accepts a boolean-like value only (e.g., 'true'/'false'). Example: "
+        "--ft-enable-dist-storage-healthcheck true",
+    )
+
+    parser.add_argument(
+        "--ft-storage-health-check-path",
+        "--ft_storage_health_check_path",
+        type=str,
+        default=None,
+        dest="ft_storage_healthcheck_path",
+        help="Comma-separated list of absolute paths to validate for existence and readability "
+        "before rendezvous. Example: --ft-storage-health-check-path '/data/a,/mnt/b'.",
+    )
+
+    parser.add_argument(
         "--ft-skip-section-response",
         "--ft-skip_section_response",
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
@@ -2332,6 +2457,18 @@ def get_args_parser() -> ArgumentParser:
         "Domains with fewer than N nodes are excluded. From valid domains, complete segments are selected. "
         "min_nodes must be divisible by segment. "
         "Note: segment=None (default) is suitable for H100; segment=1 is similar but requires ClusterUUID.",
+    )
+
+    parser.add_argument(
+        "--ft-numa-bind-strict",
+        "--ft-numa_bind_strict",
+        action="store_true",
+        default=None,
+        dest="ft_numa_bind_strict",
+        help="Enable strict NUMA binding with both CPU and memory bound to the same NUMA node "
+        "(--cpunodebind=N --membind=N). By default, only CPU is bound to NUMA node with local "
+        "memory allocation (--cpunodebind=N --localalloc). This option only affects behavior when "
+        "NVRX_GPUS_PER_NUMA environment variable is set. Default: False.",
     )
 
     parser.add_argument(
@@ -2376,6 +2513,17 @@ def get_args_parser() -> ArgumentParser:
         help="Part of Fault Tolerance pkg config (check_remaining_processes). "
         "If enabled, check for and log any remaining worker processes after termination. "
         "Useful for debugging process cleanup issues. Default: False.",
+    )
+
+    parser.add_argument(
+        "--ft-install-exception-hook",
+        "--ft-install_exception_hook",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_install_exception_hook",
+        help="Part of Fault Tolerance pkg config (install_exception_hook). "
+        "If enabled, installs sys.excepthook to capture uncaught exceptions in training worker processes, "
+        "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
     )
 
     parser.add_argument(
@@ -2565,6 +2713,8 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'legacy') == 'legacy':
         rdzv_configs['use_libuv'] = False
 
+    # Node health check endpoint is consumed by launcher to init singleton; not passed via rdzv configs
+
     if args.rdzv_backend == "static":
         rdzv_configs["rank"] = args.node_rank
 
@@ -2588,6 +2738,47 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+    # Pass distributed storage health check configuration
+    cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)
+    if cli_dist_storage is not None:
+        val = cli_dist_storage
+    else:
+        val = fault_tol_cfg.enable_dist_storage_healthcheck
+    if val is not None:
+        if isinstance(val, str):
+            lower = val.strip().lower()
+            if lower in ("true", "1", "yes"):
+                rdzv_configs['enable_dist_storage_healthcheck'] = True
+            elif lower in ("false", "0", "no", ""):
+                # explicitly disabled; do not set the key
+                pass
+            else:
+                raise ValueError(
+                    "--ft-dist-storage-health-check accepts boolean-like values only: "
+                    "'true'/'false', '1'/'0', 'yes'/'no'"
+                )
+        elif isinstance(val, bool):
+            if val:
+                rdzv_configs['enable_dist_storage_healthcheck'] = True
+
+    # Pass file path health check configuration (comma-separated absolute paths)
+    cli_storage_paths = getattr(args, 'ft_storage_healthcheck_path', None)
+    cfg_storage_paths = getattr(fault_tol_cfg, 'storage_healthcheck_path', None)
+    chosen_storage_paths = cli_storage_paths if cli_storage_paths else cfg_storage_paths
+    if chosen_storage_paths:
+        if isinstance(chosen_storage_paths, str):
+            parts = [p.strip() for p in chosen_storage_paths.split(",") if p.strip()]
+        elif isinstance(chosen_storage_paths, list):
+            parts = [str(p).strip() for p in chosen_storage_paths if str(p).strip()]
+        else:
+            raise ValueError(
+                "storage health check paths must be a comma-separated string or a list of strings"
+            )
+        for p in parts:
+            if not p.startswith("/"):
+                raise ValueError(f"--ft-storage-health-check-path: path must be absolute starting with '/': {p}")
+        if parts:
+            rdzv_configs['storage_healthcheck_paths'] = parts
 
     ranks: Optional[Set[int]] = None
     if args.local_ranks_filter:
@@ -2603,15 +2794,15 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     base_log_file = getattr(args, 'ft_base_logfile', None)
 
     if base_log_file:
-        # If --ft-base-logfile is specified, automatically use PerCycleLogsSpecs
-        # This provides a simple interface: just specify the base log file and get per-cycle logging
+        # If --ft-base-logfile is specified, automatically use PipeBasedLogsSpecs
+        # This provides pipe-based logging (like srun --output) to prevent log loss
         if args.logs_specs is not None:
             logger.warning(
                 "--logs-specs is ignored when --ft-base-logfile is specified. "
-                "Using PerCycleLogsSpecs automatically."
+                "Using PipeBasedLogsSpecs automatically."
             )
-        logs_specs = PerCycleLogsSpecs(base_log_file=base_log_file)
-        # Note: PerCycleLogsSpecs handles rank prefixing internally via sitecustomize.py
+        logs_specs = PipeBasedLogsSpecs(base_log_file=base_log_file)
+        # Note: PipeBasedLogsSpecs handles rank prefixing in parent process
     else:
         # Standard logs_specs creation for other cases
         logs_specs_cls: Type[LogsSpecs] = _get_logs_specs_class(args.logs_specs)
@@ -2713,6 +2904,10 @@ def run(args):
     # Register the selected FT rendezvous implementation
     impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
     _register_ft_rdzv_handler(impl_type)
+    ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
+    # Initialize NodeHealthCheck singleton at launcher start
+    init_node_health_check(ft_hc_endpoint)
+
     config, cmd, cmd_args = config_from_args(args)
     elastic_launch(
         config=config,
