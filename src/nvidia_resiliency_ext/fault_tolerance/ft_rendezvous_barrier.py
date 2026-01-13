@@ -1471,8 +1471,19 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # This ensures each rendezvous round uses an isolated namespace for MASTER_ADDR/MASTER_PORT
         self._rendezvous_round += 1
 
-        # AFTER rendezvous: Store host updates global cycle
-        # This allows new nodes to sync to the current cycle before their first rendezvous
+        # AFTER rendezvous: Store host updates global_cycle_key for job array coordination
+        #
+        # The global_cycle_key persists _rendezvous_round in the store, allowing replacement
+        # job array elements to sync their state. After this write:
+        #   - _rendezvous_round = N means N rendezvous have completed
+        #   - Workers are about to start for cycle (N-1)
+        #   - Replacement nodes will read this value, do another rendezvous, and run cycle N
+        #
+        # Example: If _rendezvous_round=3 after increment:
+        #   - 3 rendezvous have completed
+        #   - About to run cycle 2 (third attempt: initial + 2 restarts)
+        #   - If job crashes during/after cycle 2, replacement reads global_cycle_key=3
+        #   - Replacement does 4th rendezvous (round becomes 4) and runs cycle 3
         if self._barrier_state.is_store_host:
             self._barrier_state.store.set(
                 self._barrier_state.global_cycle_key, str(self._rendezvous_round).encode('utf-8')

@@ -349,10 +349,25 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Rank monitor state (process, IPC connections, listener tasks) per local rank
         self._rank_monitors: Dict[int, RankMonitorState] = dict()
         self._ft_cfg = fault_tol_cfg
-        # Centralized progress tracking (always instantiated, active only if configured)
+
+        # Fix _remaining_restarts for job array deployments
+        # The base class (SimpleElasticAgent) sets _remaining_restarts = spec.max_restarts,
+        # assuming this is a fresh start. But for job array replacements, we need to account
+        # for restarts that already occurred in the original job array element.
+        # The global restart count persists across replacements via the rendezvous store.
+        restarts_initiated = self._get_global_restart_count()
+        self._remaining_restarts = spec.max_restarts - restarts_initiated
+
+        # Initialize progress tracker with global cycle number for job array deployments
+        # The cycle number tells us which training cycle we're about to run (0, 1, 2, ...),
+        # which persists across job array element replacements via the rendezvous store.
+        # This allows the tracker to show correct cycle numbers in logs and continue
+        # tracking progress even after a job array element is replaced.
+        initial_cycle_number = self._get_global_cycle_number()
         self._progress_tracker = TrainingProgressTracker(
             min_progress_iterations=fault_tol_cfg.min_progress_iterations,
             max_no_progress_restarts=fault_tol_cfg.max_no_progress_restarts,
+            initial_cycle_number=initial_cycle_number,
         )
         self._rank_iterations: Dict[int, int] = dict()  # Track max iteration per rank
         self._children_pgids: Set[int] = set()
@@ -360,6 +375,87 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._node_id = self._get_fq_hostname()
 
     DEFAULT_ROLE = "default"  # FIXME
+
+    # ============================================================================
+    # Global Restart/Cycle Tracking for Job Array Deployments
+    # ============================================================================
+    #
+    # Key Concepts:
+    #
+    # 1. _rendezvous_round (in FtRendezvousBarrierHandler):
+    #    - Tracks number of COMPLETED rendezvous operations
+    #    - Starts at 0, increments AFTER each rendezvous completes
+    #    - Persisted to store as 'global_cycle_key' by store host
+    #    - Synced by replacement nodes on initialization
+    #
+    # 2. cycle_number:
+    #    - Which training cycle is running (0 = initial, 1 = first restart, etc.)
+    #    - Equals _rendezvous_round (one rendezvous per cycle)
+    #    - Used by ProgressTracker for logging
+    #
+    # 3. restart_count:
+    #    - How many RESTARTS have been initiated (cycle 0 is NOT a restart)
+    #    - Equals max(0, cycle_number - 1)
+    #    - Used to calculate _remaining_restarts
+    #
+    # 4. _remaining_restarts:
+    #    - How many more restarts are allowed after current cycle fails
+    #    - Equals max_restarts - restart_count
+    #    - Decremented on each restart decision
+    #
+    # Example Timeline (max_restarts=3):
+    #   Cycle 0: restart_count=0, _remaining_restarts=3, _rendezvous_round=1 (after rdzv)
+    #   Cycle 1: restart_count=1, _remaining_restarts=2, _rendezvous_round=2 (after rdzv)
+    #   Cycle 2: restart_count=2, _remaining_restarts=1, _rendezvous_round=3 (after rdzv)
+    #   Cycle 3: restart_count=3, _remaining_restarts=0, _rendezvous_round=4 (after rdzv)
+    #
+    # Job Array Replacement:
+    #   Original job crashes at cycle 2 with _rendezvous_round=3
+    #   Replacement reads global_cycle_key=3, sets _rendezvous_round=3
+    #   Calculates restart_count=2, _remaining_restarts=1
+    #   Continues with cycle 3 (one more restart allowed)
+    # ============================================================================
+
+    def _get_global_cycle_number(self) -> int:
+        """Get the current global cycle number.
+
+        The cycle number represents which training cycle is about to run or is running:
+        - Cycle 0 = initial attempt (not a restart)
+        - Cycle 1 = first restart
+        - Cycle 2 = second restart, etc.
+
+        This value persists across job array element replacements via the rendezvous store.
+
+        Returns:
+            Current cycle number (0-based)
+
+        Note:
+            Internally, this returns _rendezvous_round, which tracks the number of
+            completed rendezvous. Since each cycle requires one rendezvous:
+            cycle_number = number_of_completed_rendezvous
+        """
+        return self._rdzv_handler.round()
+
+    def _get_global_restart_count(self) -> int:
+        """Get the global restart count.
+
+        The restart count represents how many times we've restarted (not including
+        the initial attempt):
+        - 0 = running initial attempt (cycle 0), no restarts yet
+        - 1 = first restart initiated (cycle 1)
+        - 2 = second restart initiated (cycle 2), etc.
+
+        This value persists across job array element replacements via the rendezvous store.
+
+        Returns:
+            Number of restarts initiated (0-based)
+
+        Relationship to cycle_number:
+            restart_count = max(0, cycle_number - 1)
+            - Cycle 0 (initial) = 0 restarts
+            - Cycle N (N >= 1) = N restarts
+        """
+        return max(0, self._rdzv_handler.round() - 1)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -635,12 +731,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # we can't have min_nodes successful worker groups.
                 # NOTE: this worker group still might be successful/healthy.
                 # all we can do is to restart if possible or shutdown otherwise
-                # NOTE: we use the rdzv round to count the restarts, so restarts are counted
-                # globally (while in any-failed mode each worker counts its own restarts)
+                # NOTE: we use the global restart count so restarts are tracked globally
+                # across job array deployments. Both any-failed and min-healthy modes use this.
                 logger.warning(
                     f"[{role}] {group_rank=} {state.name=} detected that the current run failed: {worker_state_cnt=}"
                 )
-                self._remaining_restarts = spec.max_restarts - self._rdzv_handler.round()
+                restarts_initiated = self._get_global_restart_count()
+                self._remaining_restarts = spec.max_restarts - restarts_initiated
                 if self._remaining_restarts > 0:
                     logger.info(
                         f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
@@ -914,12 +1011,12 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
 
-        # Get the current rendezvous round from the handler
-        # Round is incremented AFTER rendezvous completes but BEFORE workers start,
-        # so round 1 = first attempt (cycle 0), round 2 = first restart (cycle 1), etc.
-        # Subtract 1 to get the actual restart count (number of times we've restarted, not including initial start)
-        # This provides a single global source of truth for the cycle number
-        restart_count = self._rdzv_handler.round() - 1
+        # Get the current cycle number from the rendezvous handler
+        # At this point, rendezvous has completed and we're about to start workers.
+        # The cycle number is used for profiling and environment variable setting.
+        # Note: We use _get_global_restart_count() because in the context of worker startup,
+        # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
+        restart_count = self._get_global_restart_count()  # Actually cycle number
 
         # Record worker start start event
         record_profiling_event(
