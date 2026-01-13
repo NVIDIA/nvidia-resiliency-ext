@@ -77,10 +77,6 @@ class FaultToleranceConfig:
         min_nodes must be divisible by segment. When set, ClusterUUID is automatically queried.
       Note: segment=None and segment=1 have similar behavior in rank assignment, but segment=1
       requires ClusterUUID while segment=None does not.
-    * `use_infra_group_rank` - If True, always use infrastructure group rank for rank assignment.
-      Reads from SLURM_PROCID (in SLURM environments) or GROUP_RANK (set by launcher). Previous
-      rank assignments are ignored to ensure consistency with infrastructure's rank assignment.
-      Note: Hot spare/redundancy is NOT supported with this setting. Default: True.
     * `numa_bind_strict` - If True, use strict NUMA binding with both CPU and memory bound to the
       same NUMA node (--cpunodebind=N --membind=N). If False (default), only bind CPU to NUMA node
       and allow local memory allocation (--cpunodebind=N --localalloc). Default: False.
@@ -119,7 +115,6 @@ class FaultToleranceConfig:
     link_state_path_template: Optional[str] = None
     skip_section_response: bool = True
     segment: Optional[int] = None
-    use_infra_group_rank: bool = True
     numa_bind_strict: bool = False
     gpu_memory_reclaim_timeout: float = 50.0
     gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
