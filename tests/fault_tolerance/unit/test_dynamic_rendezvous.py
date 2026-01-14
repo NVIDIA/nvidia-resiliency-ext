@@ -640,8 +640,27 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         mock_datetime = self._datetime_patch.start()
         mock_datetime.utcnow.return_value = self._now
 
+        # Clear environment variables that affect infrastructure rank assignment
+        # Save original values to restore in tearDown
+        self._env_vars_to_clear = [
+            'SLURM_PROCID',
+            'GROUP_RANK',
+            'CROSS_SLURM_PROCID',
+            'NVRX_INFRA_RANK_FROM_NODENAME',
+            'SLURM_ARRAY_TASK_ID',
+            'SLURM_JOB_ID',
+        ]
+        self._saved_env = {}
+        for var in self._env_vars_to_clear:
+            if var in os.environ:
+                self._saved_env[var] = os.environ[var]
+                del os.environ[var]
+
     def tearDown(self) -> None:
         self._datetime_patch.stop()
+        # Restore saved environment variables
+        for var, value in self._saved_env.items():
+            os.environ[var] = value
 
     def _create_settings(self) -> RendezvousSettings:
         return RendezvousSettings(
@@ -1379,9 +1398,16 @@ class IntegrationTest(TestCase):
     @patch.dict(os.environ, {}, clear=False)
     def test_use_deterministic_rank_without_env_var(self) -> None:
         """Test that ranks are assigned deterministically when env vars are not set."""
-        # Remove GROUP_RANK if it exists
+        # Remove any env vars that could influence infra-rank detection
         os.environ.pop("GROUP_RANK", None)
         os.environ.pop("SLURM_PROCID", None)
+        os.environ.pop("CROSS_SLURM_PROCID", None)
+        os.environ.pop("SLURM_JOB_ID", None)
+        os.environ.pop("SLURM_ARRAY_TASK_ID", None)
+        os.environ.pop("SLURM_NNODES", None)
+        os.environ.pop("SLURM_JOB_NUM_NODES", None)
+        os.environ.pop("SLURMD_NODENAME", None)
+        os.environ.pop("NVRX_INFRA_RANK_FROM_NODENAME", None)
 
         handler = self._create_handler(
             min_nodes=1,

@@ -56,7 +56,18 @@ def _test_segment_check_interval(seconds=TEST_SEGMENT_CHECK_INTERVAL_SECS):
 
 
 class BaseRendezvousTest(TestCase):
-    """Base test class that clears SLURM/GROUP_RANK environment variables.
+    """Base test class that clears infrastructure rank environment variables.
+
+    Clears all environment variables that affect get_infrastructure_rank():
+    - SLURM_PROCID
+    - GROUP_RANK
+    - NVRX_INFRA_RANK_FROM_NODENAME
+    - SLURMD_NODENAME
+    - CROSS_SLURM_PROCID
+    - SLURM_ARRAY_TASK_ID
+    - SLURM_JOB_ID (to avoid validation errors when SLURM_PROCID is cleared)
+    - SLURM_NNODES
+    - SLURM_JOB_NUM_NODES
 
     Most tests should inherit from this to ensure they use deterministic rank
     assignment rather than being affected by the shell environment.
@@ -68,18 +79,33 @@ class BaseRendezvousTest(TestCase):
     def setUp(self):
         """Save and clear SLURM/GROUP_RANK environment variables."""
 
-        self._saved_slurm_procid = os.environ.pop('SLURM_PROCID', None)
-        self._saved_group_rank = os.environ.pop('GROUP_RANK', None)
+        # Clear all environment variables that affect get_infrastructure_rank()
+        # to ensure deterministic rank assignment in tests
+        self._saved_env_vars = {}
+        env_vars_to_clear = [
+            'SLURM_PROCID',
+            'GROUP_RANK',
+            'NVRX_INFRA_RANK_FROM_NODENAME',
+            'SLURMD_NODENAME',
+            'CROSS_SLURM_PROCID',
+            'SLURM_ARRAY_TASK_ID',
+            'SLURM_JOB_ID',  # Must clear to avoid validation error when SLURM_PROCID is cleared
+            'SLURM_NNODES',
+            'SLURM_JOB_NUM_NODES',
+        ]
+        for var in env_vars_to_clear:
+            self._saved_env_vars[var] = os.environ.pop(var, None)
+
         super().setUp()
 
     def tearDown(self):
         """Restore SLURM/GROUP_RANK environment variables."""
 
         super().tearDown()
-        if self._saved_slurm_procid is not None:
-            os.environ['SLURM_PROCID'] = self._saved_slurm_procid
-        if self._saved_group_rank is not None:
-            os.environ['GROUP_RANK'] = self._saved_group_rank
+        # Restore all saved environment variables
+        for var, value in self._saved_env_vars.items():
+            if value is not None:
+                os.environ[var] = value
 
 
 class BarrierStateBasicTest(BaseRendezvousTest):
