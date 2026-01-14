@@ -19,7 +19,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -82,11 +82,6 @@ class RendezvousTimeout:
     Args:
         join:
             The time within which the rendezvous is expected to complete.
-        last_call:
-            An additional wait amount before completing the rendezvous once the
-            rendezvous has the minimum number of required participants. Note: this
-            only applies to SUBSEQUENT rendezvous after the first one. The first
-            rendezvous always waits for max_nodes.
         close:
             The time within which the rendezvous is expected to close after a
             call to :py:meth:`RendezvousHandler.set_closed` or
@@ -100,34 +95,26 @@ class RendezvousTimeout:
 
     _DEFAULT_TIMEOUTS = {
         "join": timedelta(seconds=600),
-        "last_call": timedelta(seconds=70),
         "close": timedelta(seconds=30),
         "heartbeat": timedelta(seconds=5),
     }
 
     _join: timedelta
-    _last_call: timedelta
     _close: timedelta
     _heartbeat: timedelta
 
     def __init__(
         self,
         join: Optional[timedelta] = None,
-        last_call: Optional[timedelta] = None,
         close: Optional[timedelta] = None,
         heartbeat: Optional[timedelta] = None,
     ) -> None:
-        self._set_timeouts(join=join, last_call=last_call, close=close, heartbeat=heartbeat)
+        self._set_timeouts(join=join, close=close, heartbeat=heartbeat)
 
     @property
     def join(self) -> timedelta:
         """Get the join timeout."""
         return self._join
-
-    @property
-    def last_call(self) -> timedelta:
-        """Get the last call timeout."""
-        return self._last_call
 
     @property
     def close(self) -> timedelta:
@@ -374,6 +361,19 @@ class _RendezvousBarrierState:
     4. RACE CONDITION TOLERANCE: The last_call_timeout provides a grace period
        for restarting nodes, preventing premature completion
 
+    5. STALE ROUND DETECTION: Periodically checks if the local rendezvous round
+       is behind the global cycle, allowing nodes to recover from desynchronization
+
+    Args:
+        store: The C10d store instance
+        run_id: The run id of the rendezvous
+        is_store_host: Whether this node is the TCPStore host
+        join_timeout_seconds: Maximum time to wait for rendezvous completion
+        segment: Number of nodes per domain for segment-aware rank assignment
+        stale_check_interval: How often (in seconds) to check for stale rounds.
+            Default is 10 seconds. Lower values increase store load but reduce
+            detection latency. Higher values reduce store load but increase latency.
+
     This design trades some synchronization guarantees for better fault tolerance
     and operational flexibility in production environments.
     """
@@ -385,14 +385,24 @@ class _RendezvousBarrierState:
         is_store_host: bool = False,
         join_timeout_seconds: float = 600.0,
         segment: Optional[int] = None,
+        stale_check_interval: float = 10.0,
     ):
         self.store = store
         self.run_id = run_id
         self.is_store_host = is_store_host
         self.join_timeout_seconds = join_timeout_seconds
         self.segment = segment
+        self.stale_check_interval = stale_check_interval
         self._rendezvous_start_time = None
-        self._attempted_open = False  # Track if this node tried to open rendezvous
+        self._last_stale_check_time = 0.0  # Track last stale round check time for rate limiting
+
+        # Track rendezvous round number
+        # This is managed by the state since it coordinates the rendezvous
+        self._rendezvous_round = 0
+
+        # Reference to agent (set via set_agent() method in handler)
+        # Will be set by handler via set_agent() method
+        self._agent = None
 
         # Cache for domain_id to avoid re-parsing on every rendezvous
         # Only populated if segment is configured
@@ -414,6 +424,57 @@ class _RendezvousBarrierState:
         #   1 = rendezvous is CLOSED (training in progress, hot spares should wait)
         if not self.store.check([self.last_participant_arrived_key]):
             self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
+
+    def _can_meet_segment_constraint(
+        self,
+        participants: List[Tuple[_NodeDesc, int, str]],
+        world_size: int,
+    ) -> bool:
+        """Check if current participants can meet the segment constraint.
+
+        This performs similar logic to _assign_group_ranks but only checks feasibility
+        without actually assigning ranks. Returns True if we have enough complete segments
+        across domains to fill world_size positions.
+
+        This is used by the store host to incrementally check if rendezvous can complete
+        as participants arrive, enabling optimal performance by completing as soon as
+        the segment constraint is satisfied.
+
+        Args:
+            participants: List of (node_desc, infra_rank, domain_id) tuples
+            world_size: Target number of active nodes (training world size)
+
+        Returns:
+            True if participants can form enough complete segments to meet world_size
+
+        Note:
+            This method assumes world_size % segment == 0, which is validated at
+            handler initialization time in __init__.
+        """
+        # Treat segment=None as segment=1
+        segment = self.segment if self.segment is not None else 1
+
+        # Group by domain and count available complete segments
+        if self.segment is not None:
+            domain_to_count: Dict[str, int] = defaultdict(int)
+            for node_desc, infra_rank, domain_id in participants:
+                # domain_id validation happens in _assign_group_ranks which will be called
+                # after this check passes. If segment is configured, domain_id must not be "none"
+                if domain_id == "none":
+                    # This indicates a bug - segment is configured but domain_id wasn't obtained
+                    raise RuntimeError(
+                        f"Domain ID is required when segment is configured, but got 'none' for node {node_desc.addr}"
+                    )
+                domain_to_count[domain_id] += 1
+        else:
+            # Each node is its own domain - just count total nodes
+            domain_to_count = {"all": len(participants)}
+
+        # Calculate total available complete segments across all domains
+        total_segments = sum(count // segment for count in domain_to_count.values())
+        required_segments = world_size // segment
+
+        return total_segments >= required_segments
 
     def _assign_group_ranks(
         self,
@@ -604,8 +665,40 @@ class _RendezvousBarrierState:
         peer_aborted_count_bytes = self.store.get(self.peer_aborted_count_key)
         return int(peer_aborted_count_bytes.decode('utf-8'))
 
+    def _sync_from_global_cycle(self) -> bool:
+        """Sync local _rendezvous_round from global_cycle_key if stale.
+
+        This method checks if the local _rendezvous_round is behind the global
+        cycle stored in the store and syncs it if needed.
+
+        Returns:
+            True if round was updated (was stale), False if already current
+        """
+        if not self.store.check([self.global_cycle_key]):
+            return False
+
+        stored_cycle_bytes = self.store.get(self.global_cycle_key)
+        stored_cycle = int(stored_cycle_bytes.decode('utf-8'))
+
+        if stored_cycle > self._rendezvous_round:
+            old_round = self._rendezvous_round
+            self._rendezvous_round = stored_cycle
+            set_profiling_cycle(self._rendezvous_round)
+
+            # Sync agent's progress tracker if agent reference is available
+            if self._agent is not None:
+                self._agent._progress_tracker.sync_cycle_number(self._rendezvous_round)
+
+            log.debug(
+                f"Synced rendezvous round from {old_round} to {self._rendezvous_round} "
+                f"(global_cycle_key)"
+            )
+            return True
+
+        return False
+
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
-        """Check for early closure and timeout, raising appropriate exceptions if detected.
+        """Check for early closure and timeout.
 
         Args:
             node_desc: Node descriptor for logging
@@ -631,12 +724,15 @@ class _RendezvousBarrierState:
             raise RendezvousTimeoutError(msg)
 
     def _wait_for_rendezvous_open(self, node_desc: _NodeDesc) -> None:
-        """Step 0: Wait if rendezvous is closed. Hot spares will wait here.
+        """Step 0: Wait if rendezvous is closed. Hot spares and late arrivals wait here.
 
-        This prevents hot spares that arrive late from disrupting ongoing training.
+        This prevents hot spares and late-arriving nodes from disrupting ongoing training.
         The rendezvous is considered:
         - OPEN (value=0): Accepting new participants for a new rendezvous round
         - CLOSED (value=1): Training in progress, wait for next round
+
+        Also checks for stale rendezvous rounds to allow hot spares to sync up when
+        other nodes have moved to a newer round.
 
         Args:
             node_desc: Node descriptor for logging
@@ -645,17 +741,11 @@ class _RendezvousBarrierState:
             RendezvousClosedError: If rendezvous is explicitly closed (not just waiting)
 
         Note:
-            This wait does NOT timeout unless the rendezvous is explicitly closed.
-            Hot spares can wait indefinitely until a failure opens a new round.
+            Stale round detection and sync happen automatically during the wait loop.
 
-            DEADLOCK PREVENTION:
-            If this node previously tried to open but was deferred (because arrived_count_key
-            existed), it will retry opening periodically. This prevents deadlock where:
-            1. Node fails after training starts
-            2. Tries to open but defers (Step 3b in progress)
-            3. Store host clears keys (slow)
-            4. Node stuck waiting, but arrived_count_key now gone
-            Without retry, no one would know to open for this node.
+            This wait does NOT timeout unless the rendezvous is explicitly closed.
+            All waiting nodes (hot spares, late arrivals) wait passively until an
+            active participant detects a failure and opens the next round.
         """
         wait_count = 0
         logged_waiting = False  # Track if we've logged the waiting message
@@ -666,6 +756,17 @@ class _RendezvousBarrierState:
                 msg = f"The node '{node_desc}' detected that rendezvous was closed"
                 log.info(msg)
                 raise RendezvousClosedError(msg)
+
+            # Check for stale rendezvous round (rate-limited to avoid thundering herd on TCPStore)
+            # This allows hot spares waiting at Step 0 to detect when other nodes have moved
+            # to a newer round and sync up. We only check this at Step 0 to avoid double-joining
+            # when a node is already participating in a rendezvous.
+            current_time = time.monotonic()
+            if current_time - self._last_stale_check_time >= self.stale_check_interval:
+                self._last_stale_check_time = current_time
+                if self._sync_from_global_cycle():
+                    # Synced to newer round, continue waiting
+                    continue
 
             # Read the open/close indicator
             # The key is always present (initialized in __init__)
@@ -680,7 +781,7 @@ class _RendezvousBarrierState:
                 break
 
             # value == 1: Rendezvous is closed (training in progress)
-            # Log once when we first start waiting, then every 60 seconds
+            # Wait passively for an active participant to trigger the next round
             if not logged_waiting:
                 log.info(
                     f"[{node_desc}] [Step 0] Rendezvous closed (training in progress), waiting..."
@@ -692,20 +793,7 @@ class _RendezvousBarrierState:
                     f"(waited {wait_count} seconds)"
                 )
 
-            # Retry opening every 10 seconds ONLY if we previously attempted to open
-            # This distinguishes between:
-            # - Failed nodes that tried to open but were deferred → SHOULD retry
-            # - Hot spares that never tried to open → SHOULD NOT retry (would disrupt training!)
             wait_count += 1
-            if self._attempted_open and wait_count % 10 == 0:  # Every 10 seconds
-                log.debug(
-                    f"[{node_desc}] [Step 0] Retrying open_rendezvous() "
-                    f"(this node previously attempted to open and was deferred)"
-                )
-                self.open_rendezvous()
-                # If open succeeds, value will be 0 on next iteration and we'll break
-                # If still deferred, we keep waiting
-
             time.sleep(1.0)  # Poll every 1 second
 
     def perform_rendezvous(
@@ -713,28 +801,26 @@ class _RendezvousBarrierState:
         node_desc: _NodeDesc,
         min_nodes: int,
         max_nodes: int,
-        last_call_timeout: timedelta,
-        is_first_rendezvous: bool = True,
+        segment_check_interval: float = 3.0,
     ) -> Tuple[int, int]:
         """Perform the complete rendezvous process: join, wait for completion, acknowledge, and get rank.
 
         DESIGN RATIONALE:
         This atomic barrier-based rendezvous design balances flexibility with convergence guarantees:
 
-        1. FIRST RENDEZVOUS ENFORCEMENT: The first rendezvous (initial startup) REQUIRES max_nodes
-           to join before completion. This ensures all expected nodes participate during initial
-           startup when all nodes should be available. This prevents premature start with missing nodes.
+        1. SEGMENT-AWARE COMPLETION: The rendezvous completes as soon as enough participants
+           arrive to satisfy the segment constraint. Specifically:
+           - We need enough complete segments across domains to form world_size (min_nodes)
+           - Store host incrementally checks this constraint as participants arrive
+           - Completion happens immediately when constraint is satisfied
 
-        2. FLEXIBILITY (SUBSEQUENT RENDEZVOUS): After the first rendezvous, we use last_call_timeout
-           (not max_nodes) as completion criteria because:
-           - Hot-fix scenarios may need to exclude broken participants without failing the job
-           - We cannot wait for max_nodes after failures as some nodes may be permanently down
-           - The system needs to be resilient to partial failures while maintaining progress
+        2. OPTIMAL PERFORMANCE: By completing as soon as the segment constraint is met,
+           we minimize waiting time and start training with available resources. This is
+           especially important in fault-tolerant scenarios where some nodes may be down.
 
         3. CONVERGENCE: The rendezvous will complete when either:
-           - FIRST RENDEZVOUS: max_nodes is reached (strict requirement)
-           - SUBSEQUENT RENDEZVOUS: max_nodes is reached (immediate completion), OR
-             min_nodes is reached AND last_call_timeout expires (graceful completion)
+           - Segment constraint is satisfied (enough complete segments for min_nodes)
+           - All healthy nodes have arrived (effective_max_nodes reached)
 
         4. NEW COMER HANDLING:
            - New comers arriving during active rendezvous participate in the current round
@@ -742,12 +828,7 @@ class _RendezvousBarrierState:
            - All existing participants detect new comers and restart to join the new round
            - This ensures eventual convergence with the new comer
 
-        5. RACE CONDITION MITIGATION:
-           - The last_call_timeout provides a grace period for nodes that are restarting
-           - This prevents premature completion when nodes are in the process of joining
-           - The timeout balances responsiveness with inclusion of restarting nodes
-
-        6. HOT SPARE HANDLING (Step 0):
+        5. HOT SPARE HANDLING (Step 0):
            - Hot spares arriving after training starts will wait at Step 0
            - They wait until a failure opens the rendezvous (value=0)
            - This prevents disruption of ongoing training
@@ -756,10 +837,8 @@ class _RendezvousBarrierState:
             node_desc: Node descriptor for this participant
             min_nodes: Minimum number of nodes required for training to proceed
             max_nodes: Maximum number of nodes allowed (active + standby)
-            last_call_timeout: Grace period after min_nodes reached to allow restarting nodes to join
-                              (only applies to subsequent rendezvous, not the first one)
-            is_first_rendezvous: True if this is the first rendezvous cycle (enforces max_nodes),
-                                False for subsequent cycles (allows graceful completion)
+            segment_check_interval: Interval in seconds for store host to check segment
+                                   constraint (default 3.0 seconds)
 
         Returns:
             Tuple of (group_rank, total_participants)
@@ -822,10 +901,10 @@ class _RendezvousBarrierState:
         )
 
         # Step 2: Wait for rendezvous completion
-        last_call_deadline = None
-        if self._arrived_count >= min_nodes and not is_first_rendezvous:
-            # Only set deadline for non-first rendezvous
-            last_call_deadline = datetime.utcnow() + last_call_timeout
+        # Store host will incrementally check segment constraint
+        last_segment_check_time = 0.0  # Track when we last checked segment constraint
+        last_checked_count = 0  # Track how many participants we checked last time
+        cached_participants = []  # Cache participants to avoid re-fetching
 
         while True:
             # Check for early closure and timeout
@@ -858,33 +937,57 @@ class _RendezvousBarrierState:
                 )
                 break
 
-            # Check if we should mark completion now
-            # DESIGN NOTE:
-            # - FIRST RENDEZVOUS: We require max_nodes to ensure all nodes join during initial startup
-            # - SUBSEQUENT RENDEZVOUS: We complete on last_call_timeout to support:
-            #   1. Hot-fix scenarios where broken participants are excluded without failing the job
-            #   2. Flexibility in participant count while ensuring convergence
-            #   3. Grace period for restarting nodes to join before completion
+            # STORE HOST: Check if we should mark completion now
+            # Perform segment constraint check incrementally at specified interval
             should_complete = False
 
-            # Get unhealthy count to calculate effective max nodes
-            # Since unhealthy nodes won't participate, we should complete when all healthy nodes arrive
-            effective_max_nodes = max_nodes - self._get_unhealthy_count()
+            if self.is_store_host:
+                # Get current arrived count to determine if we should check
+                current_arrived = int(self.store.get(self.arrived_count_key))
 
-            if self._arrived_count >= effective_max_nodes:
-                # Max healthy nodes reached - immediate completion (both first and subsequent)
-                # We don't wait for unhealthy nodes that will never join
-                should_complete = True
-            elif (
-                not is_first_rendezvous
-                and self._arrived_count >= min_nodes
-                and last_call_deadline
-                and datetime.utcnow() >= last_call_deadline
-            ):
-                # Min nodes reached and grace period expired - graceful completion
-                # ONLY allowed for subsequent rendezvous (not first)
-                # This allows the system to proceed even if not all potential nodes have joined
-                should_complete = True
+                # Only check if we have at least min_nodes
+                if current_arrived >= min_nodes:
+                    current_time = time.monotonic()
+
+                    # Check at interval or if new participants arrived
+                    time_to_check = (
+                        current_time - last_segment_check_time
+                    ) >= segment_check_interval
+                    new_participants_arrived = current_arrived > last_checked_count
+
+                    if new_participants_arrived and time_to_check:
+                        # Update check time and count
+                        last_segment_check_time = current_time
+                        last_checked_count = current_arrived
+
+                        # Timing: Incremental participant fetch
+                        fetch_start = time.monotonic()
+                        num_new_participants = current_arrived - len(cached_participants)
+
+                        # Incrementally fetch only new participants using enhanced get_all_participants
+                        cached_participants = self.get_all_participants(
+                            total_participants=current_arrived,
+                            start_index=len(cached_participants) + 1,
+                            existing_participants=cached_participants,
+                        )
+
+                        fetch_elapsed = time.monotonic() - fetch_start
+
+                        # Timing: Segment constraint check
+                        check_start = time.monotonic()
+                        constraint_satisfied = self._can_meet_segment_constraint(
+                            cached_participants, min_nodes
+                        )
+                        check_elapsed = time.monotonic() - check_start
+
+                        if constraint_satisfied:
+                            should_complete = True
+                            log.info(
+                                f"[{node_desc}] [Step 2] Segment constraint satisfied with "
+                                f"{current_arrived} participants (min_nodes={min_nodes}). "
+                                f"Perf: fetch {num_new_participants} new participants in {fetch_elapsed*1000:.1f}ms, "
+                                f"constraint check on {current_arrived} participants in {check_elapsed*1000:.1f}ms"
+                            )
 
             if should_complete:
                 # Mark rendezvous as complete
@@ -957,37 +1060,67 @@ class _RendezvousBarrierState:
                 log.debug(
                     f"[{node_desc}] [Step 4] Received group rank {rank}, total participants {total_participants}"
                 )
-                # Reset the attempted_open flag after successful rendezvous completion
-                # This ensures the flag only applies to the current rendezvous attempt
-                # On the next rendezvous, if this node is late, it should behave like a hot spare
-                self._attempted_open = False
                 return rank, total_participants
 
             # Delay before next check
             time.sleep(1)
 
-    def get_all_participants(self, total_participants: int) -> List[Tuple[_NodeDesc, int, str]]:
-        """Get all participants that have arrived using multi_get.
+    def get_all_participants(
+        self,
+        total_participants: int,
+        start_index: int = 1,
+        existing_participants: Optional[List[Tuple[_NodeDesc, int, str]]] = None,
+    ) -> List[Tuple[_NodeDesc, int, str]]:
+        """Get participants that have arrived using multi_get.
+
+        Supports incremental fetching by allowing caller to specify a start index
+        and provide a list of existing participants to append to.
 
         Args:
-            total_participants: Total number of participants
+            total_participants: Total number of participants to fetch up to
+            start_index: Starting index for fetching (1-based, inclusive). Defaults to 1 (fetch all).
+            existing_participants: Optional list of already-fetched participants to extend.
+                                  If provided, new participants are appended to this list.
+                                  If None, a new list is created.
 
         Returns:
             List of tuples: (node_desc, infra_rank, domain_id) in arrival order.
             domain_id is "none" if segment not configured.
             Note: Consumers of this method sort the list according to their needs.
+
+        Example:
+            # Fetch all participants
+            all_participants = get_all_participants(100)
+
+            # Incremental fetch: first get 50, then get next 50
+            participants = get_all_participants(50)
+            participants = get_all_participants(100, start_index=51, existing_participants=participants)
         """
-        arrived_count = total_participants
+        if start_index < 1:
+            raise ValueError(f"start_index must be >= 1, got {start_index}")
 
-        # Prepare keys for multi_get
-        participant_keys = [f"{self.prefix}:arrived_{i}" for i in range(1, arrived_count + 1)]
+        if start_index > total_participants:
+            # Nothing to fetch, return existing or empty list
+            return existing_participants if existing_participants is not None else []
 
-        # Use multi_get to fetch all data at once
+        # Initialize result list
+        participants = existing_participants if existing_participants is not None else []
+
+        # Prepare keys for multi_get (only fetch new participants)
+        participant_keys = [
+            f"{self.prefix}:arrived_{i}" for i in range(start_index, total_participants + 1)
+        ]
+
+        if not participant_keys:
+            # Nothing to fetch
+            return participants
+
+        # Use multi_get to fetch data
         participant_data_list = self.store.multi_get(participant_keys)
 
         # Unpack participant information
-        participants = []
-        for i in range(arrived_count):
+        num_keys = len(participant_keys)
+        for i in range(num_keys):
             if participant_data_list[i]:
                 try:
                     # Handle bytes to string conversion
@@ -997,7 +1130,10 @@ class _RendezvousBarrierState:
                     )
                     participants.append((node_desc, infra_rank, domain_id))
                 except Exception as e:
-                    log.warning(f"Failed to unpack participant data for arrived_{i+1}: {e}")
+                    actual_index = start_index + i
+                    log.warning(
+                        f"Failed to unpack participant data for arrived_{actual_index}: {e}"
+                    )
 
         return participants
 
@@ -1118,13 +1254,8 @@ class _RendezvousBarrierState:
         BEHAVIOR AFTER DEFER:
         The calling node will proceed to Step 0 and check last_participant_arrived_key:
         - If value=0 (rendezvous still open/joining), node can join the current rendezvous
-        - If value=1 (rendezvous complete):
-          * If this node called open_rendezvous() → will retry opening every 10 seconds
-          * If this node never called open_rendezvous() (hot spare) → will wait passively
+        - If value=1 (rendezvous complete), node will wait passively for next round
         """
-        # Mark that this node attempted to open (for retry logic in Step 0)
-        self._attempted_open = True
-
         # Check if a rendezvous is in progress or being finalized
         # If arrived_count_key exists, it means participants are joining (Step 1) or
         # finalizing (Step 3b before clearing). The key only exists with value >= 1.
@@ -1254,6 +1385,12 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 f"to the minimum number of nodes ({settings.min_nodes})."
             )
 
+        if settings.segment is not None and settings.min_nodes % settings.segment != 0:
+            raise ValueError(
+                f"The minimum number of nodes ({settings.min_nodes}) must be divisible by "
+                f"segment size ({settings.segment})."
+            )
+
         self._this_node = node
         self._settings = settings
         self._backend_name = backend_name
@@ -1264,59 +1401,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             is_store_host,
             settings.timeout.join.total_seconds(),
             settings.segment,
+            stale_check_interval=10.0,  # Check for stale rounds every 10 seconds
         )
         self._assigned_rank = None
         self._world_size = None
-
-        # Track rendezvous round number in memory (increments on each next_rendezvous call)
-        # Used to isolate MASTER_ADDR/MASTER_PORT between rendezvous rounds
-        # Round 0 indicates the first rendezvous (enforces max_nodes requirement)
-        self._rendezvous_round = 0
-
-        # Sync with global cycle for cross-array task coordination
-        # This ensures all nodes (including newly joined nodes from different array tasks)
-        # use the same cycle number, which is critical for PyTorch's role_info coordination
-        #
-        # RACE CONDITION ANALYSIS:
-        # Replacement nodes can arrive in three scenarios:
-        #
-        # 1. Required Replacement (rendezvous waiting):
-        #    - Current rendezvous is waiting to reach min_nodes
-        #    - Replacement is REQUIRED to complete the rendezvous
-        #    - Replacement reads global_cycle_key = K (current value, correct)
-        #    - Rendezvous CANNOT complete without the replacement
-        #    - When rendezvous completes, global_cycle_key is updated to K+1
-        #    - ✅ NO RACE: Replacement reads correct value because rendezvous waits for it
-        #
-        # 2. Hot Spare (after rendezvous completes):
-        #    - Current rendezvous completes and updates global_cycle_key = K+1
-        #    - Replacement arrives later and reads global_cycle_key = K+1 (new value, correct)
-        #    - Replacement waits at Step 0 for next failure to open new rendezvous
-        #    - ✅ NO RACE: Replacement reads already-updated value
-        #
-        # 3. Hot Spare (narrow race window):
-        #    - Current rendezvous completes (last_participant_arrived_key = 1)
-        #    - Replacement arrives and reads global_cycle_key = K (old value, STALE)
-        #    - BEFORE global_cycle_key is updated to K+1 (couple-seconds window)
-        #    - Replacement has stale _rendezvous_round and will wait at Step 0
-        #    - ⚠️ RACE EXISTS: Replacement has stale value for this initialization
-        #
-        # We accept this narrow race window because:
-        # - Occurs only for hot spares in a couple-seconds window
-        if self._barrier_state.store.check([self._barrier_state.global_cycle_key]):
-            stored_cycle_bytes = self._barrier_state.store.get(self._barrier_state.global_cycle_key)
-            stored_cycle = int(stored_cycle_bytes.decode('utf-8'))
-            if stored_cycle > self._rendezvous_round:
-                log.info(
-                    f"Syncing _rendezvous_round from {self._rendezvous_round} to {stored_cycle} "
-                    f"(cross-array task coordination during initialization)"
-                )
-                self._rendezvous_round = stored_cycle
-
-                # Also sync the profiling cycle to match
-                # This ensures newly joining nodes (e.g., replacement array tasks) continue
-                # with the correct cycle number instead of restarting from 0
-                set_profiling_cycle(self._rendezvous_round)
+        self._agent = None  # Reference to the agent (set via set_agent())
 
         self._ranks_connector = IpcConnector(FT_LAUNCHER_IPC_SOCKET)
         self._ranks_connector.start_receiving()
@@ -1341,9 +1430,48 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
         )
 
+    @property
+    def _rendezvous_round(self) -> int:
+        """Delegate to barrier state's rendezvous round."""
+        return self._barrier_state._rendezvous_round
+
+    @_rendezvous_round.setter
+    def _rendezvous_round(self, value: int) -> None:
+        """Delegate to barrier state's rendezvous round."""
+        self._barrier_state._rendezvous_round = value
+
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
         self._worker_group = worker_group
+
+    def set_agent(self, agent: Any) -> None:
+        """Set the agent reference for this handler.
+
+        This allows the handler to call back to the agent when important events occur,
+        such as rendezvous round updates that require agent state synchronization.
+
+        Args:
+            agent: The LocalElasticAgent instance
+        """
+        self._agent = agent
+        # Pass agent reference to barrier state for progress tracking
+        self._barrier_state._agent = agent
+        # Complete initialization now that agent is set
+        self._complete_initialization()
+
+    def _complete_initialization(self) -> None:
+        """Complete initialization tasks that require agent reference.
+
+        This is called after set_agent() to perform initialization tasks that
+        need to sync with the agent, such as syncing the rendezvous round for
+        cross-array task coordination.
+        """
+        old_round = self._rendezvous_round
+        if self._barrier_state._sync_from_global_cycle():
+            log.info(
+                f"[{self._this_node}] Synced rendezvous round at initialization "
+                f"({old_round} -> {self._rendezvous_round})"
+            )
 
     def _record(
         self,
@@ -1483,15 +1611,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     def _perform_rendezvous(self) -> None:
         """Perform the complete rendezvous process."""
         # Perform complete rendezvous process
-        # Pass flag indicating if this is the first rendezvous (round 0)
-        is_first_rendezvous = self._rendezvous_round == 0
-
         group_rank, total_participants = self._barrier_state.perform_rendezvous(
             self._this_node,
             self._settings.min_nodes,
             self._settings.max_nodes,
-            self._settings.timeout.last_call,
-            is_first_rendezvous,
         )
 
         # Increment round number for the next rendezvous
@@ -1559,6 +1682,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             self.handle_control_requests_from_rank()
 
             # Perform the complete rendezvous process
+            # Stale round detection and sync happens automatically in _wait_for_rendezvous_open()
             self._perform_rendezvous()
 
             # Use stored rank and world size
@@ -1741,14 +1865,6 @@ def create_handler(
     |                            | rendezvous is expected to complete. Defaults to 600  |
     |                            | seconds.                                             |
     +----------------------------+------------------------------------------------------+
-    | last_call_timeout          | An additional wait amount, in seconds, before        |
-    |                            | completing the rendezvous once the minimum number of |
-    |                            | nodes has been reached. Defaults to 70 seconds.      |
-    |                            | NOTE: This only applies to SUBSEQUENT rendezvous     |
-    |                            | after the first one. The FIRST rendezvous always     |
-    |                            | waits for max_nodes to ensure all nodes join during  |
-    |                            | initial startup.                                     |
-    +----------------------------+------------------------------------------------------+
     | close_timeout              | The time, in seconds, within which the rendezvous is |
     |                            | expected to close after a call to                    |
     |                            | :py:meth:`RendezvousHandler.set_closed` or           |
@@ -1760,7 +1876,9 @@ def create_handler(
     |                            | nodes are excluded. As many complete segments as     |
     |                            | possible are selected from each domain. min_nodes    |
     |                            | must be divisible by segment. Defaults to None       |
-    |                            | (disabled).                                          |
+    |                            | (disabled). Rendezvous completes as soon as enough   |
+    |                            | participants arrive to satisfy the segment           |
+    |                            | constraint.                                          |
     +----------------------------+------------------------------------------------------+
     | enable_nic_healthcheck     | Whether to enable NIC link state health check before |
     |                            | rendezvous. Defaults to False.                       |
@@ -1774,7 +1892,6 @@ def create_handler(
     try:
         timeout = RendezvousTimeout(
             _get_timeout(params, "join"),
-            _get_timeout(params, "last_call"),
             _get_timeout(params, "close"),
         )
 

@@ -89,6 +89,18 @@ class TrainingProgressTracker:
         if iteration > self.current_max_iteration:
             self.current_max_iteration = iteration
 
+    def sync_cycle_number(self, new_cycle_number: int):
+        """
+        Sync cycle number when rendezvous round is updated.
+
+        This is called when a stale rendezvous round is detected and corrected,
+        ensuring the progress tracker stays in sync with the global cycle.
+
+        Args:
+            new_cycle_number: The corrected cycle number to sync to
+        """
+        self.cycle_number = new_cycle_number
+
     def analyze_previous_cycle(self):
         """
         Analyze progress made in the previous restart cycle.

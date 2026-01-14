@@ -1329,6 +1329,13 @@ class FtRendezvousHandler(RendezvousHandler):
         """Set the worker group reference for this handler."""
         self._worker_group = worker_group
 
+    def set_agent(self, agent: Any) -> None:
+        """Set the agent reference for this handler.
+
+        Note: Legacy handler doesn't use agent callbacks, this is a no-op for compatibility.
+        """
+        pass
+
     @property
     def settings(self) -> RendezvousSettings:
         """Get the settings of the rendezvous."""

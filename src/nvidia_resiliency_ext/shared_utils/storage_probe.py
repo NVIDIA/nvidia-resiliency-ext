@@ -30,8 +30,15 @@ def _storage_path_probe(paths: Optional[list[str]] = None) -> dict:
         return {"invalid": invalid, "missing": missing, "unreadable": unreadable}
 
     for p in paths:
+        # Skip None and empty strings
         if not p:
             continue
+
+        # Ensure p is a string (defensive check)
+        if not isinstance(p, str):
+            invalid.append(f"{p} (expected string path, got {type(p).__name__})")
+            continue
+
         if not p.startswith("/"):
             invalid.append(f"{p} (not absolute; expected an absolute path starting with '/')")
             continue

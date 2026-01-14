@@ -1609,6 +1609,11 @@ def launch_agent(
         is_store_host=is_store_host,
     )
 
+    # Set agent reference in rendezvous handler for callbacks
+    # This allows the handler to directly sync agent state (like progress tracker)
+    # when important events occur (e.g., rendezvous round updates)
+    spec.rdzv_handler.set_agent(agent)
+
     shutdown_rdzv = True
     try:
         metrics.initialize_metrics(metrics.MetricsConfig(config.metrics_cfg))
@@ -1658,7 +1663,7 @@ def launch_agent(
         else:
             logger.info("All ranks exited gracefully. Launcher exiting without an error.")
     except Exception as e:
-        logger.error(f"Agent .run() raised exception, {e=}")
+        logger.error(f"Agent .run() raised exception, {e=}", exc_info=True)
         events.record(agent.get_event_failed())
         raise
     finally:
@@ -2867,7 +2872,8 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
         if isinstance(chosen_storage_paths, str):
             parts = [p.strip() for p in chosen_storage_paths.split(",") if p.strip()]
         elif isinstance(chosen_storage_paths, list):
-            parts = [str(p).strip() for p in chosen_storage_paths if str(p).strip()]
+            # Filter out None values and convert to strings, then filter empty strings
+            parts = [str(p).strip() for p in chosen_storage_paths if p is not None and str(p).strip()]
         else:
             raise ValueError(
                 "storage health check paths must be a comma-separated string or a list of strings"
@@ -3044,7 +3050,7 @@ def main(args=None):
         )
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
+        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1", exc_info=True)
         sys.exit(1)
     logger.info("Agent exits with exit code = 0.")
     sys.exit(0)

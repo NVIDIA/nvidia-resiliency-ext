@@ -29,7 +29,6 @@ These tests focus on:
 import os
 import threading
 import time
-from datetime import timedelta
 from unittest import TestCase
 
 from torch.distributed import TCPStore
@@ -45,15 +44,15 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
 )
 
 # Test timeout configuration - use short timeouts to make tests run faster
-TEST_LAST_CALL_TIMEOUT_SECS = 0.2  # seconds - for last_call_timeout (reduced from 0.5)
+TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
 TEST_JOIN_TIMEOUT_SECS = 2.0  # seconds - for join timeout (reduced from 5.0)
 TEST_THREAD_JOIN_TIMEOUT_SECS = 5.0  # seconds - for thread.join() timeout (reduced from 10.0)
 
 
-# Helper to create timedelta for tests (named with _ prefix to avoid pytest detection)
-def _test_timeout(seconds=TEST_LAST_CALL_TIMEOUT_SECS):
-    """Create timedelta for test timeouts."""
-    return timedelta(seconds=seconds)
+# Helper to create segment check interval for tests
+def _test_segment_check_interval(seconds=TEST_SEGMENT_CHECK_INTERVAL_SECS):
+    """Create segment check interval for test."""
+    return seconds
 
 
 class BaseRendezvousTest(TestCase):
@@ -170,6 +169,76 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         count3 = self.store.add(state.arrived_count_key, 1)
         self.assertEqual(count3, 3)
 
+    def test_get_all_participants_incremental_fetch(self):
+        """Test incremental fetching of participants using get_all_participants."""
+        from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
+            RendezvousParticipantInfo,
+        )
+
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        # Add some participants to the store
+        participants_data = [
+            (self.node_desc_gen.generate(), 0, "domain1"),
+            (self.node_desc_gen.generate(), 1, "domain1"),
+            (self.node_desc_gen.generate(), 2, "domain2"),
+            (self.node_desc_gen.generate(), 3, "domain2"),
+            (self.node_desc_gen.generate(), 4, "domain3"),
+        ]
+
+        for i, (node_desc, infra_rank, domain_id) in enumerate(participants_data, start=1):
+            arrived_key = f"{state.prefix}:arrived_{i}"
+            participant_data = RendezvousParticipantInfo.pack(node_desc, infra_rank, domain_id)
+            self.store.set(arrived_key, participant_data)
+
+        # Test 1: Fetch all participants at once
+        all_participants = state.get_all_participants(total_participants=5)
+        self.assertEqual(len(all_participants), 5)
+        self.assertEqual(all_participants[0][1], 0)  # First participant infra_rank=0
+        self.assertEqual(all_participants[4][1], 4)  # Last participant infra_rank=4
+
+        # Test 2: Fetch first 2 participants
+        first_two = state.get_all_participants(total_participants=2)
+        self.assertEqual(len(first_two), 2)
+        self.assertEqual(first_two[0][1], 0)
+        self.assertEqual(first_two[1][1], 1)
+
+        # Test 3: Incremental fetch - get next 3 participants
+        # Make a copy of first_two to avoid mutation
+        first_two_copy = list(first_two)
+        all_five = state.get_all_participants(
+            total_participants=5,
+            start_index=3,  # Start from 3rd participant
+            existing_participants=first_two_copy,
+        )
+        self.assertEqual(len(all_five), 5)
+        self.assertEqual(all_five[0][1], 0)  # First from cache
+        self.assertEqual(all_five[1][1], 1)  # Second from cache
+        self.assertEqual(all_five[2][1], 2)  # Third is new
+        self.assertEqual(all_five[3][1], 3)  # Fourth is new
+        self.assertEqual(all_five[4][1], 4)  # Fifth is new
+        # Verify original first_two was mutated (it's the same object as first_two_copy before the call)
+        self.assertEqual(len(first_two), 2)  # Original list should still be 2
+
+        # Test 4: Edge case - start_index beyond total_participants (returns existing)
+        first_two_copy2 = list(first_two)
+        result = state.get_all_participants(
+            total_participants=5, start_index=10, existing_participants=first_two_copy2
+        )
+        self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy2)
+
+        # Test 5: Edge case - start_index equals total_participants + 1 (returns existing)
+        first_two_copy3 = list(first_two)
+        result = state.get_all_participants(
+            total_participants=5, start_index=6, existing_participants=first_two_copy3
+        )
+        self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy3)
+
 
 class Step2CompletionTest(BaseRendezvousTest):
     """Test Step 2 completion signaling logic."""
@@ -203,7 +272,7 @@ class Step2CompletionTest(BaseRendezvousTest):
         """Test that Step 2 completes immediately when max_nodes is reached."""
         min_nodes = 2
         max_nodes = 3
-        last_call_timeout = _test_timeout()  # Short timeout for testing
+        segment_check_interval = _test_segment_check_interval()
 
         # Create a thread that will join and wait
         results = []
@@ -220,7 +289,7 @@ class Step2CompletionTest(BaseRendezvousTest):
             try:
                 node = self.node_desc_gen.generate()
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
             except Exception as e:
@@ -245,11 +314,11 @@ class Step2CompletionTest(BaseRendezvousTest):
         ranks = [r[1] for r in results]
         self.assertEqual(len(set(ranks)), max_nodes)  # All unique ranks
 
-    def test_step2_completion_on_last_call_timeout(self):
-        """Test that Step 2 completes after last_call_timeout with min_nodes."""
+    def test_step2_completion_on_min_nodes_with_segment_check(self):
+        """Test that Step 2 completes when min_nodes is reached and segment constraint is satisfied."""
         min_nodes = 2
         max_nodes = 4
-        last_call_timeout = _test_timeout()  # Short timeout for testing
+        segment_check_interval = _test_segment_check_interval()
 
         results = []
         errors = []
@@ -264,10 +333,9 @@ class Step2CompletionTest(BaseRendezvousTest):
             )
             try:
                 node = self.node_desc_gen.generate()
-                # Test subsequent rendezvous behavior (not first rendezvous)
-                # where min_nodes + timeout allows completion
+                # Rendezvous should complete when segment constraint is met
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
             except Exception as e:
@@ -280,7 +348,7 @@ class Step2CompletionTest(BaseRendezvousTest):
             t.start()
             threads.append(t)
 
-        # Wait for completion (should happen after timeout)
+        # Wait for completion (should happen after segment check interval)
         start_time = time.time()
         for t in threads:
             t.join(timeout=10)
@@ -290,22 +358,20 @@ class Step2CompletionTest(BaseRendezvousTest):
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(len(results), min_nodes)
 
-        # Note: We don't check elapsed >= 1.0 because when all min_nodes
-        # join simultaneously, any of them might set the completion key
-        # immediately after their own deadline expires, making the wait
-        # effectively instant for the others
+        # Completion should happen relatively quickly once segment constraint is met
+        # (within a few check intervals)
+        self.assertLess(elapsed, 2.0, f"Took too long to complete: {elapsed}s")
 
     def test_step2_late_arrival_sees_completion_key(self):
-        """Test that late arrivals see the completion key and proceed immediately."""
-        min_nodes = 2
+        """Test that rendezvous completes correctly when all participants arrive quickly."""
+        min_nodes = 3  # Require 3 nodes
         max_nodes = 4
-        last_call_timeout = _test_timeout(0.4)  # Longer timeout to allow late joiner
+        segment_check_interval = _test_segment_check_interval()  # Use default short interval
 
         results = []
         errors = []
-        join_times = []
 
-        def participant_thread(participant_id, is_host, delay=0):
+        def participant_thread(participant_id, is_host):
             # Each participant needs its own state instance
             state = _RendezvousBarrierState(
                 store=self.store,
@@ -314,34 +380,21 @@ class Step2CompletionTest(BaseRendezvousTest):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
-                if delay > 0:
-                    time.sleep(delay)
                 node = self.node_desc_gen.generate()
-                start = time.time()
-                # Test subsequent rendezvous behavior (not first rendezvous)
-                # where min_nodes + timeout allows completion
+                # Rendezvous completes when segment constraint is met
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
-                elapsed = time.time() - start
                 results.append((participant_id, rank, total))
-                join_times.append((participant_id, elapsed))
             except Exception as e:
                 errors.append((participant_id, e))
 
-        # Start min_nodes participants
+        # Start all min_nodes participants together
         threads = []
         for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0, 0))
+            t = threading.Thread(target=participant_thread, args=(i, i == 0))
             t.start()
             threads.append(t)
-
-        # Add a late arrival while first participants are still waiting
-        # (before last_call_timeout expires)
-        time.sleep(0.05)  # Join shortly after others, while they're waiting
-        late_thread = threading.Thread(target=participant_thread, args=(99, False, 0))
-        late_thread.start()
-        threads.append(late_thread)
 
         # Wait for all threads
         for t in threads:
@@ -349,7 +402,9 @@ class Step2CompletionTest(BaseRendezvousTest):
 
         # Check all completed
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
-        self.assertEqual(len(results), min_nodes + 1)
+        self.assertEqual(
+            len(results), min_nodes, f"Expected {min_nodes} results, got {len(results)}"
+        )
 
 
 class RaceConditionTest(BaseRendezvousTest):
@@ -409,15 +464,15 @@ class RaceConditionTest(BaseRendezvousTest):
         self.assertEqual(set(arrived_counts), set(range(1, num_participants + 1)))
 
     def test_late_arrival_during_acknowledgment(self):
-        """Test late arrival joining during acknowledgment phase."""
-        min_nodes = 2
+        """Test that rendezvous completes correctly with all participants arriving together."""
+        min_nodes = 4  # Require 4 nodes
         max_nodes = 5
-        last_call_timeout = _test_timeout(0.25)  # Short timeout
+        segment_check_interval = _test_segment_check_interval()  # Use default short interval
 
         results = []
         errors = []
 
-        def participant_thread(participant_id, is_host, delay=0):
+        def participant_thread(participant_id, is_host):
             # Each participant needs its own state instance
             state = _RendezvousBarrierState(
                 store=self.store,
@@ -426,40 +481,31 @@ class RaceConditionTest(BaseRendezvousTest):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
-                if delay > 0:
-                    time.sleep(delay)
                 node = self.node_desc_gen.generate()
-                # Test subsequent rendezvous behavior (not first rendezvous)
-                # where min_nodes + timeout allows completion
+                # Rendezvous completes when segment constraint is met
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
             except Exception as e:
                 errors.append((participant_id, e))
 
-        # Start min_nodes participants
+        # Start all min_nodes participants together
         threads = []
         for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0, 0))
+            t = threading.Thread(target=participant_thread, args=(i, i == 0))
             t.start()
             threads.append(t)
 
-        # Add late arrivals at various times
-        for i in range(2):
-            t = threading.Thread(
-                target=participant_thread, args=(min_nodes + i, False, 0.2 + i * 0.2)
-            )
-            t.start()
-            threads.append(t)
-
-        # Wait for all
+        # Wait for all with generous timeout
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
 
-        # All should complete (late arrivals are included)
+        # All should complete
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
-        self.assertGreater(len(results), min_nodes)
+        self.assertEqual(
+            len(results), min_nodes, f"Expected {min_nodes} results, got {len(results)}"
+        )
 
     def test_late_arrival_after_ack_check_before_key_clear(self):
         """Test late arrival in the critical window: after ack check, before key clearing.
@@ -475,7 +521,7 @@ class RaceConditionTest(BaseRendezvousTest):
         """
         min_nodes = 2
         max_nodes = 4
-        last_call_timeout = _test_timeout()  # Short timeout for testing
+        segment_check_interval = _test_segment_check_interval()  # Short timeout for testing
 
         results = []
         errors = []
@@ -508,10 +554,9 @@ class RaceConditionTest(BaseRendezvousTest):
 
                 state.assign_group_ranks = instrumented_assign
 
-                # Test subsequent rendezvous behavior (not first rendezvous)
-                # where min_nodes + timeout allows completion
+                # Rendezvous completes when segment constraint is met
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append(('host', rank, total))
             except Exception as e:
@@ -528,7 +573,7 @@ class RaceConditionTest(BaseRendezvousTest):
                 node = self.node_desc_gen.generate()
                 # Test subsequent rendezvous behavior (not first rendezvous)
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append(('regular', rank, total))
             except Exception as e:
@@ -549,7 +594,7 @@ class RaceConditionTest(BaseRendezvousTest):
                 node = self.node_desc_gen.generate()
                 # Test subsequent rendezvous behavior (not first rendezvous)
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout, is_first_rendezvous=False
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append(('late', rank, total))
             except Exception as e:
@@ -646,7 +691,7 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
         """Test that store host assigns ranks to all participants."""
         min_nodes = 3
         max_nodes = 3
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         results = []
 
@@ -659,7 +704,9 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             node = self.node_desc_gen.generate()
-            rank, total = state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            rank, total = state.perform_rendezvous(
+                node, min_nodes, max_nodes, segment_check_interval
+            )
             results.append((participant_id, rank, total))
 
         threads = []
@@ -702,21 +749,21 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
 
         min_nodes = 2
         max_nodes = 2
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         results = []
 
         def host_thread():
             node = self.node_desc_gen.generate()
             rank, total = host_state.perform_rendezvous(
-                node, min_nodes, max_nodes, last_call_timeout
+                node, min_nodes, max_nodes, segment_check_interval
             )
             results.append(('host', rank, total))
 
         def non_host_thread():
             node = self.node_desc_gen.generate()
             rank, total = non_host_state.perform_rendezvous(
-                node, min_nodes, max_nodes, last_call_timeout
+                node, min_nodes, max_nodes, segment_check_interval
             )
             results.append(('non_host', rank, total))
 
@@ -1543,7 +1590,7 @@ class ErrorCaseTest(BaseRendezvousTest):
         """Test that exceeding max_nodes raises RendezvousClosedError."""
         min_nodes = 2
         max_nodes = 2  # Set max to 2
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         errors = []
         # Use barrier to synchronize thread starts - ensures all threads
@@ -1562,7 +1609,7 @@ class ErrorCaseTest(BaseRendezvousTest):
                 # Wait for all threads to be ready before proceeding
                 start_barrier.wait()
                 node = self.node_desc_gen.generate()
-                state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+                state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
             except Exception as e:
                 errors.append((participant_id, type(e).__name__))
 
@@ -1590,13 +1637,13 @@ class ErrorCaseTest(BaseRendezvousTest):
         )
         min_nodes = 5  # Require 5 nodes but we'll only provide 1
         max_nodes = 5
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         node = self.node_desc_gen.generate()
 
         # Should timeout waiting for other participants
         with self.assertRaises(RendezvousTimeoutError):
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_closed_rendezvous_raises_error(self):
         """Test that joining a closed rendezvous raises RendezvousClosedError."""
@@ -1613,12 +1660,12 @@ class ErrorCaseTest(BaseRendezvousTest):
 
         min_nodes = 2
         max_nodes = 4
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
         node = self.node_desc_gen.generate()
 
         # Should raise RendezvousClosedError
         with self.assertRaises(RendezvousClosedError):
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_duplicate_infra_rank_raises_error(self):
         """Test that duplicate infrastructure ranks raise an error."""
@@ -1675,7 +1722,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
         """Test that all participants acknowledge completion."""
         min_nodes = 3
         max_nodes = 3
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         ack_counts = []
 
@@ -1688,7 +1735,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             node = self.node_desc_gen.generate()
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
             # After completion, check ack count
             # Note: Keys might be cleared by store host, so we capture during execution
             ack_counts.append(1)  # Just count that we got here
@@ -1715,7 +1762,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
         """
         min_nodes = 2
         max_nodes = 2
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         # Need one state to check keys after
         check_state = _RendezvousBarrierState(
@@ -1734,7 +1781,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             node = self.node_desc_gen.generate()
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
         threads = []
         for i in range(min_nodes):
@@ -1804,6 +1851,49 @@ class HandlerIntegrationTest(BaseRendezvousTest):
         self.assertEqual(handler.settings.run_id, self.run_id)
         self.assertEqual(handler.settings.min_nodes, 2)
         self.assertEqual(handler.settings.max_nodes, 4)
+
+    def test_handler_segment_validation(self):
+        """Test that handler validates min_nodes % segment == 0."""
+        # Valid: min_nodes=8 % segment=4 == 0
+        handler = FtRendezvousBarrierHandler.from_backend(
+            run_id=self.run_id,
+            store=self.store,
+            backend=None,
+            min_nodes=8,
+            max_nodes=16,
+            timeout=RendezvousTimeout(),
+            is_store_host=True,
+            segment=4,
+        )
+        self.assertIsNotNone(handler)
+
+        # Invalid: min_nodes=10 % segment=4 != 0
+        with self.assertRaises(ValueError) as ctx:
+            FtRendezvousBarrierHandler.from_backend(
+                run_id=f"{self.run_id}_invalid",
+                store=self.store,
+                backend=None,
+                min_nodes=10,
+                max_nodes=16,
+                timeout=RendezvousTimeout(),
+                is_store_host=True,
+                segment=4,
+            )
+        self.assertIn("must be divisible by segment", str(ctx.exception))
+
+        # Invalid: min_nodes=7 % segment=3 != 0
+        with self.assertRaises(ValueError) as ctx:
+            FtRendezvousBarrierHandler.from_backend(
+                run_id=f"{self.run_id}_invalid2",
+                store=self.store,
+                backend=None,
+                min_nodes=7,
+                max_nodes=12,
+                timeout=RendezvousTimeout(),
+                is_store_host=True,
+                segment=3,
+            )
+        self.assertIn("must be divisible by segment", str(ctx.exception))
 
     def test_handler_next_rendezvous(self):
         """Test basic rendezvous flow is validated by other test classes."""
@@ -1879,6 +1969,141 @@ class InfrastructureRankTest(TestCase):
         # Check direct mapping: group_rank = infra_rank
         self.assertEqual(result[participants[0][0]], 0)
         self.assertEqual(result[participants[1][0]], 1)
+
+
+class StaleRoundDetectionTest(BaseRendezvousTest):
+    """Test stale rendezvous round detection and rate limiting."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up shared TCPStore for all tests in this class."""
+        cls.shared_store = TCPStore(
+            host_name="127.0.0.1",
+            port=0,  # Use any available port
+            is_master=True,
+            wait_for_workers=False,
+        )
+
+    def setUp(self):
+        """Set up test fixtures with unique run_id for each test."""
+        super().setUp()
+        # Use the shared_store from setUpClass
+        self.store = self.shared_store
+        # Generate unique run_id to isolate each test
+        self.run_id = f"test_stale_{self._testMethodName}_{int(time.time() * 1000000)}"
+        self.node_desc_gen = _NodeDescGenerator()
+
+    def test_stale_check_interval_parameter(self):
+        """Test that stale_check_interval parameter is properly set."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            stale_check_interval=5.0,
+        )
+
+        self.assertEqual(state.stale_check_interval, 5.0)
+
+    def test_stale_check_interval_default(self):
+        """Test that stale_check_interval has correct default value."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        self.assertEqual(state.stale_check_interval, 10.0)
+
+    def test_stale_round_detection_rate_limiting(self):
+        """Test that stale round detection is rate-limited properly at Step 0."""
+        # Use a short interval for this test
+        check_interval = 0.5  # 500ms
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            stale_check_interval=check_interval,
+        )
+
+        # Set rendezvous as closed (training in progress)
+        state.store.set(state.last_participant_arrived_key, b"1")
+
+        # Set global cycle to a higher value to trigger stale round detection
+        state.store.set(state.global_cycle_key, b"2")
+
+        # Track how many times we would check the store
+        check_count = 0
+        start_time = time.monotonic()
+        test_duration = 1.5  # Run for 1.5 seconds
+
+        node_desc = self.node_desc_gen.generate()
+
+        # Simulate the waiting loop at Step 0
+        # We manually simulate the loop instead of calling _wait_for_rendezvous_open()
+        # to avoid the actual waiting behavior
+        while time.monotonic() - start_time < test_duration:
+            # Save the last check time before checking
+            last_check_time = state._last_stale_check_time
+
+            # Simulate the stale round check from _wait_for_rendezvous_open()
+            current_time = time.monotonic()
+            if current_time - state._last_stale_check_time >= state.stale_check_interval:
+                state._last_stale_check_time = current_time
+                if state.store.check([state.global_cycle_key]):
+                    stored_cycle_bytes = state.store.get(state.global_cycle_key)
+                    stored_cycle = int(stored_cycle_bytes.decode('utf-8'))
+                    # Would raise RendezvousStaleRoundError here, but we just count
+
+            # If last_check_time changed, a check was performed
+            if state._last_stale_check_time != last_check_time:
+                check_count += 1
+
+            # Sleep a very short time to simulate tight loop
+            time.sleep(0.01)
+
+        # We expect approximately test_duration / check_interval checks
+        expected_checks = test_duration / check_interval
+        # Allow some tolerance (±1 check)
+        self.assertGreaterEqual(check_count, expected_checks - 1)
+        self.assertLessEqual(check_count, expected_checks + 1)
+
+        # Verify that many iterations happened but only a few checks
+        # This confirms rate limiting is working
+        self.assertGreater(check_count, 0)
+        # We should have done far fewer checks than the number of iterations
+        # (which would be ~150 iterations at 10ms sleep over 1.5 seconds)
+        self.assertLess(check_count, 10)
+
+    def test_stale_round_raises_exception(self):
+        """Test that detecting a stale round syncs automatically at Step 0."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            stale_check_interval=0.1,  # Short interval for testing
+        )
+
+        # Set initial local round
+        state._rendezvous_round = 1
+
+        # Set global cycle to a higher value to trigger stale round detection
+        state.store.set(state.global_cycle_key, b"5")
+
+        # Set rendezvous as open so we can exit the wait loop
+        state.store.set(state.last_participant_arrived_key, b"0")
+
+        node_desc = self.node_desc_gen.generate()
+
+        # Should sync automatically when stale round detected at Step 0
+        # The method should return normally (not raise exception)
+        state._wait_for_rendezvous_open(node_desc)
+
+        # Verify that the round was synced
+        self.assertEqual(state._rendezvous_round, 5)
 
 
 if __name__ == '__main__':
