@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nvidia_resiliency_ext.shared_utils.log_manager &mdash; nvidia-resiliency-ext 0.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
-      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
 
   
@@ -248,7 +248,33 @@
 <a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogConfig.get_infra_rank">[docs]</a>
     <span class="nd">@classmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">get_infra_rank</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
-        <span class="k">return</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SLURM_PROCID&quot;</span><span class="p">,</span> <span class="s2">&quot;0&quot;</span><span class="p">))</span> <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SLURM_PROCID&quot;</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span></div>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Get infrastructure rank with SLURM job array support.</span>
+
+<span class="sd">        For SLURM job arrays, calculates rank as:</span>
+<span class="sd">            array_task_id * nnodes_per_array_task + slurm_procid</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Infrastructure rank or None if not available</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Check if we&#39;re in a SLURM job array</span>
+        <span class="n">slurm_array_task_id</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SLURM_ARRAY_TASK_ID&quot;</span><span class="p">)</span>
+        <span class="n">slurm_procid</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SLURM_PROCID&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">slurm_array_task_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">slurm_procid</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="c1"># SLURM job array deployment</span>
+            <span class="n">array_task_id</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">slurm_array_task_id</span><span class="p">)</span>
+            <span class="n">proc_id</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">slurm_procid</span><span class="p">)</span>
+
+            <span class="c1"># Get number of nodes per array task</span>
+            <span class="n">nnodes_per_array</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SLURM_NNODES&quot;</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SLURM_JOB_NUM_NODES&quot;</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">nnodes_per_array</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">nnodes</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">nnodes_per_array</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">array_task_id</span> <span class="o">*</span> <span class="n">nnodes</span> <span class="o">+</span> <span class="n">proc_id</span>
+            <span class="c1"># If we can&#39;t get nnodes, fall through to regular SLURM_PROCID</span>
+
+        <span class="c1"># Regular SLURM deployment or fallback</span>
+        <span class="k">return</span> <span class="nb">int</span><span class="p">(</span><span class="n">slurm_procid</span><span class="p">)</span> <span class="k">if</span> <span class="n">slurm_procid</span> <span class="k">else</span> <span class="kc">None</span></div>
 
 
 <div class="viewcode-block" id="LogConfig.get_infra_local_rank">
@@ -306,6 +332,7 @@
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">node_local_tmp_dir</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
         <span class="n">node_local_tmp_prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">log_file</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_node_local_tmp_prefix</span> <span class="o">=</span> <span class="n">LogConfig</span><span class="o">.</span><span class="n">get_process_name</span><span class="p">(</span><span class="n">node_local_tmp_prefix</span><span class="p">)</span>
         <span class="c1"># Get distributed info once during initialization</span>
@@ -324,6 +351,9 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_max_msg_file_size</span> <span class="o">=</span> <span class="n">LogConfig</span><span class="o">.</span><span class="n">get_max_file_size</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_max_backup_files</span> <span class="o">=</span> <span class="n">LogConfig</span><span class="o">.</span><span class="n">get_max_log_files</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_log_to_stdout</span> <span class="o">=</span> <span class="n">LogConfig</span><span class="o">.</span><span class="n">get_log_to_stdout_cfg</span><span class="p">()</span>
+
+        <span class="c1"># Optional log file (if specified, logs go to file instead of console)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_log_file</span> <span class="o">=</span> <span class="n">log_file</span>
 
         <span class="c1"># Create logger</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_setup_logger</span><span class="p">()</span></div>
@@ -364,7 +394,34 @@
         <span class="k">for</span> <span class="n">handler</span> <span class="ow">in</span> <span class="n">logger</span><span class="o">.</span><span class="n">handlers</span><span class="p">[:]:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">removeHandler</span><span class="p">(</span><span class="n">handler</span><span class="p">)</span>
 
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">node_local_tmp_logging_enabled</span><span class="p">:</span>
+        <span class="c1"># Determine base format (same for all handlers)</span>
+        <span class="n">base_fmt</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="s2">&quot;</span><span class="si">%(asctime)s</span><span class="s2"> [</span><span class="si">%(levelname)s</span><span class="s2">] &quot;</span>
+            <span class="s2">&quot;[</span><span class="si">{node}</span><span class="s2">] &quot;</span>
+            <span class="s2">&quot;[workload:</span><span class="si">%(workload_rank)s</span><span class="s2">(</span><span class="si">%(workload_local_rank)s</span><span class="s2">) &quot;</span>
+            <span class="s2">&quot;infra:</span><span class="si">%(infra_rank)s</span><span class="s2">(</span><span class="si">%(infra_local_rank)s</span><span class="s2">)] &quot;</span>
+            <span class="s2">&quot;</span><span class="si">%(filename)s</span><span class="s2">:</span><span class="si">%(lineno)d</span><span class="s2"> </span><span class="si">%(message)s</span><span class="s2">&quot;</span>
+        <span class="p">)</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">node</span><span class="o">=</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">get_node_id</span><span class="p">())</span>
+
+        <span class="c1"># For file handler, prepend rank prefix (like srun -l)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_log_file</span><span class="p">:</span>
+            <span class="n">infra_rank</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">infra_rank</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">infra_rank</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="s1">&#39;?&#39;</span>
+            <span class="n">world_size</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;WORLD_SIZE&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">world_size</span> <span class="ow">and</span> <span class="nb">str</span><span class="p">(</span><span class="n">infra_rank</span><span class="p">)</span><span class="o">.</span><span class="n">isdigit</span><span class="p">():</span>
+                <span class="n">width</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">world_size</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">))</span>
+                <span class="n">rank_prefix</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="nb">str</span><span class="p">(</span><span class="n">infra_rank</span><span class="p">)</span><span class="si">:</span><span class="s1">&gt;</span><span class="si">{</span><span class="n">width</span><span class="si">}}</span><span class="s1">: &#39;</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">rank_prefix</span> <span class="o">=</span> <span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">infra_rank</span><span class="si">}</span><span class="s1">: &#39;</span>
+            <span class="n">fmt</span> <span class="o">=</span> <span class="n">rank_prefix</span> <span class="o">+</span> <span class="n">base_fmt</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">fmt</span> <span class="o">=</span> <span class="n">base_fmt</span>
+
+        <span class="c1"># Create handler: file, node-local-tmp, or console (mutually exclusive)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_log_file</span><span class="p">:</span>
+            <span class="c1"># File handler</span>
+            <span class="n">handler</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">FileHandler</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_log_file</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s1">&#39;a&#39;</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">node_local_tmp_logging_enabled</span><span class="p">:</span>
+            <span class="c1"># Node-local temporary logging</span>
             <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_node_local_tmp_dir</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
             <span class="n">validate_directory</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_node_local_tmp_dir</span><span class="p">)</span>
             <span class="n">handler</span> <span class="o">=</span> <span class="n">NodeLocalTmpLogHandler</span><span class="p">(</span>
@@ -375,25 +432,19 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">_node_local_tmp_prefix</span><span class="p">,</span>
             <span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="c1"># Simple logging to stderr or stdout</span>
+            <span class="c1"># Console handler (stderr or stdout)</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_log_to_stdout</span><span class="p">:</span>
                 <span class="n">handler</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">StreamHandler</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">stdout</span><span class="p">)</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="n">handler</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">StreamHandler</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">stderr</span><span class="p">)</span>
 
-        <span class="c1"># Use dynamic formatter with static hostname and dynamic rank info</span>
+        <span class="c1"># Create formatter and apply to handler</span>
         <span class="n">formatter</span> <span class="o">=</span> <span class="n">DynamicLogFormatter</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">workload_rank</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">workload_local_rank</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">infra_rank</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">infra_local_rank</span><span class="p">,</span>
-            <span class="n">fmt</span><span class="o">=</span><span class="p">(</span>
-                <span class="s2">&quot;</span><span class="si">%(asctime)s</span><span class="s2"> [</span><span class="si">%(levelname)s</span><span class="s2">] &quot;</span>
-                <span class="s2">&quot;[</span><span class="si">{node}</span><span class="s2">] &quot;</span>
-                <span class="s2">&quot;[workload:</span><span class="si">%(workload_rank)s</span><span class="s2">(</span><span class="si">%(workload_local_rank)s</span><span class="s2">) &quot;</span>
-                <span class="s2">&quot;infra:</span><span class="si">%(infra_rank)s</span><span class="s2">(</span><span class="si">%(infra_local_rank)s</span><span class="s2">)] &quot;</span>
-                <span class="s2">&quot;</span><span class="si">%(filename)s</span><span class="s2">:</span><span class="si">%(lineno)d</span><span class="s2"> </span><span class="si">%(message)s</span><span class="s2">&quot;</span>
-            <span class="p">)</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">node</span><span class="o">=</span><span class="n">LogConfig</span><span class="o">.</span><span class="n">get_node_id</span><span class="p">()),</span>
+            <span class="n">fmt</span><span class="o">=</span><span class="n">fmt</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">handler</span><span class="o">.</span><span class="n">setFormatter</span><span class="p">(</span><span class="n">formatter</span><span class="p">)</span>
         <span class="n">handler</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="p">)</span>
@@ -424,6 +475,7 @@
     <span class="n">node_local_tmp_dir</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
     <span class="n">force_reset</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
     <span class="n">node_local_tmp_prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">log_file</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">logging</span><span class="o">.</span><span class="n">Logger</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Setup the distributed logger.</span>
@@ -446,6 +498,10 @@
 <span class="sd">        node_local_tmp_dir: Optional directory path for temporary files. If None, uses NVRX_NODE_LOCAL_TMPDIR env var.</span>
 <span class="sd">        force_reset: If True, force reconfiguration even if logger is already configured.</span>
 <span class="sd">                    Useful for subprocesses that need fresh logger setup.</span>
+<span class="sd">        node_local_tmp_prefix: Optional prefix for log files (e.g. &quot;ftlauncher&quot;).</span>
+<span class="sd">        log_file: Optional path to log file. When specified, logs are written to this file</span>
+<span class="sd">                 with rank prefixes (like srun -l) instead of console. All processes write</span>
+<span class="sd">                 to the same file using append mode for safe concurrent writes.</span>
 
 <span class="sd">    Returns:</span>
 <span class="sd">        logging.Logger: Configured logger instance</span>
@@ -454,6 +510,9 @@
 <span class="sd">        # In main script (launcher.py) or training subprocess</span>
 <span class="sd">        from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger</span>
 <span class="sd">        logger = setup_logger()</span>
+
+<span class="sd">        # With log file for consolidated logging across all ranks/nodes</span>
+<span class="sd">        logger = setup_logger(log_file=&quot;/path/to/base.log&quot;)</span>
 
 <span class="sd">        # In subprocesses that need fresh logger setup</span>
 <span class="sd">        logger = setup_logger(force_reset=True)</span>
@@ -480,6 +539,7 @@
         <span class="n">log_manager</span> <span class="o">=</span> <span class="n">LogManager</span><span class="p">(</span>
             <span class="n">node_local_tmp_dir</span><span class="o">=</span><span class="n">node_local_tmp_dir</span><span class="p">,</span>
             <span class="n">node_local_tmp_prefix</span><span class="o">=</span><span class="n">node_local_tmp_prefix</span><span class="p">,</span>
+            <span class="n">log_file</span><span class="o">=</span><span class="n">log_file</span><span class="p">,</span>
         <span class="p">)</span>
 
         <span class="c1"># Get the configured logger from the log manager</span>

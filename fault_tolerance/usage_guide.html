@@ -8,7 +8,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Usage guide &mdash; nvidia-resiliency-ext 0.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
-      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
 
   
@@ -236,28 +236,62 @@ restart proceeds as a best effort.</p>
 <section id="rank-assignment">
 <h4>Rank assignment<a class="headerlink" href="#rank-assignment" title="Link to this heading"></a></h4>
 <p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> assigns ranks to workers during the rendezvous process.</p>
-<p><strong>Infrastructure-based assignment (default):</strong></p>
-<p>By default (<code class="docutils literal notranslate"><span class="pre">--ft-use-infra-group-rank=True</span></code>), rank assignments <strong>always</strong> come from the infrastructure:</p>
+<p>Rank assignments always use infrastructure-based ordering when available:</p>
 <ul class="simple">
 <li><p>The launcher first checks <code class="docutils literal notranslate"><span class="pre">SLURM_PROCID</span></code> (automatically set in SLURM environments)</p></li>
 <li><p>If not available, it falls back to <code class="docutils literal notranslate"><span class="pre">GROUP_RANK</span></code> (set by <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> itself)</p></li>
+<li><p>If neither environment variable is set, ranks are assigned deterministically based on sorted node descriptors</p></li>
 </ul>
-<p>Infrastructure ranks are used for <strong>every rendezvous</strong>, including after failures/restarts. Previous
-rank assignments are ignored. This ensures consistency with the infrastructure’s rank assignment,
-which is important for static deployments and proper resource allocation.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>Hot spare/redundancy is <strong>NOT supported</strong> with <code class="docutils literal notranslate"><span class="pre">use_infra_group_rank=True</span></code> because dynamic
-rendezvous cannot guarantee that lower infrastructure ranks will join as participants first.</p>
-</div>
-<p><strong>Deterministic assignment (alternative):</strong></p>
-<p>Set <code class="docutils literal notranslate"><span class="pre">--ft-use-infra-group-rank=False</span></code> (or <code class="docutils literal notranslate"><span class="pre">use_infra_group_rank:</span> <span class="pre">false</span></code> in config) to use
-deterministic sorted assignment based on node descriptors. In this mode:</p>
+<p>This ensures consistency with the infrastructure’s rank assignment, which is important
+for static deployments and proper resource allocation.</p>
+</section>
+<section id="hot-spare-nodes-and-segment-aware-rank-assignment">
+<h4>Hot Spare Nodes and Segment-Aware Rank Assignment<a class="headerlink" href="#hot-spare-nodes-and-segment-aware-rank-assignment" title="Link to this heading"></a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> supports hot spare nodes, which are standby nodes that can replace failed nodes
+during restart. Hot spare functionality is always enabled and works with <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code>.</p>
+<p>By default (<code class="docutils literal notranslate"><span class="pre">--ft-segment=None</span></code>), the launcher uses <strong>simple hot spare mode</strong>, which is suitable
+for most deployments including H100-based systems where NVLink domain segmentation is not required:</p>
 <ul class="simple">
-<li><p>Previous rank assignments are preserved when possible</p></li>
-<li><p>New workers fill gaps left by failed workers</p></li>
-<li><p>Ranks are reassigned based on sorted node descriptors</p></li>
+<li><p>The first <code class="docutils literal notranslate"><span class="pre">min_nodes</span></code> (from <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code>) are assigned as active workers</p></li>
+<li><p>Any additional nodes beyond <code class="docutils literal notranslate"><span class="pre">min_nodes</span></code> become hot spares with standby ranks</p></li>
+<li><p>Hot spares do not require GPU ClusterUUID or NVLink domain awareness</p></li>
+<li><p>This mode effectively treats each node independently for rank assignment</p></li>
 </ul>
+<p>For large-scale NVSwitch-based systems (e.g., DGX H200, HGX B200), you can enable
+<strong>segment-aware hot spare mode</strong> using <code class="docutils literal notranslate"><span class="pre">--ft-segment=N</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">N</span></code> specifies the minimum number of nodes required per NVLink domain (identified by GPU ClusterUUID)</p></li>
+<li><p>Only domains with at least <code class="docutils literal notranslate"><span class="pre">N</span></code> nodes participate in training</p></li>
+<li><p>From each valid domain, as many complete segments as possible are selected</p></li>
+<li><p>Nodes in the same segment receive contiguous group ranks for optimal performance</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">min_nodes</span></code> parameter (from <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code>) must be divisible by <code class="docutils literal notranslate"><span class="pre">segment</span></code></p></li>
+<li><p>GPU ClusterUUID is automatically queried via nvidia-smi to identify NVLink domains</p></li>
+</ul>
+<p><strong>Key Differences:</strong></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-segment=None</span></code> (default): Simple mode without domain awareness, suitable for H100 systems</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-segment=1</span></code>: Each node is a segment, similar to simple mode but requires ClusterUUID</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-segment=4</span></code> or higher: Multi-node segments for NVSwitch-based systems</p></li>
+</ul>
+<p>Example for H100 deployment (8 nodes requested, 6 needed for training):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span>--nnodes<span class="o">=</span><span class="m">6</span>:8<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">            </span>--max-restarts<span class="o">=</span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
+<span class="w">            </span>training_script.py
+
+<span class="c1"># Nodes 0-5: Active workers (ranks 0-47)</span>
+<span class="c1"># Nodes 6-7: Hot spares (standby ranks 48-63)</span>
+</pre></div>
+</div>
+<p>Example for NVSwitch deployment with segment=4 (12 nodes requested, 8 needed):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span>--nnodes<span class="o">=</span><span class="m">8</span>:12<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">            </span>--ft-segment<span class="o">=</span><span class="m">4</span><span class="w"> </span>--max-restarts<span class="o">=</span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
+<span class="w">            </span>training_script.py
+
+<span class="c1"># Requires domains with at least 4 nodes each</span>
+<span class="c1"># 8 active nodes = 2 complete segments</span>
+<span class="c1"># 4 hot spare nodes available for restart</span>
+</pre></div>
+</div>
 </section>
 <section id="numa-binding">
 <h4>NUMA binding<a class="headerlink" href="#numa-binding" title="Link to this heading"></a></h4>

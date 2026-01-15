@@ -7,7 +7,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>nvidia_resiliency_ext.fault_tolerance.rank_monitor_server &mdash; nvidia-resiliency-ext 0.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
-      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../../../_static/copybutton.css?v=76b2166b" />
 
   
@@ -159,6 +159,11 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">restarter_logger</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span><span class="p">,</span> <span class="n">message</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_setup_logger</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Setup logger with stderr stream handler.</span>
+
+<span class="sd">        Note: stderr is inherited from parent (launcher). If launcher redirected</span>
+<span class="sd">        stderr to base logfile, logs will automatically go there.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">level</span><span class="p">)</span>
         <span class="n">ch</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">StreamHandler</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">stderr</span><span class="p">)</span>
         <span class="n">ch</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">level</span><span class="p">)</span>
@@ -166,6 +171,11 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">propagate</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_create_restarter_sublogger</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Create restarter sublogger (writes [ALWAYS] messages to stdout).</span>
+
+<span class="sd">        Note: stdout is inherited from parent (launcher). If launcher redirected</span>
+<span class="sd">        stdout to base logfile, logs will automatically go there.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">restarter_logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">.Restarter&quot;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">restarter_logger</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span>
             <span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_restarter_logger</span> <span class="k">else</span> <span class="n">logging</span><span class="o">.</span><span class="n">CRITICAL</span>
@@ -269,29 +279,16 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">nic_health_checker</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start_periodic_restart_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span><span class="o">.</span><span class="n">done</span><span class="p">():</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;Periodic restart check is already running.&quot;</span><span class="p">)</span>
-            <span class="k">return</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_check</span><span class="p">()</span>
-        <span class="p">)</span>
-        <span class="c1"># Only log once from local rank 0 to reduce log spam</span>
-        <span class="k">if</span> <span class="p">(</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span> <span class="o">==</span> <span class="mi">0</span>
-        <span class="p">)</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Started periodic restart check.&quot;</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="c1"># DEPRECATED: This method is disabled and will be removed in a future release.</span>
+        <span class="c1"># The periodic restart check only provided observability (state transition logging)</span>
+        <span class="c1"># without affecting core functionality.</span>
+        <span class="k">return</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop_periodic_restart_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span><span class="o">.</span><span class="n">cancel</span><span class="p">()</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span>
-            <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">CancelledError</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Periodic restart check task cancelled.&quot;</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_restart_task</span> <span class="o">=</span> <span class="kc">None</span>
-            <span class="c1"># Reset counter when restart completes successfully</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_restart_check_log_count</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="c1"># DEPRECATED: This method is disabled and will be removed in a future release.</span>
+        <span class="c1"># The periodic restart check only provided observability (state transition logging)</span>
+        <span class="c1"># without affecting core functionality.</span>
+        <span class="k">return</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="c1"># First sends SIGCONT to wake up the process, then &quot;rank_termination_signal&quot; to terminate it</span>
@@ -606,6 +603,9 @@
             <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">workload_check_interval</span><span class="p">)</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_periodic_restart_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># DEPRECATED: This method is disabled and will be removed in a future release.</span>
+        <span class="c1"># The periodic restart check only provided observability (state transition logging)</span>
+        <span class="c1"># without affecting core functionality.</span>
         <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">restart_check_interval</span><span class="p">)</span>
         <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">state_machine</span><span class="o">.</span><span class="n">periodic_restart_check</span><span class="p">()</span>
@@ -717,6 +717,8 @@
 
         <span class="c1"># Set up the nvrx logger for subprocess</span>
         <span class="c1"># Use force_reset=True to ensure fresh logger setup with correct rank info</span>
+        <span class="c1"># Note: stdout/stderr are inherited from parent (launcher), so if launcher</span>
+        <span class="c1"># redirected them to base logfile, rank monitor logs will go there too</span>
         <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">setup_logger</span>
 
         <span class="k">try</span><span class="p">:</span>
