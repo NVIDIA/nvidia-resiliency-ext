@@ -45,6 +45,7 @@ except ImportError:
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import (
+    AttributionService,
     DistributedStorageHealthCheck,
     GPUHealthCheck,
     NicLinkStateHealthCheck,
@@ -1061,6 +1062,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
+        attrsvc_host: Optional[str] = None,
+        attrsvc_port: Optional[int] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1085,8 +1088,16 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 Whether to use infrastructure group rank for rank assignment.
             enable_nic_healthcheck:
                 Whether to enable all NIC link state health check before rendezvous.
+            enable_dist_storage_healthcheck:
+                Whether to enable distributed storage health check before rendezvous.
             link_state_path_template:
                 Template path for NIC link state files.
+            storage_healthcheck_paths:
+                List of storage paths to check for health.
+            attrsvc_host:
+                Hostname or IP address of the attribution service.
+            attrsvc_port:
+                Port number of the attribution service.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1111,6 +1122,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
+            attrsvc_host=attrsvc_host,
+            attrsvc_port=attrsvc_port,
         )
 
     def __init__(
@@ -1124,6 +1137,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
+        attrsvc_host: Optional[str] = None,
+        attrsvc_port: Optional[int] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1175,6 +1190,24 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._storage_path_checker = (
             StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
         )
+
+        # Logs specs (set via set_logs_specs)
+        self._logs_specs = None
+
+        # Attribution service client (optional, only on master node)
+        if is_store_host and attrsvc_host and attrsvc_port is not None:
+            self._attr_service = AttributionService(
+                host=attrsvc_host,
+                port=int(attrsvc_port),
+            )
+        else:
+            self._attr_service = None
+
+    def set_logs_specs(self, logs_specs) -> None:
+        """
+        Set the logs specs for per-cycle log file path construction.
+        """
+        self._logs_specs = logs_specs
 
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
@@ -1263,6 +1296,14 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 "Storage path health check",
                 f"Node {self._this_node} has invalid or unreadable paths.",
             )
+
+        # Perform optional log analysis for the previous cycle (non-fatal)
+        if self._attr_service is not None and self._logs_specs is not None:
+            prev_cycle = self.round()
+            if prev_cycle >= 0 and hasattr(self._logs_specs, 'get_cycle_log_file'):
+                cycle_log_file = self._logs_specs.get_cycle_log_file(prev_cycle)
+                self._attr_service(cycle_log_file)
+                log.debug(f"Scheduled AttributionService for path: {cycle_log_file}")
 
         # Perform Node health check (external service if available)
         _nodehealth_checker = get_node_health_check()
@@ -1442,7 +1483,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         raise NotImplementedError("Not implemented")
 
     def round(self) -> int:
-        raise NotImplementedError("Not implemented")
+        """Returns the current cycle index (set by launcher before rendezvous)."""
+        return getattr(self, '_cycle_index', 0)
 
     def get_run_id(self) -> str:
         """See base class."""
@@ -1546,6 +1588,8 @@ def create_handler(
         )
         storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
+        attrsvc_host = params.config.get('attrsvc_host', None)
+        attrsvc_port = params.config.get('attrsvc_port', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -1561,6 +1605,8 @@ def create_handler(
             enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
+            attrsvc_host=attrsvc_host,
+            attrsvc_port=attrsvc_port,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

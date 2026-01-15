@@ -13,14 +13,18 @@ from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribu
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def lines_after(lines, needle):
+    for i, line in enumerate(lines):
+        if needle in line:
+            return lines[i + 1 :]
+    return lines
+
 
 def chunk_logs_strict(lines):
-    """
-    Chunks logs strictly between:
+    """Chunks logs strictly between:
     - START: The LAST occurrence of Cycle N
-    - END: The LAST occurrence of Cycle N+1
+    - END: The LAST occurrence of Cycle N+1 OR End of File (for the last cycle).
 
-    Lines after the highest Cycle number are ignored.
     If no 'Cycle' markers are found, returns all lines as Cycle 0.
     """
     # Regex to match the profiling line
@@ -39,28 +43,34 @@ def chunk_logs_strict(lines):
 
     final_chunks = {}
 
-    # --- NEW LOGIC START ---
     # If no cycles were found, return all lines as Cycle 0
     if not sorted_cycles:
         final_chunks[0] = lines
         return final_chunks
-    # --- NEW LOGIC END ---
 
-    # Step 2: Create chunks ONLY when we have both a Start (N) and an End (N+1)
-    # We iterate up to len() - 1 because the last cycle in the list
-    # serves only as the end boundary for the previous one.
-    for i in range(len(sorted_cycles) - 1):
+    # Step 2: Iterate through cycles to capture chunks
+    # We iterate through ALL sorted cycles now (not len - 1)
+    for i in range(len(sorted_cycles)):
         curr_cycle = sorted_cycles[i]
-        next_cycle = sorted_cycles[i + 1]  # This is N+1
-
         start_index = last_cycle_indices[curr_cycle]
-        end_index = last_cycle_indices[next_cycle]
 
-        # Extract lines between LAST Cycle N and LAST Cycle N+1
-        raw_chunk = lines[start_index:end_index]
+        # Determine the End Index
+        if i < len(sorted_cycles) - 1:
+            # If there is a next cycle, stop there
+            next_cycle = sorted_cycles[i + 1]
+            end_index = last_cycle_indices[next_cycle]
+            raw_chunk = lines[start_index:end_index]
+        else:
+            # --- FIX: Handling the Last Cycle ---
+            # If this is the last cycle in the list, go to the end of the lines
+            raw_chunk = lines[start_index:]
 
-        # Step 3: Remove marker lines
+        # Step 3: Remove marker lines using the existing logic
         clean_chunk = [line for line in raw_chunk if not cycle_pattern.search(line)]
+
+        # Apply the external 'lines_after' filter
+        # (Assuming lines_after is defined in your scope)
+        clean_chunk = lines_after(clean_chunk, "FT: initialized")
 
         final_chunks[curr_cycle] = clean_chunk
 
@@ -85,7 +95,8 @@ class NVRxLogAnalyzer(NVRxAttribution):
             top_p=self.args.top_p,
             max_tokens=self.args.max_tokens,
         )
-        self.exclude_nvrx_logs = args.exclude_nvrx_logs
+        self.exclude_nvrx_logs = getattr(args, 'exclude_nvrx_logs', False)
+        self.is_per_cycle = getattr(args, 'is_per_cycle', False)
         super().__init__(
             preprocess_input=self.analyze_logs,
             attribution=self.llm_analyze,
@@ -111,18 +122,24 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         """
         path = self.args.log_path
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding="latin-1") as f:
             input_data = f.readlines()
 
-        if self.exclude_nvrx_logs:
-            input_data = [line for line in input_data if "nvidia_resiliency_ext" not in line]
-            input_data = [
-                line for line in input_data if "[workload:" not in line or 'Cycle:' in line
-            ]
-            logger.info(f"Excluded {len(input_data)} lines from the input data")
-            with open(os.path.join(os.path.dirname(path), "nvrx_logs_edited.txt"), 'w') as f:
-                f.writelines(input_data)
-        chunks = chunk_logs_strict(input_data)  # Splitting the app log to cycles
+        # If is_per_cycle is set, skip filtering and chunking (data is already single-cycle)
+        if self.is_per_cycle:
+            logger.info("is_per_cycle=True: skipping nvrx log filtering and cycle chunking")
+            chunks = {0: input_data}
+        else:
+            if self.exclude_nvrx_logs:
+                input_data = [line for line in input_data if "nvidia_resiliency_ext" not in line]
+                input_data = [
+                    line for line in input_data if "[workload:" not in line or 'Cycle:' in line
+                ]
+                logger.info(f"Excluded {len(input_data)} lines from the input data")
+                with open(os.path.join(os.path.dirname(path), "nvrx_logs_edited.txt"), 'w') as f:
+                    f.writelines(input_data)
+            chunks = chunk_logs_strict(input_data)  # Splitting the app log to cycles
+
         output_list = [
             return_application_errors(self.llm, lines, self.lru_cache)
             for cycle, lines in chunks.items()
@@ -130,21 +147,28 @@ class NVRxLogAnalyzer(NVRxAttribution):
         return output_list
 
     async def llm_analyze(self, output_list: list[ApplicationData]) -> list[str]:
-        return [
-            (
-                get_proposed_solution_cat(self.llm, output)
-                if len(output.application_errors_list_full) > 0
-                else "No error found from application logs"
-            )
-            for output in output_list
-        ]
+
+        result = []
+        logger.info("output_list_size: %s", str(len(output_list)))
+        for output in output_list:
+            if len(output.application_errors_list_full):
+                result.append(get_proposed_solution_cat(self.llm, output))
+            else:
+                if output.finished == "LLM_FAILURE":
+                    result.append(("LLM FAILURE","LLM FAILURE","LLM FAILURE","LLM FAILURE",""))
+                elif output.finished != "SLURM_CANCELLED":
+                    result.append(("ERRORS NOT FOUND","ERRORS NOT FOUND","ERRORS NOT FOUND","ERRORS NOT FOUND",""))
+                else:
+                    result.append(("RESTART IMMEDIATE","","""Attribution: Primary issues: ["SLURM STEP CANCELLED"], Secondary issues: []""","",""))
+
+        return result
 
     async def print_output(
         self, attribution_results: list[str]
     ) -> list[tuple[str, AttributionState]]:
         output_list = []
         for attribution_result in attribution_results:
-            if attribution_result != "No error found from application logs":
+            if attribution_result:
                 # Concatenate all strings in attribution_result if it's a list/tuple
                 logger.info(f"attribution_result: {attribution_result}")
                 attr_state = (
@@ -157,10 +181,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 else:
                     concatenated_result = str(attribution_result)
                 output_list.append((concatenated_result, attr_state))
-            else:
-                output_list.append(
-                    ("No error found from application logs", AttributionState.CONTINUE)
-                )
         return output_list
 
 
@@ -180,6 +200,11 @@ def main():
     parser.add_argument('--max_tokens', type=int, default=8192, help='Max tokens for LLM')
     parser.add_argument(
         '--exclude_nvrx_logs', action='store_true', help='Exclude nvrx logs from the input data'
+    )
+    parser.add_argument(
+        '--is_per_cycle',
+        action='store_true',
+        help='Input is already per-cycle data (skip filtering and chunking)',
     )
 
     args = parser.parse_args()

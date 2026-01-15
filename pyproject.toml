@@ -49,7 +49,7 @@ nvidia-ml-py = ">=12.570.86"
 defusedxml = "*"
 langchain-nvidia-ai-endpoints = ">=0.3.15"
 mcp = ">=1.15.0"
-logsage = "=0.1.2"
+logsage = "=0.1.4"
 grpcio = "^1.76.0"
 grpcio-tools = "^1.76.0"
 
