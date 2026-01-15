@@ -101,8 +101,7 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
-# Setup the nvrx logger at module import time
-setup_logger(node_local_tmp_prefix="ftlauncher")
+# Logger will be configured in run() after parsing args
 logger = logging.getLogger(LogConfig.name)
 
 _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
@@ -350,10 +349,25 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Rank monitor state (process, IPC connections, listener tasks) per local rank
         self._rank_monitors: Dict[int, RankMonitorState] = dict()
         self._ft_cfg = fault_tol_cfg
-        # Centralized progress tracking (always instantiated, active only if configured)
+
+        # Fix _remaining_restarts for job array deployments
+        # The base class (SimpleElasticAgent) sets _remaining_restarts = spec.max_restarts,
+        # assuming this is a fresh start. But for job array replacements, we need to account
+        # for restarts that already occurred in the original job array element.
+        # The global restart count persists across replacements via the rendezvous store.
+        restarts_initiated = self._get_global_restart_count()
+        self._remaining_restarts = spec.max_restarts - restarts_initiated
+
+        # Initialize progress tracker with global cycle number for job array deployments
+        # The cycle number tells us which training cycle we're about to run (0, 1, 2, ...),
+        # which persists across job array element replacements via the rendezvous store.
+        # This allows the tracker to show correct cycle numbers in logs and continue
+        # tracking progress even after a job array element is replaced.
+        initial_cycle_number = self._get_global_cycle_number()
         self._progress_tracker = TrainingProgressTracker(
             min_progress_iterations=fault_tol_cfg.min_progress_iterations,
             max_no_progress_restarts=fault_tol_cfg.max_no_progress_restarts,
+            initial_cycle_number=initial_cycle_number,
         )
         self._rank_iterations: Dict[int, int] = dict()  # Track max iteration per rank
         self._children_pgids: Set[int] = set()
@@ -361,6 +375,87 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._node_id = self._get_fq_hostname()
 
     DEFAULT_ROLE = "default"  # FIXME
+
+    # ============================================================================
+    # Global Restart/Cycle Tracking for Job Array Deployments
+    # ============================================================================
+    #
+    # Key Concepts:
+    #
+    # 1. _rendezvous_round (in FtRendezvousBarrierHandler):
+    #    - Tracks number of COMPLETED rendezvous operations
+    #    - Starts at 0, increments AFTER each rendezvous completes
+    #    - Persisted to store as 'global_cycle_key' by store host
+    #    - Synced by replacement nodes on initialization
+    #
+    # 2. cycle_number:
+    #    - Which training cycle is running (0 = initial, 1 = first restart, etc.)
+    #    - Equals _rendezvous_round (one rendezvous per cycle)
+    #    - Used by ProgressTracker for logging
+    #
+    # 3. restart_count:
+    #    - How many RESTARTS have been initiated (cycle 0 is NOT a restart)
+    #    - Equals max(0, cycle_number - 1)
+    #    - Used to calculate _remaining_restarts
+    #
+    # 4. _remaining_restarts:
+    #    - How many more restarts are allowed after current cycle fails
+    #    - Equals max_restarts - restart_count
+    #    - Decremented on each restart decision
+    #
+    # Example Timeline (max_restarts=3):
+    #   Cycle 0: restart_count=0, _remaining_restarts=3, _rendezvous_round=1 (after rdzv)
+    #   Cycle 1: restart_count=1, _remaining_restarts=2, _rendezvous_round=2 (after rdzv)
+    #   Cycle 2: restart_count=2, _remaining_restarts=1, _rendezvous_round=3 (after rdzv)
+    #   Cycle 3: restart_count=3, _remaining_restarts=0, _rendezvous_round=4 (after rdzv)
+    #
+    # Job Array Replacement:
+    #   Original job crashes at cycle 2 with _rendezvous_round=3
+    #   Replacement reads global_cycle_key=3, sets _rendezvous_round=3
+    #   Calculates restart_count=2, _remaining_restarts=1
+    #   Continues with cycle 3 (one more restart allowed)
+    # ============================================================================
+
+    def _get_global_cycle_number(self) -> int:
+        """Get the current global cycle number.
+
+        The cycle number represents which training cycle is about to run or is running:
+        - Cycle 0 = initial attempt (not a restart)
+        - Cycle 1 = first restart
+        - Cycle 2 = second restart, etc.
+
+        This value persists across job array element replacements via the rendezvous store.
+
+        Returns:
+            Current cycle number (0-based)
+
+        Note:
+            Internally, this returns _rendezvous_round, which tracks the number of
+            completed rendezvous. Since each cycle requires one rendezvous:
+            cycle_number = number_of_completed_rendezvous
+        """
+        return self._rdzv_handler.round()
+
+    def _get_global_restart_count(self) -> int:
+        """Get the global restart count.
+
+        The restart count represents how many times we've restarted (not including
+        the initial attempt):
+        - 0 = running initial attempt (cycle 0), no restarts yet
+        - 1 = first restart initiated (cycle 1)
+        - 2 = second restart initiated (cycle 2), etc.
+
+        This value persists across job array element replacements via the rendezvous store.
+
+        Returns:
+            Number of restarts initiated (0-based)
+
+        Relationship to cycle_number:
+            restart_count = max(0, cycle_number - 1)
+            - Cycle 0 (initial) = 0 restarts
+            - Cycle N (N >= 1) = N restarts
+        """
+        return max(0, self._rdzv_handler.round() - 1)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -520,13 +615,14 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
-                # Check for cluster-wide issues: unhealthy nodes, new nodes waiting, or peer aborts
-                unhealthy_count = self._check_cluster_unhealthy_count()
+                # Check for cluster-wide issues: new nodes waiting or peer aborts
+                # Note: unhealthy_count is now a global job-level counter and is not used here
+                # for failure detection. It's only used in the rendezvous for early termination.
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
 
-                if unhealthy_count > 0 or num_nodes_waiting > 0 or peer_aborted_count > 0:
+                if num_nodes_waiting > 0 or peer_aborted_count > 0:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -536,7 +632,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     log_msg = (
                         f"[%s] Detected cluster changes from group_rank={group_rank} "
-                        f"(unhealthy_nodes={unhealthy_count}, nodes_waiting={num_nodes_waiting}); "
+                        f"(nodes_waiting={num_nodes_waiting}, peer_aborted={peer_aborted_count}); "
                         f"will restart worker group"
                     )
                     # Note: The node that triggered the change (unhealthy or new) already opened
@@ -635,12 +731,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # we can't have min_nodes successful worker groups.
                 # NOTE: this worker group still might be successful/healthy.
                 # all we can do is to restart if possible or shutdown otherwise
-                # NOTE: we use the rdzv round to count the restarts, so restarts are counted
-                # globally (while in any-failed mode each worker counts its own restarts)
+                # NOTE: we use the global restart count so restarts are tracked globally
+                # across job array deployments. Both any-failed and min-healthy modes use this.
                 logger.warning(
                     f"[{role}] {group_rank=} {state.name=} detected that the current run failed: {worker_state_cnt=}"
                 )
-                self._remaining_restarts = spec.max_restarts - self._rdzv_handler.round()
+                restarts_initiated = self._get_global_restart_count()
+                self._remaining_restarts = spec.max_restarts - restarts_initiated
                 if self._remaining_restarts > 0:
                     logger.info(
                         f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
@@ -807,7 +904,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._worker_watchdog.start()
             logger.info("FileTimerServer started")
         else:
-            logger.info(
+            logger.debug(
                 "Environment variable '%s' not found. Do not start FileTimerServer.",
                 enable_watchdog_env_name,
             )
@@ -914,10 +1011,12 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
 
-        # TODO: Consider using self._rdzv_handler.round() instead of calculating from _remaining_restarts
-        # Using rdzv.round() would be more robust for hot spare scenarios and provide a single source
-        # of truth for the restart cycle number.
-        restart_count = spec.max_restarts - self._remaining_restarts
+        # Get the current cycle number from the rendezvous handler
+        # At this point, rendezvous has completed and we're about to start workers.
+        # The cycle number is used for profiling and environment variable setting.
+        # Note: We use _get_global_restart_count() because in the context of worker startup,
+        # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
+        restart_count = self._get_global_restart_count()  # Actually cycle number
 
         # Record worker start start event
         record_profiling_event(
@@ -931,15 +1030,24 @@ class LocalElasticAgent(SimpleElasticAgent):
         args: Dict[int, Tuple] = {}
         envs: Dict[int, Dict[str, str]] = {}
         log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
+
+        # Get master_addr and master_port, handling compatibility with older PyTorch versions
+        try:
+            master_addr = worker_group.master_addr
+            master_port = worker_group.master_port
+        except AttributeError:
+            # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
+            master_addr, master_port = super()._get_master_addr_port(store)
+
+        # Debug logging: Log worker start info once for all workers
+        logger.debug(
+            f"Starting {len(worker_group.workers)} worker(s) "
+            f"[group_rank={worker_group.group_rank}] with "
+            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
+        )
+
         for worker in worker_group.workers:
             local_rank = worker.local_rank
-            # Get master_addr and master_port, handling compatibility with older PyTorch versions
-            try:
-                master_addr = worker_group.master_addr
-                master_port = worker_group.master_port
-            except AttributeError:
-                # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
-                master_addr, master_port = super()._get_master_addr_port(store)
 
             worker_env = {
                 "LOCAL_RANK": str(local_rank),
@@ -982,6 +1090,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._setup_local_watchdog(envs=envs)
 
         self.setup_rank_monitors(envs=envs)
+
+        # Standby nodes are those assigned a group_rank >= min_nodes after rendezvous.
+        # The rendezvous handler sets local_world_size to 0 for standby nodes, so no workers are created.
+        # Let the normal flow continue - PyTorch handles local_world_size=0 correctly.
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
@@ -1204,21 +1316,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._pcontext is not None:
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
-
-    def _check_cluster_unhealthy_count(self) -> int:
-        """Check the cluster-wide unhealthy count from the rendezvous store.
-
-        Only supported for barrier-based rendezvous. Returns 0 for legacy rendezvous.
-
-        Returns:
-            The number of unhealthy nodes reported in the cluster, or 0 if not available.
-        """
-        # Only barrier-based rendezvous supports unhealthy_count
-        if hasattr(self._rdzv_handler, '_barrier_state'):
-            return self._rdzv_handler._barrier_state._get_unhealthy_count()
-
-        # Legacy rendezvous does not support unhealthy tracking
-        return 0
 
     def _check_cluster_peer_aborted_count(self) -> int:
         """Check the cluster-wide peer aborted count from the rendezvous store.
@@ -1484,6 +1581,8 @@ def launch_agent(
 
     # Add is_store_host to rdzv_parameters
     rdzv_parameters.config["is_store_host"] = is_store_host
+    # Add nproc_per_node so the rendezvous handler can restore local_world_size for standby->active transitions
+    rdzv_parameters.config["nproc_per_node"] = config.nproc_per_node
 
     spec = WorkerSpec(
         role=config.role,
@@ -1509,6 +1608,11 @@ def launch_agent(
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
     )
+
+    # Set agent reference in rendezvous handler for callbacks
+    # This allows the handler to directly sync agent state (like progress tracker)
+    # when important events occur (e.g., rendezvous round updates)
+    spec.rdzv_handler.set_agent(agent)
 
     shutdown_rdzv = True
     try:
@@ -1559,7 +1663,7 @@ def launch_agent(
         else:
             logger.info("All ranks exited gracefully. Launcher exiting without an error.")
     except Exception as e:
-        logger.error(f"Agent .run() raised exception, {e=}")
+        logger.error(f"Agent .run() raised exception, {e=}", exc_info=True)
         events.record(agent.get_event_failed())
         raise
     finally:
@@ -2120,14 +2224,14 @@ def get_args_parser() -> ArgumentParser:
         type=str,
         default=None,
         dest="ft_base_logfile",
-        help="Base log file path for per-cycle logging (e.g. /lustre/logs/job_12345.log). "
-        "Automatically enables per-cycle consolidated logging with flat file structure: "
-        "/lustre/logs/job_12345_cycle0.log, /lustre/logs/job_12345_cycle1.log, etc. "
-        "All ranks' stdout and stderr go to the same file per cycle (truly consolidated). "
-        "Each line is automatically prefixed with [global_rank]: (like 'srun -l') for easy identification. "
-        "Uses O_APPEND flag for safe concurrent writes from multiple ranks. "
-        "Avoids filesystem pressure at scale (1 file instead of N*ranks files). "
-        "Ideal for SLURM jobs with thousands of ranks.",
+        help="Base log file path for consolidated logging (e.g. /lustre/logs/job_12345.log). "
+        "Creates two types of log files: "
+        "(1) InJob launcher logs: /lustre/logs/job_12345.log (all launcher instances from all nodes), "
+        "(2) Training worker logs per cycle: /lustre/logs/job_12345_cycle0.log, job_12345_cycle1.log, etc. "
+        "All ranks/nodes write to the same files with automatic rank prefixes (like 'srun -l'). "
+        "Uses O_APPEND flag for safe concurrent writes from multiple processes. "
+        "Avoids filesystem pressure at scale (2 files per cycle instead of N*ranks files). "
+        "Ideal for SLURM job arrays with thousands of ranks across multiple nodes.",
     )
 
     parser.add_argument(
@@ -2430,19 +2534,6 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-use-infra-group-rank",
-        "--ft-use_infra_group_rank",
-        type=lambda x: str(x).lower() not in ["false", "0", "no"],
-        default=None,
-        dest="ft_use_infra_group_rank",
-        help="Part of Fault Tolerance pkg config (use_infra_group_rank). "
-        "If enabled, always use infrastructure group rank for rank assignment. "
-        "Reads from SLURM_PROCID (SLURM) or GROUP_RANK (launcher). Previous assignments "
-        "are ignored to ensure consistency with infrastructure rank assignment. "
-        "Note: Hot spare/redundancy NOT supported. Default: True.",
-    )
-
-    parser.add_argument(
         "--ft-rdzv-impl",
         "--ft-rdzv_impl",
         type=str,
@@ -2454,6 +2545,21 @@ def get_args_parser() -> ArgumentParser:
         "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
         "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
+    )
+
+    parser.add_argument(
+        "--ft-segment",
+        "--ft_segment",
+        type=int,
+        default=None,
+        dest="ft_segment",
+        help="Controls hot spare node behavior and segment-aware rank assignment. "
+        "Default: None (simple hot spare mode for H100 and non-NVSwitch systems, no ClusterUUID required). "
+        "When set to N: Enables segment-aware mode for NVSwitch systems (DGX H200, HGX B200). "
+        "Specifies minimum nodes per NVLink domain (identified by GPU ClusterUUID via nvidia-smi). "
+        "Domains with fewer than N nodes are excluded. From valid domains, complete segments are selected. "
+        "min_nodes must be divisible by segment. "
+        "Note: segment=None (default) is suitable for H100; segment=1 is similar but requires ClusterUUID.",
     )
 
     parser.add_argument(
@@ -2725,8 +2831,12 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
 
-    # Pass use_infra_group_rank from fault tolerance config to rendezvous config
-    rdzv_configs['use_infra_group_rank'] = fault_tol_cfg.use_infra_group_rank
+    # Pass segment-related configs to rendezvous config
+    rdzv_configs['segment'] = fault_tol_cfg.segment
+
+    # Pass NIC health check configs to rendezvous config
+    rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
+    rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
 
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
@@ -2762,7 +2872,8 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
         if isinstance(chosen_storage_paths, str):
             parts = [p.strip() for p in chosen_storage_paths.split(",") if p.strip()]
         elif isinstance(chosen_storage_paths, list):
-            parts = [str(p).strip() for p in chosen_storage_paths if str(p).strip()]
+            # Filter out None values and convert to strings, then filter empty strings
+            parts = [str(p).strip() for p in chosen_storage_paths if p is not None and str(p).strip()]
         else:
             raise ValueError(
                 "storage health check paths must be a comma-separated string or a list of strings"
@@ -2869,6 +2980,35 @@ def run_script_path(training_script: str, *training_script_args: str):
 
 
 def run(args):
+    # Configure logger based on whether --ft-base-logfile is specified
+    base_log_file = getattr(args, 'ft_base_logfile', None)
+    if base_log_file:
+        # Log to file with rank prefixes (like srun -l)
+        setup_logger(log_file=base_log_file)
+
+        # Redirect launcher's stdout and stderr to the base logfile
+        # This catches:
+        # - PyTorch's C++ logs: E0112, W0112 format from torch elastic
+        # - RankMonitorLogger stderr output
+        # - NestedRestarter stdout output ([ALWAYS] messages)
+
+        # Open base logfile in append mode
+        log_fd = os.open(base_log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+
+        # Redirect both stdout (fd 1) and stderr (fd 2) to the log file
+        os.dup2(log_fd, sys.stdout.fileno())
+        os.dup2(log_fd, sys.stderr.fileno())
+
+        # Close the extra fd (stdout/stderr now point to it via dup2)
+        os.close(log_fd)
+
+        # Reopen Python's stdout/stderr handles with line buffering
+        sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+        sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
+    else:
+        # Log to console with standard prefix
+        setup_logger(node_local_tmp_prefix="ftlauncher")
+
     if args.standalone:
         args.rdzv_backend = "c10d"
         args.rdzv_endpoint = "localhost:0"
@@ -2910,7 +3050,7 @@ def main(args=None):
         )
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
+        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1", exc_info=True)
         sys.exit(1)
     logger.info("Agent exits with exit code = 0.")
     sys.exit(0)

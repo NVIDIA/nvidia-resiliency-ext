@@ -260,7 +260,7 @@ class PerCycleLogsSpecs(LogsSpecs):
         """
         nprocs = len(envs)
         if nprocs == 0:
-            self.logger.warning("Empty envs map provided when defining logging destinations.")
+            self.logger.debug("Empty envs map provided when defining logging destinations.")
             return LogsDest({}, {}, {}, {}, {})
 
         # Get restart count from environment
@@ -657,8 +657,14 @@ class PipeBasedLogsSpecs(LogsSpecs):
         _patch_subprocess_handler_once()
 
         nprocs = len(envs)
+
+        # For standby nodes (hot spares) with 0 workers, return early
+        # _current_cycle_log will remain None until the node becomes active and reify() is called again
         if nprocs == 0:
-            self.logger.warning("Empty envs map provided when defining logging destinations.")
+            self.logger.info(
+                "No workers to spawn (likely a standby/hot spare node). "
+                "Log paths will be set up when node becomes active."
+            )
             return LogsDest({}, {}, {}, {}, {})
 
         # Get restart count from environment
@@ -749,7 +755,15 @@ class PipeBasedLogsSpecs(LogsSpecs):
                 # We proceed anyway because blocking here would prevent restart
                 # The old thread should eventually exit when pipes close
 
-        # Create consolidated log file if it doesn't exist
+        # Check if log file path is set up
+        if self._current_cycle_log is None:
+            self.logger.info(
+                "start_reader() called but _current_cycle_log is None. "
+                "This is normal for standby/hot spare nodes - reify() will be called again "
+                "when the node becomes active and spawns workers."
+            )
+            return None
+
         if not os.path.exists(self._current_cycle_log):
             open(self._current_cycle_log, 'a').close()
             self.logger.info("Created consolidated log file: %s", self._current_cycle_log)

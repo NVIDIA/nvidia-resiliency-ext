@@ -93,7 +93,6 @@ class AssignRanksTest(TestCase):
     """Test the _assign_ranks static method which handles rank assignment logic."""
 
     def test_assign_ranks_with_infra_rank_always_uses_infra(self) -> None:
-        """Test that infrastructure ranks are always used when use_infra_group_rank=True."""
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
@@ -104,19 +103,15 @@ class AssignRanksTest(TestCase):
             _NodeDesc("node1", 1, 1): 1,
             _NodeDesc("node2", 1, 1): 2,
         }
-        prev = {}  # Empty prev
 
-        result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=True
-        )
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
 
-        # Should use infrastructure ranks directly
+        # Should sort by infrastructure ranks and assign contiguous group ranks
         self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
         self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
         self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
 
-    def test_assign_ranks_ignores_prev_when_use_infra_group_rank(self) -> None:
-        """Test that previous assignments are IGNORED when use_infra_group_rank=True."""
+    def test_assign_ranks_uses_infra_ranks(self) -> None:
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
@@ -128,68 +123,44 @@ class AssignRanksTest(TestCase):
             _NodeDesc("node2", 1, 1): 2,  # Infrastructure rank 2
         }
 
-        # Previous assignment (different from infrastructure ranks)
-        prev = {
-            _NodeDesc("node0", 1, 1): 2,  # Was rank 2
-            _NodeDesc("node1", 1, 1): 0,  # Was rank 0
-            _NodeDesc("node2", 1, 1): 1,  # Was rank 1
-        }
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
 
-        result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=True
-        )
-
-        # Should use infrastructure ranks, NOT previous assignments
+        # Should sort by infrastructure ranks and assign contiguous group ranks
         self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
         self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
         self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
 
-    def test_assign_ranks_fills_gaps_after_node_failure(self) -> None:
-        """Test that gaps are filled when a node leaves and a new node joins (use_infra_group_rank=False)."""
+    def test_assign_ranks_with_gaps_in_infra_ranks(self) -> None:
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
 
-        # Original: node0 (rank 0), node1 (rank 1), node2 (rank 2)
-        # node1 fails
-        # node3 joins
-        # New setup should be: node0 (rank 0), node2 (rank 2), node3 (rank 1 - fills gap)
-
+        # Infrastructure ranks with gaps (e.g., from SLURM with some nodes missing)
+        # Infra ranks: [0, 5, 10] should map to group ranks [0, 1, 2]
         participants = {
-            _NodeDesc("node0", 1, 1): 10,  # Infrastructure rank (not used when False)
-            _NodeDesc("node2", 1, 1): 12,  # Infrastructure rank (not used when False)
-            _NodeDesc("node3", 1, 1): 13,  # Infrastructure rank (not used when False) - new node
+            _NodeDesc("node0", 1, 1): 0,  # Infra rank 0
+            _NodeDesc("node1", 1, 1): 5,  # Infra rank 5
+            _NodeDesc("node2", 1, 1): 10,  # Infra rank 10
         }
 
-        # Previous assignment (node1 is gone)
-        prev = {
-            _NodeDesc("node0", 1, 1): 0,
-            _NodeDesc("node2", 1, 1): 2,
-            # node1 is not in prev because it failed
-        }
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
 
-        result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=False
-        )
+        # Should sort by infra rank and assign contiguous group ranks
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)  # Smallest infra rank -> group rank 0
+        self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)  # Middle infra rank -> group rank 1
+        self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)  # Largest infra rank -> group rank 2
 
-        # Should preserve existing assignments and fill gap
-        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)  # Preserved
-        self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)  # Preserved
-        self.assertEqual(result[_NodeDesc("node3", 1, 1)], 1)  # Fills the gap left by node1
-
-    def test_assign_ranks_sort_order_does_not_affect_prev_reuse(self) -> None:
-        """Test that sort order doesn't prevent participants from reusing previous ranks (use_infra_group_rank=False).
-
-        This test uses node descriptors that will sort in a different order than
-        their previous rank assignment, to verify that each participant can still
-        reclaim their previous rank regardless of sort order.
+    def test_assign_ranks_preserves_slurm_topology_order(self) -> None:
+        """
+        Test that participants are assigned group ranks in SLURM topology order
+        (sorted by infrastructure rank), regardless of node descriptor sort order.
         """
         from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
             _DistributedRendezvousOpExecutor,
         )
 
-        # Create nodes that will sort as: aaa_node < bbb_node < zzz_node (alphabetically)
-        # But assign them ranks in reverse order
+        # Create nodes that sort alphabetically as: aaa < bbb < zzz
+        # But assign them infrastructure ranks in reverse order
         node_aaa = _NodeDesc("aaa_node", 1, 1)
         node_bbb = _NodeDesc("bbb_node", 1, 1)
         node_zzz = _NodeDesc("zzz_node", 1, 1)
@@ -198,27 +169,161 @@ class AssignRanksTest(TestCase):
         sorted_nodes = sorted([node_zzz, node_aaa, node_bbb])
         self.assertEqual(sorted_nodes, [node_aaa, node_bbb, node_zzz])
 
-        # Previous assignments: reverse of sort order
-        prev = {
-            node_aaa: 2,  # First in sort order, but had rank 2
-            node_bbb: 1,  # Second in sort order, had rank 1
-            node_zzz: 0,  # Last in sort order, but had rank 0
-        }
-
+        # Assign infrastructure ranks in reverse of alphabetical order
         participants = {
-            node_aaa: 100,  # Infrastructure ranks (not used when False)
-            node_bbb: 101,
-            node_zzz: 102,
+            node_aaa: 102,  # Largest infra rank
+            node_bbb: 101,  # Middle infra rank
+            node_zzz: 100,  # Smallest infra rank
         }
 
-        result = _DistributedRendezvousOpExecutor._assign_ranks(
-            participants, prev, use_infra_group_rank=False
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # Group ranks should follow SLURM topology order (infra rank order), not alphabetical
+        self.assertEqual(result[node_zzz], 0)  # Smallest infra rank -> group rank 0
+        self.assertEqual(result[node_bbb], 1)  # Middle infra rank -> group rank 1
+        self.assertEqual(result[node_aaa], 2)  # Largest infra rank -> group rank 2
+
+    def test_assign_ranks_with_hot_spare_segment_none(self) -> None:
+        """Test rank assignment with hot spare nodes (segment=None).
+
+        When there are more participants than min_nodes, the legacy rendezvous
+        assigns contiguous group ranks [0, 1, 2, ...] to all participants in
+        SLURM topology order. The first min_nodes get active ranks [0..min_nodes-1],
+        and extras become hot spares with ranks [min_nodes..N-1].
+        """
+        from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
+            _DistributedRendezvousOpExecutor,
         )
 
-        # Each node should reclaim their previous rank, regardless of sort order
-        self.assertEqual(result[node_aaa], 2)  # Reclaimed rank 2
-        self.assertEqual(result[node_bbb], 1)  # Reclaimed rank 1
-        self.assertEqual(result[node_zzz], 0)  # Reclaimed rank 0
+        # Simulate 5 participants (infra ranks 0-4), where min_nodes=3
+        # First 3 should be active [0,1,2], remaining 2 are hot spares [3,4]
+        participants = {
+            _NodeDesc("node0", 1, 1): 0,  # Active: group rank 0
+            _NodeDesc("node1", 1, 1): 1,  # Active: group rank 1
+            _NodeDesc("node2", 1, 1): 2,  # Active: group rank 2
+            _NodeDesc("node3", 1, 1): 3,  # Hot spare: group rank 3
+            _NodeDesc("node4", 1, 1): 4,  # Hot spare: group rank 4
+        }
+
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # All nodes get contiguous group ranks in SLURM topology order
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
+        self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
+        self.assertEqual(result[_NodeDesc("node2", 1, 1)], 2)
+        self.assertEqual(result[_NodeDesc("node3", 1, 1)], 3)  # Hot spare
+        self.assertEqual(result[_NodeDesc("node4", 1, 1)], 4)  # Hot spare
+
+        # Verify all ranks are contiguous
+        self.assertEqual(set(result.values()), {0, 1, 2, 3, 4})
+
+    def test_assign_ranks_out_of_order_with_hot_spare(self) -> None:
+        """Test that out-of-order infra rank arrivals work correctly with hot spares.
+
+        Participants arrive in arbitrary order, but should be sorted by infra_rank
+        and assigned group ranks accordingly, with extras becoming hot spares.
+        """
+        from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
+            _DistributedRendezvousOpExecutor,
+        )
+
+        # Participants arrive out-of-order (infra ranks: 4, 1, 3, 0, 2)
+        # After sorting by infra_rank: 0, 1, 2, 3, 4
+        # First 3 get active ranks [0,1,2], remaining 2 are hot spares [3,4]
+        participants = {
+            _NodeDesc("node_d", 1, 1): 4,  # Out-of-order
+            _NodeDesc("node_b", 1, 1): 1,
+            _NodeDesc("node_c", 1, 1): 3,
+            _NodeDesc("node_a", 1, 1): 0,
+            _NodeDesc("node_e", 1, 1): 2,
+        }
+
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # Should be sorted by infra_rank and assigned accordingly
+        self.assertEqual(result[_NodeDesc("node_a", 1, 1)], 0)  # infra_rank 0 -> group rank 0
+        self.assertEqual(result[_NodeDesc("node_b", 1, 1)], 1)  # infra_rank 1 -> group rank 1
+        self.assertEqual(result[_NodeDesc("node_e", 1, 1)], 2)  # infra_rank 2 -> group rank 2
+        self.assertEqual(
+            result[_NodeDesc("node_c", 1, 1)], 3
+        )  # infra_rank 3 -> group rank 3 (hot spare)
+        self.assertEqual(
+            result[_NodeDesc("node_d", 1, 1)], 4
+        )  # infra_rank 4 -> group rank 4 (hot spare)
+
+        # Verify all ranks are contiguous
+        self.assertEqual(set(result.values()), {0, 1, 2, 3, 4})
+
+    def test_assign_ranks_with_gaps_and_hot_spare(self) -> None:
+        """Test rank assignment with gaps in infra_ranks (simulating node failures) and hot spares.
+
+        When some nodes fail and don't join, there are gaps in infra_ranks.
+        E.g., if nodes 2, 4, 5 failed, we have infra_ranks [0, 1, 3, 6, 7] instead of [0-7].
+        These should still get contiguous group ranks [0, 1, 2, 3, 4].
+        With hot spares, the first min_nodes are active, rest are hot spares.
+        """
+        from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
+            _DistributedRendezvousOpExecutor,
+        )
+
+        # Simulate 5 nodes joining with gaps: infra_ranks [0, 1, 3, 6, 7]
+        # Missing nodes: 2, 4, 5 (failed to join)
+        # Should get contiguous group ranks [0, 1, 2, 3, 4]
+        # If min_nodes=3, first 3 are active, last 2 are hot spares
+        participants = {
+            _NodeDesc("node0", 1, 1): 0,  # infra_rank 0 -> group rank 0 (active)
+            _NodeDesc("node1", 1, 1): 1,  # infra_rank 1 -> group rank 1 (active)
+            _NodeDesc("node3", 1, 1): 3,  # infra_rank 3 -> group rank 2 (active)
+            _NodeDesc("node6", 1, 1): 6,  # infra_rank 6 -> group rank 3 (hot spare)
+            _NodeDesc("node7", 1, 1): 7,  # infra_rank 7 -> group rank 4 (hot spare)
+        }
+
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # Should get contiguous group ranks [0-4] based on sorted infra_rank
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
+        self.assertEqual(result[_NodeDesc("node1", 1, 1)], 1)
+        self.assertEqual(result[_NodeDesc("node3", 1, 1)], 2)
+        self.assertEqual(result[_NodeDesc("node6", 1, 1)], 3)
+        self.assertEqual(result[_NodeDesc("node7", 1, 1)], 4)
+
+        # Verify all ranks are contiguous
+        self.assertEqual(set(result.values()), {0, 1, 2, 3, 4})
+
+    def test_assign_ranks_with_large_gaps_and_hot_spare(self) -> None:
+        """Test rank assignment with large gaps in infra_ranks and hot spares.
+
+        More aggressive gap scenario: infra_ranks [0, 5, 10, 15, 20, 22, 24]
+        Simulates many node failures (1-4, 6-9, 11-14, 16-19, 21, 23 all failed).
+        """
+        from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
+            _DistributedRendezvousOpExecutor,
+        )
+
+        # Large gaps in infra_ranks
+        participants = {
+            _NodeDesc("node0", 1, 1): 0,
+            _NodeDesc("node5", 1, 1): 5,
+            _NodeDesc("node10", 1, 1): 10,
+            _NodeDesc("node15", 1, 1): 15,
+            _NodeDesc("node20", 1, 1): 20,
+            _NodeDesc("node22", 1, 1): 22,
+            _NodeDesc("node24", 1, 1): 24,
+        }
+
+        result = _DistributedRendezvousOpExecutor._assign_ranks(participants)
+
+        # Should get contiguous group ranks [0-6], sorted by infra_rank
+        self.assertEqual(result[_NodeDesc("node0", 1, 1)], 0)
+        self.assertEqual(result[_NodeDesc("node5", 1, 1)], 1)
+        self.assertEqual(result[_NodeDesc("node10", 1, 1)], 2)
+        self.assertEqual(result[_NodeDesc("node15", 1, 1)], 3)
+        self.assertEqual(result[_NodeDesc("node20", 1, 1)], 4)
+        self.assertEqual(result[_NodeDesc("node22", 1, 1)], 5)
+        self.assertEqual(result[_NodeDesc("node24", 1, 1)], 6)
+
+        # Verify all ranks are contiguous
+        self.assertEqual(set(result.values()), {0, 1, 2, 3, 4, 5, 6})
 
 
 # RendezvousState is largely unchanged from upstream, but we test serialization
@@ -298,7 +403,6 @@ class BackendRendezvousStateHolderTest(TestCase, CustomAssertMixin):
             timeout=RendezvousTimeout(),
             keep_alive_interval=timedelta(seconds=30),
             keep_alive_max_attempt=3,
-            use_infra_group_rank=False,
         )
 
         self._cache_duration = 0
@@ -536,8 +640,27 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         mock_datetime = self._datetime_patch.start()
         mock_datetime.utcnow.return_value = self._now
 
+        # Clear environment variables that affect infrastructure rank assignment
+        # Save original values to restore in tearDown
+        self._env_vars_to_clear = [
+            'SLURM_PROCID',
+            'GROUP_RANK',
+            'CROSS_SLURM_PROCID',
+            'NVRX_INFRA_RANK_FROM_NODENAME',
+            'SLURM_ARRAY_TASK_ID',
+            'SLURM_JOB_ID',
+        ]
+        self._saved_env = {}
+        for var in self._env_vars_to_clear:
+            if var in os.environ:
+                self._saved_env[var] = os.environ[var]
+                del os.environ[var]
+
     def tearDown(self) -> None:
         self._datetime_patch.stop()
+        # Restore saved environment variables
+        for var, value in self._saved_env.items():
+            os.environ[var] = value
 
     def _create_settings(self) -> RendezvousSettings:
         return RendezvousSettings(
@@ -547,7 +670,6 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
             timeout=self._timeout,
             keep_alive_interval=timedelta(seconds=30),
             keep_alive_max_attempt=3,
-            use_infra_group_rank=False,
         )
 
     def _create_op_executor(
@@ -604,7 +726,8 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         """Test adding node to participants from both clean state and waitlist."""
         # Test 1: Clean state
         expected_state = _RendezvousState()
-        expected_state.participants[self._node] = 0
+        # Infrastructure rank is -1 initially (not yet assigned, will be assigned on completion)
+        expected_state.participants[self._node] = -1
         expected_state.last_heartbeats[self._node] = self._now
         self._min_nodes = 2
         self._max_nodes = 2
@@ -614,7 +737,7 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         self._mock_state_holder.reset_mock()
         self._state.wait_list.add(self._node)
         expected_state = _RendezvousState()
-        expected_state.participants[self._node] = 0
+        expected_state.participants[self._node] = -1
         expected_state.last_heartbeats[self._node] = self._now
         self._assert_action(_Action.ADD_TO_PARTICIPANTS, expected_state)
 
@@ -645,7 +768,8 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
 
         expected_state = _RendezvousState()
         self._add_participants(num_participants, expected_state)
-        expected_state.participants[self._node] = 0
+        # Infrastructure rank is -1 initially (not yet assigned)
+        expected_state.participants[self._node] = -1
         expected_state.last_heartbeats[self._node] = self._now
         expected_state.deadline = self._now + self._timeout.last_call
 
@@ -897,7 +1021,6 @@ class DynamicRendezvousHandlerTest(TestCase):
             ),
             keep_alive_interval=self._keep_alive_interval,
             keep_alive_max_attempt=3,
-            use_infra_group_rank=False,
         )
 
         self._state_holder.state = self._state
@@ -1109,7 +1232,6 @@ class IntegrationTest(TestCase):
             "last_call_timeout": "2",
             "local_addr": f"address_{len(self._handlers)}",
             "upscaling_enabled": True,
-            "use_infra_group_rank": False,  # Integration tests run in single process, can't set different GROUP_RANK per handler
         }
         params.update(**kwargs)
 
@@ -1258,13 +1380,11 @@ class IntegrationTest(TestCase):
                 self.tearDown()
 
     @patch.dict(os.environ, {"GROUP_RANK": "0"}, clear=False)
-    def test_use_infra_group_rank_with_env_var(self) -> None:
-        """Test that infrastructure group rank is used when GROUP_RANK is set."""
-        # Test with use_infra_group_rank=True (default) and GROUP_RANK env var set
+    def test_infra_rank_from_env_var(self) -> None:
+        """Test that infrastructure rank is used when GROUP_RANK is set."""
         handler = self._create_handler(
             min_nodes=1,
             max_nodes=1,
-            use_infra_group_rank=True,
         )
 
         # Perform rendezvous
@@ -1276,23 +1396,31 @@ class IntegrationTest(TestCase):
         self.assertEqual(world_size, 1)
 
     @patch.dict(os.environ, {}, clear=False)
-    def test_use_infra_group_rank_without_env_var_raises_error(self) -> None:
-        """Test that using infra group rank without env var raises an error."""
-        # Remove GROUP_RANK if it exists
+    def test_use_deterministic_rank_without_env_var(self) -> None:
+        """Test that ranks are assigned deterministically when env vars are not set."""
+        # Remove any env vars that could influence infra-rank detection
         os.environ.pop("GROUP_RANK", None)
         os.environ.pop("SLURM_PROCID", None)
+        os.environ.pop("CROSS_SLURM_PROCID", None)
+        os.environ.pop("SLURM_JOB_ID", None)
+        os.environ.pop("SLURM_ARRAY_TASK_ID", None)
+        os.environ.pop("SLURM_NNODES", None)
+        os.environ.pop("SLURM_JOB_NUM_NODES", None)
+        os.environ.pop("SLURMD_NODENAME", None)
+        os.environ.pop("NVRX_INFRA_RANK_FROM_NODENAME", None)
 
         handler = self._create_handler(
             min_nodes=1,
             max_nodes=1,
-            use_infra_group_rank=True,
         )
 
-        # Should raise ValueError due to missing environment variables
-        with self.assertRaises(ValueError) as cm:
-            handler.next_rendezvous()
+        # Should succeed with deterministic rank assignment
+        rdzv_info = handler.next_rendezvous()
+        rank, world_size = _extract_rendezvous_info(rdzv_info)
 
-        self.assertIn("neither SLURM_PROCID nor GROUP_RANK", str(cm.exception))
+        # Verify rank is assigned (should be 0 for single node)
+        self.assertEqual(rank, 0)
+        self.assertEqual(world_size, 1)
 
     def test_worker_states_invalid_transitions(self) -> None:
         # one final state should not be changed into another final state

@@ -49,6 +49,7 @@ class TrainingProgressTracker:
         self,
         min_progress_iterations: int = 200,
         max_no_progress_restarts: int = 3,
+        initial_cycle_number: int = 0,
     ):
         """
         Initialize the progress tracker.
@@ -56,6 +57,8 @@ class TrainingProgressTracker:
         Args:
             min_progress_iterations: Minimum iterations to consider as "making progress"
             max_no_progress_restarts: Max consecutive restarts without progress before early termination
+            initial_cycle_number: Initial global cycle number (for job array replacement nodes)
+                                  Cycle 0 = initial attempt, cycle 1 = first restart, etc.
         """
         self.min_progress_iterations = min_progress_iterations
         self.max_no_progress_restarts = max_no_progress_restarts
@@ -64,10 +67,15 @@ class TrainingProgressTracker:
         self.current_max_iteration = 0
         self.last_restart_iteration = 0
         self.no_progress_count = 0
-        self.restart_count = 0  # Track restarts internally
+        self.cycle_number = (
+            initial_cycle_number  # Track global cycle number (0 = initial, 1 = first restart, etc.)
+        )
         self._iterations_not_reported_warned = (
             False  # Track if we've warned about missing iterations
         )
+        # Track if this is the first cycle on this agent instance
+        # If initial_cycle_number > 0, this is a replacement node starting mid-job
+        self._first_cycle_on_this_agent = True
 
     def update_iteration(self, iteration: int):
         """
@@ -81,6 +89,18 @@ class TrainingProgressTracker:
         if iteration > self.current_max_iteration:
             self.current_max_iteration = iteration
 
+    def sync_cycle_number(self, new_cycle_number: int):
+        """
+        Sync cycle number when rendezvous round is updated.
+
+        This is called when a stale rendezvous round is detected and corrected,
+        ensuring the progress tracker stays in sync with the global cycle.
+
+        Args:
+            new_cycle_number: The corrected cycle number to sync to
+        """
+        self.cycle_number = new_cycle_number
+
     def analyze_previous_cycle(self):
         """
         Analyze progress made in the previous restart cycle.
@@ -92,8 +112,9 @@ class TrainingProgressTracker:
         the progress check is skipped and a warning is logged once.
         """
 
-        # Check if previous cycle made progress (skip initial run, Cycle 0)
-        if self.restart_count > 0:
+        # Check if previous cycle made progress
+        # Skip if this is the first cycle on this agent instance (no baseline data)
+        if not self._first_cycle_on_this_agent:
             # Auto-detect if iterations are being reported
             if self.last_restart_iteration == 0 and self.current_max_iteration == 0:
                 # Iterations are not being reported - skip progress check
@@ -114,7 +135,7 @@ class TrainingProgressTracker:
                 if progress_made >= self.min_progress_iterations:
                     # Good progress made
                     logger.info(
-                        f"Training cycle #{self.restart_count} made progress: "
+                        f"Training cycle #{self.cycle_number} made progress: "
                         f"{self.last_restart_iteration} → {self.current_max_iteration} "
                         f"({progress_made} iterations)"
                     )
@@ -123,16 +144,17 @@ class TrainingProgressTracker:
                     # No meaningful progress
                     self.no_progress_count += 1
                     logger.warning(
-                        f"Training cycle #{self.restart_count} made NO progress: "
+                        f"Training cycle #{self.cycle_number} made NO progress: "
                         f"{self.last_restart_iteration} → {self.current_max_iteration} "
                         f"({progress_made} iterations, need {self.min_progress_iterations}). "
                         f"Consecutive cycles without progress: {self.no_progress_count}/{self.max_no_progress_restarts}"
                     )
 
         # Update for next restart
-        self.restart_count += 1
+        self.cycle_number += 1
         self.last_restart_iteration = self.current_max_iteration
         self.current_max_iteration = 0  # Will be updated during new run
+        self._first_cycle_on_this_agent = False  # No longer first cycle after this
 
     def should_terminate_early(self) -> bool:
         """

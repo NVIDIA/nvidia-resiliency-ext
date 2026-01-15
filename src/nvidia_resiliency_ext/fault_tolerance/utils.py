@@ -35,6 +35,125 @@ logger = logging.getLogger(LogConfig.name)
 _IPC_PICKLER = multiprocessing.reduction.ForkingPickler(open(os.devnull, mode='wb'))
 
 
+def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
+    """Get infrastructure rank from environment variables with SLURM validation.
+
+    Returns infrastructure rank with the following precedence:
+    1. NVRX_INFRA_RANK_FROM_NODENAME (if set and not skipped) - calculate rank by extracting digits from SLURMD_NODENAME
+    2. CROSS_SLURM_PROCID (for multi-job coordination)
+    3. SLURM_PROCID (set by SLURM), with job array support
+    4. GROUP_RANK (fallback, set by launcher)
+
+    For SLURM job arrays with one task per node, the infrastructure rank is calculated as:
+        array_task_id * nnodes_per_array_task + slurm_procid
+    This ensures unique ranks across all nodes in all array tasks.
+
+    If none are set, returns -1 to indicate it should be assigned deterministically.
+
+    Args:
+        skip_nodename_logic: If True, skip the NVRX_INFRA_RANK_FROM_NODENAME logic and fall through
+                           to SLURM array task ID calculation. Default is False.
+
+    Returns:
+        int: Infrastructure rank (>=0) or -1 if not set
+
+    Raises:
+        RuntimeError: If SLURM_JOB_ID is set but neither CROSS_SLURM_PROCID nor SLURM_PROCID is defined
+        ValueError: If NVRX_INFRA_RANK_FROM_NODENAME is set (and not skipped) but SLURMD_NODENAME
+                   is not set or contains no digits
+    """
+    # Check NVRX_INFRA_RANK_FROM_NODENAME first (for nodename-based rank calculation)
+    if not skip_nodename_logic and os.getenv('NVRX_INFRA_RANK_FROM_NODENAME') is not None:
+        nodename = os.getenv('SLURMD_NODENAME')
+        if nodename is None:
+            raise ValueError(
+                "NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME environment variable is not set"
+            )
+        # Extract all digits from nodename
+        digits = ''.join(c for c in nodename if c.isdigit())
+        if not digits:
+            raise ValueError(
+                f"NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME '{nodename}' contains no digits"
+            )
+        infra_rank = int(digits)
+        logger.debug(f"Using infrastructure rank {infra_rank} from SLURMD_NODENAME '{nodename}'")
+        return infra_rank
+
+    # Check CROSS_SLURM_PROCID first (for multi-job scenarios)
+    cross_slurm_procid = os.getenv('CROSS_SLURM_PROCID')
+    if cross_slurm_procid is not None:
+        infra_rank = int(cross_slurm_procid)
+        logger.debug(f"Using infrastructure rank {infra_rank} from CROSS_SLURM_PROCID")
+        return infra_rank
+
+    # Get SLURM_PROCID once and reuse it
+    slurm_procid = os.getenv('SLURM_PROCID')
+
+    # Check if we're running in a SLURM job array
+    slurm_array_task_id = os.getenv('SLURM_ARRAY_TASK_ID')
+
+    if slurm_array_task_id is not None and slurm_procid is not None:
+        # In a SLURM job array with one task per node, calculate global rank across all array tasks
+        # based on node count rather than process count
+        array_task_id = int(slurm_array_task_id)
+        proc_id = int(slurm_procid)
+
+        # Get the number of nodes per array task
+        # SLURM_NNODES is the number of nodes allocated to the current job step
+        nnodes_per_array = os.getenv('SLURM_NNODES', os.getenv('SLURM_JOB_NUM_NODES'))
+        if nnodes_per_array is None:
+            # If SLURM_NNODES is not set, we can't compute the offset
+            # This should not happen in a properly configured SLURM array job
+            raise RuntimeError(
+                "SLURM_ARRAY_TASK_ID is set but SLURM_NNODES/SLURM_JOB_NUM_NODES is not defined. "
+                "Cannot calculate infrastructure rank for job array. "
+                "Ensure the job array is properly configured."
+            )
+
+        nnodes = int(nnodes_per_array)
+
+        # For one launcher per node, SLURM_PROCID should match SLURM_NODEID (local node ID within job)
+        # Calculate global infrastructure rank: array_task_id * nodes_per_task + local_node_id
+        infra_rank = array_task_id * nnodes + proc_id
+        logger.debug(
+            f"Using infrastructure rank {infra_rank} from SLURM job array "
+            f"(array_task_id={array_task_id}, nnodes={nnodes}, procid={proc_id})"
+        )
+        return infra_rank
+
+    # Try SLURM_PROCID (already retrieved), then fall back to GROUP_RANK (set by launcher)
+    infra_rank_str = slurm_procid if slurm_procid is not None else os.getenv('GROUP_RANK')
+
+    if infra_rank_str is not None:
+        infra_rank = int(infra_rank_str)
+        logger.debug(f"Using infrastructure rank {infra_rank} from environment")
+        return infra_rank
+
+    # Check if we're running under SLURM - if so, SLURM_PROCID should be defined
+    # (unless CROSS_SLURM_PROCID was set, which we already handled)
+    if os.getenv('SLURM_JOB_ID') is not None:
+        raise RuntimeError(
+            "SLURM_JOB_ID is set but neither CROSS_SLURM_PROCID nor SLURM_PROCID is defined. "
+            "This indicates a SLURM deployment error. "
+            "SLURM_PROCID should be automatically set by SLURM for each task."
+        )
+
+    # Neither env var is set - will be assigned deterministically later
+    logger.debug(
+        "Neither SLURM_PROCID nor GROUP_RANK is set. Infrastructure rank will be assigned deterministically."
+    )
+    return -1
+
+
+def is_slurm_job_array() -> bool:
+    """Check if the current job is running in a SLURM job array.
+
+    Returns:
+        bool: True if running in a SLURM job array (SLURM_ARRAY_TASK_ID is set), False otherwise
+    """
+    return os.getenv('SLURM_ARRAY_TASK_ID') is not None
+
+
 def is_process_alive(pid):
     try:
         process = psutil.Process(pid)

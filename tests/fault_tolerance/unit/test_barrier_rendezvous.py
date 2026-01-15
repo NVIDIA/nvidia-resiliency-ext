@@ -29,7 +29,6 @@ These tests focus on:
 import os
 import threading
 import time
-from datetime import timedelta
 from unittest import TestCase
 
 from torch.distributed import TCPStore
@@ -45,18 +44,71 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
 )
 
 # Test timeout configuration - use short timeouts to make tests run faster
-TEST_LAST_CALL_TIMEOUT_SECS = 0.2  # seconds - for last_call_timeout (reduced from 0.5)
+TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
 TEST_JOIN_TIMEOUT_SECS = 2.0  # seconds - for join timeout (reduced from 5.0)
 TEST_THREAD_JOIN_TIMEOUT_SECS = 5.0  # seconds - for thread.join() timeout (reduced from 10.0)
 
 
-# Helper to create timedelta for tests (named with _ prefix to avoid pytest detection)
-def _test_timeout(seconds=TEST_LAST_CALL_TIMEOUT_SECS):
-    """Create timedelta for test timeouts."""
-    return timedelta(seconds=seconds)
+# Helper to create segment check interval for tests
+def _test_segment_check_interval(seconds=TEST_SEGMENT_CHECK_INTERVAL_SECS):
+    """Create segment check interval for test."""
+    return seconds
 
 
-class BarrierStateBasicTest(TestCase):
+class BaseRendezvousTest(TestCase):
+    """Base test class that clears infrastructure rank environment variables.
+
+    Clears all environment variables that affect get_infrastructure_rank():
+    - SLURM_PROCID
+    - GROUP_RANK
+    - NVRX_INFRA_RANK_FROM_NODENAME
+    - SLURMD_NODENAME
+    - CROSS_SLURM_PROCID
+    - SLURM_ARRAY_TASK_ID
+    - SLURM_JOB_ID (to avoid validation errors when SLURM_PROCID is cleared)
+    - SLURM_NNODES
+    - SLURM_JOB_NUM_NODES
+
+    Most tests should inherit from this to ensure they use deterministic rank
+    assignment rather than being affected by the shell environment.
+
+    Tests that specifically need to test infrastructure rank behavior from
+    environment variables should inherit directly from TestCase instead.
+    """
+
+    def setUp(self):
+        """Save and clear SLURM/GROUP_RANK environment variables."""
+
+        # Clear all environment variables that affect get_infrastructure_rank()
+        # to ensure deterministic rank assignment in tests
+        self._saved_env_vars = {}
+        env_vars_to_clear = [
+            'SLURM_PROCID',
+            'GROUP_RANK',
+            'NVRX_INFRA_RANK_FROM_NODENAME',
+            'SLURMD_NODENAME',
+            'CROSS_SLURM_PROCID',
+            'SLURM_ARRAY_TASK_ID',
+            'SLURM_JOB_ID',  # Must clear to avoid validation error when SLURM_PROCID is cleared
+            'SLURM_NNODES',
+            'SLURM_JOB_NUM_NODES',
+        ]
+        for var in env_vars_to_clear:
+            self._saved_env_vars[var] = os.environ.pop(var, None)
+
+        super().setUp()
+
+    def tearDown(self):
+        """Restore SLURM/GROUP_RANK environment variables."""
+
+        super().tearDown()
+        # Restore all saved environment variables
+        for var, value in self._saved_env_vars.items():
+            if value is not None:
+                os.environ[var] = value
+
+
+class BarrierStateBasicTest(BaseRendezvousTest):
     """Test basic barrier state operations."""
 
     @classmethod
@@ -71,6 +123,7 @@ class BarrierStateBasicTest(TestCase):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
+        super().setUp()  # Clears environment variables
         import time
 
         # Reuse the shared store
@@ -81,8 +134,7 @@ class BarrierStateBasicTest(TestCase):
 
     def tearDown(self):
         """Clean up test fixtures."""
-        # Don't delete the shared store
-        pass
+        super().tearDown()  # Restores environment variables
 
     def test_barrier_state_initialization(self):
         """Test that barrier state initializes with correct key prefixes."""
@@ -143,8 +195,78 @@ class BarrierStateBasicTest(TestCase):
         count3 = self.store.add(state.arrived_count_key, 1)
         self.assertEqual(count3, 3)
 
+    def test_get_all_participants_incremental_fetch(self):
+        """Test incremental fetching of participants using get_all_participants."""
+        from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
+            RendezvousParticipantInfo,
+        )
 
-class Step2CompletionTest(TestCase):
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        # Add some participants to the store
+        participants_data = [
+            (self.node_desc_gen.generate(), 0, "domain1"),
+            (self.node_desc_gen.generate(), 1, "domain1"),
+            (self.node_desc_gen.generate(), 2, "domain2"),
+            (self.node_desc_gen.generate(), 3, "domain2"),
+            (self.node_desc_gen.generate(), 4, "domain3"),
+        ]
+
+        for i, (node_desc, infra_rank, domain_id) in enumerate(participants_data, start=1):
+            arrived_key = f"{state.prefix}:arrived_{i}"
+            participant_data = RendezvousParticipantInfo.pack(node_desc, infra_rank, domain_id)
+            self.store.set(arrived_key, participant_data)
+
+        # Test 1: Fetch all participants at once
+        all_participants = state.get_all_participants(total_participants=5)
+        self.assertEqual(len(all_participants), 5)
+        self.assertEqual(all_participants[0][1], 0)  # First participant infra_rank=0
+        self.assertEqual(all_participants[4][1], 4)  # Last participant infra_rank=4
+
+        # Test 2: Fetch first 2 participants
+        first_two = state.get_all_participants(total_participants=2)
+        self.assertEqual(len(first_two), 2)
+        self.assertEqual(first_two[0][1], 0)
+        self.assertEqual(first_two[1][1], 1)
+
+        # Test 3: Incremental fetch - get next 3 participants
+        # Make a copy of first_two to avoid mutation
+        first_two_copy = list(first_two)
+        all_five = state.get_all_participants(
+            total_participants=5,
+            start_index=3,  # Start from 3rd participant
+            existing_participants=first_two_copy,
+        )
+        self.assertEqual(len(all_five), 5)
+        self.assertEqual(all_five[0][1], 0)  # First from cache
+        self.assertEqual(all_five[1][1], 1)  # Second from cache
+        self.assertEqual(all_five[2][1], 2)  # Third is new
+        self.assertEqual(all_five[3][1], 3)  # Fourth is new
+        self.assertEqual(all_five[4][1], 4)  # Fifth is new
+        # Verify original first_two was mutated (it's the same object as first_two_copy before the call)
+        self.assertEqual(len(first_two), 2)  # Original list should still be 2
+
+        # Test 4: Edge case - start_index beyond total_participants (returns existing)
+        first_two_copy2 = list(first_two)
+        result = state.get_all_participants(
+            total_participants=5, start_index=10, existing_participants=first_two_copy2
+        )
+        self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy2)
+
+        # Test 5: Edge case - start_index equals total_participants + 1 (returns existing)
+        first_two_copy3 = list(first_two)
+        result = state.get_all_participants(
+            total_participants=5, start_index=6, existing_participants=first_two_copy3
+        )
+        self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy3)
+
+
+class Step2CompletionTest(BaseRendezvousTest):
     """Test Step 2 completion signaling logic."""
 
     @classmethod
@@ -161,6 +283,8 @@ class Step2CompletionTest(TestCase):
         """Set up test fixtures with unique run_id for each test."""
         import time
 
+        super().setUp()  # Clears environment variables
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_step2_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -168,13 +292,13 @@ class Step2CompletionTest(TestCase):
 
     def tearDown(self):
         """Clean up test fixtures."""
-        pass
+        super().tearDown()  # Restores environment variables
 
     def test_step2_completion_on_max_nodes(self):
         """Test that Step 2 completes immediately when max_nodes is reached."""
         min_nodes = 2
         max_nodes = 3
-        last_call_timeout = _test_timeout()  # Short timeout for testing
+        segment_check_interval = _test_segment_check_interval()
 
         # Create a thread that will join and wait
         results = []
@@ -186,13 +310,12 @@ class Step2CompletionTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=is_host,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
                 node = self.node_desc_gen.generate()
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
             except Exception as e:
@@ -217,11 +340,11 @@ class Step2CompletionTest(TestCase):
         ranks = [r[1] for r in results]
         self.assertEqual(len(set(ranks)), max_nodes)  # All unique ranks
 
-    def test_step2_completion_on_last_call_timeout(self):
-        """Test that Step 2 completes after last_call_timeout with min_nodes."""
+    def test_step2_completion_on_min_nodes_with_segment_check(self):
+        """Test that Step 2 completes when min_nodes is reached and segment constraint is satisfied."""
         min_nodes = 2
         max_nodes = 4
-        last_call_timeout = _test_timeout()  # Short timeout for testing
+        segment_check_interval = _test_segment_check_interval()
 
         results = []
         errors = []
@@ -232,13 +355,13 @@ class Step2CompletionTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=is_host,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
                 node = self.node_desc_gen.generate()
+                # Rendezvous should complete when segment constraint is met
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
             except Exception as e:
@@ -251,7 +374,7 @@ class Step2CompletionTest(TestCase):
             t.start()
             threads.append(t)
 
-        # Wait for completion (should happen after timeout)
+        # Wait for completion (should happen after segment check interval)
         start_time = time.time()
         for t in threads:
             t.join(timeout=10)
@@ -261,57 +384,43 @@ class Step2CompletionTest(TestCase):
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(len(results), min_nodes)
 
-        # Note: We don't check elapsed >= 1.0 because when all min_nodes
-        # join simultaneously, any of them might set the completion key
-        # immediately after their own deadline expires, making the wait
-        # effectively instant for the others
+        # Completion should happen relatively quickly once segment constraint is met
+        # (within a few check intervals)
+        self.assertLess(elapsed, 2.0, f"Took too long to complete: {elapsed}s")
 
     def test_step2_late_arrival_sees_completion_key(self):
-        """Test that late arrivals see the completion key and proceed immediately."""
-        min_nodes = 2
+        """Test that rendezvous completes correctly when all participants arrive quickly."""
+        min_nodes = 3  # Require 3 nodes
         max_nodes = 4
-        last_call_timeout = _test_timeout(0.4)  # Longer timeout to allow late joiner
+        segment_check_interval = _test_segment_check_interval()  # Use default short interval
 
         results = []
         errors = []
-        join_times = []
 
-        def participant_thread(participant_id, is_host, delay=0):
+        def participant_thread(participant_id, is_host):
             # Each participant needs its own state instance
             state = _RendezvousBarrierState(
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=is_host,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
-                if delay > 0:
-                    time.sleep(delay)
                 node = self.node_desc_gen.generate()
-                start = time.time()
+                # Rendezvous completes when segment constraint is met
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
-                elapsed = time.time() - start
                 results.append((participant_id, rank, total))
-                join_times.append((participant_id, elapsed))
             except Exception as e:
                 errors.append((participant_id, e))
 
-        # Start min_nodes participants
+        # Start all min_nodes participants together
         threads = []
         for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0, 0))
+            t = threading.Thread(target=participant_thread, args=(i, i == 0))
             t.start()
             threads.append(t)
-
-        # Add a late arrival while first participants are still waiting
-        # (before last_call_timeout expires)
-        time.sleep(0.05)  # Join shortly after others, while they're waiting
-        late_thread = threading.Thread(target=participant_thread, args=(99, False, 0))
-        late_thread.start()
-        threads.append(late_thread)
 
         # Wait for all threads
         for t in threads:
@@ -319,10 +428,12 @@ class Step2CompletionTest(TestCase):
 
         # Check all completed
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
-        self.assertEqual(len(results), min_nodes + 1)
+        self.assertEqual(
+            len(results), min_nodes, f"Expected {min_nodes} results, got {len(results)}"
+        )
 
 
-class RaceConditionTest(TestCase):
+class RaceConditionTest(BaseRendezvousTest):
     """Test race conditions with concurrent operations."""
 
     @classmethod
@@ -339,6 +450,8 @@ class RaceConditionTest(TestCase):
         """Set up test fixtures with unique run_id for each test."""
         import time
 
+        super().setUp()  # Clears environment variables
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_race_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -346,7 +459,7 @@ class RaceConditionTest(TestCase):
 
     def tearDown(self):
         """Clean up test fixtures."""
-        pass
+        super().tearDown()  # Restores environment variables
 
     def test_concurrent_joins(self):
         """Test that concurrent joins are handled correctly with atomic increments."""
@@ -377,56 +490,48 @@ class RaceConditionTest(TestCase):
         self.assertEqual(set(arrived_counts), set(range(1, num_participants + 1)))
 
     def test_late_arrival_during_acknowledgment(self):
-        """Test late arrival joining during acknowledgment phase."""
-        min_nodes = 2
+        """Test that rendezvous completes correctly with all participants arriving together."""
+        min_nodes = 4  # Require 4 nodes
         max_nodes = 5
-        last_call_timeout = _test_timeout(0.25)  # Short timeout
+        segment_check_interval = _test_segment_check_interval()  # Use default short interval
 
         results = []
         errors = []
 
-        def participant_thread(participant_id, is_host, delay=0):
+        def participant_thread(participant_id, is_host):
             # Each participant needs its own state instance
             state = _RendezvousBarrierState(
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=is_host,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
-                if delay > 0:
-                    time.sleep(delay)
                 node = self.node_desc_gen.generate()
+                # Rendezvous completes when segment constraint is met
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
             except Exception as e:
                 errors.append((participant_id, e))
 
-        # Start min_nodes participants
+        # Start all min_nodes participants together
         threads = []
         for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0, 0))
+            t = threading.Thread(target=participant_thread, args=(i, i == 0))
             t.start()
             threads.append(t)
 
-        # Add late arrivals at various times
-        for i in range(2):
-            t = threading.Thread(
-                target=participant_thread, args=(min_nodes + i, False, 0.2 + i * 0.2)
-            )
-            t.start()
-            threads.append(t)
-
-        # Wait for all
+        # Wait for all with generous timeout
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
 
-        # All should complete (late arrivals are included)
+        # All should complete
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
-        self.assertGreater(len(results), min_nodes)
+        self.assertEqual(
+            len(results), min_nodes, f"Expected {min_nodes} results, got {len(results)}"
+        )
 
     def test_late_arrival_after_ack_check_before_key_clear(self):
         """Test late arrival in the critical window: after ack check, before key clearing.
@@ -442,7 +547,7 @@ class RaceConditionTest(TestCase):
         """
         min_nodes = 2
         max_nodes = 4
-        last_call_timeout = _test_timeout()  # Short timeout for testing
+        segment_check_interval = _test_segment_check_interval()  # Short timeout for testing
 
         results = []
         errors = []
@@ -459,7 +564,6 @@ class RaceConditionTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=True,
-                use_infra_group_rank=False,
             )
             try:
                 node = self.node_desc_gen.generate()
@@ -476,8 +580,9 @@ class RaceConditionTest(TestCase):
 
                 state.assign_group_ranks = instrumented_assign
 
+                # Rendezvous completes when segment constraint is met
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append(('host', rank, total))
             except Exception as e:
@@ -489,12 +594,12 @@ class RaceConditionTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=False,
-                use_infra_group_rank=False,
             )
             try:
                 node = self.node_desc_gen.generate()
+                # Test subsequent rendezvous behavior (not first rendezvous)
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append(('regular', rank, total))
             except Exception as e:
@@ -509,13 +614,13 @@ class RaceConditionTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=False,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
                 node = self.node_desc_gen.generate()
+                # Test subsequent rendezvous behavior (not first rendezvous)
                 rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, last_call_timeout
+                    node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append(('late', rank, total))
             except Exception as e:
@@ -580,7 +685,7 @@ class RaceConditionTest(TestCase):
         self.assertTrue(self.store.check([state.last_participant_arrived_key]))
 
 
-class StoreHostBehaviorTest(TestCase):
+class StoreHostBehaviorTest(BaseRendezvousTest):
     """Test store host specific behavior."""
 
     @classmethod
@@ -597,6 +702,8 @@ class StoreHostBehaviorTest(TestCase):
         """Set up test fixtures with unique run_id for each test."""
         import time
 
+        super().setUp()  # Clears environment variables
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_host_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -604,13 +711,13 @@ class StoreHostBehaviorTest(TestCase):
 
     def tearDown(self):
         """Clean up test fixtures."""
-        pass
+        super().tearDown()  # Restores environment variables
 
     def test_rank_assignment_with_arrival_order(self):
         """Test that store host assigns ranks to all participants."""
         min_nodes = 3
         max_nodes = 3
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         results = []
 
@@ -620,11 +727,12 @@ class StoreHostBehaviorTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=is_host,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             node = self.node_desc_gen.generate()
-            rank, total = state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            rank, total = state.perform_rendezvous(
+                node, min_nodes, max_nodes, segment_check_interval
+            )
             results.append((participant_id, rank, total))
 
         threads = []
@@ -656,34 +764,32 @@ class StoreHostBehaviorTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            use_infra_group_rank=False,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
         non_host_state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
             is_store_host=False,
-            use_infra_group_rank=False,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
         min_nodes = 2
         max_nodes = 2
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         results = []
 
         def host_thread():
             node = self.node_desc_gen.generate()
             rank, total = host_state.perform_rendezvous(
-                node, min_nodes, max_nodes, last_call_timeout
+                node, min_nodes, max_nodes, segment_check_interval
             )
             results.append(('host', rank, total))
 
         def non_host_thread():
             node = self.node_desc_gen.generate()
             rank, total = non_host_state.perform_rendezvous(
-                node, min_nodes, max_nodes, last_call_timeout
+                node, min_nodes, max_nodes, segment_check_interval
             )
             results.append(('non_host', rank, total))
 
@@ -719,6 +825,9 @@ class GroupRankAssignmentTest(TestCase):
         """Set up test fixtures with unique run_id for each test."""
         import time
 
+        # NOTE: DO NOT clear SLURM_PROCID/GROUP_RANK for this test class
+        # These tests specifically test infrastructure rank behavior
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_rank_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -734,19 +843,18 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            use_infra_group_rank=False,
         )
 
         # Create participants
         participants = [
-            (_NodeDesc("node_a", 100, 0), -1),
-            (_NodeDesc("node_b", 101, 0), -1),
-            (_NodeDesc("node_c", 102, 0), -1),
+            (_NodeDesc("node_a", 100, 0), -1, None),
+            (_NodeDesc("node_b", 101, 0), -1, None),
+            (_NodeDesc("node_c", 102, 0), -1, None),
         ]
         min_nodes = 3
 
         # Assign ranks
-        result = state._assign_group_ranks(participants, {}, min_nodes)
+        result = state._assign_group_ranks(participants, min_nodes)
 
         # Check all got unique ranks
         self.assertEqual(len(result), 3)
@@ -759,51 +867,24 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            use_infra_group_rank=True,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
         # Create participants with infra ranks
         participants = [
-            (_NodeDesc("node_a", 100, 0), 0),
-            (_NodeDesc("node_b", 101, 0), 1),
-            (_NodeDesc("node_c", 102, 0), 2),
+            (_NodeDesc("node_a", 100, 0), 0, "none"),
+            (_NodeDesc("node_b", 101, 0), 1, "none"),
+            (_NodeDesc("node_c", 102, 0), 2, "none"),
         ]
         min_nodes = 3
 
         # Assign ranks
-        result = state._assign_group_ranks(participants, {}, min_nodes)
+        result = state._assign_group_ranks(participants, min_nodes)
 
         # Check direct mapping: group_rank = infra_rank
         self.assertEqual(result[participants[0][0]], 0)
         self.assertEqual(result[participants[1][0]], 1)
         self.assertEqual(result[participants[2][0]], 2)
-
-    def test_rank_assignment_with_gap_filling(self):
-        """Test rank assignment fills gaps when primary nodes are missing."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            use_infra_group_rank=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-
-        # Missing infra_rank=1 (HW failure scenario)
-        participants = [
-            (_NodeDesc("node_a", 100, 0), 0),
-            (_NodeDesc("node_c", 102, 0), 2),
-            (_NodeDesc("spare", 200, 0), 10),  # Spare node
-        ]
-        min_nodes = 3
-
-        # Assign ranks
-        result = state._assign_group_ranks(participants, {}, min_nodes)
-
-        # Check gap at rank 1 is filled by spare
-        self.assertEqual(result[participants[0][0]], 0)  # node_a stays at 0
-        self.assertEqual(result[participants[1][0]], 2)  # node_c stays at 2
-        self.assertEqual(result[participants[2][0]], 1)  # spare fills gap at 1
 
     def test_rank_assignment_standby_nodes(self):
         """Test rank assignment for standby nodes (beyond min_nodes)."""
@@ -811,21 +892,20 @@ class GroupRankAssignmentTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            use_infra_group_rank=False,
         )
 
         # 5 participants, min_nodes=3
         participants = [
-            (_NodeDesc("node_a", 100, 0), -1),
-            (_NodeDesc("node_b", 101, 0), -1),
-            (_NodeDesc("node_c", 102, 0), -1),
-            (_NodeDesc("node_d", 103, 0), -1),
-            (_NodeDesc("node_e", 104, 0), -1),
+            (_NodeDesc("node_a", 100, 0), -1, "none"),
+            (_NodeDesc("node_b", 101, 0), -1, "none"),
+            (_NodeDesc("node_c", 102, 0), -1, "none"),
+            (_NodeDesc("node_d", 103, 0), -1, "none"),
+            (_NodeDesc("node_e", 104, 0), -1, "none"),
         ]
         min_nodes = 3
 
         # Assign ranks
-        result = state._assign_group_ranks(participants, {}, min_nodes)
+        result = state._assign_group_ranks(participants, min_nodes)
 
         # First 3 should get ranks 0-2 (active)
         # Last 2 should get ranks 3-4 (standby)
@@ -833,8 +913,678 @@ class GroupRankAssignmentTest(TestCase):
         ranks = sorted(result.values())
         self.assertEqual(ranks, [0, 1, 2, 3, 4])
 
+    def test_rank_assignment_preserves_slurm_topology_order(self):
+        """Test that participants arriving out-of-order are assigned group ranks
+        in SLURM topology order (sorted by infrastructure rank), not arrival order.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+        )
 
-class ErrorCaseTest(TestCase):
+        # Create nodes that arrive in arbitrary order (e.g., alphabetically: aaa < bbb < zzz)
+        # But assign them infrastructure ranks in reverse order
+        node_aaa = _NodeDesc("aaa_node", 100, 0)
+        node_bbb = _NodeDesc("bbb_node", 101, 0)
+        node_zzz = _NodeDesc("zzz_node", 102, 0)
+
+        # Verify sort order by node descriptor is as expected
+        sorted_nodes = sorted([node_zzz, node_aaa, node_bbb])
+        self.assertEqual(sorted_nodes, [node_aaa, node_bbb, node_zzz])
+
+        # Create participants list with infra ranks in reverse of alphabetical order
+        # Simulating they arrived/joined out of order
+        participants = [
+            (node_aaa, 102, "none"),  # Largest infra rank
+            (node_bbb, 101, "none"),  # Middle infra rank
+            (node_zzz, 100, "none"),  # Smallest infra rank
+        ]
+        min_nodes = 3
+
+        # Assign ranks
+        result = state._assign_group_ranks(participants, min_nodes)
+
+        # Group ranks should follow SLURM topology order (infra rank order), not node descriptor order
+        self.assertEqual(result[node_zzz], 0)  # Smallest infra rank -> group rank 0
+        self.assertEqual(result[node_bbb], 1)  # Middle infra rank -> group rank 1
+        self.assertEqual(result[node_aaa], 2)  # Largest infra rank -> group rank 2
+
+    def test_rank_assignment_with_hot_spare_segment_none(self):
+        """Test rank assignment with hot spare nodes (segment=None).
+
+        When there are more participants than world_size and segment=None,
+        the extra nodes become hot spares with ranks >= world_size.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=None,  # No segment awareness
+        )
+
+        # 5 nodes, world_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0, "none"),  # Active
+            (_NodeDesc("node1", 101, 0), 1, "none"),  # Active
+            (_NodeDesc("node2", 102, 0), 2, "none"),  # Active
+            (_NodeDesc("node3", 103, 0), 3, "none"),  # Hot spare
+            (_NodeDesc("node4", 104, 0), 4, "none"),  # Hot spare
+        ]
+        world_size = 3
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # First 3 get active ranks [0,1,2]
+        self.assertEqual(result[_NodeDesc("node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("node2", 102, 0)], 2)
+
+        # Remaining 2 are hot spares [3,4]
+        self.assertEqual(result[_NodeDesc("node3", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("node4", 104, 0)], 4)
+
+    def test_rank_assignment_segment_1_with_hot_spare(self):
+        """Test rank assignment with segment=1 and hot spare nodes.
+
+        segment=1 means each node is a complete segment.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=1,
+        )
+
+        # 5 nodes, world_size=3, segment=1 -> first 3 active, remaining 2 hot spares
+        # Each node has its own domain (simulated with node names like "domain0")
+        participants = [
+            (_NodeDesc("domain0-node", 100, 0), 0, "domain0"),
+            (_NodeDesc("domain1-node", 101, 0), 1, "domain1"),
+            (_NodeDesc("domain2-node", 102, 0), 2, "domain2"),
+            (_NodeDesc("domain3-node", 103, 0), 3, "domain3"),  # Hot spare
+            (_NodeDesc("domain4-node", 104, 0), 4, "domain4"),  # Hot spare
+        ]
+        world_size = 3
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Active ranks
+        self.assertEqual(result[_NodeDesc("domain0-node", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("domain1-node", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("domain2-node", 102, 0)], 2)
+
+        # Hot spares
+        self.assertEqual(result[_NodeDesc("domain3-node", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("domain4-node", 104, 0)], 4)
+
+    def test_rank_assignment_segment_4_with_hot_spare(self):
+        """Test rank assignment with segment=4 and hot spare nodes.
+
+        segment=4 means we need 4 nodes per segment.
+        world_size=8 requires 2 complete segments.
+        Using domain-aware assignment with 2 domains.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        # Domain 100: 8 nodes (2 complete segments) -> first 8 active
+        # Domain 101: 4 nodes (1 complete segment) -> all standby (already have enough)
+        # Total 12 nodes, world_size=8 (2 segments)
+        participants = [
+            # Domain 100: 8 nodes
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
+            # Domain 101: 4 nodes
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
+        ]
+        world_size = 8
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100: all 8 nodes are active (2 complete segments) [0-7]
+        for i in range(8):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+        # Domain 101: all 4 nodes are standby [8-11]
+        for i in range(4):
+            self.assertEqual(result[_NodeDesc(f"nvl72101-node{i}", 108 + i, 0)], 8 + i)
+
+    def test_rank_assignment_segment_16_with_hot_spare(self):
+        """Test rank assignment with segment=16 and hot spare nodes.
+
+        segment=16 means we need 16 nodes per segment.
+        Using domain-aware assignment with 2 domains.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=16,
+        )
+
+        # Domain 100: 16 nodes (1 complete segment) -> all 16 active
+        # Domain 101: 4 nodes (0 complete segments) -> all 4 standby
+        # Total 20 nodes, world_size=16 (1 segment)
+        participants = [
+            # Domain 100: 16 nodes
+            *[(_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i, "nvl72100") for i in range(16)],
+            # Domain 101: 4 nodes
+            *[(_NodeDesc(f"nvl72101-node{i}", 116 + i, 0), 16 + i, "nvl72101") for i in range(4)],
+        ]
+        world_size = 16
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100: all 16 nodes are active (1 complete segment) [0-15]
+        for i in range(16):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+        # Domain 101: all 4 nodes are standby [16-19]
+        for i in range(4):
+            self.assertEqual(result[_NodeDesc(f"nvl72101-node{i}", 116 + i, 0)], 16 + i)
+
+    def test_rank_assignment_domain_with_zero_complete_segments(self):
+        """Test rank assignment when a domain has 0 complete segments.
+
+        If segment=4 and a domain has only 3 nodes, those nodes can't form
+        a complete segment and should be assigned to standby.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        # Domain 100: 4 nodes (1 complete segment) -> active
+        # Domain 101: 3 nodes (0 complete segments) -> all standby
+        # World_size=4 requires 1 segment
+        participants = [
+            # Domain 100: 4 nodes
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            # Domain 101: 3 nodes (incomplete segment)
+            (_NodeDesc("nvl72101-node0", 104, 0), 4, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 105, 0), 5, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 106, 0), 6, "nvl72101"),
+        ]
+        world_size = 4
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100: all 4 nodes active [0-3]
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 3)
+
+        # Domain 101: all 3 nodes become standby [4-6]
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 104, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 105, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 106, 0)], 6)
+
+    def test_rank_assignment_domain_with_one_complete_segment(self):
+        """Test rank assignment when a domain has exactly 1 complete segment."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        # Domain 100: 4 nodes (1 complete segment)
+        # Domain 101: 4 nodes (1 complete segment)
+        # World_size=8 requires 2 segments, both domains contribute 1 segment
+        participants = [
+            # Domain 100
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            # Domain 101
+            (_NodeDesc("nvl72101-node0", 104, 0), 4, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 105, 0), 5, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 106, 0), 6, "nvl72101"),
+            (_NodeDesc("nvl72101-node3", 107, 0), 7, "nvl72101"),
+        ]
+        world_size = 8
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Both domains contribute 1 segment each, all nodes active
+        # Domain 100 comes first (lower infra_rank)
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 3)
+
+        # Domain 101
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 104, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 105, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 106, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72101-node3", 107, 0)], 7)
+
+    def test_rank_assignment_domain_with_multiple_complete_segments(self):
+        """Test rank assignment when a domain has multiple complete segments.
+
+        A domain with 12 nodes and segment=4 has 3 complete segments.
+        If world_size=4 (1 segment needed), domain uses 4 nodes, rest are standby.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        # Domain 100: 12 nodes (3 complete segments)
+        # World_size=4 requires 1 segment
+        # -> First 4 nodes active, remaining 8 standby
+        participants = [
+            (_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i, "nvl72100") for i in range(12)
+        ]
+        world_size = 4
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # First 4 nodes active (1 segment)
+        for i in range(4):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+        # Remaining 8 nodes standby [4-11]
+        for i in range(4, 12):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+    def test_rank_assignment_multiple_domains_mixed_segments(self):
+        """Test rank assignment with multiple domains having different segment counts.
+
+        Test scenario:
+        - Domain 100: 8 nodes (2 segments with segment=4)
+        - Domain 101: 6 nodes (1 complete segment + 2 incomplete)
+        - Domain 102: 4 nodes (1 complete segment)
+        - World_size=8 (2 segments needed)
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        participants = [
+            # Domain 100: 8 nodes (2 segments) - lower infra_rank comes first
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
+            (_NodeDesc("nvl72101-node4", 112, 0), 12, "nvl72101"),
+            (_NodeDesc("nvl72101-node5", 113, 0), 13, "nvl72101"),
+            (_NodeDesc("nvl72102-node0", 114, 0), 14, "nvl72102"),
+            (_NodeDesc("nvl72102-node1", 115, 0), 15, "nvl72102"),
+            (_NodeDesc("nvl72102-node2", 116, 0), 16, "nvl72102"),
+            (_NodeDesc("nvl72102-node3", 117, 0), 17, "nvl72102"),
+        ]
+        world_size = 8  # Need 2 segments
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100 contributes 2 segments (all 8 nodes active) [0-7]
+        for i in range(8):
+            self.assertEqual(result[_NodeDesc(f"nvl72100-node{i}", 100 + i, 0)], i)
+
+        # Domain 101: all nodes go to standby (we already have 2 segments)
+        for i in range(6):
+            self.assertEqual(result[_NodeDesc(f"nvl72101-node{i}", 108 + i, 0)], 8 + i)
+
+        # Domain 102: all nodes go to standby
+        for i in range(4):
+            self.assertEqual(result[_NodeDesc(f"nvl72102-node{i}", 114 + i, 0)], 14 + i)
+
+    def test_rank_assignment_out_of_order_with_hot_spare_segment_none(self):
+        """Test that out-of-order infra rank arrivals work correctly with hot spares (segment=None).
+
+        Participants arrive in arbitrary order, but should be sorted by infra_rank
+        and assigned group ranks accordingly, with extras becoming hot spares.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=None,
+        )
+
+        # Participants arrive out-of-order (infra ranks: 4, 1, 3, 0, 2)
+        # After sorting by infra_rank: 0, 1, 2, 3, 4
+        # World_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
+        participants = [
+            (_NodeDesc("node4", 104, 0), 4, "none"),
+            (_NodeDesc("node1", 101, 0), 1, "none"),
+            (_NodeDesc("node3", 103, 0), 3, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none"),
+            (_NodeDesc("node2", 102, 0), 2, "none"),
+        ]
+        world_size = 3
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Should be sorted by infra_rank and assigned accordingly
+        self.assertEqual(
+            result[_NodeDesc("node0", 100, 0)], 0
+        )  # infra_rank 0 -> group rank 0 (active)
+        self.assertEqual(
+            result[_NodeDesc("node1", 101, 0)], 1
+        )  # infra_rank 1 -> group rank 1 (active)
+        self.assertEqual(
+            result[_NodeDesc("node2", 102, 0)], 2
+        )  # infra_rank 2 -> group rank 2 (active)
+        self.assertEqual(
+            result[_NodeDesc("node3", 103, 0)], 3
+        )  # infra_rank 3 -> group rank 3 (hot spare)
+        self.assertEqual(
+            result[_NodeDesc("node4", 104, 0)], 4
+        )  # infra_rank 4 -> group rank 4 (hot spare)
+
+    def test_rank_assignment_out_of_order_with_hot_spare_segment_4(self):
+        """Test that out-of-order infra rank arrivals work correctly with segment=4 and hot spares.
+
+        Participants from different domains arrive out-of-order, but should be sorted
+        by infra_rank (SLURM topology order) for proper segment assignment.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        # Participants arrive out-of-order from 2 domains
+        # Domain 100 has infra_ranks [0-7], Domain 101 has infra_ranks [8-11]
+        # Listed in reverse order to test sorting
+        participants = [
+            # Domain 101 nodes (listed first, but have higher infra_ranks)
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+        ]
+        world_size = 8  # Need 2 segments
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Despite out-of-order arrival, Domain 100 (lower infra_ranks) should be sorted first
+        # Domain 100: all 8 nodes active [0-7]
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("nvl72100-node4", 104, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72100-node5", 105, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72100-node6", 106, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72100-node7", 107, 0)], 7)
+
+        # Domain 101: all 4 nodes are standby [8-11]
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 108, 0)], 8)
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 109, 0)], 9)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 110, 0)], 10)
+        self.assertEqual(result[_NodeDesc("nvl72101-node3", 111, 0)], 11)
+
+    def test_rank_assignment_out_of_order_mixed_domains_segment_4(self):
+        """Test out-of-order arrivals with mixed segment counts across domains.
+
+        Tests that nodes from multiple domains arriving in arbitrary order are
+        correctly sorted and assigned ranks based on infra_rank and segment rules.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        # Domain 100: infra_ranks [0-5] (1 complete segment + 2 incomplete)
+        # Domain 101: infra_ranks [6-9] (1 complete segment)
+        # Domain 102: infra_ranks [10-12] (0 complete segments)
+        # Listed in completely arbitrary order
+        participants = [
+            (_NodeDesc("nvl72102-node2", 112, 0), 12, "nvl72102"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72101-node1", 107, 0), 7, "nvl72101"),
+            (_NodeDesc("nvl72102-node0", 110, 0), 10, "nvl72102"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72101-node3", 109, 0), 9, "nvl72101"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72101-node2", 108, 0), 8, "nvl72101"),
+            (_NodeDesc("nvl72102-node1", 111, 0), 11, "nvl72102"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72101-node0", 106, 0), 6, "nvl72101"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+        ]
+        world_size = 8  # Need 2 segments
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100 (infra_ranks 0-5): 1 complete segment (4 nodes) active, 2 standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 3)
+        self.assertEqual(result[_NodeDesc("nvl72100-node4", 104, 0)], 8)  # Standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node5", 105, 0)], 9)  # Standby
+
+        # Domain 101 (infra_ranks 6-9): 1 complete segment (4 nodes) active
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 106, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 107, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 108, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72101-node3", 109, 0)], 7)
+
+        # Domain 102 (infra_ranks 10-12): 0 complete segments, all 3 standby
+        self.assertEqual(result[_NodeDesc("nvl72102-node0", 110, 0)], 10)  # Standby
+        self.assertEqual(result[_NodeDesc("nvl72102-node1", 111, 0)], 11)  # Standby
+        self.assertEqual(result[_NodeDesc("nvl72102-node2", 112, 0)], 12)  # Standby
+
+    def test_rank_assignment_with_gaps_in_infra_ranks_segment_none(self):
+        """Test rank assignment with gaps in infra_ranks (simulating node failures), segment=None.
+
+        When some nodes fail and don't join, there are gaps in infra_ranks.
+        E.g., if nodes 2, 4, 5 failed, we have infra_ranks [0, 1, 3, 6, 7] instead of [0-7].
+        These should still get contiguous group ranks [0, 1, 2, 3, 4].
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=None,
+        )
+
+        # Simulate 5 nodes joining with gaps: infra_ranks [0, 1, 3, 6, 7]
+        # Missing nodes: 2, 4, 5 (failed to join)
+        # World_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0, "none"),
+            (_NodeDesc("node1", 101, 0), 1, "none"),
+            (_NodeDesc("node3", 103, 0), 3, "none"),
+            (_NodeDesc("node6", 106, 0), 6, "none"),
+            (_NodeDesc("node7", 107, 0), 7, "none"),
+        ]
+        world_size = 3
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Should get contiguous group ranks [0-4] based on sorted infra_rank
+        self.assertEqual(result[_NodeDesc("node0", 100, 0)], 0)  # Active
+        self.assertEqual(result[_NodeDesc("node1", 101, 0)], 1)  # Active
+        self.assertEqual(result[_NodeDesc("node3", 103, 0)], 2)  # Active
+        self.assertEqual(result[_NodeDesc("node6", 106, 0)], 3)  # Hot spare
+        self.assertEqual(result[_NodeDesc("node7", 107, 0)], 4)  # Hot spare
+
+    def test_rank_assignment_with_gaps_in_infra_ranks_with_hot_spare(self):
+        """Test rank assignment with gaps in infra_ranks and hot spares (segment=None).
+
+        More aggressive gap scenario: infra_ranks [0, 5, 10, 15, 20, 22, 24]
+        Simulates many node failures (1-4, 6-9, 11-14, 16-19, 21, 23 all failed).
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=None,
+        )
+
+        # Large gaps in infra_ranks
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0, "none"),
+            (_NodeDesc("node5", 105, 0), 5, "none"),
+            (_NodeDesc("node10", 110, 0), 10, "none"),
+            (_NodeDesc("node15", 115, 0), 15, "none"),
+            (_NodeDesc("node20", 120, 0), 20, "none"),
+            (_NodeDesc("node22", 122, 0), 22, "none"),
+            (_NodeDesc("node24", 124, 0), 24, "none"),
+        ]
+        world_size = 4  # Need 4 active nodes
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Should get contiguous group ranks [0-6], first 4 active, last 3 hot spares
+        self.assertEqual(result[_NodeDesc("node0", 100, 0)], 0)  # Active
+        self.assertEqual(result[_NodeDesc("node5", 105, 0)], 1)  # Active
+        self.assertEqual(result[_NodeDesc("node10", 110, 0)], 2)  # Active
+        self.assertEqual(result[_NodeDesc("node15", 115, 0)], 3)  # Active
+        self.assertEqual(result[_NodeDesc("node20", 120, 0)], 4)  # Hot spare
+        self.assertEqual(result[_NodeDesc("node22", 122, 0)], 5)  # Hot spare
+        self.assertEqual(result[_NodeDesc("node24", 124, 0)], 6)  # Hot spare
+
+    def test_rank_assignment_with_gaps_in_infra_ranks_segment_4(self):
+        """Test rank assignment with gaps in infra_ranks across domains with segment=4.
+
+        Simulates scenario where some nodes in each domain failed to join,
+        leaving gaps in infra_ranks within each domain.
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        # Domain 100: infra_ranks [0, 2, 4, 6, 8, 10] (nodes 1,3,5,7,9 failed)
+        #             6 nodes -> 1 complete segment (4 nodes), 2 incomplete
+        # Domain 101: infra_ranks [12, 14, 17, 19] (nodes 13,15,16,18 failed)
+        #             4 nodes -> 1 complete segment
+        # World_size=8 requires 2 segments
+        participants = [
+            # Domain 100 (with gaps)
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
+            (_NodeDesc("nvl72100-node8", 108, 0), 8, "nvl72100"),
+            (_NodeDesc("nvl72100-node10", 110, 0), 10, "nvl72100"),
+            (_NodeDesc("nvl72101-node0", 112, 0), 12, "nvl72101"),
+            (_NodeDesc("nvl72101-node2", 114, 0), 14, "nvl72101"),
+            (_NodeDesc("nvl72101-node5", 117, 0), 17, "nvl72101"),
+            (_NodeDesc("nvl72101-node7", 119, 0), 19, "nvl72101"),
+        ]
+        world_size = 8
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Domain 100: 1 complete segment (4 nodes) active, 2 standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node0", 100, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node2", 102, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node4", 104, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node6", 106, 0)], 3)
+        self.assertEqual(result[_NodeDesc("nvl72100-node8", 108, 0)], 8)  # Standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node10", 110, 0)], 9)  # Standby
+
+        # Domain 101: 1 complete segment (4 nodes) active
+        self.assertEqual(result[_NodeDesc("nvl72101-node0", 112, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node2", 114, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node5", 117, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72101-node7", 119, 0)], 7)
+
+    def test_rank_assignment_with_gaps_out_of_order_segment_4(self):
+        """Test rank assignment with gaps in infra_ranks arriving out-of-order with segment=4.
+
+        Combines three challenging scenarios:
+        1. Gaps in infra_ranks (node failures)
+        2. Out-of-order arrivals
+        3. Multiple domains with segment awareness
+        """
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            segment=4,
+        )
+
+        # Domain 100: infra_ranks [1, 3, 5, 7, 9] (0,2,4,6,8 failed) -> 1 segment + 1 incomplete
+        # Domain 101: infra_ranks [11, 13, 15, 17] (10,12,14,16 failed) -> 1 segment
+        # Listed in reverse order to test sorting
+        participants = [
+            # Domain 101 first, in reverse
+            (_NodeDesc("nvl72101-node7", 117, 0), 17, "nvl72101"),
+            (_NodeDesc("nvl72101-node5", 115, 0), 15, "nvl72101"),
+            (_NodeDesc("nvl72101-node3", 113, 0), 13, "nvl72101"),
+            (_NodeDesc("nvl72101-node1", 111, 0), 11, "nvl72101"),
+            (_NodeDesc("nvl72100-node9", 109, 0), 9, "nvl72100"),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+        ]
+        world_size = 8
+
+        result = state._assign_group_ranks(participants, world_size)
+
+        # Despite reverse order and gaps, Domain 100 (lower infra_ranks) comes first
+        # Domain 100: 1 complete segment (4 nodes) active, 1 standby
+        self.assertEqual(result[_NodeDesc("nvl72100-node1", 101, 0)], 0)
+        self.assertEqual(result[_NodeDesc("nvl72100-node3", 103, 0)], 1)
+        self.assertEqual(result[_NodeDesc("nvl72100-node5", 105, 0)], 2)
+        self.assertEqual(result[_NodeDesc("nvl72100-node7", 107, 0)], 3)
+        self.assertEqual(result[_NodeDesc("nvl72100-node9", 109, 0)], 8)  # Standby
+
+        # Domain 101: 1 complete segment (4 nodes) active
+        self.assertEqual(result[_NodeDesc("nvl72101-node1", 111, 0)], 4)
+        self.assertEqual(result[_NodeDesc("nvl72101-node3", 113, 0)], 5)
+        self.assertEqual(result[_NodeDesc("nvl72101-node5", 115, 0)], 6)
+        self.assertEqual(result[_NodeDesc("nvl72101-node7", 117, 0)], 7)
+
+
+class ErrorCaseTest(BaseRendezvousTest):
     """Test error cases and exception handling."""
 
     @classmethod
@@ -851,6 +1601,8 @@ class ErrorCaseTest(TestCase):
         """Set up test fixtures with unique run_id for each test."""
         import time
 
+        super().setUp()  # Clears environment variables
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_error_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -858,13 +1610,13 @@ class ErrorCaseTest(TestCase):
 
     def tearDown(self):
         """Clean up test fixtures."""
-        pass
+        super().tearDown()  # Restores environment variables
 
     def test_exceed_max_nodes_raises_error(self):
         """Test that exceeding max_nodes raises RendezvousClosedError."""
         min_nodes = 2
         max_nodes = 2  # Set max to 2
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         errors = []
         # Use barrier to synchronize thread starts - ensures all threads
@@ -877,14 +1629,13 @@ class ErrorCaseTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=is_host,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
                 # Wait for all threads to be ready before proceeding
                 start_barrier.wait()
                 node = self.node_desc_gen.generate()
-                state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+                state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
             except Exception as e:
                 errors.append((participant_id, type(e).__name__))
 
@@ -909,17 +1660,16 @@ class ErrorCaseTest(TestCase):
             run_id=self.run_id,
             is_store_host=True,
             join_timeout_seconds=1.0,  # Use very short timeout to test timeout behavior
-            use_infra_group_rank=False,
         )
         min_nodes = 5  # Require 5 nodes but we'll only provide 1
         max_nodes = 5
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         node = self.node_desc_gen.generate()
 
         # Should timeout waiting for other participants
         with self.assertRaises(RendezvousTimeoutError):
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_closed_rendezvous_raises_error(self):
         """Test that joining a closed rendezvous raises RendezvousClosedError."""
@@ -936,12 +1686,12 @@ class ErrorCaseTest(TestCase):
 
         min_nodes = 2
         max_nodes = 4
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
         node = self.node_desc_gen.generate()
 
         # Should raise RendezvousClosedError
         with self.assertRaises(RendezvousClosedError):
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_duplicate_infra_rank_raises_error(self):
         """Test that duplicate infrastructure ranks raise an error."""
@@ -949,47 +1699,24 @@ class ErrorCaseTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            use_infra_group_rank=True,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
         # Create participants with duplicate infra_rank
         participants = [
-            (_NodeDesc("node_a", 100, 0), 0),
-            (_NodeDesc("node_b", 101, 0), 0),  # Duplicate!
+            (_NodeDesc("node_a", 100, 0), 0, "none"),
+            (_NodeDesc("node_b", 101, 0), 0, "none"),
         ]
         min_nodes = 2
 
         # Should raise RuntimeError about duplicate ranks
         with self.assertRaises(RuntimeError) as ctx:
-            state._assign_group_ranks(participants, {}, min_nodes)
+            state._assign_group_ranks(participants, min_nodes)
 
         self.assertIn("Duplicate", str(ctx.exception))
 
-    def test_invalid_infra_rank_raises_error(self):
-        """Test that negative infrastructure ranks raise an error."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            use_infra_group_rank=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
 
-        # Create participant with invalid infra_rank
-        participants = [
-            (_NodeDesc("node_a", 100, 0), -5),  # Invalid negative rank
-        ]
-        min_nodes = 1
-
-        # Should raise ValueError
-        with self.assertRaises(ValueError) as ctx:
-            state._assign_group_ranks(participants, {}, min_nodes)
-
-        self.assertIn("Invalid infrastructure rank", str(ctx.exception))
-
-
-class AcknowledgmentPhaseTest(TestCase):
+class AcknowledgmentPhaseTest(BaseRendezvousTest):
     """Test acknowledgment phase behavior."""
 
     @classmethod
@@ -1006,6 +1733,8 @@ class AcknowledgmentPhaseTest(TestCase):
         """Set up test fixtures with unique run_id for each test."""
         import time
 
+        super().setUp()  # Clears environment variables
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_ack_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -1013,13 +1742,13 @@ class AcknowledgmentPhaseTest(TestCase):
 
     def tearDown(self):
         """Clean up test fixtures."""
-        pass
+        super().tearDown()  # Restores environment variables
 
     def test_all_participants_acknowledge(self):
         """Test that all participants acknowledge completion."""
         min_nodes = 3
         max_nodes = 3
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         ack_counts = []
 
@@ -1029,11 +1758,10 @@ class AcknowledgmentPhaseTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=is_host,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             node = self.node_desc_gen.generate()
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
             # After completion, check ack count
             # Note: Keys might be cleared by store host, so we capture during execution
             ack_counts.append(1)  # Just count that we got here
@@ -1053,20 +1781,20 @@ class AcknowledgmentPhaseTest(TestCase):
     def test_barrier_keys_cleared_after_acknowledgment(self):
         """Test that barrier keys are cleared after all acknowledgments.
 
-        Note: last_participant_arrived_key is NOT cleared as it serves as the
-        open/close indicator for the rendezvous. It remains set to 1 (closed)
-        during training and is reset to 0 (open) by the launcher when needed.
+        Keys cleared: arrived_count_key, ack_count_key, peer_aborted_count_key
+        Keys NOT cleared:
+        - last_participant_arrived_key: serves as open/close indicator
+        - unhealthy_count_key: global job-level counter across all cycles
         """
         min_nodes = 2
         max_nodes = 2
-        last_call_timeout = _test_timeout()
+        segment_check_interval = _test_segment_check_interval()
 
         # Need one state to check keys after
         check_state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
             is_store_host=False,
-            use_infra_group_rank=False,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
@@ -1076,11 +1804,10 @@ class AcknowledgmentPhaseTest(TestCase):
                 store=self.store,
                 run_id=self.run_id,
                 is_store_host=is_host,
-                use_infra_group_rank=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             node = self.node_desc_gen.generate()
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
         threads = []
         for i in range(min_nodes):
@@ -1097,11 +1824,17 @@ class AcknowledgmentPhaseTest(TestCase):
         # Barrier keys should be cleared by store host
         # Note: last_participant_arrived_key is intentionally NOT cleared as it
         # serves as the open/close indicator for the rendezvous
+        # Note: unhealthy_count_key is intentionally NOT cleared as it is a global
+        # job-level counter that tracks unhealthy nodes across the entire job lifetime
         self.assertFalse(self.store.check([check_state.arrived_count_key]))
         self.assertFalse(self.store.check([check_state.ack_count_key]))
+        self.assertFalse(self.store.check([check_state.peer_aborted_count_key]))
+
+        # Verify that unhealthy_count_key is NOT cleared (should remain absent if no unhealthy nodes)
+        # We don't assert its presence/absence since no health check failures occurred in this test
 
 
-class HandlerIntegrationTest(TestCase):
+class HandlerIntegrationTest(BaseRendezvousTest):
     """Integration tests for FtRendezvousBarrierHandler."""
 
     @classmethod
@@ -1118,13 +1851,15 @@ class HandlerIntegrationTest(TestCase):
         """Set up test fixtures with unique run_id for each test."""
         import time
 
+        super().setUp()  # Clears environment variables
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_handler_{self._testMethodName}_{int(time.time() * 1000000)}"
 
     def tearDown(self):
         """Clean up test fixtures."""
-        pass
+        super().tearDown()  # Restores environment variables
 
     def test_handler_creation(self):
         """Test that handler can be created with correct parameters."""
@@ -1142,6 +1877,49 @@ class HandlerIntegrationTest(TestCase):
         self.assertEqual(handler.settings.run_id, self.run_id)
         self.assertEqual(handler.settings.min_nodes, 2)
         self.assertEqual(handler.settings.max_nodes, 4)
+
+    def test_handler_segment_validation(self):
+        """Test that handler validates min_nodes % segment == 0."""
+        # Valid: min_nodes=8 % segment=4 == 0
+        handler = FtRendezvousBarrierHandler.from_backend(
+            run_id=self.run_id,
+            store=self.store,
+            backend=None,
+            min_nodes=8,
+            max_nodes=16,
+            timeout=RendezvousTimeout(),
+            is_store_host=True,
+            segment=4,
+        )
+        self.assertIsNotNone(handler)
+
+        # Invalid: min_nodes=10 % segment=4 != 0
+        with self.assertRaises(ValueError) as ctx:
+            FtRendezvousBarrierHandler.from_backend(
+                run_id=f"{self.run_id}_invalid",
+                store=self.store,
+                backend=None,
+                min_nodes=10,
+                max_nodes=16,
+                timeout=RendezvousTimeout(),
+                is_store_host=True,
+                segment=4,
+            )
+        self.assertIn("must be divisible by segment", str(ctx.exception))
+
+        # Invalid: min_nodes=7 % segment=3 != 0
+        with self.assertRaises(ValueError) as ctx:
+            FtRendezvousBarrierHandler.from_backend(
+                run_id=f"{self.run_id}_invalid2",
+                store=self.store,
+                backend=None,
+                min_nodes=7,
+                max_nodes=12,
+                timeout=RendezvousTimeout(),
+                is_store_host=True,
+                segment=3,
+            )
+        self.assertIn("must be divisible by segment", str(ctx.exception))
 
     def test_handler_next_rendezvous(self):
         """Test basic rendezvous flow is validated by other test classes."""
@@ -1178,6 +1956,9 @@ class InfrastructureRankTest(TestCase):
         """Set up test fixtures with unique run_id for each test."""
         import time
 
+        # NOTE: DO NOT clear SLURM_PROCID/GROUP_RANK for this test class
+        # These tests specifically test infrastructure rank behavior from environment
+
         self.store = self.shared_store
         # Use unique run_id for each test to avoid key collisions
         self.run_id = f"test_infra_{self._testMethodName}_{int(time.time() * 1000000)}"
@@ -1198,50 +1979,157 @@ class InfrastructureRankTest(TestCase):
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            use_infra_group_rank=True,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
         # Create participants with infra ranks
         participants = [
-            (_NodeDesc("node_0", 100, 0), 0),  # infra_rank=0
-            (_NodeDesc("node_1", 101, 0), 1),  # infra_rank=1
+            (_NodeDesc("node_0", 100, 0), 0, "none"),
+            (_NodeDesc("node_1", 101, 0), 1, "none"),
         ]
         min_nodes = 2
 
         # Assign ranks using infrastructure rank mode
-        result = state._assign_group_ranks(participants, {}, min_nodes)
+        result = state._assign_group_ranks(participants, min_nodes)
 
         # Check direct mapping: group_rank = infra_rank
         self.assertEqual(result[participants[0][0]], 0)
         self.assertEqual(result[participants[1][0]], 1)
 
-    def test_missing_infra_rank_raises_error(self):
-        """Test that missing infra rank environment variable raises error."""
+
+class StaleRoundDetectionTest(BaseRendezvousTest):
+    """Test stale rendezvous round detection and rate limiting."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up shared TCPStore for all tests in this class."""
+        cls.shared_store = TCPStore(
+            host_name="127.0.0.1",
+            port=0,  # Use any available port
+            is_master=True,
+            wait_for_workers=False,
+        )
+
+    def setUp(self):
+        """Set up test fixtures with unique run_id for each test."""
+        super().setUp()
+        # Use the shared_store from setUpClass
+        self.store = self.shared_store
+        # Generate unique run_id to isolate each test
+        self.run_id = f"test_stale_{self._testMethodName}_{int(time.time() * 1000000)}"
+        self.node_desc_gen = _NodeDescGenerator()
+
+    def test_stale_check_interval_parameter(self):
+        """Test that stale_check_interval parameter is properly set."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
-            use_infra_group_rank=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            stale_check_interval=5.0,
+        )
+
+        self.assertEqual(state.stale_check_interval, 5.0)
+
+    def test_stale_check_interval_default(self):
+        """Test that stale_check_interval has correct default value."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        # Ensure environment variables are not set
-        for var in ['SLURM_PROCID', 'GROUP_RANK']:
-            if var in os.environ:
-                del os.environ[var]
+        self.assertEqual(state.stale_check_interval, 10.0)
 
-        min_nodes = 1
-        max_nodes = 1
-        last_call_timeout = _test_timeout()
-        node = self.node_desc_gen.generate()
+    def test_stale_round_detection_rate_limiting(self):
+        """Test that stale round detection is rate-limited properly at Step 0."""
+        # Use a short interval for this test
+        check_interval = 0.5  # 500ms
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            stale_check_interval=check_interval,
+        )
 
-        # Should raise ValueError about missing environment variable
-        with self.assertRaises(ValueError) as ctx:
-            state.perform_rendezvous(node, min_nodes, max_nodes, last_call_timeout)
+        # Set rendezvous as closed (training in progress)
+        state.store.set(state.last_participant_arrived_key, b"1")
 
-        self.assertIn("SLURM_PROCID", str(ctx.exception))
-        self.assertIn("GROUP_RANK", str(ctx.exception))
+        # Set global cycle to a higher value to trigger stale round detection
+        state.store.set(state.global_cycle_key, b"2")
+
+        # Track how many times we would check the store
+        check_count = 0
+        start_time = time.monotonic()
+        test_duration = 1.5  # Run for 1.5 seconds
+
+        node_desc = self.node_desc_gen.generate()
+
+        # Simulate the waiting loop at Step 0
+        # We manually simulate the loop instead of calling _wait_for_rendezvous_open()
+        # to avoid the actual waiting behavior
+        while time.monotonic() - start_time < test_duration:
+            # Save the last check time before checking
+            last_check_time = state._last_stale_check_time
+
+            # Simulate the stale round check from _wait_for_rendezvous_open()
+            current_time = time.monotonic()
+            if current_time - state._last_stale_check_time >= state.stale_check_interval:
+                state._last_stale_check_time = current_time
+                if state.store.check([state.global_cycle_key]):
+                    stored_cycle_bytes = state.store.get(state.global_cycle_key)
+                    stored_cycle = int(stored_cycle_bytes.decode('utf-8'))
+                    # Would raise RendezvousStaleRoundError here, but we just count
+
+            # If last_check_time changed, a check was performed
+            if state._last_stale_check_time != last_check_time:
+                check_count += 1
+
+            # Sleep a very short time to simulate tight loop
+            time.sleep(0.01)
+
+        # We expect approximately test_duration / check_interval checks
+        expected_checks = test_duration / check_interval
+        # Allow some tolerance (±1 check)
+        self.assertGreaterEqual(check_count, expected_checks - 1)
+        self.assertLessEqual(check_count, expected_checks + 1)
+
+        # Verify that many iterations happened but only a few checks
+        # This confirms rate limiting is working
+        self.assertGreater(check_count, 0)
+        # We should have done far fewer checks than the number of iterations
+        # (which would be ~150 iterations at 10ms sleep over 1.5 seconds)
+        self.assertLess(check_count, 10)
+
+    def test_stale_round_raises_exception(self):
+        """Test that detecting a stale round syncs automatically at Step 0."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            stale_check_interval=0.1,  # Short interval for testing
+        )
+
+        # Set initial local round
+        state._rendezvous_round = 1
+
+        # Set global cycle to a higher value to trigger stale round detection
+        state.store.set(state.global_cycle_key, b"5")
+
+        # Set rendezvous as open so we can exit the wait loop
+        state.store.set(state.last_participant_arrived_key, b"0")
+
+        node_desc = self.node_desc_gen.generate()
+
+        # Should sync automatically when stale round detected at Step 0
+        # The method should return normally (not raise exception)
+        state._wait_for_rendezvous_open(node_desc)
+
+        # Verify that the round was synced
+        self.assertEqual(state._rendezvous_round, 5)
 
 
 if __name__ == '__main__':

@@ -144,7 +144,33 @@ class LogConfig:
 
     @classmethod
     def get_infra_rank(cls):
-        return int(os.environ.get("SLURM_PROCID", "0")) if os.environ.get("SLURM_PROCID") else None
+        """
+        Get infrastructure rank with SLURM job array support.
+
+        For SLURM job arrays, calculates rank as:
+            array_task_id * nnodes_per_array_task + slurm_procid
+
+        Returns:
+            Infrastructure rank or None if not available
+        """
+        # Check if we're in a SLURM job array
+        slurm_array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+        slurm_procid = os.environ.get("SLURM_PROCID")
+
+        if slurm_array_task_id is not None and slurm_procid is not None:
+            # SLURM job array deployment
+            array_task_id = int(slurm_array_task_id)
+            proc_id = int(slurm_procid)
+
+            # Get number of nodes per array task
+            nnodes_per_array = os.environ.get("SLURM_NNODES", os.environ.get("SLURM_JOB_NUM_NODES"))
+            if nnodes_per_array is not None:
+                nnodes = int(nnodes_per_array)
+                return array_task_id * nnodes + proc_id
+            # If we can't get nnodes, fall through to regular SLURM_PROCID
+
+        # Regular SLURM deployment or fallback
+        return int(slurm_procid) if slurm_procid else None
 
     @classmethod
     def get_infra_local_rank(cls):
@@ -184,6 +210,7 @@ class LogManager:
         self,
         node_local_tmp_dir: Optional[str] = None,
         node_local_tmp_prefix: str = None,
+        log_file: Optional[str] = None,
     ):
         self._node_local_tmp_prefix = LogConfig.get_process_name(node_local_tmp_prefix)
         # Get distributed info once during initialization
@@ -202,6 +229,9 @@ class LogManager:
         self._max_msg_file_size = LogConfig.get_max_file_size()
         self._max_backup_files = LogConfig.get_max_log_files()
         self._log_to_stdout = LogConfig.get_log_to_stdout_cfg()
+
+        # Optional log file (if specified, logs go to file instead of console)
+        self._log_file = log_file
 
         # Create logger
         self._logger = self._setup_logger()
@@ -241,7 +271,34 @@ class LogManager:
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
 
-        if self.node_local_tmp_logging_enabled:
+        # Determine base format (same for all handlers)
+        base_fmt = (
+            "%(asctime)s [%(levelname)s] "
+            "[{node}] "
+            "[workload:%(workload_rank)s(%(workload_local_rank)s) "
+            "infra:%(infra_rank)s(%(infra_local_rank)s)] "
+            "%(filename)s:%(lineno)d %(message)s"
+        ).format(node=LogConfig.get_node_id())
+
+        # For file handler, prepend rank prefix (like srun -l)
+        if self._log_file:
+            infra_rank = self.infra_rank if self.infra_rank is not None else '?'
+            world_size = os.environ.get('WORLD_SIZE')
+            if world_size and str(infra_rank).isdigit():
+                width = len(str(int(world_size) - 1))
+                rank_prefix = f'{str(infra_rank):>{width}}: '
+            else:
+                rank_prefix = f'{infra_rank}: '
+            fmt = rank_prefix + base_fmt
+        else:
+            fmt = base_fmt
+
+        # Create handler: file, node-local-tmp, or console (mutually exclusive)
+        if self._log_file:
+            # File handler
+            handler = logging.FileHandler(self._log_file, mode='a')
+        elif self.node_local_tmp_logging_enabled:
+            # Node-local temporary logging
             os.makedirs(self._node_local_tmp_dir, exist_ok=True)
             validate_directory(self._node_local_tmp_dir)
             handler = NodeLocalTmpLogHandler(
@@ -252,25 +309,19 @@ class LogManager:
                 self._node_local_tmp_prefix,
             )
         else:
-            # Simple logging to stderr or stdout
+            # Console handler (stderr or stdout)
             if self._log_to_stdout:
                 handler = logging.StreamHandler(sys.stdout)
             else:
                 handler = logging.StreamHandler(sys.stderr)
 
-        # Use dynamic formatter with static hostname and dynamic rank info
+        # Create formatter and apply to handler
         formatter = DynamicLogFormatter(
             self.workload_rank,
             self.workload_local_rank,
             self.infra_rank,
             self.infra_local_rank,
-            fmt=(
-                "%(asctime)s [%(levelname)s] "
-                "[{node}] "
-                "[workload:%(workload_rank)s(%(workload_local_rank)s) "
-                "infra:%(infra_rank)s(%(infra_local_rank)s)] "
-                "%(filename)s:%(lineno)d %(message)s"
-            ).format(node=LogConfig.get_node_id()),
+            fmt=fmt,
         )
         handler.setFormatter(formatter)
         handler.setLevel(self.log_level)
@@ -298,6 +349,7 @@ def setup_logger(
     node_local_tmp_dir=None,
     force_reset=False,
     node_local_tmp_prefix: str = None,
+    log_file: Optional[str] = None,
 ) -> logging.Logger:
     """
     Setup the distributed logger.
@@ -320,6 +372,10 @@ def setup_logger(
         node_local_tmp_dir: Optional directory path for temporary files. If None, uses NVRX_NODE_LOCAL_TMPDIR env var.
         force_reset: If True, force reconfiguration even if logger is already configured.
                     Useful for subprocesses that need fresh logger setup.
+        node_local_tmp_prefix: Optional prefix for log files (e.g. "ftlauncher").
+        log_file: Optional path to log file. When specified, logs are written to this file
+                 with rank prefixes (like srun -l) instead of console. All processes write
+                 to the same file using append mode for safe concurrent writes.
 
     Returns:
         logging.Logger: Configured logger instance
@@ -328,6 +384,9 @@ def setup_logger(
         # In main script (launcher.py) or training subprocess
         from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
         logger = setup_logger()
+
+        # With log file for consolidated logging across all ranks/nodes
+        logger = setup_logger(log_file="/path/to/base.log")
 
         # In subprocesses that need fresh logger setup
         logger = setup_logger(force_reset=True)
@@ -354,6 +413,7 @@ def setup_logger(
         log_manager = LogManager(
             node_local_tmp_dir=node_local_tmp_dir,
             node_local_tmp_prefix=node_local_tmp_prefix,
+            log_file=log_file,
         )
 
         # Get the configured logger from the log manager

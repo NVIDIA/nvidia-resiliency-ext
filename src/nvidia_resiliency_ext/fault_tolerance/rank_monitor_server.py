@@ -78,6 +78,11 @@ class RankMonitorLogger(logging.Logger):
         self.restarter_logger.log(logging.DEBUG, message, *args, **kwargs)
 
     def _setup_logger(self):
+        """Setup logger with stderr stream handler.
+
+        Note: stderr is inherited from parent (launcher). If launcher redirected
+        stderr to base logfile, logs will automatically go there.
+        """
         self.setLevel(self.level)
         ch = logging.StreamHandler(sys.stderr)
         ch.setLevel(self.level)
@@ -85,6 +90,11 @@ class RankMonitorLogger(logging.Logger):
         self.propagate = False
 
     def _create_restarter_sublogger(self):
+        """Create restarter sublogger (writes [ALWAYS] messages to stdout).
+
+        Note: stdout is inherited from parent (launcher). If launcher redirected
+        stdout to base logfile, logs will automatically go there.
+        """
         self.restarter_logger = logging.getLogger(f"{self.name}.Restarter")
         self.restarter_logger.setLevel(
             logging.DEBUG if self.is_restarter_logger else logging.CRITICAL
@@ -182,29 +192,16 @@ class RankMonitorServer:
             self.nic_health_checker = None
 
     def start_periodic_restart_check(self):
-        if self._periodic_restart_task and not self._periodic_restart_task.done():
-            self.logger.warning("Periodic restart check is already running.")
-            return
-        self._periodic_restart_task = asyncio.get_running_loop().create_task(
-            self._periodic_restart_check()
-        )
-        # Only log once from local rank 0 to reduce log spam
-        if (
-            self.rank_info is None or self.rank_info.local_rank == 0
-        ) and self._restart_check_log_count < 2:
-            self.logger.info("Started periodic restart check.")
-            self._restart_check_log_count += 1
+        # DEPRECATED: This method is disabled and will be removed in a future release.
+        # The periodic restart check only provided observability (state transition logging)
+        # without affecting core functionality.
+        return
 
     async def stop_periodic_restart_check(self):
-        if self._periodic_restart_task:
-            self._periodic_restart_task.cancel()
-            try:
-                await self._periodic_restart_task
-            except asyncio.CancelledError:
-                self.logger.debug("Periodic restart check task cancelled.")
-            self._periodic_restart_task = None
-            # Reset counter when restart completes successfully
-            self._restart_check_log_count = 0
+        # DEPRECATED: This method is disabled and will be removed in a future release.
+        # The periodic restart check only provided observability (state transition logging)
+        # without affecting core functionality.
+        return
 
     def _shutdown_rank(self):
         # First sends SIGCONT to wake up the process, then "rank_termination_signal" to terminate it
@@ -519,6 +516,9 @@ class RankMonitorServer:
             await asyncio.sleep(self.cfg.workload_check_interval)
 
     async def _periodic_restart_check(self):
+        # DEPRECATED: This method is disabled and will be removed in a future release.
+        # The periodic restart check only provided observability (state transition logging)
+        # without affecting core functionality.
         await asyncio.sleep(self.cfg.restart_check_interval)
         while True:
             self.state_machine.periodic_restart_check()
@@ -630,6 +630,8 @@ class RankMonitorServer:
 
         # Set up the nvrx logger for subprocess
         # Use force_reset=True to ensure fresh logger setup with correct rank info
+        # Note: stdout/stderr are inherited from parent (launcher), so if launcher
+        # redirected them to base logfile, rank monitor logs will go there too
         from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
 
         try:

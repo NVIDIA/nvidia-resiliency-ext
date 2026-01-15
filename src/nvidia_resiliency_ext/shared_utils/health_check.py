@@ -1255,7 +1255,8 @@ class StoragePathHealthCheck:
     """
 
     def __init__(self, paths: list[str], on_failure: Optional[Callable] = None):
-        self.paths = paths
+        # Filter out None values and ensure all paths are strings
+        self.paths = [str(p) for p in paths if p is not None]
         self.on_failure = on_failure
 
     def __call__(self) -> bool:

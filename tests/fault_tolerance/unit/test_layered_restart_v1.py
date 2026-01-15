@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from nvidia_resiliency_ext.fault_tolerance import (
     InvalidStateTransitionException,
@@ -23,9 +23,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         # Valid transition from UNINITIALIZED to INITIALIZE
         self.state_machine.transition_to(RankMonitorState.INITIALIZE)
         self.assertEqual(self.state_machine.state, RankMonitorState.INITIALIZE)
-        self.logger.log_restarter_event.assert_called_with(
-            "[NestedRestarter] name=[InJob] state=initialize"
-        )
+        # Note: log_restarter_event no longer called (deprecated)
 
     def test_handle_signal_while_uninitialized_to_aborted(self):
         # Attempt the invalid transition and assert that it raises an exception
@@ -79,18 +77,14 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.HANDLING_START)
         self.state_machine.handle_signal()
         self.assertEqual(self.state_machine.state, RankMonitorState.ABORTED)
-        self.logger.log_restarter_event.assert_called_with(
-            "[NestedRestarter] name=[InJob] state=aborted"
-        )
+        # Note: log_restarter_event no longer called (deprecated)
 
     def test_handle_signal_from_initialize(self):
         # Valid signal handling from INITIALIZE, transitioning to FINALIZED
         self.state_machine.transition_to(RankMonitorState.INITIALIZE)
         self.state_machine.handle_signal()
         self.assertEqual(self.state_machine.state, RankMonitorState.FINALIZED)
-        self.logger.log_restarter_event.assert_called_with(
-            "[NestedRestarter] name=[InJob] state=finalized"
-        )
+        # Note: log_restarter_event no longer called (deprecated)
 
     def test_invalid_handle_signal_from_finalized(self):
         # Invalid signal handling from FINALIZED, should remain in FINALIZED
@@ -108,18 +102,14 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.HANDLING_START)
         self.state_machine.periodic_restart_check()
         self.assertEqual(self.state_machine.state, RankMonitorState.HANDLING_PROCESSING)
-        self.logger.log_restarter_event.assert_called_with(
-            "[NestedRestarter] name=[InJob] state=handling stage=processing"
-        )
+        # Note: log_restarter_event no longer called (deprecated)
 
     def test_handle_ipc_connection_lost_from_initialize(self):
         # Test IPC connection lost handling from INITIALIZE, valid transition to HANDLING_START
         self.state_machine.transition_to(RankMonitorState.INITIALIZE)
         self.state_machine.handle_ipc_connection_lost()
         self.assertEqual(self.state_machine.state, RankMonitorState.HANDLING_START)
-        self.logger.log_restarter_event.assert_called_with(
-            "[NestedRestarter] name=[InJob] state=handling stage=starting"
-        )
+        # Note: log_restarter_event no longer called (deprecated)
 
     def test_handle_ipc_connection_lost_invalid_state(self):
         # Invalid IPC connection lost handling from ABORTED, should remain ABORTED
@@ -233,13 +223,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.HANDLING_PROCESSING)
         self.state_machine.transition_to(RankMonitorState.HANDLING_COMPLETED)
         self.assertEqual(self.state_machine.state, RankMonitorState.HANDLING_COMPLETED)
-        expected_calls = [
-            call("[NestedRestarter] name=[InJob] state=initialize"),
-            call("[NestedRestarter] name=[InJob] state=handling stage=starting"),
-            call("[NestedRestarter] name=[InJob] state=handling stage=processing"),
-            call("[NestedRestarter] name=[InJob] state=handling stage=completed"),
-        ]
-        self.logger.log_restarter_event.assert_has_calls(expected_calls)
+        # Note: log_restarter_event calls no longer made (deprecated)
 
     def test_normal_flow_with_max_restarts_3_with_periodic_check_section(self):
         # Normal flow with max_restarts = 3
@@ -345,13 +329,7 @@ class TestRankMonitorStateMachine(unittest.TestCase):
         self.state_machine.transition_to(RankMonitorState.HANDLING_PROCESSING)
         self.state_machine.transition_to(RankMonitorState.HANDLING_COMPLETED)
         self.assertEqual(self.state_machine.state, RankMonitorState.HANDLING_COMPLETED)
-        expected_calls = [
-            call("[NestedRestarter] name=[InJob] state=initialize"),
-            call("[NestedRestarter] name=[InJob] state=handling stage=starting"),
-            call("[NestedRestarter] name=[InJob] state=handling stage=processing"),
-            call("[NestedRestarter] name=[InJob] state=handling stage=completed"),
-        ]
-        self.logger.log_restarter_event.assert_has_calls(expected_calls)
+        # Note: log_restarter_event calls no longer made (deprecated)
 
 
 if __name__ == "__main__":
