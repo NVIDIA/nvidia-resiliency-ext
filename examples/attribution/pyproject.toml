@@ -11,7 +11,7 @@ version = "0.1.0"
 description = "NVRX Attribution Service - FastAPI server for log analysis and attribution"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "NVIDIA Corporation"}
 ]
@@ -35,7 +35,7 @@ dependencies = [
     # Attribution library (MCP client, analyzers)
     "langchain-nvidia-ai-endpoints>=0.3.15",
     "mcp>=1.15.0",
-    "logsage==0.1.2",
+    "logsage==0.1.4",
 ]
 
 [project.optional-dependencies]
