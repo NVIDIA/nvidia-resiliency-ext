@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -1068,19 +1069,38 @@ class NodeHealthCheck:
                 else:
                     response = stub.RunHealthCheck(request)
 
-                if not getattr(
-                    response, "success", False
-                ):  # If the health check failed, return False
-                    exit_code = getattr(response, "exit_code", None)
-                    output = getattr(response, "output", "")
-                    error = getattr(response, "error", "")
-                    msg = f"Node health check failed (exit_code={exit_code}). Output: {output}"
-                    if error:
-                        msg += f" Error: {error}"
+                if not response.success:
+                    msg = (
+                        f"Node health check failed (exit_code={response.exit_code}). "
+                        f"Output: {response.output}"
+                    )
+                    if response.error:
+                        msg += f" Error: {response.error}"
                     logger.warning(msg)
                     return False
 
-                logger.debug("Node health check: success")
+                # Parse JSON output and check fail_count
+                output = response.output
+                try:
+                    result = json.loads(output)
+                    fail_count = result.get("fail_count")
+                    if fail_count is None:
+                        logger.warning(
+                            "Node health check: 'fail_count' field not found in response"
+                        )
+                        return False
+                    if fail_count != 0:
+                        failed_checks = result.get("failed_checks", [])
+                        logger.warning(
+                            f"Node health check failed: fail_count={fail_count}, "
+                            f"failed_checks={failed_checks}"
+                        )
+                        return False
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Node health check: failed to parse JSON output: {e}")
+                    return False
+
+                logger.debug("Node health check: success (fail_count=0)")
                 return True
 
         except Exception as e:
