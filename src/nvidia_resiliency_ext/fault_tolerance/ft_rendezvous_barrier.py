@@ -14,6 +14,7 @@ import inspect
 import json
 import logging
 import os
+import signal
 import socket
 import threading
 import time
@@ -21,10 +22,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
+from types import FrameType
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from torch.distributed import PrefixStore, Store
 from torch.distributed.elastic.events import NodeState, construct_and_record_rdzv_event
+from torch.distributed.elastic.multiprocessing import SignalException
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
     RendezvousError,
@@ -64,6 +67,24 @@ if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
     from ..testing_utils import health_check_injector
 
 log = logging.getLogger(LogConfig.name)
+
+
+def _rdzv_signal_exception_handler(sig: int, frame: Optional[FrameType]) -> None:
+    del frame
+    raise SignalException(f"Received signal {sig} during rendezvous", signal.Signals(sig))
+
+
+def _install_rdzv_signal_handlers() -> Dict[signal.Signals, Any]:
+    prev_handlers: Dict[signal.Signals, Any] = {}
+    for sig_to_handle in (signal.SIGTERM, signal.SIGINT):
+        prev_handlers[sig_to_handle] = signal.getsignal(sig_to_handle)
+        signal.signal(sig_to_handle, _rdzv_signal_exception_handler)
+    return prev_handlers
+
+
+def _restore_rdzv_signal_handlers(prev_handlers: Dict[signal.Signals, Any]) -> None:
+    for sig_to_handle, handler in prev_handlers.items():
+        signal.signal(sig_to_handle, handler)
 
 
 def get_method_name(depth=2):
@@ -851,6 +872,13 @@ class _RendezvousBarrierState:
         # Record start time for timeout monitoring
         # Start timing AFTER Step 0 completes, since hot spares may wait indefinitely at Step 0
         self._rendezvous_start_time = time.monotonic()
+
+        # Record rendezvous start event - start profiling AFTER waiting for rendezvous to open
+        # This ensures hot spares waiting at Step 0 don't skew the rendezvous performance measurement
+        rendezvous_start_event_id = record_profiling_event(
+            ProfilingEvent.RENDEZVOUS_STARTED,
+            node_id=node_desc,
+        )
 
         # Step 1: Join the rendezvous and get unique identifier
         self._arrived_count = self.store.add(self.arrived_count_key, 1)
@@ -1670,12 +1698,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._record(message=msg)
         log.info(msg)
 
-        # Record rendezvous start event
-        rendezvous_start_event_id = record_profiling_event(
-            ProfilingEvent.RENDEZVOUS_STARTED,
-            node_id=self._this_node,
-        )
-
+        prev_signal_handlers = _install_rdzv_signal_handlers()
         try:
             # Check node health and control requests before starting rendezvous
             self.ensure_node_is_healthy()
@@ -1709,6 +1732,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 node_state=NodeState.FAILED,
             )
             raise
+        finally:
+            _restore_rdzv_signal_handlers(prev_signal_handlers)
 
         msg = (
             f"The node '{self._this_node}' has joined the rendezvous "
