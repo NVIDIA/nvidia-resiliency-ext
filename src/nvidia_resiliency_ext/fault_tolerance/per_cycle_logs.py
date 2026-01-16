@@ -164,7 +164,26 @@ class PipeSubprocessHandler(SubprocessHandler):
             except OSError:
                 pass
 
-        # Close file handles (but not subprocess.PIPE/STDOUT which are managed by Popen)
+        # Close the parent's pipe file descriptors
+        # This is critical for the reader thread to detect pipe closure and terminate.
+        # When we close proc.stdout/stderr, the reader thread will immediately get:
+        # - POLLERR/POLLHUP from poll(), or
+        # - Empty data from os.read(), or
+        # - OSError from os.read()
+        # All of these trigger pipe removal from the reader thread's monitoring set.
+        if self.proc.stdout:
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
+
+        if self.proc.stderr and self.proc.stderr != subprocess.STDOUT:
+            try:
+                self.proc.stderr.close()
+            except Exception:
+                pass
+
+        # Close file handles for non-pipe cases (when we opened actual files)
         if self._stdout and self._stdout not in (subprocess.PIPE, subprocess.STDOUT):
             try:
                 self._stdout.close()
