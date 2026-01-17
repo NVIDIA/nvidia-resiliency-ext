@@ -85,7 +85,8 @@ class NVRxLogAnalyzer(NVRxAttribution):
             top_p=self.args.top_p,
             max_tokens=self.args.max_tokens,
         )
-        self.exclude_nvrx_logs = args.exclude_nvrx_logs
+        self.exclude_nvrx_logs = getattr(args, 'exclude_nvrx_logs', False)
+        self.is_per_cycle = getattr(args, 'is_per_cycle', False)
         super().__init__(
             preprocess_input=self.analyze_logs,
             attribution=self.llm_analyze,
@@ -114,15 +115,21 @@ class NVRxLogAnalyzer(NVRxAttribution):
         with open(path, 'r') as f:
             input_data = f.readlines()
 
-        if self.exclude_nvrx_logs:
-            input_data = [line for line in input_data if "nvidia_resiliency_ext" not in line]
-            input_data = [
-                line for line in input_data if "[workload:" not in line or 'Cycle:' in line
-            ]
-            logger.info(f"Excluded {len(input_data)} lines from the input data")
-            with open(os.path.join(os.path.dirname(path), "nvrx_logs_edited.txt"), 'w') as f:
-                f.writelines(input_data)
-        chunks = chunk_logs_strict(input_data)  # Splitting the app log to cycles
+        # If is_per_cycle is set, skip filtering and chunking (data is already single-cycle)
+        if self.is_per_cycle:
+            logger.info("is_per_cycle=True: skipping nvrx log filtering and cycle chunking")
+            chunks = {0: input_data}
+        else:
+            if self.exclude_nvrx_logs:
+                input_data = [line for line in input_data if "nvidia_resiliency_ext" not in line]
+                input_data = [
+                    line for line in input_data if "[workload:" not in line or 'Cycle:' in line
+                ]
+                logger.info(f"Excluded {len(input_data)} lines from the input data")
+                with open(os.path.join(os.path.dirname(path), "nvrx_logs_edited.txt"), 'w') as f:
+                    f.writelines(input_data)
+            chunks = chunk_logs_strict(input_data)  # Splitting the app log to cycles
+
         output_list = [
             return_application_errors(self.llm, lines, self.lru_cache)
             for cycle, lines in chunks.items()
@@ -180,6 +187,11 @@ def main():
     parser.add_argument('--max_tokens', type=int, default=8192, help='Max tokens for LLM')
     parser.add_argument(
         '--exclude_nvrx_logs', action='store_true', help='Exclude nvrx logs from the input data'
+    )
+    parser.add_argument(
+        '--is_per_cycle',
+        action='store_true',
+        help='Input is already per-cycle data (skip filtering and chunking)',
     )
 
     args = parser.parse_args()
