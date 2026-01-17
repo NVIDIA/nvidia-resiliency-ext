@@ -53,11 +53,7 @@
 <li class="toctree-l2 current"><a class="reference internal" href="../api.html">API documentation</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="config.html">Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="client.html">Client</a></li>
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Server</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorLogger"><code class="docutils literal notranslate"><span class="pre">RankMonitorLogger</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer"><code class="docutils literal notranslate"><span class="pre">RankMonitorServer</span></code></a></li>
-</ul>
-</li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Server</a></li>
 <li class="toctree-l3"><a class="reference internal" href="callback.html">Callback</a></li>
 </ul>
 </li>
@@ -97,46 +93,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="module-nvidia_resiliency_ext.fault_tolerance.rank_monitor_server">
-<span id="server"></span><h1>Server<a class="headerlink" href="#module-nvidia_resiliency_ext.fault_tolerance.rank_monitor_server" title="Link to this heading"></a></h1>
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorLogger">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.</span></span><span class="sig-name descname"><span class="pre">RankMonitorLogger</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'RankMonServer'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">level</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">20</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">connected_rank</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_restarter_logger</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_server.html#RankMonitorLogger"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorLogger" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.Logger" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Logger</span></code></a></p>
-<p>Logger used in a rank monitor process</p>
-<p>Initialize the logger with a name and an optional level.</p>
-<dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorLogger.log_restarter_event">
-<span class="sig-name descname"><span class="pre">log_restarter_event</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">message</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_server.html#RankMonitorLogger.log_restarter_event"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorLogger.log_restarter_event" title="Link to this definition"></a></dt>
-<dd><p>Log a restart event that should always be visible, but only if restarter logging is enabled.
-:param is_restarter_logger: Whether restarter logging is enabled
-:param message: The message to log
-:param *args: Additional arguments for logging
-:param <a href="#id1"><span class="problematic" id="id2">**</span></a>kwargs: Additional arguments for logging</p>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer">
-<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.</span></span><span class="sig-name descname"><span class="pre">RankMonitorServer</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cfg</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ipc_socket_path</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank_monitor_ready_event</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">logger</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_restarter_logger</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_server.html#RankMonitorServer"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>RankMonitorServer, running in a separate process, is responsible for monitoring the ranks.
-RankMonitorClient is intialized in each rank and is used to communicate with the RankMonitorServer.</p>
-<p>Initializes the RankMonitorServer object.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>cfg</strong> (<a class="reference internal" href="config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><em>FaultToleranceConfig</em></a>) – The configuration object for fault tolerance.</p></li>
-<li><p><strong>ipc_socket_path</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Path of the IPC socket connecting this monitor with its rank</p></li>
-<li><p><strong>rank_monitor_ready_event</strong> (<em>mp.Event</em>) – The event indicating that the rank monitor is ready.</p></li>
-<li><p><strong>is_restarter_logger</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – True if this monitor writes state transition logs</p></li>
-<li><p><strong>logger</strong> (<a class="reference external" href="https://docs.python.org/3/library/logging.html#logging.Logger" title="(in Python v3.14)"><em>logging.Logger</em></a>) – The logger object for logging.</p></li>
-</ul>
-</dd>
-</dl>
-</dd></dl>
-
+  <section id="server">
+<h1>Server<a class="headerlink" href="#server" title="Link to this heading"></a></h1>
 </section>
 
 

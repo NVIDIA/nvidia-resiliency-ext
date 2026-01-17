@@ -172,6 +172,9 @@
 <span class="sd">    * `install_exception_hook` [bool] if True, installs sys.excepthook to capture uncaught exceptions</span>
 <span class="sd">      in training worker processes, format and log the traceback, and use os._exit() to exit the</span>
 <span class="sd">      process reliably. Default: False.</span>
+<span class="sd">    * Attribution service (optional):</span>
+<span class="sd">      - `attrsvc_host` [str] hostname/IP of the attribution service</span>
+<span class="sd">      - `attrsvc_port` [int] port of the attribution service</span>
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
@@ -206,6 +209,9 @@
     <span class="n">min_progress_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">200</span>
     <span class="n">progress_update_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>  <span class="c1"># Seconds between sending progress updates to launcher</span>
     <span class="n">install_exception_hook</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="c1"># Attribution service configuration (optional)</span>
+    <span class="n">attrsvc_host</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">attrsvc_port</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_progress_tracking_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>

@@ -214,6 +214,33 @@ By default it is disabled. When enabled (via CLI or YAML), it:</p>
 </dd>
 </dl>
 </section>
+<section id="attribution-service-integration">
+<h4>Attribution service integration<a class="headerlink" href="#attribution-service-integration" title="Link to this heading"></a></h4>
+<p>Enable artifact analysis (e.g., logs) during rendezvous health checks by pointing to a running attribution service.
+The feature is enabled by specifying both host and port.</p>
+<ul>
+<li><p>CLI:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attrsvc-host</span> <span class="pre">&lt;HOST&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attrsvc_host</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attrsvc-port</span> <span class="pre">&lt;PORT&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attrsvc_port</span></code>)</p></li>
+</ul>
+<p>Example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ft-attrsvc-host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ft-attrsvc-port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>train.py
+</pre></div>
+</div>
+</li>
+<li><p>YAML: under the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> section</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">fault_tolerance</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">attrsvc_host</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;127.0.0.1&quot;</span>
+<span class="w">  </span><span class="nt">attrsvc_port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8000</span>
+</pre></div>
+</div>
+</li>
+</ul>
+</section>
 <section id="gpu-memory-reclaim">
 <h4>GPU Memory Reclaim<a class="headerlink" href="#gpu-memory-reclaim" title="Link to this heading"></a></h4>
 <p>When <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can optionally wait for GPU memory to be
