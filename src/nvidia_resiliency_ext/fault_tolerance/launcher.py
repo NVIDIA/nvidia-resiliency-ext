@@ -78,6 +78,7 @@ from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgr
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
+    is_slurm_job_array,
     patched_method,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
@@ -1658,6 +1659,17 @@ def launch_agent(
         shutdown_rdzv = False
         logger.error(f"Agent .run() raised UnhealthyNodeException: {e}")
         events.record(agent.get_event_failed())
+
+        # Exit behavior depends on deployment mode:
+        # - Job array: raise (exit 1) so replacement job can be launched
+        # - Single job with hot spares: don't raise (instead, exit 0) to avoid killing job
+        #   since --kill-on-bad-exit is the default srun behavior
+        if is_slurm_job_array():
+            logger.info("Job array deployment: exiting with code 1 for replacement.")
+            raise
+        else:
+            logger.info("Single job deployment: exiting with code 0 for hot spare takeover.")
+            # Don't raise - returns None, main() will exit with 0
     except ChildFailedError:
         raise
     except SignalException as e:
@@ -1673,7 +1685,7 @@ def launch_agent(
         else:
             logger.info("All ranks exited gracefully. Launcher exiting without an error.")
     except Exception as e:
-        logger.error(f"Agent .run() raised exception, {e=}", exc_info=True)
+        logger.error(f"Agent .run() raised exception, {e=}")
         events.record(agent.get_event_failed())
         raise
     finally:
@@ -2823,18 +2835,8 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     nproc_per_node = determine_local_world_size(args.nproc_per_node)
     if "OMP_NUM_THREADS" not in os.environ and nproc_per_node > 1:
-        omp_num_threads = 1
-        logger.warning(
-            "\n*****************************************\n"
-            "Setting OMP_NUM_THREADS environment variable for each process to be "
-            "%s in default, to avoid your system being overloaded, "
-            "please further tune the variable for optimal performance in "
-            "your application as needed. \n"
-            "*****************************************",
-            omp_num_threads,
-        )
         # This env variable will be passed down to the subprocesses
-        os.environ["OMP_NUM_THREADS"] = str(omp_num_threads)
+        os.environ["OMP_NUM_THREADS"] = "1"
 
     log_line_prefix_template = os.getenv("TORCHELASTIC_LOG_LINE_PREFIX_TEMPLATE")
 
