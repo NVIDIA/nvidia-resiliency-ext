@@ -47,6 +47,7 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..inprocess.utils import format_rank_set_verbose
 from ..shared_utils.health_check import (
+    AttributionService,
     DistributedStorageHealthCheck,
     GPUHealthCheck,
     NicLinkStateHealthCheck,
@@ -1306,6 +1307,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
+        attrsvc_host: Optional[str] = None,
+        attrsvc_port: Optional[int] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1330,8 +1333,16 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 Number of nodes to select from each domain.
             enable_nic_healthcheck:
                 Whether to enable all NIC link state health check before rendezvous.
+            enable_dist_storage_healthcheck:
+                Whether to enable distributed storage health check before rendezvous.
             link_state_path_template:
                 Template path for NIC link state files.
+            storage_healthcheck_paths:
+                List of storage paths to check for health.
+            attrsvc_host:
+                Hostname or IP address of the attribution service.
+            attrsvc_port:
+                Port number of the attribution service.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1357,6 +1368,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
+            attrsvc_host=attrsvc_host,
+            attrsvc_port=attrsvc_port,
         )
 
     def __init__(
@@ -1370,6 +1383,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
+        attrsvc_host: Optional[str] = None,
+        attrsvc_port: Optional[int] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1429,6 +1444,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._storage_path_checker = (
             StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
         )
+
+        # Attribution service client (optional, only on master node)
+        if is_store_host and attrsvc_host and attrsvc_port is not None:
+            self._attr_service = AttributionService(
+                host=attrsvc_host,
+                port=int(attrsvc_port),
+            )
+        else:
+            self._attr_service = None
 
     @property
     def _rendezvous_round(self) -> int:
@@ -1578,6 +1602,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 "Storage path health check",
                 f"Node {self._this_node} has invalid or unreadable paths.",
             )
+
+        # Perform optional log analysis (non-fatal)
+        # Note: _submit_log() was already called from launcher before workers started
+        if self._attr_service is not None:
+            self._attr_service()
 
         # Perform Node health check (external service if available)
         _nodehealth_checker = get_node_health_check()
@@ -1905,6 +1934,8 @@ def create_handler(
         )
         storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
+        attrsvc_host = params.config.get('attrsvc_host', None)
+        attrsvc_port = params.config.get('attrsvc_port', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -1921,6 +1952,8 @@ def create_handler(
             enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
+            attrsvc_host=attrsvc_host,
+            attrsvc_port=attrsvc_port,
         )
     except Exception as e:
         construct_and_record_rdzv_event(
