@@ -129,6 +129,7 @@ class AttributionModuleRegistry:
             if param_name not in result and "default" in param_schema:
                 result[param_name] = param_schema["default"]
                 logger.debug(f"Applied default for {param_name}: {param_schema['default']}")
+
         return result
 
     def cache_result(self, module_name: str, arguments: Dict[str, Any], result: Any):
