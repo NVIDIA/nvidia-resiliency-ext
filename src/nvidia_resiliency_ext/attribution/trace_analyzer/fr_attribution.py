@@ -1053,15 +1053,6 @@ class CollectiveAnalyzer(NVRxAttribution):
             if 'health_check_results' in data:
                 self.node_health_status[rank_id] = data['health_check_results']
 
-            # self.collective_groups = self.matching_collectives_by_ordering_of_appearance_of_process_group_types()
-            # logger.info(f"collective_groups: {self.collective_groups.keys()}")
-            '''
-            # Group collectives by process_group[0] and process_group[1] only (remove seq_id and op_id)
-            for collective in collectives:
-                # Use process_group[0] and process_group[1] as they contain the group identifiers
-                key = (collective.process_group[0], collective.process_group[1])
-                self.collective_groups[key].append(collective)
-            '''
             return True
         except Exception as e:
             eprint(f"Error processing {filepath}: {str(e)}")
