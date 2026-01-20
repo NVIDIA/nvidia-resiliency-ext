@@ -1002,7 +1002,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             rank=worker_group.group_rank,
         )
 
-
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -1688,6 +1687,10 @@ def launch_agent(
         # flag only controls whether we explicitly signal closure via closed_key; it cannot
         # keep the store alive if the store host process exits.
         if is_store_host:
+            # Trigger attribution service analysis for final cycle
+            if agent._rdzv_handler._attr_service is not None:
+                agent._rdzv_handler._attr_service()
+
             grace_period = 3.0  # seconds
             logger.info(
                 f"Store host waiting {grace_period} seconds before exit "
