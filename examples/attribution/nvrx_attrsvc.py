@@ -12,14 +12,19 @@ import os
 import re
 import stat
 import time
+import re
 from importlib.resources import files as pkg_files
 from typing import Any, Awaitable, Callable, Dict, Optional
+import sys
+from datetime import datetime
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from nvdataflow import post
 
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
 
@@ -447,17 +452,71 @@ def create_app(cfg: Settings) -> FastAPI:
                 async with client:
                     # Detect per-cycle logs: filename ends with _cycle<N>.log
                     is_per_cycle = bool(re.search(r'_cycle\d+\.log$', normalized))
+                    s_time = time.time()
                     log_result = await client.run_module(
                         module_name="log_analyzer",
                         log_path=normalized,
                         model=cfg.LLM_MODEL,
-                        temperature=0.2,
+                        temperature=0.0,
                         exclude_nvrx_logs=False,
                         is_per_cycle=is_per_cycle,
-                        top_p=0.7,
+                        top_p=1,
                         max_tokens=8192,
                     )
-                    logger.info(f"Result preview: {str(log_result)[:200]}...")
+                    logger.info(f"Result preview: {str(log_result)}")
+
+                    e_time = time.time()
+                    # 1. Access the main text blob inside the nested list
+                    # data['result'] is a list, the first item is a list, and the text is the first item of that.
+                    if 'result' in log_result and len(log_result['result']) > 0:
+                        for item in log_result['result']:
+                            raw_text = item[0]
+
+                            # 2. Extract the First Line
+                            # Split by newlines and take the first element
+                            auto_resume = raw_text.split('\n')[0]
+                            try:
+                                auto_resume_explanation = raw_text.split('\n')[1]
+                            except Exception as e:
+                                auto_resume_explanation = ""
+                                logger.info(f"Failed to extract auto resume explanation: {e}")
+
+                            # 3. Extract text after 'Attribution:'
+                            # Split the text by the specific key "Attribution:" and take the second part
+                            # We use .strip() to remove the leading newline character
+                            attribution_text = raw_text.split('Attribution:')
+                            if len(attribution_text) > 1:
+                                attribution_text = attribution_text[1].strip()
+                                attribution_text = \
+                                    attribution_text.replace('"\\', "").replace('\"', "").split("\n\n")[0]
+                            else:
+                                attribution_text = ""
+                            try:
+                                match = re.search(r"_(\d+)_date_", normalized)
+                                if not match:
+                                    raise ValueError("Job ID not found in path")
+                                jobid = match.group(1)
+                            except Exception as e:
+                                jobid = ""
+                                logger.info(f"Failed to extract job ID: {e}")
+
+                            logger.info("jobid: %s", jobid)
+                            logger.info("log_path: %s", normalized)
+                            logger.info("auto_resume: %s", auto_resume)
+                            logger.info("auto_resume_explanation: %s", auto_resume_explanation)
+                            logger.info("attribution_text: %s", attribution_text)
+                            data = {
+                                "s_cluster": "oci-hsg",
+                                "s_user": "nvrx_attr",
+                                "s_attribution": attribution_text,
+                                "s_auto_resume": auto_resume,
+                                "s_auto_resume_explanation": auto_resume_explanation,
+                                "s_jobid": jobid,
+                                "s_logpath": normalized,
+                                "d_processing_time": round(e_time - s_time, 2),
+                                "ts_current_time": round(datetime.now().timestamp() * 1000),
+                            }
+                            result = post(data=data, project="aidot-fact-logsage")
                     return log_result
 
             # Use request coalescing: only one request per log file is processed,
@@ -488,7 +547,7 @@ def _get_server_command() -> list[str]:
         raise FileNotFoundError(f"failed to locate server_launcher.py in package {pkg}: {e}")
     if not resource.exists():
         raise FileNotFoundError(f"server launcher not found in package: {pkg}/server_launcher.py")
-    return ["python", str(resource)]
+    return [sys.executable, str(resource)]
 
 
 def _create_mcp_client() -> NVRxMCPClient:
