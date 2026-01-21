@@ -91,6 +91,10 @@ class FaultToleranceConfig:
     * `install_exception_hook` [bool] if True, installs sys.excepthook to capture uncaught exceptions
       in training worker processes, format and log the traceback, and use os._exit() to exit the
       process reliably. Default: False.
+    * `num_warmup_iterations` [int] number of warmup iterations before monitoring step section and
+      out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
+      timeout monitoring as they can be significantly slower than steady-state iterations.
+      Default: 5. Note: This also patches Megatron-LM's _NUM_WARMUP_ITERS when detected.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -125,6 +129,9 @@ class FaultToleranceConfig:
     min_progress_iterations: int = 200
     progress_update_interval: float = 30.0  # Seconds between sending progress updates to launcher
     install_exception_hook: bool = False
+    num_warmup_iterations: int = (
+        5  # Number of warmup iterations before monitoring step section and out-of-section timeouts
+    )
 
     @property
     def is_progress_tracking_enabled(self) -> bool:

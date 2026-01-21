@@ -2639,6 +2639,19 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-num-warmup-iterations",
+        "--ft-num_warmup_iterations",
+        type=int,
+        default=None,
+        dest="ft_num_warmup_iterations",
+        help="Part of Fault Tolerance pkg config (num_warmup_iterations). "
+        "Number of warmup iterations before monitoring step section and out-of-section timeouts. "
+        "The first N iterations (relative to cycle start) are excluded from timeout monitoring "
+        "as they can be significantly slower than steady-state iterations. "
+        "This also patches Megatron-LM's _NUM_WARMUP_ITERS when detected. Default: 5.",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
