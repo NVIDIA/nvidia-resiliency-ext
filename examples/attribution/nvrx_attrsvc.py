@@ -24,7 +24,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from nvdataflow import post
+try:
+    from nvdataflow import post
+    HAS_NVDATAFLOW = True
+except ImportError:
+    post = None
+    HAS_NVDATAFLOW = False
 
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
 
@@ -44,6 +49,9 @@ class Settings(BaseSettings):
     HOST: str = Field(default="0.0.0.0")
     PORT: int = Field(default=8000)
     LOG_LEVEL_NAME: str = Field(default="INFO")
+
+    CLUSTER_NAME: str = Field(default="", description="Cluster name")
+    NVDATAFLOW_PROJECT: str = Field(default="", description="nvdataflow index")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -472,11 +480,12 @@ def create_app(cfg: Settings) -> FastAPI:
                         for item in log_result['result']:
                             raw_text = item[0]
 
-                            # 2. Extract the First Line
+                            # 2. Extract the auto_resume raw
+                            auto_resume_raw = raw_text.split('\n')
                             # Split by newlines and take the first element
-                            auto_resume = raw_text.split('\n')[0]
+                            auto_resume = auto_resume_raw[0]
                             try:
-                                auto_resume_explanation = raw_text.split('\n')[1]
+                                auto_resume_explanation = auto_resume_raw[1]
                             except Exception as e:
                                 auto_resume_explanation = ""
                                 logger.info(f"Failed to extract auto resume explanation: {e}")
@@ -487,10 +496,14 @@ def create_app(cfg: Settings) -> FastAPI:
                             attribution_text = raw_text.split('Attribution:')
                             if len(attribution_text) > 1:
                                 attribution_text = attribution_text[1].strip()
+                                checkpoint_saved = attribution_text.split("\n\n")[1]
                                 attribution_text = \
                                     attribution_text.replace('"\\', "").replace('\"', "").split("\n\n")[0]
                             else:
                                 attribution_text = ""
+                                checkpoint_saved = ""
+                            #checkpoint_saved = attribution_text#attribution_text.split("\n\n")[1]
+                            #return checkpoint_saved
                             try:
                                 match = re.search(r"_(\d+)_date_", normalized)
                                 if not match:
@@ -506,17 +519,25 @@ def create_app(cfg: Settings) -> FastAPI:
                             logger.info("auto_resume_explanation: %s", auto_resume_explanation)
                             logger.info("attribution_text: %s", attribution_text)
                             data = {
-                                "s_cluster": "oci-hsg",
+                                "s_cluster": cfg.CLUSTER_NAME,
                                 "s_user": "nvrx_attr",
                                 "s_attribution": attribution_text,
                                 "s_auto_resume": auto_resume,
                                 "s_auto_resume_explanation": auto_resume_explanation,
                                 "s_jobid": jobid,
                                 "s_logpath": normalized,
+                                "s_checkpoint_saved": checkpoint_saved,
                                 "d_processing_time": round(e_time - s_time, 2),
                                 "ts_current_time": round(datetime.now().timestamp() * 1000),
                             }
-                            result = post(data=data, project="aidot-fact-logsage")
+
+                            if HAS_NVDATAFLOW and cfg.NVDATAFLOW_PROJECT:
+                                result = post(data=data, project=cfg.NVDATAFLOW_PROJECT)
+                            else:
+                                if HAS_NVDATAFLOW:
+                                    logger.error("nvdataflow index is missing")
+                                if cfg.NVDATAFLOW_PROJECT:
+                                    logger.error("can't import nvdataflow")
                     return log_result
 
             # Use request coalescing: only one request per log file is processed,
