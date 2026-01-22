@@ -2835,8 +2835,18 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
 
     nproc_per_node = determine_local_world_size(args.nproc_per_node)
     if "OMP_NUM_THREADS" not in os.environ and nproc_per_node > 1:
+        omp_num_threads = 1
+        logger.warning(
+            "\n*****************************************\n"
+            "Setting OMP_NUM_THREADS environment variable for each process to be "
+            "%s in default, to avoid your system being overloaded, "
+            "please further tune the variable for optimal performance in "
+            "your application as needed. \n"
+            "*****************************************",
+            omp_num_threads,
+        )
         # This env variable will be passed down to the subprocesses
-        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["OMP_NUM_THREADS"] = str(omp_num_threads)
 
     log_line_prefix_template = os.getenv("TORCHELASTIC_LOG_LINE_PREFIX_TEMPLATE")
 
