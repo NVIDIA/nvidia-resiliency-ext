@@ -56,6 +56,7 @@ class RankInfo:
                 "Could not find the rank of the current process. "
                 "Is it a part of a distributed workload?"
             )
+        global_rank = int(global_rank)
         local_rank = int(os.environ.get("LOCAL_RANK", -1))
         host = socket.gethostname()
         pid = os.getpid()
