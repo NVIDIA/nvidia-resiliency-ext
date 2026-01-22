@@ -121,15 +121,9 @@ class RankMonitorClient:
         # We don't cache _GLOBAL_ARGS here because it may not be initialized yet
         # (ft_integration.setup() is called before initialize_megatron which sets _GLOBAL_ARGS)
         self._workload_global_vars_module = None
-        self._workload_ft_integration_module = None  # For monkey-patching warmup iterations
         self._cached_workload_args = None  # Cache once _GLOBAL_ARGS is set (optimization)
         if 'megatron.training.global_vars' in sys.modules:
             self._workload_global_vars_module = sys.modules['megatron.training.global_vars']
-            # Also get ft_integration module for monkey-patching
-            if 'megatron.training.ft_integration' in sys.modules:
-                self._workload_ft_integration_module = sys.modules[
-                    'megatron.training.ft_integration'
-                ]
             # Only log from rank 0 to reduce log spam
             if get_rank() in (0, "0", None):
                 self.logger.debug(
@@ -188,24 +182,6 @@ class RankMonitorClient:
                 if hasattr(self._cached_workload_args, 'iteration'):
                     return self._cached_workload_args.iteration
         return None
-
-    def _patch_megatron_warmup_iterations(self):
-        """
-        Monkey-patch Megatron-LM's _NUM_WARMUP_ITERS to match FT config.
-
-        This synchronizes the warmup iteration count used for step section wrapping
-        with the warmup period used for out-of-section timeout monitoring.
-        """
-        if self._workload_ft_integration_module is not None:
-            warmup_iters = self.cfg.num_warmup_iterations
-            # Monkey-patch the module-level variable
-            setattr(self._workload_ft_integration_module, '_NUM_WARMUP_ITERS', warmup_iters)
-            # Only log from rank 0 to reduce log spam
-            if get_rank() in (0, "0", None):
-                self.logger.info(
-                    f"Patched Megatron-LM _NUM_WARMUP_ITERS to {warmup_iters} "
-                    f"(from FT config num_warmup_iterations)"
-                )
 
     def _set_calculated_timeouts(
         self,
@@ -388,7 +364,7 @@ class RankMonitorClient:
                 f"RankMonitorClient could not send section update. Exception: {e}"
             )
 
-    def _connect_to_rmon_server(self):
+    def _connect_to_rmon_server(self, num_warmup_iters: Optional[int] = None):
         assert self.rank_monitor_socket is None
         rmon_ipc_socket_path = os.getenv(FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR, None)
         if rmon_ipc_socket_path is None:
@@ -408,7 +384,9 @@ class RankMonitorClient:
             # Send sentinel value (1) to arm progress tracking - the real iteration
             # will be reported later when training starts
             initial_iteration = 1
-        init_msg = InitMsg(rank_info=self.rank_info, iteration=initial_iteration)
+        init_msg = InitMsg(
+            rank_info=self.rank_info, iteration=initial_iteration, num_warmup_iters=num_warmup_iters
+        )
         write_object_to_ipc_socket(init_msg, self.rank_monitor_socket)
         reply_for_init = read_obj_from_ipc_socket(self.rank_monitor_socket)
         if not isinstance(reply_for_init, OkMsg):
@@ -420,16 +398,23 @@ class RankMonitorClient:
 
     def init_workload_monitoring(
         self,
+        num_warmup_iters: Optional[int] = None,
     ) -> None:
         """
         Initializes the fault tolerance and connects to the RankMonitorServer.
+
+        Args:
+            num_warmup_iters (Optional[int]): Number of warmup iterations before monitoring
+                step section and out-of-section timeouts. If provided, this value will be sent
+                to the server and used for timeout monitoring logic. If None, server will use
+                its default value from config.
         """
         if self.is_initialized:
             raise RankMonitorClientError("RankMonitorClient is already initialized")
 
         self.rank_info = RankInfo.get_for_current_rank()
 
-        self._connect_to_rmon_server()
+        self._connect_to_rmon_server(num_warmup_iters=num_warmup_iters)
 
         # Install exception handler if configured
         if self.cfg.install_exception_hook:
@@ -459,9 +444,6 @@ class RankMonitorClient:
                 new_hb_timeouts=self.loaded_hb_timeouts,
                 new_section_timeouts=self.loaded_section_timeouts,
             )
-
-        # Monkey-patch Megatron-LM warmup iterations to match FT config
-        self._patch_megatron_warmup_iterations()
 
         self.is_initialized = True
 

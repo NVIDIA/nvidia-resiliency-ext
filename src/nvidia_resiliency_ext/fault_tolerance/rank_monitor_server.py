@@ -275,6 +275,16 @@ class RankMonitorServer:
         # Capture starting iteration for this cycle
         self._initial_iteration = msg.iteration
         self._current_iteration = msg.iteration
+
+        # Update num_warmup_iterations if provided by the client
+        if msg.num_warmup_iters is not None:
+            self.cfg.num_warmup_iterations = msg.num_warmup_iters
+            # Only log from rank 0 to reduce log spam
+            if self.rank_info.global_rank == 0:
+                self.logger.info(
+                    f"Updated num_warmup_iterations to {msg.num_warmup_iters} from client"
+                )
+
         # Update NIC health checker on the rank to monitor.
         if self.nic_health_checker is not None:
             self.nic_health_checker.set_nic_device(local_rank=self.rank_info.local_rank)

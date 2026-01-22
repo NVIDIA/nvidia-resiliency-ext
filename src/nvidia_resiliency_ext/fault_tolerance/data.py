@@ -159,11 +159,19 @@ class InitMsg:
         iteration: Current training iteration if available from workload framework.
                   If None, indicates that the workload cannot report iterations,
                   and progress tracking should remain disabled.
+        num_warmup_iters: Number of warmup iterations before monitoring step section
+                         and out-of-section timeouts. If None, server uses default from config.
     """
 
-    def __init__(self, rank_info=None, iteration: Optional[int] = None):
+    def __init__(
+        self,
+        rank_info=None,
+        iteration: Optional[int] = None,
+        num_warmup_iters: Optional[int] = None,
+    ):
         self.rank_info = rank_info
         self.iteration = iteration
+        self.num_warmup_iters = num_warmup_iters
 
 
 class HeartbeatMsg:

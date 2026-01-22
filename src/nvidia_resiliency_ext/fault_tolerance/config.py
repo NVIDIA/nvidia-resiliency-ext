@@ -94,7 +94,7 @@ class FaultToleranceConfig:
     * `num_warmup_iterations` [int] number of warmup iterations before monitoring step section and
       out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
       timeout monitoring as they can be significantly slower than steady-state iterations.
-      Default: 5. Note: This also patches Megatron-LM's _NUM_WARMUP_ITERS when detected.
+      Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
