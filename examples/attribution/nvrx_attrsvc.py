@@ -496,14 +496,21 @@ def create_app(cfg: Settings) -> FastAPI:
                             attribution_text = raw_text.split('Attribution:')
                             if len(attribution_text) > 1:
                                 attribution_text = attribution_text[1].strip()
-                                checkpoint_saved = attribution_text.split("\n\n")[1]
+                                try:
+                                    checkpoint_saved = attribution_text.split("\n\n")[1]
+                                except (IndexError, AttributeError):
+                                    checkpoint_saved = "false"
                                 attribution_text = \
                                     attribution_text.replace('"\\', "").replace('\"', "").split("\n\n")[0]
                             else:
                                 attribution_text = ""
-                                checkpoint_saved = ""
-                            #checkpoint_saved = attribution_text#attribution_text.split("\n\n")[1]
-                            #return checkpoint_saved
+                                checkpoint_saved = "false"
+
+                            # normalize checkpoint_saved → int flag
+                            checkpoint_saved_flag = 0
+                            if isinstance(checkpoint_saved, str) and checkpoint_saved.strip().lower() != "false":
+                                checkpoint_saved_flag = 1
+
                             try:
                                 match = re.search(r"_(\d+)_date_", normalized)
                                 if not match:
@@ -513,6 +520,17 @@ def create_app(cfg: Settings) -> FastAPI:
                                 jobid = ""
                                 logger.info(f"Failed to extract job ID: {e}")
 
+                            cycle_id = 0
+                            try:
+                                match = re.search(r"_cycle(\d+)\.log$", normalized)
+                                if not match:
+                                    raise ValueError("Cycle ID not found in path")
+
+                                cycle_id = int(match.group(1))
+
+                            except Exception as e:
+                                logger.info(f"Failed to extract cycle ID: {e}")
+
                             logger.info("jobid: %s", jobid)
                             logger.info("log_path: %s", normalized)
                             logger.info("auto_resume: %s", auto_resume)
@@ -520,13 +538,14 @@ def create_app(cfg: Settings) -> FastAPI:
                             logger.info("attribution_text: %s", attribution_text)
                             data = {
                                 "s_cluster": cfg.CLUSTER_NAME,
-                                "s_user": "nvrx_attr",
+                                "s_user": "nemotron_run",
                                 "s_attribution": attribution_text,
                                 "s_auto_resume": auto_resume,
                                 "s_auto_resume_explanation": auto_resume_explanation,
-                                "s_jobid": jobid,
-                                "s_logpath": normalized,
-                                "s_checkpoint_saved": checkpoint_saved,
+                                "s_job_id": jobid,
+                                "l_cycle_id": cycle_id,
+                                "s_log_path": normalized,
+                                "l_checkpoint_saved": checkpoint_saved_flag,
                                 "d_processing_time": round(e_time - s_time, 2),
                                 "ts_current_time": round(datetime.now().timestamp() * 1000),
                             }

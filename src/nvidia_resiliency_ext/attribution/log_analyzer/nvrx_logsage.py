@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import re
+from enum import Enum
 
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
@@ -13,6 +14,22 @@ from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribu
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
+FINISHED_STATUS_SLURM_CANCELLED = "SLURM_CANCELLED"
+FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE = "SLURM_CANCELLED_JOB_REQUEUE"
+FINISHED_STATUS_TRAINING_DONE = "TRAINING_DONE"
+# pattern-based (not exact match)
+FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT = "SLURM_CANCELLED_TIME_LIMIT"
+
+RESTART_IMMEDIATE = "RESTART IMMEDIATE"
+STOP_NO_RESTART = "STOP - DONT RESTART IMMEDIATE"
+
+ATTR_LLM_FAILURE = "LLM FAILURE"
+ATTR_SLURM_STEP_CANCELLED = "SLURM STEP CANCELLED"
+ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE = "SLURM STEP CANCELLED JOB REQUEUE"
+ATTR_TRAINING_DONE = "TRAINING DONE"
+ATTR_ERRORS_NOT_FOUND = "ERRORS NOT FOUND"
+
 def lines_after(lines, needle):
     for i, line in enumerate(lines):
         if needle in line:
@@ -23,8 +40,9 @@ def lines_after(lines, needle):
 def chunk_logs_strict(lines):
     """Chunks logs strictly between:
     - START: The LAST occurrence of Cycle N
-    - END: The LAST occurrence of Cycle N+1 OR End of File (for the last cycle).
+    - END: The LAST occurrence of Cycle N+1
 
+    Lines after the highest Cycle number are ignored.
     If no 'Cycle' markers are found, returns all lines as Cycle 0.
     """
     # Regex to match the profiling line
@@ -32,10 +50,13 @@ def chunk_logs_strict(lines):
 
     # Step 1: Find the LAST index for every cycle number
     last_cycle_indices = {}
+    start_cycle_indices = {}
     for index, line in enumerate(lines):
         match = cycle_pattern.search(line)
         if match:
             cycle_num = int(match.group(1))
+            if cycle_num not in start_cycle_indices:
+                start_cycle_indices[cycle_num] = index
             last_cycle_indices[cycle_num] = index
 
     # Sort cycles (0, 1, 2...)
@@ -43,33 +64,31 @@ def chunk_logs_strict(lines):
 
     final_chunks = {}
 
+    # --- NEW LOGIC START ---
     # If no cycles were found, return all lines as Cycle 0
     if not sorted_cycles:
         final_chunks[0] = lines
         return final_chunks
+    # --- NEW LOGIC END ---
 
-    # Step 2: Iterate through cycles to capture chunks
-    # We iterate through ALL sorted cycles now (not len - 1)
+    # Step 2: Create chunks ONLY when we have both a Start (N) and an End (N+1)
+    # We iterate up to len() - 1 because the last cycle in the list
+    # serves only as the end boundary for the previous one.
     for i in range(len(sorted_cycles)):
         curr_cycle = sorted_cycles[i]
-        start_index = last_cycle_indices[curr_cycle]
-
-        # Determine the End Index
-        if i < len(sorted_cycles) - 1:
-            # If there is a next cycle, stop there
-            next_cycle = sorted_cycles[i + 1]
-            end_index = last_cycle_indices[next_cycle]
-            raw_chunk = lines[start_index:end_index]
+        start_index = start_cycle_indices[curr_cycle]
+        if i == len(sorted_cycles) - 1:
+            end_index = -1
         else:
-            # --- FIX: Handling the Last Cycle ---
-            # If this is the last cycle in the list, go to the end of the lines
-            raw_chunk = lines[start_index:]
+            next_cycle = sorted_cycles[i + 1]  # This is N+1
+            end_index = start_cycle_indices[next_cycle]
 
-        # Step 3: Remove marker lines using the existing logic
+        # Extract lines between LAST Cycle N and LAST Cycle N+1
+        raw_chunk = lines[start_index:end_index]
+
+        # Step 3: Remove marker lines
         clean_chunk = [line for line in raw_chunk if not cycle_pattern.search(line)]
 
-        # Apply the external 'lines_after' filter
-        # (Assuming lines_after is defined in your scope)
         clean_chunk = lines_after(clean_chunk, "FT: initialized")
 
         final_chunks[curr_cycle] = clean_chunk
@@ -154,26 +173,26 @@ class NVRxLogAnalyzer(NVRxAttribution):
             if len(output.application_errors_list_full):
                 result.append(get_proposed_solution_cat(self.llm, output))
             else:
-                if output.finished == "LLM_FAILURE":
-                    result.append(("LLM FAILURE","LLM FAILURE","LLM FAILURE","LLM FAILURE",""))
-                elif output.finished == "SLURM_CANCELLED":
-                    result.append(("RESTART IMMEDIATE", "",
-                                   """Attribution: Primary issues: ["SLURM STEP CANCELLED"], Secondary issues: []""",
-                                   "", ""))
-                elif output.finished == "SLURM_CANCELLED_JOB_REQUEUE":
-                    result.append(("RESTART IMMEDIATE", "",
-                                   """Attribution: Primary issues: ["SLURM STEP CANCELLED JOB REQUEUE"], Secondary issues: []""",
-                                   "", ""))
-                elif "SLURM_CANCELLED_TIME_LIMIT" in output.finished:
-                    result.append(("STOP - DONT RESTART IMMEDIATE", "",
+                if output.finished == FINISHED_STATUS_LLM_FAILURE:
+                    result.append((ATTR_LLM_FAILURE, ATTR_LLM_FAILURE, ATTR_LLM_FAILURE, ATTR_LLM_FAILURE, str(output.checkpoint_saved)))
+                elif output.finished == FINISHED_STATUS_SLURM_CANCELLED:
+                    result.append((RESTART_IMMEDIATE, "",
+                                   f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED}], Secondary issues: []""",
+                                   "", str(output.checkpoint_saved)))
+                elif output.finished == FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE:
+                    result.append((RESTART_IMMEDIATE, "",
+                                   f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE}], Secondary issues: []""",
+                                   "", str(output.checkpoint_saved)))
+                elif FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT in output.finished:
+                    result.append((STOP_NO_RESTART, "",
                                    f"""Attribution: Primary issues: [{output.finished.replace("_", " ")}], Secondary issues: []""",
-                                   "", ""))
-                elif output.finished == "TRAINING_DONE":
-                    result.append(("STOP - DONT RESTART IMMEDIATE", "",
-                                   """Attribution: Primary issues: ["TRAINING DONE"], Secondary issues: []""",
-                                   "", ""))
+                                   "", str(output.checkpoint_saved)))
+                elif output.finished == FINISHED_STATUS_TRAINING_DONE:
+                    result.append((STOP_NO_RESTART, "",
+                                   f"""Attribution: Primary issues: [{ATTR_TRAINING_DONE}], Secondary issues: []""",
+                                   "", str(output.checkpoint_saved)))
                 else:
-                    result.append(("ERRORS NOT FOUND","ERRORS NOT FOUND","ERRORS NOT FOUND","ERRORS NOT FOUND",""))
+                    result.append((ATTR_ERRORS_NOT_FOUND, ATTR_ERRORS_NOT_FOUND, ATTR_ERRORS_NOT_FOUND, ATTR_ERRORS_NOT_FOUND, str(output.checkpoint_saved)))
         return result
 
     async def print_output(
