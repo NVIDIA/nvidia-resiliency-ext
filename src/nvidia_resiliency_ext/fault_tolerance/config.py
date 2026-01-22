@@ -95,6 +95,9 @@ class FaultToleranceConfig:
       out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
       timeout monitoring as they can be significantly slower than steady-state iterations.
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
+    * Attribution service (optional):
+      - `attrsvc_host` [str] hostname/IP of the attribution service
+      - `attrsvc_port` [int] port of the attribution service
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -132,6 +135,9 @@ class FaultToleranceConfig:
     num_warmup_iterations: int = (
         5  # Number of warmup iterations before monitoring step section and out-of-section timeouts
     )
+    # Attribution service configuration (optional)
+    attrsvc_host: Optional[str] = None
+    attrsvc_port: Optional[int] = None
 
     @property
     def is_progress_tracking_enabled(self) -> bool:

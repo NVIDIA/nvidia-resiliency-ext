@@ -108,9 +108,11 @@ class PipeSubprocessHandler(SubprocessHandler):
         stdout: Optional[str],  # Can be path, _PIPE_MARKER, or None
         stderr: Optional[str],  # Can be path, _PIPE_MARKER, or None
         local_rank_id: int,
+        numa_options: Optional[Any] = None,  # Accept but ignore NUMA options
     ):
         # Override parent to handle our pipe marker
         # Don't call super().__init__() because it would try to open() the marker
+        # Note: numa_options is accepted for compatibility but not used with pipe-based logging
 
         # Handle stdout
         if stdout == _PIPE_MARKER:
@@ -519,9 +521,7 @@ class PipeBasedLogsSpecs(LogsSpecs):
         self._local_to_global_rank = local_to_global_rank
 
         # Calculate cycle log file path (will be created in start_reader())
-        base_without_ext = os.path.splitext(self._base_log_file)[0]
-        ext = os.path.splitext(self._base_log_file)[1] or ".log"
-        self._current_cycle_log = f"{base_without_ext}_cycle{restart_count}{ext}"
+        self._current_cycle_log = self.get_cycle_log_file(int(restart_count))
 
         # Return pipe marker strings to signal pipe-based redirection
         # We use a special string marker instead of subprocess.PIPE because
@@ -639,6 +639,14 @@ class PipeBasedLogsSpecs(LogsSpecs):
         )
 
         return self._reader_thread
+
+    def get_cycle_log_file(self, cycle_index: int) -> str:
+        """
+        Instance helper to build cycle logfile for this spec's base path.
+        """
+        base_without_ext = os.path.splitext(self._base_log_file)[0]
+        ext = os.path.splitext(self._base_log_file)[1] or ".log"
+        return f"{base_without_ext}_cycle{cycle_index}{ext}"
 
     def __repr__(self) -> str:
         return f"PipeBasedLogsSpecs(base_log_file={self._base_log_file})"

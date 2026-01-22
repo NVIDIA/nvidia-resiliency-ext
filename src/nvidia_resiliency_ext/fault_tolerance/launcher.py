@@ -1000,7 +1000,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             rank=worker_group.group_rank,
         )
 
-
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -1043,6 +1042,16 @@ class LocalElasticAgent(SimpleElasticAgent):
             f"[group_rank={worker_group.group_rank}] with "
             f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
         )
+
+        # Submit current cycle's log to attribution service (master node only, before workers start)
+        if (
+            self._is_store_host
+            and self._rdzv_handler._attr_service is not None
+            and hasattr(self._logs_specs, 'get_cycle_log_file')
+        ):
+            current_cycle = self._get_global_cycle_number() - 1
+            cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
+            self._rdzv_handler._attr_service._submit_log(cycle_log_file)
 
         for worker in worker_group.workers:
             local_rank = worker.local_rank
@@ -1687,6 +1696,10 @@ def launch_agent(
         # flag only controls whether we explicitly signal closure via closed_key; it cannot
         # keep the store alive if the store host process exits.
         if is_store_host:
+            # Trigger attribution service analysis for final cycle
+            if agent._rdzv_handler._attr_service is not None:
+                agent._rdzv_handler._attr_service()
+
             grace_period = 3.0  # seconds
             logger.info(
                 f"Store host waiting {grace_period} seconds before exit "
@@ -2638,6 +2651,24 @@ def get_args_parser() -> ArgumentParser:
         "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
     )
 
+    # Attribution service configuration (optional)
+    parser.add_argument(
+        "--ft-attrsvc-host",
+        "--ft_attrsvc_host",
+        type=str,
+        default=None,
+        dest="ft_attrsvc_host",
+        help="Hostname or IP for the attribution service (e.g., 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--ft-attrsvc-port",
+        "--ft_attrsvc_port",
+        type=int,
+        default=None,
+        dest="ft_attrsvc_port",
+        help="Port for the attribution service (e.g., 8000).",
+    )
+
     parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
@@ -2840,6 +2871,11 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+    # Pass attribution service configuration if provided
+    if getattr(fault_tol_cfg, 'attrsvc_host', None):
+        rdzv_configs['attrsvc_host'] = fault_tol_cfg.attrsvc_host
+    if getattr(fault_tol_cfg, 'attrsvc_port', None) is not None:
+        rdzv_configs['attrsvc_port'] = int(fault_tol_cfg.attrsvc_port)
     # Pass distributed storage health check configuration
     cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)
     if cli_dist_storage is not None:

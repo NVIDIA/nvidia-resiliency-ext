@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -24,9 +25,12 @@ import threading
 import traceback
 from collections import defaultdict
 from functools import wraps
-from typing import Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
+from urllib.parse import quote_plus
 
 import defusedxml.ElementTree as ET
+import httpx
+from pydantic import BaseModel
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
@@ -1068,19 +1072,38 @@ class NodeHealthCheck:
                 else:
                     response = stub.RunHealthCheck(request)
 
-                if not getattr(
-                    response, "success", False
-                ):  # If the health check failed, return False
-                    exit_code = getattr(response, "exit_code", None)
-                    output = getattr(response, "output", "")
-                    error = getattr(response, "error", "")
-                    msg = f"Node health check failed (exit_code={exit_code}). Output: {output}"
-                    if error:
-                        msg += f" Error: {error}"
+                if not response.success:
+                    msg = (
+                        f"Node health check failed (exit_code={response.exit_code}). "
+                        f"Output: {response.output}"
+                    )
+                    if response.error:
+                        msg += f" Error: {response.error}"
                     logger.warning(msg)
                     return False
 
-                logger.debug("Node health check: success")
+                # Parse JSON output and check fail_count
+                output = response.output
+                try:
+                    result = json.loads(output)
+                    fail_count = result.get("fail_count")
+                    if fail_count is None:
+                        logger.warning(
+                            "Node health check: 'fail_count' field not found in response"
+                        )
+                        return False
+                    if fail_count != 0:
+                        failed_checks = result.get("failed_checks", [])
+                        logger.warning(
+                            f"Node health check failed: fail_count={fail_count}, "
+                            f"failed_checks={failed_checks}"
+                        )
+                        return False
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Node health check: failed to parse JSON output: {e}")
+                    return False
+
+                logger.debug("Node health check: success (fail_count=0)")
                 return True
 
         except Exception as e:
@@ -1298,3 +1321,100 @@ class StoragePathHealthCheck:
         if self.paths:
             logger.debug("all storage paths accessible:\n" + "\n".join(self.paths))
         return True
+
+
+class AttrSvcResult(BaseModel):
+    result: Any
+    status: str = "completed"
+
+
+class AttributionService:
+    """
+    Client that queries an external attribution service to analyze artifacts (e.g., logs).
+    Behavior:
+      - POSTs to submit for log analysis
+      - GETs results by the last submitted log_path
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+    ):
+        self.host = host
+        self.port = port
+        # Track the most recent log_path we submitted
+        self._last_submitted: Optional[str] = None
+
+    def __call__(self) -> None:
+        """
+        Fire-and-forget entrypoint. GET results for the previously submitted log.
+        Runs in a background daemon thread.
+
+        Note: _submit_log() should be called first (from launcher) to set _last_submitted.
+        """
+        log_path = self._last_submitted
+        if log_path:
+            threading.Thread(
+                target=self._get_results,
+                args=(log_path,),
+                daemon=True,
+            ).start()
+
+    def _submit_log(self, log_path: str) -> None:
+        """
+        Submit a log file for analysis via POST.
+        Runs in a background daemon thread (fire-and-forget).
+        """
+        self._last_submitted = log_path
+        threading.Thread(
+            target=self._do_submit_log,
+            args=(log_path,),
+            daemon=True,
+        ).start()
+
+    def _do_submit_log(self, log_path: str) -> None:
+        """Perform the actual POST request (runs in background thread)."""
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                url = f"http://{self.host}:{self.port}/logs"
+                logger.debug("AttributionService POST: %s (log_path=%s)", url, log_path)
+                client.post(
+                    url,
+                    json={"log_path": log_path},
+                    headers={"accept": "application/json"},
+                )
+        except Exception as e:
+            logger.warning(
+                "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e
+            )
+
+    def _get_results(self, log_path: str) -> None:
+        """
+        Get analysis results for a previously submitted log file via GET.
+        """
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                q_path = quote_plus(log_path)
+                url = f"http://{self.host}:{self.port}/logs?log_path={q_path}"
+                logger.debug("AttributionService GET: %s (log_path=%s)", url, log_path)
+                resp = client.get(url, headers={"accept": "application/json"})
+                if resp.status_code == 200:
+                    payload = resp.json() if resp.text else {}
+                    result = payload.get("result", payload)
+                    status = payload.get("status", "completed")
+                    attrsvc_result = AttrSvcResult(result=result, status=status)
+                    logger.info("AttrSvcResult for %s: status=%s", log_path, attrsvc_result.status)
+                    logger.info(
+                        "AttrSvcResult for %s: result preview: %s",
+                        log_path,
+                        str(attrsvc_result.result)[:200],
+                    )
+                else:
+                    logger.warning(
+                        "AttributionService GET for %s returned %d", log_path, resp.status_code
+                    )
+        except Exception as e:
+            logger.warning(
+                "AttributionService GET %s failed: %s: %s", log_path, type(e).__name__, e
+            )
