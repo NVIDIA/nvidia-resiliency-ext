@@ -11,7 +11,9 @@ import logging
 import os
 import re
 import stat
+import sys
 import time
+from datetime import datetime
 from importlib.resources import files as pkg_files
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -20,6 +22,14 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+try:
+    from nvdataflow import post as nv_post
+
+    HAS_NVDATAFLOW = True
+except ImportError:
+    nv_post = None
+    HAS_NVDATAFLOW = False
 
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
 
@@ -39,6 +49,9 @@ class Settings(BaseSettings):
     HOST: str = Field(default="0.0.0.0")
     PORT: int = Field(default=8000)
     LOG_LEVEL_NAME: str = Field(default="INFO")
+
+    CLUSTER_NAME: str = Field(default="", description="Cluster name")
+    NVDATAFLOW_PROJECT: str = Field(default="", description="nvdataflow index")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -447,17 +460,109 @@ def create_app(cfg: Settings) -> FastAPI:
                 async with client:
                     # Detect per-cycle logs: filename ends with _cycle<N>.log
                     is_per_cycle = bool(re.search(r'_cycle\d+\.log$', normalized))
+                    s_time = time.time()
                     log_result = await client.run_module(
                         module_name="log_analyzer",
                         log_path=normalized,
                         model=cfg.LLM_MODEL,
-                        temperature=0.2,
+                        temperature=0.0,
                         exclude_nvrx_logs=False,
                         is_per_cycle=is_per_cycle,
-                        top_p=0.7,
+                        top_p=1,
                         max_tokens=8192,
                     )
-                    logger.info(f"Result preview: {str(log_result)[:200]}...")
+                    logger.info(f"Result preview: {str(log_result)}")
+
+                    e_time = time.time()
+                    # 1. Access the main text blob inside the nested list
+                    # data['result'] is a list, the first item is a list, and the text is the first item of that.
+                    if 'result' in log_result and len(log_result['result']) > 0:
+                        for item in log_result['result']:
+                            raw_text = item[0]
+
+                            # 2. Extract the auto_resume raw
+                            auto_resume_raw = raw_text.split('\n')
+                            # Split by newlines and take the first element
+                            auto_resume = auto_resume_raw[0]
+                            try:
+                                auto_resume_explanation = auto_resume_raw[1]
+                            except Exception as e:
+                                auto_resume_explanation = ""
+                                logger.info(f"Failed to extract auto resume explanation: {e}")
+
+                            # 3. Extract text after 'Attribution:'
+                            # Split the text by the specific key "Attribution:" and take the second part
+                            # We use .strip() to remove the leading newline character
+                            attribution_text = raw_text.split('Attribution:')
+                            if len(attribution_text) > 1:
+                                attribution_text = attribution_text[1].strip()
+                                try:
+                                    checkpoint_saved = attribution_text.split("\n\n")[1]
+                                except (IndexError, AttributeError):
+                                    checkpoint_saved = "false"
+                                attribution_text = (
+                                    attribution_text.replace('"\\', "")
+                                    .replace('\"', "")
+                                    .split("\n\n")[0]
+                                )
+                            else:
+                                attribution_text = ""
+                                checkpoint_saved = "false"
+
+                            # normalize checkpoint_saved → int flag
+                            checkpoint_saved_flag = 0
+                            if (
+                                isinstance(checkpoint_saved, str)
+                                and checkpoint_saved.strip().lower() != "false"
+                            ):
+                                checkpoint_saved_flag = 1
+
+                            try:
+                                match = re.search(r"_(\d+)_date_", normalized)
+                                if not match:
+                                    raise ValueError("Job ID not found in path")
+                                jobid = match.group(1)
+                            except Exception as e:
+                                jobid = ""
+                                logger.info(f"Failed to extract job ID: {e}")
+
+                            cycle_id = 0
+                            try:
+                                match = re.search(r"_cycle(\d+)\.log$", normalized)
+                                if not match:
+                                    raise ValueError("Cycle ID not found in path")
+
+                                cycle_id = int(match.group(1))
+
+                            except Exception as e:
+                                logger.info(f"Failed to extract cycle ID: {e}")
+
+                            logger.info("jobid: %s", jobid)
+                            logger.info("log_path: %s", normalized)
+                            logger.info("auto_resume: %s", auto_resume)
+                            logger.info("auto_resume_explanation: %s", auto_resume_explanation)
+                            logger.info("attribution_text: %s", attribution_text)
+                            data = {
+                                "s_cluster": cfg.CLUSTER_NAME,
+                                "s_user": "nemotron_run",
+                                "s_attribution": attribution_text,
+                                "s_auto_resume": auto_resume,
+                                "s_auto_resume_explanation": auto_resume_explanation,
+                                "s_job_id": jobid,
+                                "l_cycle_id": cycle_id,
+                                "s_log_path": normalized,
+                                "l_checkpoint_saved": checkpoint_saved_flag,
+                                "d_processing_time": round(e_time - s_time, 2),
+                                "ts_current_time": round(datetime.now().timestamp() * 1000),
+                            }
+
+                            if HAS_NVDATAFLOW and cfg.NVDATAFLOW_PROJECT:
+                                result = nv_post(data=data, project=cfg.NVDATAFLOW_PROJECT)
+                            else:
+                                if HAS_NVDATAFLOW:
+                                    logger.error("nvdataflow index is missing")
+                                if cfg.NVDATAFLOW_PROJECT:
+                                    logger.error("can't import nvdataflow")
                     return log_result
 
             # Use request coalescing: only one request per log file is processed,
@@ -488,7 +593,7 @@ def _get_server_command() -> list[str]:
         raise FileNotFoundError(f"failed to locate server_launcher.py in package {pkg}: {e}")
     if not resource.exists():
         raise FileNotFoundError(f"server launcher not found in package: {pkg}/server_launcher.py")
-    return ["python", str(resource)]
+    return [sys.executable, str(resource)]
 
 
 def _create_mcp_client() -> NVRxMCPClient:
