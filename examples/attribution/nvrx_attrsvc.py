@@ -24,11 +24,11 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 try:
-    from nvdataflow import post
+    from nvdataflow import post as nv_post
 
     HAS_NVDATAFLOW = True
 except ImportError:
-    post = None
+    nv_post = None
     HAS_NVDATAFLOW = False
 
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
@@ -556,8 +556,8 @@ def create_app(cfg: Settings) -> FastAPI:
                                 "ts_current_time": round(datetime.now().timestamp() * 1000),
                             }
 
-                            if HAS_NVDATAFLOW and cfg.NVDATAFLOW_PROJECT:
-                                result = post(data=data, project=cfg.NVDATAFLOW_PROJECT)
+                            if HAS_NVDATAFLOW:# and cfg.NVDATAFLOW_PROJECT:
+                                result = nv_post(data=data, project="coreai_resiliency_osiris")#cfg.NVDATAFLOW_PROJECT)
                             else:
                                 if HAS_NVDATAFLOW:
                                     logger.error("nvdataflow index is missing")
