@@ -2,7 +2,6 @@ import argparse
 import logging
 import os
 import re
-from enum import Enum
 
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
@@ -29,6 +28,7 @@ ATTR_SLURM_STEP_CANCELLED = "SLURM STEP CANCELLED"
 ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE = "SLURM STEP CANCELLED JOB REQUEUE"
 ATTR_TRAINING_DONE = "TRAINING DONE"
 ATTR_ERRORS_NOT_FOUND = "ERRORS NOT FOUND"
+
 
 def lines_after(lines, needle):
     for i, line in enumerate(lines):
@@ -174,25 +174,65 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 result.append(get_proposed_solution_cat(self.llm, output))
             else:
                 if output.finished == FINISHED_STATUS_LLM_FAILURE:
-                    result.append((ATTR_LLM_FAILURE, ATTR_LLM_FAILURE, ATTR_LLM_FAILURE, ATTR_LLM_FAILURE, str(output.checkpoint_saved)))
+                    result.append(
+                        (
+                            ATTR_LLM_FAILURE,
+                            ATTR_LLM_FAILURE,
+                            ATTR_LLM_FAILURE,
+                            ATTR_LLM_FAILURE,
+                            str(output.checkpoint_saved),
+                        )
+                    )
                 elif output.finished == FINISHED_STATUS_SLURM_CANCELLED:
-                    result.append((RESTART_IMMEDIATE, "",
-                                   f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED}], Secondary issues: []""",
-                                   "", str(output.checkpoint_saved)))
+                    result.append(
+                        (
+                            RESTART_IMMEDIATE,
+                            "",
+                            f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED}], Secondary issues: []""",
+                            "",
+                            str(output.checkpoint_saved),
+                        )
+                    )
                 elif output.finished == FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE:
-                    result.append((RESTART_IMMEDIATE, "",
-                                   f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE}], Secondary issues: []""",
-                                   "", str(output.checkpoint_saved)))
+                    result.append(
+                        (
+                            RESTART_IMMEDIATE,
+                            "",
+                            f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE}], Secondary issues: []""",
+                            "",
+                            str(output.checkpoint_saved),
+                        )
+                    )
                 elif FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT in output.finished:
-                    result.append((STOP_NO_RESTART, "",
-                                   f"""Attribution: Primary issues: [{output.finished.replace("_", " ")}], Secondary issues: []""",
-                                   "", str(output.checkpoint_saved)))
+                    result.append(
+                        (
+                            STOP_NO_RESTART,
+                            "",
+                            f"""Attribution: Primary issues: [{output.finished.replace("_", " ")}], Secondary issues: []""",
+                            "",
+                            str(output.checkpoint_saved),
+                        )
+                    )
                 elif output.finished == FINISHED_STATUS_TRAINING_DONE:
-                    result.append((STOP_NO_RESTART, "",
-                                   f"""Attribution: Primary issues: [{ATTR_TRAINING_DONE}], Secondary issues: []""",
-                                   "", str(output.checkpoint_saved)))
+                    result.append(
+                        (
+                            STOP_NO_RESTART,
+                            "",
+                            f"""Attribution: Primary issues: [{ATTR_TRAINING_DONE}], Secondary issues: []""",
+                            "",
+                            str(output.checkpoint_saved),
+                        )
+                    )
                 else:
-                    result.append((ATTR_ERRORS_NOT_FOUND, ATTR_ERRORS_NOT_FOUND, ATTR_ERRORS_NOT_FOUND, ATTR_ERRORS_NOT_FOUND, str(output.checkpoint_saved)))
+                    result.append(
+                        (
+                            ATTR_ERRORS_NOT_FOUND,
+                            ATTR_ERRORS_NOT_FOUND,
+                            ATTR_ERRORS_NOT_FOUND,
+                            ATTR_ERRORS_NOT_FOUND,
+                            str(output.checkpoint_saved),
+                        )
+                    )
         return result
 
     async def print_output(

@@ -11,12 +11,11 @@ import logging
 import os
 import re
 import stat
+import sys
 import time
-import re
+from datetime import datetime
 from importlib.resources import files as pkg_files
 from typing import Any, Awaitable, Callable, Dict, Optional
-import sys
-from datetime import datetime
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
@@ -26,6 +25,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 try:
     from nvdataflow import post
+
     HAS_NVDATAFLOW = True
 except ImportError:
     post = None
@@ -500,15 +500,21 @@ def create_app(cfg: Settings) -> FastAPI:
                                     checkpoint_saved = attribution_text.split("\n\n")[1]
                                 except (IndexError, AttributeError):
                                     checkpoint_saved = "false"
-                                attribution_text = \
-                                    attribution_text.replace('"\\', "").replace('\"', "").split("\n\n")[0]
+                                attribution_text = (
+                                    attribution_text.replace('"\\', "")
+                                    .replace('\"', "")
+                                    .split("\n\n")[0]
+                                )
                             else:
                                 attribution_text = ""
                                 checkpoint_saved = "false"
 
                             # normalize checkpoint_saved → int flag
                             checkpoint_saved_flag = 0
-                            if isinstance(checkpoint_saved, str) and checkpoint_saved.strip().lower() != "false":
+                            if (
+                                isinstance(checkpoint_saved, str)
+                                and checkpoint_saved.strip().lower() != "false"
+                            ):
                                 checkpoint_saved_flag = 1
 
                             try:
