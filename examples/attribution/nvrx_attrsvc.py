@@ -555,7 +555,7 @@ def create_app(cfg: Settings) -> FastAPI:
                                 "d_processing_time": round(e_time - s_time, 2),
                                 "ts_current_time": round(datetime.now().timestamp() * 1000),
                             }
-                            if HAS_NVDATAFLOW and cfg.NVDATAFLOW_PROJECT and auto_resume == "NO LOGS"":
+                            if HAS_NVDATAFLOW and cfg.NVDATAFLOW_PROJECT and auto_resume != "NO LOGS"":
                                 result = nv_post(data=data, project=cfg.NVDATAFLOW_PROJECT)
                             else:
                                 if HAS_NVDATAFLOW:
