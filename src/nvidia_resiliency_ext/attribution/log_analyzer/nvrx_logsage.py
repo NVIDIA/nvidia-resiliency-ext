@@ -13,10 +13,33 @@ from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribu
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
+FINISHED_STATUS_SLURM_CANCELLED = "SLURM_CANCELLED"
+FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE = "SLURM_CANCELLED_JOB_REQUEUE"
+FINISHED_STATUS_TRAINING_DONE = "TRAINING_DONE"
+# pattern-based (not exact match)
+FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT = "SLURM_CANCELLED_TIME_LIMIT"
+
+RESTART_IMMEDIATE = "RESTART IMMEDIATE"
+STOP_NO_RESTART = "STOP - DONT RESTART IMMEDIATE"
+
+ATTR_LLM_FAILURE = "LLM FAILURE"
+ATTR_SLURM_STEP_CANCELLED = "SLURM STEP CANCELLED"
+ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE = "SLURM STEP CANCELLED JOB REQUEUE"
+ATTR_TRAINING_DONE = "TRAINING DONE"
+ATTR_ERRORS_NOT_FOUND = "ERRORS NOT FOUND"
+ATTR_NO_LOGS = "NO LOGS"
+
+
+def lines_after(lines, needle):
+    for i, line in enumerate(lines):
+        if needle in line:
+            return lines[i + 1 :]
+    return lines
+
 
 def chunk_logs_strict(lines):
-    """
-    Chunks logs strictly between:
+    """Chunks logs strictly between:
     - START: The LAST occurrence of Cycle N
     - END: The LAST occurrence of Cycle N+1
 
@@ -28,10 +51,13 @@ def chunk_logs_strict(lines):
 
     # Step 1: Find the LAST index for every cycle number
     last_cycle_indices = {}
+    start_cycle_indices = {}
     for index, line in enumerate(lines):
         match = cycle_pattern.search(line)
         if match:
             cycle_num = int(match.group(1))
+            if cycle_num not in start_cycle_indices:
+                start_cycle_indices[cycle_num] = index
             last_cycle_indices[cycle_num] = index
 
     # Sort cycles (0, 1, 2...)
@@ -49,18 +75,22 @@ def chunk_logs_strict(lines):
     # Step 2: Create chunks ONLY when we have both a Start (N) and an End (N+1)
     # We iterate up to len() - 1 because the last cycle in the list
     # serves only as the end boundary for the previous one.
-    for i in range(len(sorted_cycles) - 1):
+    for i in range(len(sorted_cycles)):
         curr_cycle = sorted_cycles[i]
-        next_cycle = sorted_cycles[i + 1]  # This is N+1
-
-        start_index = last_cycle_indices[curr_cycle]
-        end_index = last_cycle_indices[next_cycle]
+        start_index = start_cycle_indices[curr_cycle]
+        if i == len(sorted_cycles) - 1:
+            end_index = None
+        else:
+            next_cycle = sorted_cycles[i + 1]  # This is N+1
+            end_index = start_cycle_indices[next_cycle]
 
         # Extract lines between LAST Cycle N and LAST Cycle N+1
         raw_chunk = lines[start_index:end_index]
 
         # Step 3: Remove marker lines
         clean_chunk = [line for line in raw_chunk if not cycle_pattern.search(line)]
+
+        clean_chunk = lines_after(clean_chunk, "FT: initialized")
 
         final_chunks[curr_cycle] = clean_chunk
 
@@ -112,7 +142,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         """
         path = self.args.log_path
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding="latin-1") as f:
             input_data = f.readlines()
 
         # If is_per_cycle is set, skip filtering and chunking (data is already single-cycle)
@@ -137,21 +167,92 @@ class NVRxLogAnalyzer(NVRxAttribution):
         return output_list
 
     async def llm_analyze(self, output_list: list[ApplicationData]) -> list[str]:
-        return [
-            (
-                get_proposed_solution_cat(self.llm, output)
-                if len(output.application_errors_list_full) > 0
-                else "No error found from application logs"
-            )
-            for output in output_list
-        ]
+
+        result = []
+        logger.info("output_list_size: %s", str(len(output_list)))
+        for output in output_list:
+            if output.finished == FINISHED_STATUS_TRAINING_DONE:
+                result.append(
+                    (
+                        STOP_NO_RESTART,
+                        "",
+                        f"""Attribution: Primary issues: [{ATTR_TRAINING_DONE}], Secondary issues: []""",
+                        "",
+                        str(output.checkpoint_saved),
+                    )
+                )
+            else:
+                if len(output.application_errors_list_full):
+                    result.append(get_proposed_solution_cat(self.llm, output))
+                else:
+                    if output.finished == FINISHED_STATUS_LLM_FAILURE:
+                        result.append(
+                            (
+                                ATTR_LLM_FAILURE,
+                                ATTR_LLM_FAILURE,
+                                ATTR_LLM_FAILURE,
+                                ATTR_LLM_FAILURE,
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    elif output.finished == FINISHED_STATUS_SLURM_CANCELLED:
+                        result.append(
+                            (
+                                RESTART_IMMEDIATE,
+                                "",
+                                f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED}], Secondary issues: []""",
+                                "",
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    elif output.finished == FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE:
+                        result.append(
+                            (
+                                RESTART_IMMEDIATE,
+                                "",
+                                f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE}], Secondary issues: []""",
+                                "",
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    elif FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT in output.finished:
+                        result.append(
+                            (
+                                STOP_NO_RESTART,
+                                "",
+                                f"""Attribution: Primary issues: [{output.finished.replace("_", " ")}], Secondary issues: []""",
+                                "",
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    elif not output.original_text:
+                        result.append(
+                            (
+                                ATTR_NO_LOGS,
+                                ATTR_NO_LOGS,
+                                ATTR_NO_LOGS,
+                                ATTR_NO_LOGS,
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    else:
+                        result.append(
+                            (
+                                ATTR_ERRORS_NOT_FOUND,
+                                ATTR_ERRORS_NOT_FOUND,
+                                ATTR_ERRORS_NOT_FOUND,
+                                ATTR_ERRORS_NOT_FOUND,
+                                str(output.checkpoint_saved),
+                            )
+                        )
+        return result
 
     async def print_output(
         self, attribution_results: list[str]
     ) -> list[tuple[str, AttributionState]]:
         output_list = []
         for attribution_result in attribution_results:
-            if attribution_result != "No error found from application logs":
+            if attribution_result:
                 # Concatenate all strings in attribution_result if it's a list/tuple
                 logger.info(f"attribution_result: {attribution_result}")
                 attr_state = (
@@ -164,10 +265,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 else:
                     concatenated_result = str(attribution_result)
                 output_list.append((concatenated_result, attr_state))
-            else:
-                output_list.append(
-                    ("No error found from application logs", AttributionState.CONTINUE)
-                )
         return output_list
 
 

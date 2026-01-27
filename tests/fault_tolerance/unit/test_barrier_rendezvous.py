@@ -59,6 +59,8 @@ class BaseRendezvousTest(TestCase):
     """Base test class that clears infrastructure rank environment variables.
 
     Clears all environment variables that affect get_infrastructure_rank():
+    - SLURM_TOPOLOGY_ADDR
+    - SLURM_TOPOLOGY_ADDR_PATTERN
     - SLURM_PROCID
     - GROUP_RANK
     - NVRX_INFRA_RANK_FROM_NODENAME
@@ -83,6 +85,8 @@ class BaseRendezvousTest(TestCase):
         # to ensure deterministic rank assignment in tests
         self._saved_env_vars = {}
         env_vars_to_clear = [
+            'SLURM_TOPOLOGY_ADDR',
+            'SLURM_TOPOLOGY_ADDR_PATTERN',
             'SLURM_PROCID',
             'GROUP_RANK',
             'NVRX_INFRA_RANK_FROM_NODENAME',
