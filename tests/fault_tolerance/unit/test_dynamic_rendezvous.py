@@ -643,6 +643,8 @@ class DistributedRendezvousOpExecutorTest(TestCase, CustomAssertMixin):
         # Clear environment variables that affect infrastructure rank assignment
         # Save original values to restore in tearDown
         self._env_vars_to_clear = [
+            'SLURM_TOPOLOGY_ADDR',
+            'SLURM_TOPOLOGY_ADDR_PATTERN',
             'SLURM_PROCID',
             'GROUP_RANK',
             'CROSS_SLURM_PROCID',
@@ -1399,6 +1401,8 @@ class IntegrationTest(TestCase):
     def test_use_deterministic_rank_without_env_var(self) -> None:
         """Test that ranks are assigned deterministically when env vars are not set."""
         # Remove any env vars that could influence infra-rank detection
+        os.environ.pop("SLURM_TOPOLOGY_ADDR", None)
+        os.environ.pop("SLURM_TOPOLOGY_ADDR_PATTERN", None)
         os.environ.pop("GROUP_RANK", None)
         os.environ.pop("SLURM_PROCID", None)
         os.environ.pop("CROSS_SLURM_PROCID", None)

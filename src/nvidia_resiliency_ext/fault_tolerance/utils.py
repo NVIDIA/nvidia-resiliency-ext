@@ -39,10 +39,22 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
     """Get infrastructure rank from environment variables with SLURM validation.
 
     Returns infrastructure rank with the following precedence:
-    1. NVRX_INFRA_RANK_FROM_NODENAME (if set and not skipped) - calculate rank by extracting digits from SLURMD_NODENAME
-    2. CROSS_SLURM_PROCID (for multi-job coordination)
-    3. SLURM_PROCID (set by SLURM), with job array support
-    4. GROUP_RANK (fallback, set by launcher)
+    1. SLURM_TOPOLOGY_ADDR with block awareness (if SLURM_TOPOLOGY_ADDR_PATTERN is "block.node" and not skipped)
+       - Parses format "blockX.nodeY" and calculates rank as X * multiplier + Y
+       - Default multiplier is 10^10 (10 billion), reserving 10 digits for node numbers
+       - This keeps block index in MSB for proper ordering with 64-bit integers
+       - Can be overridden with SLURM_TOPOLOGY_NODES_PER_BLOCK env var
+       - Raises ValueError if node number >= 10^10 (exceeds 10 digits)
+       - Examples with default multiplier=10^10:
+         * "block5.node3"   -> rank 5*10^10 + 3 = 50000000003
+         * "block5.node9"   -> rank 5*10^10 + 9 = 50000000009
+         * "block5.node10"  -> rank 5*10^10 + 10 = 50000000010
+         * "block6.node2"   -> rank 6*10^10 + 2 = 60000000002
+    2. NVRX_INFRA_RANK_FROM_NODENAME (if set and not skipped) - calculate rank by extracting all digits from SLURMD_NODENAME
+       - Example: "nvl72134-T01" -> rank 7213401
+    3. CROSS_SLURM_PROCID (for multi-job coordination)
+    4. SLURM_PROCID (set by SLURM), with job array support
+    5. GROUP_RANK (fallback, set by launcher)
 
     For SLURM job arrays with one task per node, the infrastructure rank is calculated as:
         array_task_id * nnodes_per_array_task + slurm_procid
@@ -51,18 +63,82 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
     If none are set, returns -1 to indicate it should be assigned deterministically.
 
     Args:
-        skip_nodename_logic: If True, skip the NVRX_INFRA_RANK_FROM_NODENAME logic and fall through
-                           to SLURM array task ID calculation. Default is False.
+        skip_nodename_logic: If True, skip the SLURM_TOPOLOGY_ADDR and NVRX_INFRA_RANK_FROM_NODENAME logic
+                           and fall through to SLURM array task ID calculation. Default is False.
 
     Returns:
         int: Infrastructure rank (>=0) or -1 if not set
 
     Raises:
         RuntimeError: If SLURM_JOB_ID is set but neither CROSS_SLURM_PROCID nor SLURM_PROCID is defined
+        ValueError: If SLURM_TOPOLOGY_ADDR_PATTERN is "block.node" (and not skipped) but SLURM_TOPOLOGY_ADDR
+                   does not match expected format or parts contain no digits
+        ValueError: If node number in SLURM_TOPOLOGY_ADDR exceeds 10 digits (>= 10^10)
         ValueError: If NVRX_INFRA_RANK_FROM_NODENAME is set (and not skipped) but SLURMD_NODENAME
                    is not set or contains no digits
     """
-    # Check NVRX_INFRA_RANK_FROM_NODENAME first (for nodename-based rank calculation)
+    # Check SLURM_TOPOLOGY_ADDR with block awareness first
+    if not skip_nodename_logic:
+        topology_addr = os.getenv('SLURM_TOPOLOGY_ADDR')
+        topology_pattern = os.getenv('SLURM_TOPOLOGY_ADDR_PATTERN')
+
+        if (
+            topology_addr is not None
+            and topology_pattern is not None
+            and topology_pattern.lower() == 'block.node'
+        ):
+            # Parse block.node format to extract block and node numbers separately
+            # Format: blockX.nodeY -> rank = X * multiplier + Y
+            # The multiplier ensures block index stays in MSB for proper ordering
+            parts = topology_addr.split('.')
+            if len(parts) != 2:
+                raise ValueError(
+                    f"SLURM_TOPOLOGY_ADDR_PATTERN is 'block.node' but SLURM_TOPOLOGY_ADDR '{topology_addr}' "
+                    f"does not match expected format (expected 2 dot-separated parts, got {len(parts)})"
+                )
+
+            # Extract digits from block part
+            block_digits = ''.join(c for c in parts[0] if c.isdigit())
+            if not block_digits:
+                raise ValueError(
+                    f"SLURM_TOPOLOGY_ADDR_PATTERN is 'block.node' but block part '{parts[0]}' contains no digits"
+                )
+            block_num = int(block_digits)
+
+            # Extract digits from node part
+            node_digits = ''.join(c for c in parts[1] if c.isdigit())
+            if not node_digits:
+                raise ValueError(
+                    f"SLURM_TOPOLOGY_ADDR_PATTERN is 'block.node' but node part '{parts[1]}' contains no digits"
+                )
+            node_num = int(node_digits)
+
+            # Calculate multiplier to ensure block index stays in MSB
+            # Default to 10^10 (10 billion) to reserve 10 digits for node numbers
+            # This works with 64-bit integers and ensures proper ordering
+            multiplier_env = os.getenv('SLURM_TOPOLOGY_NODES_PER_BLOCK')
+            if multiplier_env is not None:
+                multiplier = int(multiplier_env)
+            else:
+                multiplier = 10_000_000_000  # 10^10: reserves 10 digits for node numbers
+
+            # Validate node number doesn't exceed 10 digits
+            if node_num >= multiplier:
+                raise ValueError(
+                    f"Node number {node_num} exceeds maximum supported value {multiplier - 1}. "
+                    f"Node numbers must fit within 10 digits when using default multiplier."
+                )
+
+            # Calculate rank: block * multiplier + node
+            # This keeps block index in MSB for proper ordering
+            infra_rank = block_num * multiplier + node_num
+            logger.debug(
+                f"Using infrastructure rank {infra_rank} from SLURM_TOPOLOGY_ADDR '{topology_addr}' "
+                f"(block={block_num}, node={node_num}, multiplier={multiplier}) with pattern '{topology_pattern}'"
+            )
+            return infra_rank
+
+    # Check NVRX_INFRA_RANK_FROM_NODENAME (for nodename-based rank calculation)
     if not skip_nodename_logic and os.getenv('NVRX_INFRA_RANK_FROM_NODENAME') is not None:
         nodename = os.getenv('SLURMD_NODENAME')
         if nodename is None:
