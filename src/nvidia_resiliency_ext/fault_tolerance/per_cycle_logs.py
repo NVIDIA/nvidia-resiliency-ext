@@ -236,34 +236,6 @@ class MultiplexingReaderThread(threading.Thread):
             self.poller.register(pipe_fd, select.POLLIN | select.POLLHUP)
             self.fd_to_local_rank[pipe_fd] = local_rank
 
-    def _safe_write(self, log_file, text: str, rank: int) -> None:
-        """
-        Safely write text to log file, handling null bytes if present.
-
-        Args:
-            log_file: Open file object to write to
-            text: Text to write (may contain null bytes)
-            rank: Rank number for logging purposes
-        """
-        try:
-            log_file.write(text)
-        except OSError as e:
-            # errno 22 = Invalid argument, typically caused by null bytes in text mode
-            # This can happen during worker crashes when binary data ends up in stdout/stderr
-            if e.errno == errno.EINVAL:
-                # Replace null bytes with visible marker and retry
-                text_cleaned = text.replace('\x00', '<NUL>')
-                try:
-                    log_file.write(text_cleaned)
-                except OSError:
-                    # If it still fails, just skip this write to avoid crashing the thread
-                    self.logger.debug(
-                        f"Failed to write output from rank {rank} even after cleaning"
-                    )
-            else:
-                # Re-raise other OSErrors
-                raise
-
     def _write_lines(self, log_file, local_rank: int, lines: list[str]) -> None:
         """
         Write complete lines to log file with rank prefix.
@@ -277,7 +249,7 @@ class MultiplexingReaderThread(threading.Thread):
         rank = self.local_to_global_rank.get(local_rank, local_rank)
         prefix = f'{rank:>{self._rank_width}}: ' if self._rank_width > 0 else f'{rank}: '
         for line in lines:
-            self._safe_write(log_file, prefix + line, rank)
+            log_file.write(prefix + line)
 
     def _flush_incomplete_line(self, log_file, local_rank: int) -> None:
         """
@@ -298,7 +270,7 @@ class MultiplexingReaderThread(threading.Thread):
                 prefix = f'{rank:>{self._rank_width}}: ' if self._rank_width > 0 else f'{rank}: '
                 # Add newline to prevent merging with next rank's output
                 # This changes the original output slightly, but prevents corruption
-                self._safe_write(log_file, prefix + incomplete + '\n', rank)
+                log_file.write(prefix + incomplete + '\n')
                 self.logger.debug(
                     f"Flushed incomplete line for rank {rank} on pipe close: {incomplete[:50]}..."
                 )
@@ -367,6 +339,11 @@ class MultiplexingReaderThread(threading.Thread):
                                 # Process data from this rank's pipe
                                 # Decode with error replacement to handle any encoding issues
                                 text = data.decode('utf-8', errors='replace')
+
+                                # Clean NULL bytes to prevent log file from being detected as binary
+                                # This can happen during worker crashes when binary data ends up in stdout/stderr
+                                if '\x00' in text:
+                                    text = text.replace('\x00', '<NUL>')
 
                                 # Split into lines, keeping line endings
                                 # Important: splitlines(keepends=True) on "abc\ndef" returns ['abc\n', 'def']
