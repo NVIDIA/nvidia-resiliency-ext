@@ -28,6 +28,7 @@ ATTR_SLURM_STEP_CANCELLED = "SLURM STEP CANCELLED"
 ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE = "SLURM STEP CANCELLED JOB REQUEUE"
 ATTR_TRAINING_DONE = "TRAINING DONE"
 ATTR_ERRORS_NOT_FOUND = "ERRORS NOT FOUND"
+ATTR_NO_LOGS = "NO LOGS"
 
 
 def lines_after(lines, needle):
@@ -78,7 +79,7 @@ def chunk_logs_strict(lines):
         curr_cycle = sorted_cycles[i]
         start_index = start_cycle_indices[curr_cycle]
         if i == len(sorted_cycles) - 1:
-            end_index = -1
+            end_index = None
         else:
             next_cycle = sorted_cycles[i + 1]  # This is N+1
             end_index = start_cycle_indices[next_cycle]
@@ -170,69 +171,80 @@ class NVRxLogAnalyzer(NVRxAttribution):
         result = []
         logger.info("output_list_size: %s", str(len(output_list)))
         for output in output_list:
-            if len(output.application_errors_list_full):
-                result.append(get_proposed_solution_cat(self.llm, output))
+            if output.finished == FINISHED_STATUS_TRAINING_DONE:
+                result.append(
+                    (
+                        STOP_NO_RESTART,
+                        "",
+                        f"""Attribution: Primary issues: [{ATTR_TRAINING_DONE}], Secondary issues: []""",
+                        "",
+                        str(output.checkpoint_saved),
+                    )
+                )
             else:
-                if output.finished == FINISHED_STATUS_LLM_FAILURE:
-                    result.append(
-                        (
-                            ATTR_LLM_FAILURE,
-                            ATTR_LLM_FAILURE,
-                            ATTR_LLM_FAILURE,
-                            ATTR_LLM_FAILURE,
-                            str(output.checkpoint_saved),
-                        )
-                    )
-                elif output.finished == FINISHED_STATUS_SLURM_CANCELLED:
-                    result.append(
-                        (
-                            RESTART_IMMEDIATE,
-                            "",
-                            f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED}], Secondary issues: []""",
-                            "",
-                            str(output.checkpoint_saved),
-                        )
-                    )
-                elif output.finished == FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE:
-                    result.append(
-                        (
-                            RESTART_IMMEDIATE,
-                            "",
-                            f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE}], Secondary issues: []""",
-                            "",
-                            str(output.checkpoint_saved),
-                        )
-                    )
-                elif FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT in output.finished:
-                    result.append(
-                        (
-                            STOP_NO_RESTART,
-                            "",
-                            f"""Attribution: Primary issues: [{output.finished.replace("_", " ")}], Secondary issues: []""",
-                            "",
-                            str(output.checkpoint_saved),
-                        )
-                    )
-                elif output.finished == FINISHED_STATUS_TRAINING_DONE:
-                    result.append(
-                        (
-                            STOP_NO_RESTART,
-                            "",
-                            f"""Attribution: Primary issues: [{ATTR_TRAINING_DONE}], Secondary issues: []""",
-                            "",
-                            str(output.checkpoint_saved),
-                        )
-                    )
+                if len(output.application_errors_list_full):
+                    result.append(get_proposed_solution_cat(self.llm, output))
                 else:
-                    result.append(
-                        (
-                            ATTR_ERRORS_NOT_FOUND,
-                            ATTR_ERRORS_NOT_FOUND,
-                            ATTR_ERRORS_NOT_FOUND,
-                            ATTR_ERRORS_NOT_FOUND,
-                            str(output.checkpoint_saved),
+                    if output.finished == FINISHED_STATUS_LLM_FAILURE:
+                        result.append(
+                            (
+                                ATTR_LLM_FAILURE,
+                                ATTR_LLM_FAILURE,
+                                ATTR_LLM_FAILURE,
+                                ATTR_LLM_FAILURE,
+                                str(output.checkpoint_saved),
+                            )
                         )
-                    )
+                    elif output.finished == FINISHED_STATUS_SLURM_CANCELLED:
+                        result.append(
+                            (
+                                RESTART_IMMEDIATE,
+                                "",
+                                f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED}], Secondary issues: []""",
+                                "",
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    elif output.finished == FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE:
+                        result.append(
+                            (
+                                RESTART_IMMEDIATE,
+                                "",
+                                f"""Attribution: Primary issues: [{ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE}], Secondary issues: []""",
+                                "",
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    elif FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT in output.finished:
+                        result.append(
+                            (
+                                STOP_NO_RESTART,
+                                "",
+                                f"""Attribution: Primary issues: [{output.finished.replace("_", " ")}], Secondary issues: []""",
+                                "",
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    elif not output.original_text:
+                        result.append(
+                            (
+                                ATTR_NO_LOGS,
+                                ATTR_NO_LOGS,
+                                ATTR_NO_LOGS,
+                                ATTR_NO_LOGS,
+                                str(output.checkpoint_saved),
+                            )
+                        )
+                    else:
+                        result.append(
+                            (
+                                ATTR_ERRORS_NOT_FOUND,
+                                ATTR_ERRORS_NOT_FOUND,
+                                ATTR_ERRORS_NOT_FOUND,
+                                ATTR_ERRORS_NOT_FOUND,
+                                str(output.checkpoint_saved),
+                            )
+                        )
         return result
 
     async def print_output(
