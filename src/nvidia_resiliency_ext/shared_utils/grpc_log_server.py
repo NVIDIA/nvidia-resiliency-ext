@@ -487,6 +487,18 @@ def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeou
         options=[
             ('grpc.max_send_message_length', 10 * 1024 * 1024),  # 10MB
             ('grpc.max_receive_message_length', 10 * 1024 * 1024),  # 10MB
+            # Keepalive enforcement (data center optimized - clients send keepalive every 60s)
+            # These settings allow clients to send keepalive pings as frequently as every 5s
+            ('grpc.http2.min_time_between_pings_ms', 5000),  # Min 5s between consecutive pings
+            (
+                'grpc.http2.min_ping_interval_without_data_ms',
+                5000,
+            ),  # Min 5s between pings when idle
+            (
+                'grpc.http2.max_pings_without_data',
+                0,
+            ),  # Allow unlimited pings for long-lived streams
+            ('grpc.keepalive_permit_without_calls', 1),  # Permit keepalive even with no active RPCs
         ],
     )
 

@@ -336,8 +336,9 @@ class GrpcWriterThread(threading.Thread):
                     options=[
                         ('grpc.max_send_message_length', 10 * 1024 * 1024),  # 10MB
                         ('grpc.max_receive_message_length', 10 * 1024 * 1024),
-                        ('grpc.keepalive_time_ms', 10000),
-                        ('grpc.keepalive_timeout_ms', 5000),
+                        # Keepalive for data center: detect dead connections, but not aggressively
+                        ('grpc.keepalive_time_ms', 60000),  # Send ping every 60s
+                        ('grpc.keepalive_timeout_ms', 20000),  # Wait 20s for ping response
                     ],
                 )
                 stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
