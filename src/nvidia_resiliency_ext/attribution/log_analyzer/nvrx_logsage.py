@@ -166,7 +166,11 @@ class NVRxLogAnalyzer(NVRxAttribution):
             chunks = chunk_logs_strict(input_data)  # Splitting the app log to cycles
 
         # Adding another parser for other application logs marks
-        if len(chunks)==1 and input_data and any(MARKER_NEW_RUN_DIR_ADDED in line for line in input_data):
+        if (
+            len(chunks) == 1
+            and input_data
+            and any(MARKER_NEW_RUN_DIR_ADDED in line for line in input_data)
+        ):
 
             chunks = {}
             current_chunk = []
@@ -181,7 +185,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
                 if cycle >= 0:
                     current_chunk.append(line)
-        
+
         output_list = [
             return_application_errors(self.llm, lines, self.lru_cache)
             for cycle, lines in chunks.items()
@@ -203,14 +207,17 @@ class NVRxLogAnalyzer(NVRxAttribution):
                         str(output.checkpoint_saved),
                     )
                 )
-            elif output.original_text and any(FINISHED_STATUS_SLURM_CANCELLED_PREEMPTION_REGEX.search(line) for line in output.original_text):
+            elif output.original_text and any(
+                FINISHED_STATUS_SLURM_CANCELLED_PREEMPTION_REGEX.search(line)
+                for line in output.original_text
+            ):
                 result.append(
                     (
-                    RESTART_IMMEDIATE,
-                    "",
-                    f"""Attribution: Primary issues: [{ATTR_SLURM_CANCELLED_DUE_TO_PREEMPTION}], Secondary issues: []""",
-                    "",
-                    str(output.checkpoint_saved),
+                        RESTART_IMMEDIATE,
+                        "",
+                        f"""Attribution: Primary issues: [{ATTR_SLURM_CANCELLED_DUE_TO_PREEMPTION}], Secondary issues: []""",
+                        "",
+                        str(output.checkpoint_saved),
                     )
                 )
             else:
