@@ -172,6 +172,10 @@
 <span class="sd">    * `install_exception_hook` [bool] if True, installs sys.excepthook to capture uncaught exceptions</span>
 <span class="sd">      in training worker processes, format and log the traceback, and use os._exit() to exit the</span>
 <span class="sd">      process reliably. Default: False.</span>
+<span class="sd">    * `num_warmup_iterations` [int] number of warmup iterations before monitoring step section and</span>
+<span class="sd">      out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from</span>
+<span class="sd">      timeout monitoring as they can be significantly slower than steady-state iterations.</span>
+<span class="sd">      Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).</span>
 <span class="sd">    * Attribution service (optional):</span>
 <span class="sd">      - `attrsvc_host` [str] hostname/IP of the attribution service</span>
 <span class="sd">      - `attrsvc_port` [int] port of the attribution service</span>
@@ -209,6 +213,9 @@
     <span class="n">min_progress_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">200</span>
     <span class="n">progress_update_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>  <span class="c1"># Seconds between sending progress updates to launcher</span>
     <span class="n">install_exception_hook</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="n">num_warmup_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="mi">5</span>  <span class="c1"># Number of warmup iterations before monitoring step section and out-of-section timeouts</span>
+    <span class="p">)</span>
     <span class="c1"># Attribution service configuration (optional)</span>
     <span class="n">attrsvc_host</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">attrsvc_port</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>

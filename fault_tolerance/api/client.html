@@ -212,11 +212,17 @@ Does nothing if there are no sections open.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring">
-<span class="sig-name descname"><span class="pre">init_workload_monitoring</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.init_workload_monitoring"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">init_workload_monitoring</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_warmup_iters</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/fault_tolerance/rank_monitor_client.html#RankMonitorClient.init_workload_monitoring"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring" title="Link to this definition"></a></dt>
 <dd><p>Initializes the fault tolerance and connects to the RankMonitorServer.</p>
 <dl class="field-list simple">
-<dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>None</p>
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>num_warmup_iters</strong> (<em>Optional</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – Number of warmup iterations before monitoring
+step section and out-of-section timeouts. If provided, this value will be sent
+to the server and used for timeout monitoring logic. If None, server will use
+its default value from config.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>None</p>
 </dd>
 </dl>
 </dd></dl>

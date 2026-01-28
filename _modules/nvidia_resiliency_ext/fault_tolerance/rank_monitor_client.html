@@ -454,7 +454,7 @@
                 <span class="sa">f</span><span class="s2">&quot;RankMonitorClient could not send section update. Exception: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span>
             <span class="p">)</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_connect_to_rmon_server</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_connect_to_rmon_server</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">num_warmup_iters</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">):</span>
         <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span> <span class="ow">is</span> <span class="kc">None</span>
         <span class="n">rmon_ipc_socket_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="n">FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">rmon_ipc_socket_path</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
@@ -474,7 +474,9 @@
             <span class="c1"># Send sentinel value (1) to arm progress tracking - the real iteration</span>
             <span class="c1"># will be reported later when training starts</span>
             <span class="n">initial_iteration</span> <span class="o">=</span> <span class="mi">1</span>
-        <span class="n">init_msg</span> <span class="o">=</span> <span class="n">InitMsg</span><span class="p">(</span><span class="n">rank_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="p">,</span> <span class="n">iteration</span><span class="o">=</span><span class="n">initial_iteration</span><span class="p">)</span>
+        <span class="n">init_msg</span> <span class="o">=</span> <span class="n">InitMsg</span><span class="p">(</span>
+            <span class="n">rank_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="p">,</span> <span class="n">iteration</span><span class="o">=</span><span class="n">initial_iteration</span><span class="p">,</span> <span class="n">num_warmup_iters</span><span class="o">=</span><span class="n">num_warmup_iters</span>
+        <span class="p">)</span>
         <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">init_msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="n">reply_for_init</span> <span class="o">=</span> <span class="n">read_obj_from_ipc_socket</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">reply_for_init</span><span class="p">,</span> <span class="n">OkMsg</span><span class="p">):</span>
@@ -488,16 +490,23 @@
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">init_workload_monitoring</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
+        <span class="n">num_warmup_iters</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Initializes the fault tolerance and connects to the RankMonitorServer.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            num_warmup_iters (Optional[int]): Number of warmup iterations before monitoring</span>
+<span class="sd">                step section and out-of-section timeouts. If provided, this value will be sent</span>
+<span class="sd">                to the server and used for timeout monitoring logic. If None, server will use</span>
+<span class="sd">                its default value from config.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">RankMonitorClientError</span><span class="p">(</span><span class="s2">&quot;RankMonitorClient is already initialized&quot;</span><span class="p">)</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="o">=</span> <span class="n">RankInfo</span><span class="o">.</span><span class="n">get_for_current_rank</span><span class="p">()</span>
 
-        <span class="bp">self</span><span class="o">.</span><span class="n">_connect_to_rmon_server</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_connect_to_rmon_server</span><span class="p">(</span><span class="n">num_warmup_iters</span><span class="o">=</span><span class="n">num_warmup_iters</span><span class="p">)</span>
 
         <span class="c1"># Install exception handler if configured</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">install_exception_hook</span><span class="p">:</span>
