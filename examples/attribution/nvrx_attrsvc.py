@@ -33,6 +33,10 @@ except ImportError:
 
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
 
+from slack_bolt.app import App
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+
 # Setup logging (configurable via NVRX_ATTRSVC_LOG_LEVEL_NAME env: DEBUG|INFO|WARNING|ERROR|CRITICAL)
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,13 @@ class Settings(BaseSettings):
         default="coreai_resiliency_osiris", description="nvdataflow index"
     )
 
+    SLACK_BOT_TOKEN: str = Field(
+        default="", description="Slack bot token"
+    )
+    SLACK_CHANNEL: str = Field(
+        default="#osiris-alerts", description="Slack channel"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -63,6 +74,22 @@ class Settings(BaseSettings):
         env_prefix="NVRX_ATTRSVC_",
     )
 
+def send_slack_notification(data: dict, slack_bot_token: str, slack_channel: str):
+    """
+    Send slack notification.
+    """
+
+    app = App(token=slack_bot_token)
+
+    client = WebClient(token=slack_bot_token)
+
+    try:
+        response = client.chat_postMessage(
+            channel=slack_channel,   # or channel ID like "C1234567890"
+            text=f"TESTING: Job ID: {data['s_job_id']} failed due to: {data['s_attribution']}, the job suffered from terminal issue: {data['s_auto_resume_explanation']}\nUser: {data['s_user']}"
+        )
+    except SlackApiError as e:
+        logger.error(f"Error posting message: {e.response['error']}")
 
 class RequestCoalescer:
     """
@@ -557,6 +584,11 @@ def create_app(cfg: Settings) -> FastAPI:
                                 "d_processing_time": round(e_time - s_time, 2),
                                 "ts_current_time": round(datetime.now().timestamp() * 1000),
                             }
+
+                            if auto_resume == "STOP - DONT RESTART IMMEDIATE":
+                                # Send slack notification
+                                send_slack_notification(data, cfg.SLACK_BOT_TOKEN, cfg.SLACK_CHANNEL)
+
                             if (
                                 HAS_NVDATAFLOW
                                 and cfg.NVDATAFLOW_PROJECT
