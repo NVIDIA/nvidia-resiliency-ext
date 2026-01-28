@@ -171,8 +171,14 @@ class TestMultiplexingReaderThread:
         assert '0: Multiple <NUL> nulls <NUL> here\n' in content
 
         # Verify file is still detected as text, not binary
-        file_type = os.popen(f'file "{temp_log_file}"').read()
-        assert 'text' in file_type.lower() or 'ASCII' in file_type
+        # Use Python's built-in text detection instead of 'file' command for portability
+        try:
+            with open(temp_log_file, 'r', encoding='utf-8') as f:
+                f.read()
+            is_text = True
+        except (UnicodeDecodeError, ValueError):
+            is_text = False
+        assert is_text, f"Log file {temp_log_file} is not valid UTF-8 text"
 
     def test_invalid_utf8_handling(self, temp_log_file):
         """Test handling of invalid UTF-8 sequences."""
