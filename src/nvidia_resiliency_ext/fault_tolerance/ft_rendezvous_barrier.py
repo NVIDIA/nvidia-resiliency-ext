@@ -1202,7 +1202,10 @@ class _RendezvousBarrierState:
 
         assigned_group_ranks = self._assign_group_ranks(all_participants, world_size)
 
-        # Store the assigned ranks and total participants in the store
+        # Build lists for multi_set to improve performance with large participant counts
+        rank_keys = []
+        rank_values = []
+
         for i, (node_desc_item, infra_rank, _) in enumerate(all_participants):
             rank_key = f"{self.prefix}:arrived_{i+1}_group_rank"
             assigned_group_rank = assigned_group_ranks.get(node_desc_item, -1)
@@ -1217,7 +1220,11 @@ class _RendezvousBarrierState:
             # Store both group_rank and total_participants in the rank key
             # Format: "group_rank,total_participants"
             rank_value = f"{assigned_group_rank},{total_participants}"
-            self.store.set(rank_key, rank_value.encode('utf-8'))
+            rank_keys.append(rank_key)
+            rank_values.append(rank_value.encode('utf-8'))
+
+        # Use multi_set for better performance - single atomic operation
+        self.store.multi_set(rank_keys, rank_values)
 
         log.debug(
             f"[{node_desc}] [Step 3b] Assigned group ranks to {len(assigned_group_ranks)} participants"
