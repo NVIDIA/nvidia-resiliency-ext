@@ -71,6 +71,19 @@ class Settings(BaseSettings):
     )
 
 
+def get_slack_user_email(userID: str, token: str) -> str | None:
+    client = WebClient(token=token)
+
+    try:
+        # Fetch all users (pagination may be needed for very large teams)
+        user_id = client.users_lookupByEmail(email=f"{userID}@nvidia.com").get("user")["id"]
+
+        return user_id  # User not found
+    except SlackApiError as e:
+        logger.error(f"Error fetching user email: {e.response['error']}")
+        return None
+
+
 def send_slack_notification(data: dict, slack_bot_token: str, slack_channel: str):
     """
     Send slack notification.
@@ -80,10 +93,24 @@ def send_slack_notification(data: dict, slack_bot_token: str, slack_channel: str
 
     client = WebClient(token=slack_bot_token)
 
+    slack_user_id = get_slack_user_email(data['s_user'], slack_bot_token)
+
+    mention = f"\n<@{slack_user_id}>" if slack_user_id else ""
+    if not slack_user_id:
+        logger.error(f"User {data['s_user']} not found in Slack")
+
+    text = (
+        f"*Job ID:* `{data['s_job_id']}`\n"
+        "*Failed due to:*\n"
+        f"```{data['s_attribution']}```\n"
+        "*Terminal issue:*\n"
+        f"```{data['s_auto_resume_explanation']}```"
+        f"{mention}"
+    )
     try:
         response = client.chat_postMessage(
             channel=slack_channel,  # or channel ID like "C1234567890"
-            text=f"TESTING: Job ID: {data['s_job_id']} failed due to: {data['s_attribution']}, the job suffered from terminal issue: {data['s_auto_resume_explanation']}\nUser: {data['s_user']}",
+            text=text,
         )
     except SlackApiError as e:
         logger.error(f"Error posting message: {e.response['error']}")
@@ -571,7 +598,7 @@ def create_app(cfg: Settings) -> FastAPI:
                             logger.info("attribution_text: %s", attribution_text)
                             data = {
                                 "s_cluster": cfg.CLUSTER_NAME,
-                                "s_user": "nemotron_run",
+                                "s_user": "user",
                                 "s_attribution": attribution_text,
                                 "s_auto_resume": auto_resume,
                                 "s_auto_resume_explanation": auto_resume_explanation,
