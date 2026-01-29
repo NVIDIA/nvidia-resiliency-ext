@@ -963,6 +963,16 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Rank monitors will detect worker shutdown when worker processes disconnect
         self._shutdown(timeout=self._workers_stop_timeout)
 
+        # Wait for reader thread to drain pipes (polls every 100ms, wait 3 cycles)
+        # then close pipe file objects to prevent FD reuse bugs
+        if isinstance(self._logs_specs, PipeBasedLogsSpecs):
+            time.sleep(0.3)
+            for handler in self._pcontext.subprocess_handlers.values():
+                for stream in (handler.proc.stdout, handler.proc.stderr):
+                    if stream:
+                        with contextlib.suppress(Exception):
+                            stream.close()
+
         # Check for remaining processes if configured
         if self._ft_cfg.check_remaining_processes and self._children_pgids:
             remaining = get_processes_by_pgids(self._children_pgids)
@@ -1707,11 +1717,17 @@ def launch_agent(
             )
             time.sleep(grace_period)
 
+        # Shutdown components (may generate logs - reader thread must stay alive!)
         if shutdown_rdzv:
             agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
         with contextlib.suppress(Exception):
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
+
+        # Gracefully shut down reader thread LAST to capture all launcher logs
+        # This must be the final cleanup step to avoid losing logs during shutdown
+        if isinstance(config.logs_specs, PipeBasedLogsSpecs):
+            config.logs_specs.cleanup()
 
 
 # Source
@@ -2821,7 +2837,7 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     return logs_specs_cls
 
 
-def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
+def config_from_args(args, launcher_pipe_read_fd=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
@@ -2950,7 +2966,7 @@ def config_from_args(args) -> Tuple[LaunchConfig, Union[Callable, str], List[str
                 "--logs-specs is ignored when --ft-base-logfile is specified. "
                 "Using PipeBasedLogsSpecs automatically."
             )
-        logs_specs = PipeBasedLogsSpecs(base_log_file=base_log_file)
+        logs_specs = PipeBasedLogsSpecs(base_log_file=base_log_file, launcher_pipe_fd=launcher_pipe_read_fd)
         # Note: PipeBasedLogsSpecs handles rank prefixing in parent process
     else:
         # Standard logs_specs creation for other cases
@@ -3027,32 +3043,31 @@ def run_script_path(training_script: str, *training_script_args: str):
 def run(args):
     # Configure logger based on whether --ft-base-logfile is specified
     base_log_file = getattr(args, 'ft_base_logfile', None)
-    if base_log_file:
-        # Log to file with rank prefixes (like srun -l)
-        setup_logger(log_file=base_log_file)
+    launcher_pipe_read_fd = None
 
-        # Redirect launcher's stdout and stderr to the base logfile
+    if base_log_file:
+        # Setup pipe-based logging for launcher logs
+        # This avoids slow Lustre writes blocking the launcher
+        launcher_pipe_read_fd, launcher_pipe_write_fd = os.pipe()
+
+        # Redirect launcher's stdout and stderr to the pipe
         # This catches:
+        # - Python logger output (StreamHandler writes to stderr by default)
         # - PyTorch's C++ logs: E0112, W0112 format from torch elastic
         # - RankMonitorLogger stderr output
         # - NestedRestarter stdout output ([ALWAYS] messages)
+        os.dup2(launcher_pipe_write_fd, sys.stdout.fileno())
+        os.dup2(launcher_pipe_write_fd, sys.stderr.fileno())
 
-        # Open base logfile in append mode
-        log_fd = os.open(base_log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-
-        # Redirect both stdout (fd 1) and stderr (fd 2) to the log file
-        os.dup2(log_fd, sys.stdout.fileno())
-        os.dup2(log_fd, sys.stderr.fileno())
-
-        # Close the extra fd (stdout/stderr now point to it via dup2)
-        os.close(log_fd)
+        # Close the original write end (stdout/stderr now point to it via dup2)
+        os.close(launcher_pipe_write_fd)
 
         # Reopen Python's stdout/stderr handles with line buffering
         sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
         sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
-    else:
-        # Log to console with standard prefix
-        setup_logger(node_local_tmp_prefix="ftlauncher")
+
+    # Setup logger - writes to redirected stderr (pipe or console)
+    setup_logger(node_local_tmp_prefix="ftlauncher")
 
     if args.standalone:
         args.rdzv_backend = "c10d"
@@ -3077,7 +3092,7 @@ def run(args):
     # Initialize NodeHealthCheck singleton at launcher start
     init_node_health_check(ft_hc_endpoint)
 
-    config, cmd, cmd_args = config_from_args(args)
+    config, cmd, cmd_args = config_from_args(args, launcher_pipe_read_fd)
     elastic_launch(
         config=config,
         entrypoint=cmd,
@@ -3095,7 +3110,7 @@ def main(args=None):
         )
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1", exc_info=True)
+        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
         sys.exit(1)
     logger.info("Agent exits with exit code = 0.")
     sys.exit(0)

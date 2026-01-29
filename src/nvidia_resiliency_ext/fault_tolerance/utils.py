@@ -39,7 +39,10 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
     """Get infrastructure rank from environment variables with SLURM validation.
 
     Returns infrastructure rank with the following precedence:
-    1. SLURM_TOPOLOGY_ADDR with block awareness (if SLURM_TOPOLOGY_ADDR_PATTERN is "block.node" and not skipped)
+    1. NVRX_INFRA_RANK_FROM_NODENAME (if set and not skipped) - calculate rank by extracting all digits from SLURMD_NODENAME
+       - Example: "nvl72134-T01" -> rank 7213401
+    2. CROSS_SLURM_PROCID (for multi-job coordination)
+    3. SLURM_TOPOLOGY_ADDR with block awareness (if SLURM_TOPOLOGY_ADDR_PATTERN is "block.node" and not skipped)
        - Parses format "blockX.nodeY" and calculates rank as X * multiplier + Y
        - Default multiplier is 10^10 (10 billion), reserving 10 digits for node numbers
        - This keeps block index in MSB for proper ordering with 64-bit integers
@@ -50,9 +53,6 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
          * "block5.node9"   -> rank 5*10^10 + 9 = 50000000009
          * "block5.node10"  -> rank 5*10^10 + 10 = 50000000010
          * "block6.node2"   -> rank 6*10^10 + 2 = 60000000002
-    2. NVRX_INFRA_RANK_FROM_NODENAME (if set and not skipped) - calculate rank by extracting all digits from SLURMD_NODENAME
-       - Example: "nvl72134-T01" -> rank 7213401
-    3. CROSS_SLURM_PROCID (for multi-job coordination)
     4. SLURM_PROCID (set by SLURM), with job array support
     5. GROUP_RANK (fallback, set by launcher)
 
@@ -63,7 +63,7 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
     If none are set, returns -1 to indicate it should be assigned deterministically.
 
     Args:
-        skip_nodename_logic: If True, skip the SLURM_TOPOLOGY_ADDR and NVRX_INFRA_RANK_FROM_NODENAME logic
+        skip_nodename_logic: If True, skip the NVRX_INFRA_RANK_FROM_NODENAME and SLURM_TOPOLOGY_ADDR logic
                            and fall through to SLURM array task ID calculation. Default is False.
 
     Returns:
@@ -71,13 +71,37 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
 
     Raises:
         RuntimeError: If SLURM_JOB_ID is set but neither CROSS_SLURM_PROCID nor SLURM_PROCID is defined
+        ValueError: If NVRX_INFRA_RANK_FROM_NODENAME is set (and not skipped) but SLURMD_NODENAME
+                   is not set or contains no digits
         ValueError: If SLURM_TOPOLOGY_ADDR_PATTERN is "block.node" (and not skipped) but SLURM_TOPOLOGY_ADDR
                    does not match expected format or parts contain no digits
         ValueError: If node number in SLURM_TOPOLOGY_ADDR exceeds 10 digits (>= 10^10)
-        ValueError: If NVRX_INFRA_RANK_FROM_NODENAME is set (and not skipped) but SLURMD_NODENAME
-                   is not set or contains no digits
     """
-    # Check SLURM_TOPOLOGY_ADDR with block awareness first
+    # Check NVRX_INFRA_RANK_FROM_NODENAME first (for nodename-based rank calculation)
+    if not skip_nodename_logic and os.getenv('NVRX_INFRA_RANK_FROM_NODENAME') is not None:
+        nodename = os.getenv('SLURMD_NODENAME')
+        if nodename is None:
+            raise ValueError(
+                "NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME environment variable is not set"
+            )
+        # Extract all digits from nodename
+        digits = ''.join(c for c in nodename if c.isdigit())
+        if not digits:
+            raise ValueError(
+                f"NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME '{nodename}' contains no digits"
+            )
+        infra_rank = int(digits)
+        logger.debug(f"Using infrastructure rank {infra_rank} from SLURMD_NODENAME '{nodename}'")
+        return infra_rank
+
+    # Check CROSS_SLURM_PROCID second (for multi-job scenarios)
+    cross_slurm_procid = os.getenv('CROSS_SLURM_PROCID')
+    if cross_slurm_procid is not None:
+        infra_rank = int(cross_slurm_procid)
+        logger.debug(f"Using infrastructure rank {infra_rank} from CROSS_SLURM_PROCID")
+        return infra_rank
+
+    # Check SLURM_TOPOLOGY_ADDR with block awareness third
     if not skip_nodename_logic:
         topology_addr = os.getenv('SLURM_TOPOLOGY_ADDR')
         topology_pattern = os.getenv('SLURM_TOPOLOGY_ADDR_PATTERN')
@@ -137,30 +161,6 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
                 f"(block={block_num}, node={node_num}, multiplier={multiplier}) with pattern '{topology_pattern}'"
             )
             return infra_rank
-
-    # Check NVRX_INFRA_RANK_FROM_NODENAME (for nodename-based rank calculation)
-    if not skip_nodename_logic and os.getenv('NVRX_INFRA_RANK_FROM_NODENAME') is not None:
-        nodename = os.getenv('SLURMD_NODENAME')
-        if nodename is None:
-            raise ValueError(
-                "NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME environment variable is not set"
-            )
-        # Extract all digits from nodename
-        digits = ''.join(c for c in nodename if c.isdigit())
-        if not digits:
-            raise ValueError(
-                f"NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME '{nodename}' contains no digits"
-            )
-        infra_rank = int(digits)
-        logger.debug(f"Using infrastructure rank {infra_rank} from SLURMD_NODENAME '{nodename}'")
-        return infra_rank
-
-    # Check CROSS_SLURM_PROCID first (for multi-job scenarios)
-    cross_slurm_procid = os.getenv('CROSS_SLURM_PROCID')
-    if cross_slurm_procid is not None:
-        infra_rank = int(cross_slurm_procid)
-        logger.debug(f"Using infrastructure rank {infra_rank} from CROSS_SLURM_PROCID")
-        return infra_rank
 
     # Get SLURM_PROCID once and reuse it
     slurm_procid = os.getenv('SLURM_PROCID')

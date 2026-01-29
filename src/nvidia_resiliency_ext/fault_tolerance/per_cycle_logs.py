@@ -34,13 +34,17 @@ mode="w+b" which truncates the file. This is fine for per-rank files, but causes
 when multiple ranks write to the same file.
 """
 
+import contextlib
 import errno
 import logging
 import os
+import queue
 import select
 import subprocess
 import tempfile
 import threading
+import time
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from torch.distributed.elastic.multiprocessing import LogsDest, LogsSpecs, Std
@@ -51,6 +55,12 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 # Special marker string to signal pipe-based logging
 # We can't use subprocess.PIPE directly because PyTorch expects strings
 _PIPE_MARKER = "__SUBPROCESS_PIPE__"
+
+# Writer thread batch size and flush interval
+# Larger batches improve Lustre performance (reduces metadata operations)
+# The reader thread drains 64KB pipes quickly into queue, then writer batches from queue
+_WRITE_BATCH_SIZE = 256 * 1024  # 256 KB batches
+_FLUSH_INTERVAL_SECONDS = 1.0  # Flush at least every 1 second
 
 # Module-level flag to track if we've patched get_subprocess_handler
 _SUBPROCESS_HANDLER_PATCHED = False
@@ -172,16 +182,43 @@ class PipeSubprocessHandler(SubprocessHandler):
             except Exception:
                 pass
 
+        # For pipe cases, close the parent's read-end of the pipes
+        # This is defense-in-depth: PyTorch calls this for alive processes,
+        # but _stop_workers() in launcher.py also does explicit cleanup for ALL
+        # processes (alive or crashed) to handle the case where PyTorch skips
+        # this call. We keep this code for: 1) earlier cleanup timing, 2) safety
+        # if called outside launcher context, 3) code clarity.
+        for stream in (self.proc.stdout, self.proc.stderr):
+            if stream:
+                with contextlib.suppress(Exception):
+                    stream.close()
+
+
+@dataclass
+class ReaderConfig:
+    """Configuration for the reader thread - all state needed for one cycle."""
+
+    pipes: dict[int, int]
+    log_file_path: str
+    world_size: Optional[int]
+    local_to_global_rank: dict[int, int]
+    launcher_pipe_fd: Optional[int] = None  # Special pipe for launcher logs
+    launcher_log_file_path: Optional[str] = None  # Separate file for launcher logs
+
 
 class MultiplexingReaderThread(threading.Thread):
     """
-    Reader thread that multiplexes multiple worker pipes into a single log file.
+    Reader thread that multiplexes multiple worker pipes into log files.
+
+    Architecture:
+    - Reader thread: Polls pipes, reads data, adds rank prefixes, queues writes
+    - Writer thread: Consumes queue, writes to Lustre in batches
+
+    This decouples pipe draining from Lustre I/O to prevent:
+    - Main thread blocking on pipe writes during slow Lustre I/O
+    - GIL contention between main thread and I/O operations
 
     Uses select.poll() to efficiently monitor multiple pipes without busy-waiting.
-    Automatically terminates when all worker pipes close (workers exit).
-
-    This mimics how 'srun --output' works: one reader thread per node aggregates
-    all local worker output and writes to a consolidated log file.
 
     Line Buffering Strategy:
         To prevent line merging when multiple ranks write simultaneously, we buffer
@@ -198,6 +235,8 @@ class MultiplexingReaderThread(threading.Thread):
         log_file_path: str,
         world_size: Optional[int] = None,
         local_to_global_rank: Optional[dict[int, int]] = None,
+        launcher_pipe_fd: Optional[int] = None,
+        launcher_log_file_path: Optional[str] = None,
     ):
         """
         Initialize reader thread.
@@ -210,20 +249,161 @@ class MultiplexingReaderThread(threading.Thread):
             local_to_global_rank: Optional mapping of local_rank -> global_rank for prefixes.
                                  If provided, uses global ranks in prefixes (like srun -l).
                                  If None, uses local ranks.
+            launcher_pipe_fd: Optional FD for launcher logs (writes without prefix)
+            launcher_log_file_path: Optional separate file for launcher logs
         """
         super().__init__(daemon=True)
-        self.pipes = pipes.copy()
-        self.log_file_path = log_file_path
-        self.world_size = world_size
-        self.local_to_global_rank = local_to_global_rank or {}
-        self.poller = select.poll()
-        self.fd_to_local_rank = {}  # Maps file descriptor to local rank
+
+        # Current configuration
+        self._current_config = ReaderConfig(
+            pipes=pipes.copy(),
+            log_file_path=log_file_path,
+            world_size=world_size,
+            local_to_global_rank=local_to_global_rank or {},
+            launcher_pipe_fd=launcher_pipe_fd,
+            launcher_log_file_path=launcher_log_file_path,
+        )
+
+        # Logger and control
         self.logger = logging.getLogger(LogConfig.name)
+        self._shutdown_requested = False
+
+        # Write queue for decoupling pipe reading from Lustre I/O
+        # Queue items: (log_file_path, data_to_write)
+        self._write_queue = queue.Queue()
+        self._writer_shutdown = False
+
+        # Start writer thread immediately (must be before reader starts polling)
+        self._writer_thread = threading.Thread(
+            target=self._writer_thread_loop, daemon=True, name="LogWriter"
+        )
+        self._writer_thread.start()
+
+        # Pre-initialize poller and fd mapping
+        self.poller = select.poll()
+        self.fd_to_local_rank = {}
+
+        # Initialize all other state from config
+        self._initialize_state_from_config(self._current_config)
+
+    def _writer_thread_loop(self):
+        """
+        Writer thread loop: consumes write queue and writes to Lustre in batches.
+
+        This thread isolates Lustre I/O from pipe reading, preventing:
+        - Main thread blocking when pipes fill during slow Lustre writes
+        - Reader thread blocking on Lustre (can't drain other pipes)
+
+        Batching strategy:
+        - Accumulates writes up to _WRITE_BATCH_SIZE (256KB by default)
+        - Flushes at least every _FLUSH_INTERVAL_SECONDS (1s)
+        - Larger batches improve Lustre performance (reduces metadata ops)
+        """
+        # Track open files by path (lazy open)
+        open_files = {}  # {path: file_object}
+
+        # Batch accumulators per file path
+        batches = {}  # {path: list of strings}
+        batch_sizes = {}  # {path: total bytes}
+        last_flush_time = time.time()
+
+        def flush_batches():
+            """Helper to flush all pending batches and update timestamp."""
+            nonlocal last_flush_time
+            for path, batch in batches.items():
+                if batch and path in open_files:
+                    open_files[path].write(''.join(batch))
+                    open_files[path].flush()  # GIL released during flush syscall
+                    batch.clear()
+                    batch_sizes[path] = 0
+            last_flush_time = time.time()
+
+        def add_to_batch(log_file_path, data):
+            """Helper to add data to batch, lazily opening file if needed."""
+            # Lazy open files as needed
+            if log_file_path not in open_files:
+                # Match buffer size to batch size for optimal Lustre performance
+                # This ensures 256KB batches are written in 1-2 large syscalls instead of ~32 small ones
+                open_files[log_file_path] = open(log_file_path, 'a', buffering=_WRITE_BATCH_SIZE)
+                batches[log_file_path] = []
+                batch_sizes[log_file_path] = 0
+
+            # Add to appropriate batch
+            batches[log_file_path].append(data)
+            batch_sizes[log_file_path] += len(data)
+
+        try:
+            while not self._writer_shutdown:
+                try:
+                    # Get next write request with short timeout for responsive shutdown
+                    log_file_path, data = self._write_queue.get(timeout=0.1)
+
+                    add_to_batch(log_file_path, data)
+
+                    # Flush if any batch is large enough or time interval reached
+                    current_time = time.time()
+                    should_flush = (
+                        any(size >= _WRITE_BATCH_SIZE for size in batch_sizes.values())
+                        or current_time - last_flush_time >= _FLUSH_INTERVAL_SECONDS
+                    )
+
+                    if should_flush:
+                        flush_batches()
+
+                except queue.Empty:
+                    # Timeout - check if flush interval reached (don't flush on every timeout!)
+                    current_time = time.time()
+                    if current_time - last_flush_time >= _FLUSH_INTERVAL_SECONDS:
+                        flush_batches()
+
+            # Shutdown: first drain any remaining queue items into batches
+            while not self._write_queue.empty():
+                try:
+                    log_file_path, data = self._write_queue.get_nowait()
+                    add_to_batch(log_file_path, data)
+                except queue.Empty:
+                    break
+
+            # Then flush all batches (both accumulated and freshly drained)
+            flush_batches()
+
+        except Exception as e:
+            # CRITICAL: Unexpected exception in writer thread
+            # This indicates a bug in our code or system failure (disk full, etc.)
+            # Log and exit thread - launcher continues, but logging may be incomplete
+            self.logger.error(
+                f"Writer thread crashed with unexpected exception: {e}\n"
+                f"Logging may be incomplete. This indicates a bug or system failure.",
+                exc_info=True,
+            )
+
+        finally:
+            # Close any remaining open files
+            for file_obj in open_files.values():
+                with contextlib.suppress(Exception):
+                    file_obj.close()
+
+    def _initialize_state_from_config(self, config: ReaderConfig):
+        """
+        Initialize working state from a configuration.
+
+        Args:
+            config: Configuration to initialize from
+        """
+        # Set configuration values
+        self.pipes = config.pipes.copy()
+        self.log_file_path = config.log_file_path
+        self.world_size = config.world_size
+        self.local_to_global_rank = config.local_to_global_rank.copy()
+        self.launcher_pipe_fd = config.launcher_pipe_fd
+        self.launcher_log_file_path = config.launcher_log_file_path
 
         # Calculate rank prefix padding width (like srun -l)
         # Determine padding width based on world_size (max rank is world_size - 1)
         self._rank_width = (
-            len(str(world_size - 1)) if (world_size is not None and world_size > 1) else 0
+            len(str(self.world_size - 1))
+            if (self.world_size is not None and self.world_size > 1)
+            else 0
         )
 
         # Buffer for incomplete lines (lines without trailing '\n')
@@ -231,151 +411,359 @@ class MultiplexingReaderThread(threading.Thread):
         # This prevents line merging when os.read() returns partial data
         self._line_buffers = {}
 
-        # Register all pipes with poller
-        for local_rank, pipe_fd in pipes.items():
+        # Register all worker pipes with poller and increase buffer size
+        for local_rank, pipe_fd in config.pipes.items():
+
             self.poller.register(pipe_fd, select.POLLIN | select.POLLHUP)
             self.fd_to_local_rank[pipe_fd] = local_rank
 
-    def _write_lines(self, log_file, local_rank: int, lines: list[str]) -> None:
+        # Register launcher pipe with special rank -1 (no prefix needed)
+        if config.launcher_pipe_fd is not None:
+
+            self.poller.register(config.launcher_pipe_fd, select.POLLIN | select.POLLHUP)
+            self.fd_to_local_rank[config.launcher_pipe_fd] = -1  # Special rank for launcher
+
+    def _cleanup_resources(self):
         """
-        Write complete lines to log file with rank prefix.
+        Clean up all resources: poller registrations and state.
+
+        This centralizes all cleanup logic used by:
+        - _apply_config() when switching cycles
+        - run() finally block for shutdown
+
+        IMPORTANT: Does NOT close FDs! File objects (handler.proc.stdout) own the FDs.
+        They are closed by _stop_workers() in launcher.py to avoid FD ownership races.
+
+        NOTE: Log file writing is handled by the writer thread, not here.
+        """
+        # 1. Queue any incomplete lines for writing
+        if self._line_buffers:
+            for local_rank, incomplete_data in list(self._line_buffers.items()):
+                self._flush_incomplete_line(local_rank, incomplete_data)
+
+            self._line_buffers.clear()
+
+        # 3. Unregister all FDs from poller
+        for fd in list(self.fd_to_local_rank.keys()):
+            with contextlib.suppress(Exception):
+                self.poller.unregister(fd)
+
+        # 4. Clear all state
+        self.pipes.clear()
+        self.fd_to_local_rank.clear()
+        self._line_buffers.clear()
+
+    def _get_log_file_for_rank(self, local_rank: int):
+        """
+        Get the appropriate log file for a given rank.
 
         Args:
-            log_file: Open file object to write to
-            local_rank: Local rank number (will be mapped to global rank if mapping provided)
+            local_rank: Local rank (-1 for launcher, 0+ for workers)
+
+        Returns:
+            File object to write to (launcher_log_file or worker_log_file)
+        """
+        if local_rank == -1:
+            return self.launcher_log_file
+        else:
+            return self.worker_log_file
+
+    def _queue_lines_for_write(self, local_rank: int, lines: list[str]) -> None:
+        """
+        Queue complete lines for writing with rank prefix (unless launcher).
+
+        Args:
+            local_rank: Local rank number (-1 for launcher, 0+ for workers)
             lines: List of lines to write (should all end with '\\n')
         """
-        # Use global rank for prefix if mapping is available, otherwise use local rank
-        rank = self.local_to_global_rank.get(local_rank, local_rank)
-        prefix = f'{rank:>{self._rank_width}}: ' if self._rank_width > 0 else f'{rank}: '
-        for line in lines:
-            log_file.write(prefix + line)
+        # Determine target file
+        log_file_path = self.launcher_log_file_path if local_rank == -1 else self.log_file_path
 
-    def _flush_incomplete_line(self, log_file, local_rank: int) -> None:
+        if local_rank == -1:
+            # Launcher logs - no prefix, queue directly
+            data = ''.join(lines)
+        else:
+            # Worker logs - add rank prefix to each line
+            rank = self.local_to_global_rank.get(local_rank, local_rank)
+            prefix = f'{rank:>{self._rank_width}}: ' if self._rank_width > 0 else f'{rank}: '
+            data = ''.join(prefix + line for line in lines)
+
+        # Queue for writer thread
+        self._write_queue.put((log_file_path, data))
+
+    def _flush_incomplete_line(self, local_rank: int, incomplete_data: str) -> None:
         """
-        Flush any buffered incomplete line for a rank when its pipe closes.
+        Queue an incomplete line (no trailing newline) for writing, adding newline.
 
-        This ensures we don't lose partial output when a worker crashes.
-        We add a newline to prevent merging with subsequent output.
+        Helper to avoid code duplication between _cleanup_resources() and POLLHUP handling.
 
         Args:
-            log_file: Open file object to write to
-            local_rank: Local rank whose incomplete line to flush
+            local_rank: Local rank number (-1 for launcher, 0+ for workers)
+            incomplete_data: Incomplete line data (no trailing '\\n')
         """
-        if local_rank in self._line_buffers:
-            incomplete = self._line_buffers[local_rank]
-            if incomplete:  # Only write if non-empty
-                # Use global rank for prefix if mapping is available, otherwise use local rank
-                rank = self.local_to_global_rank.get(local_rank, local_rank)
-                prefix = f'{rank:>{self._rank_width}}: ' if self._rank_width > 0 else f'{rank}: '
-                # Add newline to prevent merging with next rank's output
-                # This changes the original output slightly, but prevents corruption
-                log_file.write(prefix + incomplete + '\n')
-                self.logger.debug(
-                    f"Flushed incomplete line for rank {rank} on pipe close: {incomplete[:50]}..."
-                )
-            del self._line_buffers[local_rank]
+        if not incomplete_data:
+            return
+
+        # Determine target file
+        log_file_path = self.launcher_log_file_path if local_rank == -1 else self.log_file_path
+
+        # Add prefix if worker rank
+        if local_rank != -1:
+            rank = self.local_to_global_rank.get(local_rank, local_rank)
+            prefix = f'{rank:>{self._rank_width}}: ' if self._rank_width > 0 else f'{rank}: '
+            incomplete_data = prefix + incomplete_data
+
+        # Queue the incomplete line with newline
+        self._write_queue.put((log_file_path, incomplete_data + '\n'))
 
     def run(self):
         """
-        Main loop: poll pipes, read data, add rank prefixes, write to file.
+        Main loop: poll pipes, read data, add rank prefixes, queue for writing.
 
-        Exits when all pipes close (all workers terminated).
+        Runs until shutdown() is called or exception occurs.
+
+        Thread lifecycle:
+            - Created once for first training cycle
+            - Reused across cycles via update_pipes()
+            - Must call shutdown() + join() for graceful cleanup (flushes buffers!)
+            - Daemon=True only as safety fallback if shutdown() not called
 
         Implementation notes:
             - Buffers incomplete lines (no trailing '\\n') to prevent line merging
-            - Flushes incomplete lines when pipe closes (worker exits)
+            - Queues writes to separate writer thread (decouples Lustre I/O from pipe reading)
             - Handles partial reads from os.read() correctly
+            - Supports thread reuse: updates config when paths change
+            - Manages two log files: worker logs (with prefix) and launcher logs (no prefix)
         """
+        active_config = None  # Track which config we're currently using
+
         try:
-            with open(self.log_file_path, 'a', buffering=1) as log_file:  # Line buffered
-                while self.pipes:
-                    try:
-                        # Wait for any pipe to have data (timeout 1s for responsiveness)
-                        events = self.poller.poll(1000)  # timeout is positional arg
-                    except OSError as e:
-                        # Handle EINTR (interrupted system call) - can happen if process receives signal
-                        if e.errno == errno.EINTR:
-                            continue
-                        else:
-                            # Other OSError - log and re-raise
-                            self.logger.error(f"poll() failed with OSError: {e}")
-                            raise
+            active_config = self._current_config  # Remember what we've applied
 
-                    for fd, event in events:
-                        local_rank = self.fd_to_local_rank.get(fd)
-                        if local_rank is None:
-                            continue
+            while not self._shutdown_requested:
+                # Check if configuration changed
+                current_config = self._current_config
 
-                        if event & (select.POLLIN | select.POLLHUP):
-                            try:
-                                # Read available data
-                                data = os.read(fd, 65536)
-                            except OSError as e:
-                                # EINTR can also happen on read()
-                                if e.errno == errno.EINTR:
-                                    continue
-                                # Use global rank for logging if available
-                                rank_for_log = self.local_to_global_rank.get(local_rank, local_rank)
-                                self.logger.warning(
-                                    f"Error reading from rank {rank_for_log} pipe: {e}"
+                if current_config is not active_config:
+                    # Configuration changed - apply it
+                    # Flushes buffers, closes log files, unregisters FDs, opens new log files
+                    # (FD ownership: see _cleanup_resources() docstring)
+                    self._apply_config(current_config)
+                    active_config = current_config
+
+                # Note: Even if self.pipes is empty, we don't break!
+                # poller.poll() returns [] (empty) when no FDs registered,
+                # event loop doesn't execute, and we loop back to check for
+                # config changes (update_pipes() adding new pipes for next cycle).
+                # This is how thread reuse works - thread stays alive between cycles!
+
+                try:
+                    # Wait for any pipe to have data (timeout 100ms for quick shutdown response)
+                    # Note: Shorter timeout = faster shutdown response when shutdown() is called
+                    # Trade-off: More frequent loop iterations (negligible CPU overhead)
+                    events = self.poller.poll(100)  # timeout is positional arg in milliseconds
+                except OSError as e:
+                    # Handle EINTR (interrupted system call) - can happen if process receives signal
+                    if e.errno == errno.EINTR:
+                        continue
+                    else:
+                        # Other OSError - will be caught and logged by outer exception handler
+                        raise
+
+                # Process events
+                for fd, event in events:
+                    local_rank = self.fd_to_local_rank.get(fd)
+                    if local_rank is None:
+                        # Defensive check - should be impossible since poller only returns
+                        # events for registered FDs, and we maintain the invariant that
+                        # all registered FDs are in fd_to_local_rank
+                        self.logger.warning(
+                            f"Received event for unknown FD {fd} - this should not happen! "
+                            f"This indicates a bug in the reader thread logic."
+                        )
+                        continue
+
+                    if event & (select.POLLIN | select.POLLHUP):
+                        try:
+                            # Read available data
+                            data = os.read(fd, 65536)
+                        except OSError as e:
+                            # EINTR: system call interrupted by signal, retry
+                            if e.errno == errno.EINTR:
+                                continue
+                            # Any other OSError means FD was closed externally - expected during
+                            # worker termination. This is a race condition: launcher closes pipes
+                            # in _stop_workers() while reader thread still has FD registered.
+                            # The OS may reuse the FD number for another operation, causing various
+                            # errors (EBADF, EISDIR, ESPIPE, etc.) depending on the reuse.
+                            # Treat as pipe closure (data=None triggers cleanup below).
+                            data = None
+
+                        if not data:
+                            # Pipe closed - queue any buffered incomplete data
+                            if local_rank in self._line_buffers:
+                                self._flush_incomplete_line(
+                                    local_rank, self._line_buffers[local_rank]
                                 )
-                                data = None
+                                del self._line_buffers[local_rank]
 
-                            if not data:
-                                # Pipe closed - worker exited
-                                # First, flush any buffered incomplete line to avoid data loss
-                                self._flush_incomplete_line(log_file, local_rank)
+                            # Unregister FD from poller (FD ownership: file objects own FDs)
+                            rank_for_log = (
+                                self.local_to_global_rank.get(local_rank, local_rank)
+                                if local_rank != -1
+                                else -1
+                            )
 
-                                # Then clean up pipe resources
+                            try:
                                 self.poller.unregister(fd)
-                                try:
-                                    os.close(fd)
-                                except OSError:
-                                    pass
-                                del self.pipes[local_rank]
-                                del self.fd_to_local_rank[fd]
-                            else:
-                                # Process data from this rank's pipe
-                                # Decode with error replacement to handle any encoding issues
-                                text = data.decode('utf-8', errors='replace')
+                            except Exception:
+                                # This is unexpected! FD should be registered (we just got an event from it)
+                                # Log with full exception details for debugging
+                                self.logger.warning(
+                                    f"UNEXPECTED: Failed to unregister FD {fd} for rank {rank_for_log} after pipe closure",
+                                    exc_info=True,
+                                )
 
-                                # Clean NULL bytes to prevent log file from being detected as binary
-                                # This can happen during worker crashes when binary data ends up in stdout/stderr
-                                if '\x00' in text:
-                                    text = text.replace('\x00', '<NUL>')
+                            # Clean up tracking dicts
+                            self.pipes.pop(local_rank, None)
+                            self.fd_to_local_rank.pop(fd, None)
+                        else:
+                            # Process data from this rank's pipe
+                            # Decode with error replacement to handle any encoding issues
+                            text = data.decode('utf-8', errors='replace')
 
-                                # Split into lines, keeping line endings
-                                # Important: splitlines(keepends=True) on "abc\ndef" returns ['abc\n', 'def']
-                                # The last element 'def' has NO newline - it's an incomplete line!
-                                lines = text.splitlines(keepends=True)
+                            # Clean NULL bytes to prevent log file from being detected as binary
+                            # (rare, but can happen during worker crashes with binary data on stdout/stderr)
+                            text = text.replace('\x00', '<NUL>')
 
-                                if not lines:
-                                    # Empty read (shouldn't happen, but be defensive)
-                                    continue
+                            # Split into lines, keeping line endings
+                            # Important: splitlines(keepends=True) on "abc\ndef" returns ['abc\n', 'def']
+                            # The last element 'def' has NO newline - it's an incomplete line!
+                            lines = text.splitlines(keepends=True)
 
-                                # First, complete any previously buffered incomplete line
-                                if local_rank in self._line_buffers:
-                                    # Prepend buffered text to first line of this read
-                                    lines[0] = self._line_buffers[local_rank] + lines[0]
-                                    del self._line_buffers[local_rank]
+                            if not lines:
+                                # Empty read (shouldn't happen, but be defensive)
+                                continue
 
-                                # Check if last line is incomplete and buffer it
-                                if not lines[-1].endswith('\n'):
-                                    # Last line incomplete - buffer it for next read
-                                    self._line_buffers[local_rank] = lines.pop()
+                            # First, complete any previously buffered incomplete line
+                            if local_rank in self._line_buffers:
+                                # Prepend buffered text to first line of this read
+                                lines[0] = self._line_buffers[local_rank] + lines[0]
+                                del self._line_buffers[local_rank]
 
-                                # Write any remaining complete lines
-                                if lines:
-                                    self._write_lines(log_file, local_rank, lines)
+                            # Check if last line is incomplete and buffer it
+                            if not lines[-1].endswith('\n'):
+                                # Last line incomplete - buffer it for next read
+                                self._line_buffers[local_rank] = lines.pop()
 
-                                # Flush to ensure data is written immediately
-                                log_file.flush()
+                            # Queue any remaining complete lines for writing
+                            if lines:
+                                self._queue_lines_for_write(local_rank, lines)
 
+        except KeyboardInterrupt:
+            raise
+        except (IOError, OSError) as e:
+            self.logger.error(
+                f"CRITICAL: MultiplexingReaderThread I/O failure (log file: {self.log_file_path})",
+                exc_info=True,
+            )
+            raise
         except Exception as e:
-            # Catch-all for unexpected errors
-            # This prevents the thread from dying silently
-            self.logger.error(f"MultiplexingReaderThread fatal error: {e}", exc_info=True)
+            self.logger.error(
+                f"CRITICAL: MultiplexingReaderThread crashed unexpectedly (log file: {self.log_file_path})",
+                exc_info=True,
+            )
+            raise
+        finally:
+            # Clean up all resources (queue incomplete lines for writing)
+            self._cleanup_resources()
+
+            # Shut down writer thread
+            self._writer_shutdown = True
+            if self._writer_thread and self._writer_thread.is_alive():
+                self._writer_thread.join(timeout=5.0)  # Wait for writer to drain queue
+
+    def update_pipes(
+        self,
+        new_pipes: dict[int, int],
+        new_log_file: str,
+        new_world_size: Optional[int] = None,
+        new_local_to_global_rank: Optional[dict[int, int]] = None,
+        new_launcher_pipe_fd: Optional[int] = None,
+        new_launcher_log_file: Optional[str] = None,
+    ):
+        """
+        Update the pipes being monitored by this thread (for new training cycle).
+
+        Args:
+            new_pipes: {local_rank: pipe_fd} for new cycle's workers
+            new_log_file: Path to new cycle's log file
+            new_world_size: Total ranks (for rank padding)
+            new_local_to_global_rank: Rank mapping for new cycle
+            new_launcher_pipe_fd: Optional FD for launcher logs (persists across cycles)
+            new_launcher_log_file: Optional separate file for launcher logs
+
+        How it works:
+        1. Create new ReaderConfig with all new state
+        2. Atomically swap the reference (Python GIL ensures atomicity)
+        3. Thread detects change at start of next loop iteration
+        4. Thread applies all new state at once
+        5. No locks, no queues, just atomic reference assignment!
+        """
+        new_config = ReaderConfig(
+            pipes=new_pipes.copy(),
+            log_file_path=new_log_file,
+            world_size=new_world_size,
+            local_to_global_rank=new_local_to_global_rank or {},
+            launcher_pipe_fd=new_launcher_pipe_fd,
+            launcher_log_file_path=new_launcher_log_file,
+        )
+
+        # Atomic swap - thread will detect and apply this change
+        self._current_config = new_config
+
+    def _apply_config(self, new_config: ReaderConfig):
+        """
+        Apply new configuration.
+
+        This is called from run() to switch to new cycle configuration.
+        Uses centralized cleanup and initialization methods.
+
+        Args:
+            new_config: New configuration to apply
+        """
+
+        # Step 1: Clean up old resources (queues incomplete lines for writing)
+        self._cleanup_resources()
+
+        # Step 2: Initialize new state from config (sets all attributes, registers FDs, increases pipe buffers)
+        self._initialize_state_from_config(new_config)
+
+        # Note: No need to open/close log files - writer thread handles that
+
+    def shutdown(self):
+        """
+        Request graceful shutdown of the reader thread.
+
+        IMPORTANT: Must call this before ft_launcher exits to ensure:
+        - Incomplete buffered lines are flushed to disk
+        - Write queue is drained (all pending writes complete)
+        - Log files are properly closed
+
+        After calling shutdown(), use join(timeout=5.0) to wait for thread to exit.
+        Daemon=True is only a safety fallback if shutdown is not called.
+
+        Usage:
+            if self._reader_thread:
+                self._reader_thread.shutdown()
+                self._reader_thread.join(timeout=5.0)
+        """
+        # First, give reader thread a moment to process any final pipe events
+        # (especially POLLHUP after pipes are closed)
+        # The poll timeout is 100ms, so 0.15s ensures at least one poll cycle
+        time.sleep(0.15)
+
+        self._shutdown_requested = True
 
 
 class PipeBasedLogsSpecs(LogsSpecs):
@@ -390,7 +778,7 @@ class PipeBasedLogsSpecs(LogsSpecs):
         1. Each worker's stdout/stderr is redirected to a pipe (via subprocess.PIPE)
         2. Parent ft_launcher runs a MultiplexingReaderThread that reads from all pipes
         3. Reader thread adds rank prefixes and writes to consolidated log file
-        4. When workers exit, pipes close and reader thread terminates automatically
+        4. When workers exit, pipes close; call cleanup() before exit to flush buffers
 
     Benefits:
         - Line-buffered pipes prevent log loss on worker termination (SIGTERM)
@@ -417,7 +805,7 @@ class PipeBasedLogsSpecs(LogsSpecs):
 
     logger = logging.getLogger(LogConfig.name)
 
-    def __init__(self, base_log_file: str) -> None:
+    def __init__(self, base_log_file: str, launcher_pipe_fd: Optional[int] = None) -> None:
         if not base_log_file:
             raise ValueError("base_log_file is required for PipeBasedLogsSpecs")
 
@@ -428,6 +816,25 @@ class PipeBasedLogsSpecs(LogsSpecs):
         log_dir = os.path.dirname(self._base_log_file) or "."
         os.makedirs(log_dir, exist_ok=True)
 
+        # Store launcher pipe FD
+        self._launcher_pipe_fd = launcher_pipe_fd
+
+        # Start reader thread IMMEDIATELY if launcher pipe provided
+        # This prevents pipe buffer from filling up while launcher is logging
+        if launcher_pipe_fd is not None:
+            self.logger.info("Starting reader thread early for launcher logs...")
+            self._reader_thread = MultiplexingReaderThread(
+                pipes={},  # No worker pipes yet
+                log_file_path="/dev/null",  # Dummy, not used until workers start
+                world_size=None,
+                local_to_global_rank={},
+                launcher_pipe_fd=launcher_pipe_fd,
+                launcher_log_file_path=self._base_log_file,
+            )
+            self._reader_thread.start()
+        else:
+            self._reader_thread = None
+
         super().__init__(
             log_dir=log_dir,
             redirects=Std.ALL,
@@ -436,7 +843,7 @@ class PipeBasedLogsSpecs(LogsSpecs):
         )
 
         self._error_dir = None
-        self._reader_thread = None
+        # self._reader_thread already initialized above
         self._current_cycle_log = None
         self._world_size = None  # Will be set in reify()
 
@@ -542,34 +949,16 @@ class PipeBasedLogsSpecs(LogsSpecs):
         Returns:
             The reader thread (already started)
         """
-        # Check if previous reader thread is still alive
+        # Thread Lifecycle: ONE thread for the entire ft_launcher process
         #
-        # WHY THIS HAPPENS:
-        # The reader thread exits when all pipes close. However, pipes don't close immediately
-        # when workers die because:
-        # 1. PyTorch's SubprocessContext._close() only calls handler.close() if proc.poll() is None
-        # 2. By the time _close() runs, workers have often already died (proc.poll() != None)
-        # 3. So handler.close() is never called, and Popen.stdout pipes remain open
-        # 4. Pipes only close when Python's GC collects the old Popen objects
+        # The reader thread is created once and lives for the entire process lifetime.
+        # It handles log reading across ALL restart cycles by updating its configuration
+        # via update_pipes() when workers restart. This design:
+        #   - Avoids FD reuse issues from lingering threads
+        #   - Eliminates thread creation overhead per cycle
+        #   - Simplifies lifecycle management
         #
-        # WHEN THIS IS OK:
-        # - With hour-long restart intervals: plenty of time for GC to run, FD reuse unlikely
-        # - Old thread will exit within minutes when GC closes pipes
-        # - New thread uses different FDs, so no conflict
-        #
-        # WHEN THIS COULD BE PROBLEMATIC:
-        # - Fast restart scenarios (seconds apart): old FDs might be reused before cleanup
-        # - Could cause log corruption if same FD monitored by multiple threads
-        #
-        # WHAT HAPPENS:
-        # - We proceed immediately without waiting (old thread will exit via GC)
-        # - Old thread monitors old FDs, new thread monitors new FDs
-        # - No conflict as long as FDs are different (typical with hour-long intervals)
-        if self._reader_thread and self._reader_thread.is_alive():
-            self.logger.debug(
-                "Previous reader thread still alive (expected, will exit when GC closes old pipes). "
-                "Proceeding with new cycle."
-            )
+        # Thread is created on first call and reused for all subsequent cycles.
 
         # Check if log file path is set up
         if self._current_cycle_log is None:
@@ -581,7 +970,6 @@ class PipeBasedLogsSpecs(LogsSpecs):
 
         if not os.path.exists(self._current_cycle_log):
             open(self._current_cycle_log, 'a').close()
-            self.logger.info("Created consolidated log file: %s", self._current_cycle_log)
 
         # Collect pipes from all local workers
         # stdout carries both stdout and stderr (merged via subprocess.STDOUT)
@@ -593,27 +981,63 @@ class PipeBasedLogsSpecs(LogsSpecs):
                 pipes[rank] = handler.proc.stdout.fileno()
 
         if not pipes:
-            # No pipes available - this is expected for hot spare nodes with no workers
-            # Only log at debug level since it's normal behavior
-            self.logger.debug(
-                "No pipes available from subprocess handlers (likely hot spare node with no workers)"
+            # No pipes available - this can happen in two scenarios:
+            # 1. Hot spare node from the start (no thread exists - OK to return None)
+            # 2. Active node transitioning to hot spare (thread exists - MUST update it!)
+
+            if self._reader_thread:
+                # Active → Hot spare transition: Update thread with empty pipes
+                # This ensures the thread properly closes the old log file and cleans up state
+                self.logger.info(
+                    "Node transitioned from active to hot spare - updating thread with empty pipes"
+                )
+                self._reader_thread.update_pipes(
+                    new_pipes={},  # Empty - no workers
+                    new_log_file=self._current_cycle_log,
+                    new_world_size=self._world_size,
+                    new_local_to_global_rank=self._local_to_global_rank,
+                    new_launcher_pipe_fd=self._launcher_pipe_fd,
+                    new_launcher_log_file=self._base_log_file,
+                )
+                return self._reader_thread
+            else:
+                # Hot spare from the start - no thread needed
+                self.logger.debug(
+                    "No pipes available from subprocess handlers (hot spare node with no workers)"
+                )
+                return None
+
+        # Reuse existing thread if exists, otherwise create new one
+        if self._reader_thread:
+            # Thread reuse: Just update the pipes it's monitoring!
+            # This eliminates the FD reuse catastrophe problem entirely
+            self._reader_thread.update_pipes(
+                new_pipes=pipes,
+                new_log_file=self._current_cycle_log,
+                new_world_size=self._world_size,
+                new_local_to_global_rank=self._local_to_global_rank,
+                new_launcher_pipe_fd=self._launcher_pipe_fd,
+                new_launcher_log_file=self._base_log_file,
             )
-            return None
-
-        # Create and start multiplexing reader thread
-        # Pass local_to_global_rank mapping so reader can use global ranks for prefixes
-        self._reader_thread = MultiplexingReaderThread(
-            pipes=pipes,
-            log_file_path=self._current_cycle_log,
-            world_size=self._world_size,
-            local_to_global_rank=self._local_to_global_rank,
-        )
-        self._reader_thread.start()
-
-        self.logger.info(
-            f"Started multiplexing reader thread for {len(pipes)} workers, "
-            f"writing to {self._current_cycle_log}"
-        )
+            self.logger.info(
+                f"Updated reader thread with {len(pipes)} new workers for cycle, "
+                f"writing to {self._current_cycle_log}"
+            )
+        else:
+            # First cycle or thread died - create new thread
+            self._reader_thread = MultiplexingReaderThread(
+                pipes=pipes,
+                log_file_path=self._current_cycle_log,
+                world_size=self._world_size,
+                local_to_global_rank=self._local_to_global_rank,
+                launcher_pipe_fd=self._launcher_pipe_fd,
+                launcher_log_file_path=self._base_log_file,
+            )
+            self._reader_thread.start()
+            self.logger.info(
+                f"Started new multiplexing reader thread for {len(pipes)} workers, "
+                f"writing to {self._current_cycle_log}"
+            )
 
         return self._reader_thread
 
@@ -624,6 +1048,25 @@ class PipeBasedLogsSpecs(LogsSpecs):
         base_without_ext = os.path.splitext(self._base_log_file)[0]
         ext = os.path.splitext(self._base_log_file)[1] or ".log"
         return f"{base_without_ext}_cycle{cycle_index}{ext}"
+
+    def cleanup(self):
+        """
+        Gracefully shut down the reader thread.
+
+        IMPORTANT: Call this before ft_launcher exits to ensure:
+        - All buffered log data is flushed to disk
+        - Log file is properly closed
+        - FDs are properly closed
+
+        This must be called explicitly - daemon thread alone won't flush buffers!
+        """
+        if self._reader_thread:
+            self._reader_thread.shutdown()
+            self._reader_thread.join(timeout=1.0)
+            if self._reader_thread.is_alive():
+                self.logger.warning(
+                    "Reader thread did not exit within 1s timeout. " "Logs may be incomplete."
+                )
 
     def __repr__(self) -> str:
         return f"PipeBasedLogsSpecs(base_log_file={self._base_log_file})"

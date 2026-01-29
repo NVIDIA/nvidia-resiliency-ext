@@ -3,14 +3,19 @@
 
 """Unit tests for nvidia_resiliency_ext.fault_tolerance.per_cycle_logs module."""
 
+import errno
 import os
 import tempfile
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
-from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import MultiplexingReaderThread
+from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
+    MultiplexingReaderThread,
+    PipeSubprocessHandler,
+)
 
 
 class TestMultiplexingReaderThread:
@@ -67,6 +72,7 @@ class TestMultiplexingReaderThread:
         self._close_pipe(write_fd)
 
         # Wait for thread to finish
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check output
@@ -102,6 +108,7 @@ class TestMultiplexingReaderThread:
             self._close_pipe(write_fd)
 
         # Wait for thread to finish
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check output
@@ -139,6 +146,7 @@ class TestMultiplexingReaderThread:
         for write_fd in write_fds.values():
             self._close_pipe(write_fd)
 
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check output uses global ranks with proper padding (world_size=100, so 2 digits)
@@ -162,6 +170,8 @@ class TestMultiplexingReaderThread:
         self._write_to_pipe(write_fd, b'Multiple \x00 nulls \x00 here\n')
 
         self._close_pipe(write_fd)
+
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check NULL bytes are replaced
@@ -198,6 +208,8 @@ class TestMultiplexingReaderThread:
         self._write_to_pipe(write_fd, b'Incomplete: \xe2\x28\xa1\n')
 
         self._close_pipe(write_fd)
+
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check that invalid bytes are replaced with Unicode replacement character
@@ -227,6 +239,8 @@ class TestMultiplexingReaderThread:
         time.sleep(0.1)
 
         self._close_pipe(write_fd)
+
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check that incomplete line was buffered and completed
@@ -248,6 +262,7 @@ class TestMultiplexingReaderThread:
         self._write_to_pipe(write_fd, b'Incomplete line without newline')
         self._close_pipe(write_fd)
 
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check that incomplete line was flushed with added newline
@@ -289,6 +304,7 @@ class TestMultiplexingReaderThread:
         for write_fd in write_fds.values():
             self._close_pipe(write_fd)
 
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check all output
@@ -315,6 +331,8 @@ class TestMultiplexingReaderThread:
             self._write_to_pipe(write_fd, f'Line {i}\n'.encode('utf-8'))
 
         self._close_pipe(write_fd)
+
+        reader.shutdown()
         reader.join(timeout=5.0)
 
         # Check all lines are present
@@ -398,6 +416,7 @@ class TestMultiplexingReaderThread:
         for write_fd in write_fds.values():
             self._close_pipe(write_fd)
 
+        reader.shutdown()
         reader.join(timeout=5.0)
 
         # Check that all lines are present and properly formatted
@@ -428,6 +447,8 @@ class TestMultiplexingReaderThread:
 
         self._write_to_pipe(write_fd, b'New content\n')
         self._close_pipe(write_fd)
+
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # Check both old and new content are present
@@ -449,9 +470,466 @@ class TestMultiplexingReaderThread:
         # Close pipe immediately without writing
         self._close_pipe(write_fd)
 
+        reader.shutdown()
         reader.join(timeout=2.0)
 
         # File should be empty or contain only pre-existing content
         content = self._read_log_file(temp_log_file)
         # No crash, thread terminates cleanly
         assert reader is not None
+
+
+class TestPipeSubprocessHandler:
+    """Tests for PipeSubprocessHandler class."""
+
+    def test_close_releases_pipe_fds(self):
+        """
+        Test that PipeSubprocessHandler.close() properly closes parent's pipe FDs.
+
+        This is a regression test for the FD reuse bug where:
+        1. Workers from cycle N are shut down
+        2. Pipes remain open because close() didn't close proc.stdout/stderr
+        3. FDs get reused when cycle N+1 workers spawn quickly
+        4. Old reader thread tries to read from reused FDs → EBADF/EINVAL errors
+
+        The fix ensures that close() explicitly closes self.proc.stdout/stderr
+        to release the parent's read-end of the pipes.
+        """
+        # Create a worker process with pipes
+        handler = PipeSubprocessHandler(
+            entrypoint="bash",
+            args=("-c", "sleep 0.5"),
+            env={},
+            stdout="__SUBPROCESS_PIPE__",
+            stderr="__SUBPROCESS_PIPE__",
+            local_rank_id=0,
+        )
+
+        # Get the parent's read-end FD
+        parent_fd_stdout = handler.proc.stdout.fileno()
+
+        # Verify FD is valid before close
+        os.fstat(parent_fd_stdout)  # Should not raise
+
+        # Close the handler (should close parent's pipe FDs)
+        handler.close()
+
+        # Verify FD is now closed (should raise EBADF)
+        with pytest.raises(OSError) as exc_info:
+            os.fstat(parent_fd_stdout)
+
+        assert exc_info.value.errno == 9  # EBADF - Bad file descriptor
+
+        # Clean up
+        handler.proc.wait(timeout=2.0)
+
+    def test_close_with_non_pipe_stdout(self):
+        """
+        Test that close() works correctly when stdout is a file (not a pipe).
+
+        In this case, proc.stdout should be None, so closing it should be a no-op.
+        """
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+            temp_path = f.name
+
+        try:
+            handler = PipeSubprocessHandler(
+                entrypoint="bash",
+                args=("-c", "echo test"),
+                env={},
+                stdout=temp_path,
+                stderr=temp_path,
+                local_rank_id=0,
+            )
+
+            # For non-pipe case, proc.stdout should be None
+            assert handler.proc.stdout is None
+
+            # close() should work without errors
+            handler.close()
+            handler.proc.wait(timeout=2.0)
+
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def test_fd_closed_immediately_when_process_alive(self):
+        """
+        Test that FDs are closed immediately when process is still alive (normal case).
+
+        This tests PyTorch's conditional logic:
+            if handler.proc.poll() is None:  # Process still alive
+                handler.close(death_sig=death_sig)  # CALLED!
+
+        When proc.poll() is None (process alive), handler.close() IS called.
+        Our fix closes proc.stdout/stderr immediately, releasing FDs.
+        """
+        # Create a worker with a long-running process
+        handler = PipeSubprocessHandler(
+            entrypoint="bash",
+            args=("-c", "sleep 10"),  # Long enough that it's still alive
+            env={},
+            stdout="__SUBPROCESS_PIPE__",
+            stderr="__SUBPROCESS_PIPE__",
+            local_rank_id=0,
+        )
+
+        parent_fd = handler.proc.stdout.fileno()
+
+        # Verify process is still alive (normal shutdown scenario)
+        assert handler.proc.poll() is None, "Process should still be alive"
+
+        # Verify FD is open before cleanup
+        os.fstat(parent_fd)  # Should not raise
+
+        # Simulate PyTorch's SubprocessContext._close() conditional logic:
+        # It calls handler.close() if proc.poll() is None
+        if handler.proc.poll() is None:
+            handler.close()  # This IS called (scenario 1)
+
+        # Our fix (lines 180-189 in per_cycle_logs.py) should have closed the FD
+        # immediately inside handler.close()
+        with pytest.raises(OSError) as exc_info:
+            os.fstat(parent_fd)
+        assert exc_info.value.errno == 9  # EBADF - FD properly closed!
+
+        # Clean up
+        handler.proc.wait(timeout=2.0)
+
+        # Summary: Normal case where our fix works. When handler.close()
+        # is called, FDs are released immediately, preventing FD reuse issues.
+
+    def test_fd_not_closed_when_process_already_dead(self):
+        """
+        Test that FDs remain open when process dies before close (edge case).
+
+        This tests PyTorch's conditional logic:
+            if handler.proc.poll() is None:  # Only if process still running
+                handler.close(death_sig=death_sig)
+
+        When proc.poll() != None (process dead), handler.close() is SKIPPED.
+        Pipes remain open until GC collects the Popen object.
+
+        NOTE: This edge case is NOW FIXED in launcher.py!
+        The _stop_workers() method explicitly closes all pipe FDs before
+        spawning new workers, ensuring deterministic cleanup regardless
+        of whether PyTorch called handler.close() or not.
+
+        This test documents the PyTorch behavior, but the actual FD cleanup
+        happens in _stop_workers() which is tested in integration tests.
+        """
+
+        # Create a worker with a short-lived process
+        handler = PipeSubprocessHandler(
+            entrypoint="bash",
+            args=("-c", "exit 0"),  # Dies immediately
+            env={},
+            stdout="__SUBPROCESS_PIPE__",
+            stderr="__SUBPROCESS_PIPE__",
+            local_rank_id=0,
+        )
+
+        parent_fd = handler.proc.stdout.fileno()
+
+        # Wait for process to die
+        handler.proc.wait(timeout=2.0)
+
+        # Verify process is dead (simulates fast worker failure)
+        assert handler.proc.poll() is not None, "Process should be dead"
+
+        # Verify FD is still open before any cleanup
+        os.fstat(parent_fd)  # Should NOT raise - FD still open
+
+        # Simulate PyTorch's SubprocessContext._close() conditional logic:
+        # It only calls handler.close() if proc.poll() is None
+        if handler.proc.poll() is None:
+            handler.close()  # Would be called
+        # else: handler.close() is SKIPPED (our case!)
+
+        # Verify FD is still open because handler.close() was skipped
+        # This demonstrates that PyTorch's conditional logic leaves FDs open
+        # when processes die before _close() is called
+        os.fstat(parent_fd)  # Should still NOT raise - FD still open
+
+        # Document the behavior: FD only closes when we manually close it
+        # or when GC collects the Popen object
+        handler.proc.stdout.close()
+
+        # Now it should be closed
+        with pytest.raises(OSError) as exc_info:
+            os.fstat(parent_fd)
+        assert exc_info.value.errno == 9  # EBADF
+
+        # Summary: This test documents PyTorch's conditional close behavior.
+        # The actual fix for FD reuse issues is in _stop_workers() (launcher.py)
+        # which explicitly closes all pipe FDs before spawning new workers.
+
+    def test_shutdown_mechanism_prevents_fd_reuse_catastrophe(self):
+        """
+        Test that the shutdown mechanism allows graceful thread termination.
+
+        The thread reuse pattern prevents the old FD reuse catastrophe by:
+        1. Using ONE long-lived thread across all cycles (no lingering threads)
+        2. Thread updates its pipes via update_pipes() for new cycles
+        3. Reader thread ONLY unregisters FDs, doesn't close them (ownership with file objects)
+        4. _stop_workers() explicitly closes FDs before spawning new workers
+
+        This test verifies the shutdown() mechanism works correctly for process exit:
+        - shutdown() sets _shutdown_requested flag
+        - Thread breaks main loop and exits cleanly
+        - finally block calls _cleanup_resources() to flush logs
+        """
+        # Create two pipes for the old reader
+        r1, w1 = os.pipe()
+        r2, w2 = os.pipe()
+
+        # Create old reader thread
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.log') as f:
+            log_file = f.name
+
+        try:
+            from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
+                MultiplexingReaderThread,
+            )
+
+            old_reader = MultiplexingReaderThread(
+                pipes={0: r1, 1: r2},
+                log_file_path=log_file,
+            )
+            old_reader.start()
+
+            # Give it a moment to start polling
+            time.sleep(0.1)
+
+            # Request shutdown (simulates process exit cleanup)
+            old_reader.shutdown()
+
+            # Thread should exit quickly
+            old_reader.join(timeout=2.0)
+            assert not old_reader.is_alive(), "Reader thread should exit after shutdown()"
+
+            # Thread exited cleanly - shutdown mechanism works!
+
+        finally:
+            # Cleanup
+            for fd in [w1, w2]:  # Only close write ends, read ends handled by thread
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if os.path.exists(log_file):
+                os.remove(log_file)
+
+    def test_thread_reuse_pattern3_atomic_swap(self):
+        """
+        Test that thread reuse uses Pattern 3 (Atomic Pointer Swap).
+
+        Pattern 3 advantages over Pattern 4 (queues):
+        ✓ Simpler - no queue module needed
+        ✓ Atomic - GIL guarantees reference assignment is atomic
+        ✓ Direct - just compare object identity
+        ✓ Perfect for our use case (one update per cycle)
+
+        This test verifies the API exists. Full integration testing
+        is done in end-to-end tests with real workers.
+        """
+        from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
+            MultiplexingReaderThread,
+            ReaderConfig,
+        )
+
+        # Just verify the API and structure - don't actually run the thread
+        # (Full functional testing requires real worker lifecycle)
+        # Verify ReaderConfig dataclass exists
+        config = ReaderConfig(
+            pipes={0: 123},
+            log_file_path="/tmp/test.log",
+            world_size=None,
+            local_to_global_rank={},
+            launcher_pipe_fd=None,  # New optional field
+            launcher_log_file_path=None,  # New optional field
+        )
+        assert config.pipes == {0: 123}
+        assert config.log_file_path == "/tmp/test.log"
+        assert config.launcher_pipe_fd is None
+        assert config.launcher_log_file_path is None
+
+        # Verify MultiplexingReaderThread has the Pattern 3 structure
+        # (We check the class, not an instance, to avoid pipe registration issues)
+        assert hasattr(
+            MultiplexingReaderThread, 'update_pipes'
+        ), "Should have update_pipes method for thread reuse"
+        assert hasattr(
+            MultiplexingReaderThread, '_apply_config'
+        ), "Should have _apply_config for atomic state switching"
+
+
+class TestReaderThreadErrorHandling:
+    """Tests for MultiplexingReaderThread error handling during pipe operations.
+
+    These are regression tests for a race condition bug where:
+    - Launcher closes pipe FDs in _stop_workers() during worker termination
+    - OS immediately reuses those FD numbers for other operations
+    - Reader thread's poller still has the old FD registered
+    - Reader thread tries to read from the reused FD
+    - Gets EBADF (errno 9) or EISDIR (errno 21) errors
+
+    The fix treats these errors as expected pipe closures (DEBUG log) instead of WARNING,
+    since they're normal during worker restart scenarios.
+    """
+
+    @pytest.fixture
+    def temp_log_file(self):
+        """Create temporary log file."""
+        fd, path = tempfile.mkstemp(suffix='.log')
+        os.close(fd)
+        yield path
+        if os.path.exists(path):
+            os.remove(path)
+
+    def test_ebadf_error_handling(self, temp_log_file):
+        """Test that EBADF (Bad file descriptor) is handled gracefully.
+
+        This is a regression test for a race condition where:
+        1. Launcher closes pipe FDs in _stop_workers()
+        2. OS reuses FD for another operation
+        3. Reader thread tries to read from the reused FD
+        4. Gets EBADF error
+
+        The fix treats EBADF as expected pipe closure (DEBUG log) instead of WARNING.
+        """
+        # Create a pipe
+        read_fd, write_fd = os.pipe()
+
+        # Create reader thread
+        reader = MultiplexingReaderThread(
+            pipes={0: read_fd},
+            log_file_path=temp_log_file,
+            world_size=1,
+            local_to_global_rank={0: 0},
+        )
+        reader.start()
+
+        # Write some data
+        os.write(write_fd, b'Before close\n')
+        time.sleep(0.1)
+
+        # Close both ends to simulate external closure
+        os.close(write_fd)
+        os.close(read_fd)
+
+        # Give thread time to detect closure and handle EBADF
+        time.sleep(0.3)
+
+        # Thread should still be running (not crashed)
+        assert reader.is_alive()
+
+        # Shutdown cleanly
+        reader.shutdown()
+        reader.join(timeout=2.0)
+
+        # Verify data was written before the error
+        with open(temp_log_file, 'r') as f:
+            content = f.read()
+        assert 'Before close\n' in content
+
+    def test_eisdir_error_handling(self, temp_log_file):
+        """Test that EISDIR (Is a directory) is handled gracefully.
+
+        This tests the case where an FD gets reused for a directory operation
+        after being closed externally.
+        """
+        # Create a pipe
+        read_fd, write_fd = os.pipe()
+
+        # Create reader thread
+        reader = MultiplexingReaderThread(
+            pipes={0: read_fd},
+            log_file_path=temp_log_file,
+            world_size=1,
+            local_to_global_rank={0: 0},
+        )
+
+        # Mock os.read to simulate EISDIR error
+        original_read = os.read
+        call_count = [0]
+
+        def mock_read(fd, size):
+            call_count[0] += 1
+            if call_count[0] == 2:  # Second call simulates EISDIR
+                raise OSError(errno.EISDIR, "Is a directory")
+            return original_read(fd, size)
+
+        with patch('os.read', side_effect=mock_read):
+            reader.start()
+
+            # Write some data (first read succeeds)
+            os.write(write_fd, b'Before EISDIR\n')
+            time.sleep(0.2)
+
+            # Second write will trigger EISDIR in mock
+            os.write(write_fd, b'Trigger EISDIR\n')
+            time.sleep(0.2)
+
+        # Close pipes
+        os.close(write_fd)
+
+        # Thread should handle EISDIR gracefully
+        reader.shutdown()
+        reader.join(timeout=2.0)
+
+        # Verify first data was written
+        with open(temp_log_file, 'r') as f:
+            content = f.read()
+        assert 'Before EISDIR\n' in content
+
+    def test_any_oserror_handled_gracefully(self, temp_log_file):
+        """Test that any OSError (not just EBADF/EISDIR) is handled gracefully.
+
+        When an FD is closed and reused, it can be reused for any type of file descriptor
+        (socket, regular file, device, etc.), resulting in various errno values (ESPIPE,
+        ENOTSOCK, EINVAL, etc.). All should be treated as expected pipe closures.
+        """
+        # Create a pipe
+        read_fd, write_fd = os.pipe()
+
+        # Create reader thread
+        reader = MultiplexingReaderThread(
+            pipes={0: read_fd},
+            log_file_path=temp_log_file,
+            world_size=1,
+            local_to_global_rank={0: 0},
+        )
+
+        # Mock os.read to simulate a different OSError (ESPIPE - illegal seek)
+        original_read = os.read
+        call_count = [0]
+
+        def mock_read(fd, size):
+            call_count[0] += 1
+            if call_count[0] == 2:  # Second call raises ESPIPE
+                raise OSError(errno.ESPIPE, "Illegal seek")
+            return original_read(fd, size)
+
+        with patch('os.read', side_effect=mock_read):
+            reader.start()
+
+            # Write some data (first read succeeds)
+            os.write(write_fd, b'Before ESPIPE\n')
+            time.sleep(0.2)
+
+            # Second write will trigger ESPIPE in mock
+            os.write(write_fd, b'Trigger ESPIPE\n')
+            time.sleep(0.2)
+
+        # Close pipes
+        os.close(write_fd)
+
+        # Thread should handle ESPIPE gracefully (no crash)
+        reader.shutdown()
+        reader.join(timeout=2.0)
+
+        # Verify first data was written
+        with open(temp_log_file, 'r') as f:
+            content = f.read()
+        assert 'Before ESPIPE\n' in content
