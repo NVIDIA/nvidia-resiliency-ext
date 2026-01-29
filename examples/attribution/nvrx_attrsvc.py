@@ -59,7 +59,7 @@ class Settings(BaseSettings):
         default="coreai_resiliency_osiris", description="nvdataflow index"
     )
 
-    SLACK_BOT_TOKEN: str = Field(default="", description="Slack bot token")
+    SLACK_BOT_TOKEN: str = Field(defau", description="Slack bot token")
     SLACK_CHANNEL: str = Field(default="#osiris-alerts", description="Slack channel")
 
     model_config = SettingsConfigDict(
@@ -77,8 +77,8 @@ def get_slack_user_email(userID: str, token: str) -> str | None:
     try:
         # Fetch all users (pagination may be needed for very large teams)
         user_id = client.users_lookupByEmail(email=f"{userID}@nvidia.com").get("user")["id"]
-
-        return user_id  # User not found
+            
+        return user_id  # User not found      
     except SlackApiError as e:
         logger.error(f"Error fetching user email: {e.response['error']}")
         return None
@@ -539,7 +539,7 @@ def create_app(cfg: Settings) -> FastAPI:
                             # Split by newlines and take the first element
                             auto_resume = auto_resume_raw[0]
                             try:
-                                auto_resume_explanation = auto_resume_raw[1]
+                                auto_resume_explanation = auto_resume_raw[1][:-1]
                             except Exception as e:
                                 auto_resume_explanation = ""
                                 logger.info(f"Failed to extract auto resume explanation: {e}")
