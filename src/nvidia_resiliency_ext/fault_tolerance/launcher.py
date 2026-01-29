@@ -70,14 +70,12 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
 )
-from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
-    PerCycleLogsSpecs,
-    PipeBasedLogsSpecs,
-)
+from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
+    is_slurm_job_array,
     patched_method,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
@@ -1657,6 +1655,17 @@ def launch_agent(
         shutdown_rdzv = False
         logger.error(f"Agent .run() raised UnhealthyNodeException: {e}")
         events.record(agent.get_event_failed())
+
+        # Exit behavior depends on deployment mode:
+        # - Job array: raise (exit 1) so replacement job can be launched
+        # - Single job with hot spares: don't raise (instead, exit 0) to avoid killing job
+        #   since --kill-on-bad-exit is the default srun behavior
+        if is_slurm_job_array():
+            logger.info("Job array deployment: exiting with code 1 for replacement.")
+            raise
+        else:
+            logger.info("Single job deployment: exiting with code 0 for hot spare takeover.")
+            # Don't raise - returns None, main() will exit with 0
     except ChildFailedError:
         raise
     except SignalException as e:
@@ -1672,7 +1681,7 @@ def launch_agent(
         else:
             logger.info("All ranks exited gracefully. Launcher exiting without an error.")
     except Exception as e:
-        logger.error(f"Agent .run() raised exception, {e=}", exc_info=True)
+        logger.error(f"Agent .run() raised exception, {e=}")
         events.record(agent.get_event_failed())
         raise
     finally:
@@ -2327,8 +2336,8 @@ def get_args_parser() -> ArgumentParser:
         type=str,
         help="Logging behavior configuration. Options: "
         "(1) None (default): Creates separate log files per rank per restart cycle. "
-        "(2) 'per_cycle': Consolidates all ranks' logs into a single log file per restart cycle. "
-        "(3) Custom entrypoint name from torchrun.logs_specs group for advanced customization.",
+        "(2) Custom entrypoint name from torchrun.logs_specs group for advanced customization. "
+        "Note: For consolidated logging, use --ft-base-logfile instead (automatically uses PipeBasedLogsSpecs).",
     )
 
     #
@@ -2783,14 +2792,14 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
 
     Built-in options:
     - None (default): Uses DefaultLogsSpecs (per-rank log files per cycle)
-    - 'per_cycle': Uses PerCycleLogsSpecs (single log file per cycle for all ranks)
+
+    Note: The legacy 'per_cycle' option has been removed. Use --ft-base-logfile instead,
+    which automatically uses PipeBasedLogsSpecs for consolidated logging.
     """
     logs_specs_cls = None
 
-    # Handle built-in per_cycle option
-    if logs_specs_name == "per_cycle":
-        logs_specs_cls = PerCycleLogsSpecs
-    elif logs_specs_name is not None:
+    # Try to load from entrypoints
+    if logs_specs_name is not None:
         # Try to load from entrypoints
         eps = metadata.entry_points()
         if hasattr(eps, "select"):  # >= 3.10

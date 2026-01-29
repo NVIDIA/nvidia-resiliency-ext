@@ -179,6 +179,8 @@ class RankMonitorServer:
         self.launcher_writer = None  # Keep connection to launcher for bidirectional IPC
         self._max_iteration_this_cycle = 0  # Track max iteration in current restart cycle
         self._last_sent_iteration = 0  # Track last iteration sent to launcher (avoid duplicates)
+        self._initial_iteration = None  # Track starting iteration of current cycle
+        self._current_iteration = None  # Track current iteration for warmup detection
 
         if self.cfg.enable_nic_monitor:
             self.logger.info("Enable NIC health monitoring.")
@@ -270,6 +272,19 @@ class RankMonitorServer:
         self.out_of_section_time = time.monotonic()
         self.open_sections.clear()
         self.last_hb_time = None
+        # Capture starting iteration for this cycle
+        self._initial_iteration = msg.iteration
+        self._current_iteration = msg.iteration
+
+        # Update num_warmup_iterations if provided by the client
+        if msg.num_warmup_iters is not None:
+            self.cfg.num_warmup_iterations = msg.num_warmup_iters
+            # Only log from rank 0 to reduce log spam
+            if self.rank_info.global_rank == 0:
+                self.logger.info(
+                    f"Updated num_warmup_iterations to {msg.num_warmup_iters} from client"
+                )
+
         # Update NIC health checker on the rank to monitor.
         if self.nic_health_checker is not None:
             self.nic_health_checker.set_nic_device(local_rank=self.rank_info.local_rank)
@@ -321,6 +336,14 @@ class RankMonitorServer:
         # Track max iteration for this restart cycle (will be sent to launcher on next init)
         if msg.iteration is not None:
             self._max_iteration_this_cycle = max(self._max_iteration_this_cycle, msg.iteration)
+            # Reset initial_iteration on first real iteration update (in case it was a sentinel value)
+            if (
+                self._initial_iteration is not None
+                and self._current_iteration == self._initial_iteration
+            ):
+                # First section message with iteration - reset the baseline
+                self._initial_iteration = msg.iteration
+            self._current_iteration = msg.iteration
 
         resp = ErrorMsg()
         current_time = time.monotonic()
@@ -380,6 +403,8 @@ class RankMonitorServer:
         self.start_time = None
         self.last_hb_time = None
         self.out_of_section_time = None
+        self._initial_iteration = None
+        self._current_iteration = None
         self.rmlogger.set_connected_rank(None)
         if self.connection_lock.locked():
             self.connection_lock.release()
@@ -495,6 +520,14 @@ class RankMonitorServer:
                 )
                 is_elapsed = True
         if not self.open_sections:
+            # Skip out-of-section timeout monitoring during warmup iterations
+            # Count iterations relative to when this training cycle started
+            if self._initial_iteration is not None and self._current_iteration is not None:
+                iterations_this_cycle = self._current_iteration - self._initial_iteration
+                if iterations_this_cycle < self.cfg.num_warmup_iterations:
+                    # Still in warmup period, don't check out-of-section timeout
+                    return False
+
             elapsed = curr_time - self.out_of_section_time
             timeout = self.cfg.rank_out_of_section_timeout
             is_elapsed = timeout is not None and elapsed > timeout

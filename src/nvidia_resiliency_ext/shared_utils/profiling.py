@@ -17,6 +17,7 @@
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -239,13 +240,17 @@ class FaultToleranceProfiler:
 
 # Global profiler instance (lazy-initialized to avoid stdout output at import time)
 _global_profiler: Optional[FaultToleranceProfiler] = None
+_global_profiler_lock = threading.Lock()
 
 
 def _get_global_profiler() -> FaultToleranceProfiler:
-    """Get or create the global profiler instance."""
+    """Get or create the global profiler instance (thread-safe)."""
     global _global_profiler
     if _global_profiler is None:
-        _global_profiler = FaultToleranceProfiler()
+        with _global_profiler_lock:
+            # Double-check pattern to avoid race conditions
+            if _global_profiler is None:
+                _global_profiler = FaultToleranceProfiler()
     return _global_profiler
 
 

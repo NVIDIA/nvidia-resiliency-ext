@@ -364,7 +364,7 @@ class RankMonitorClient:
                 f"RankMonitorClient could not send section update. Exception: {e}"
             )
 
-    def _connect_to_rmon_server(self):
+    def _connect_to_rmon_server(self, num_warmup_iters: Optional[int] = None):
         assert self.rank_monitor_socket is None
         rmon_ipc_socket_path = os.getenv(FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR, None)
         if rmon_ipc_socket_path is None:
@@ -384,7 +384,9 @@ class RankMonitorClient:
             # Send sentinel value (1) to arm progress tracking - the real iteration
             # will be reported later when training starts
             initial_iteration = 1
-        init_msg = InitMsg(rank_info=self.rank_info, iteration=initial_iteration)
+        init_msg = InitMsg(
+            rank_info=self.rank_info, iteration=initial_iteration, num_warmup_iters=num_warmup_iters
+        )
         write_object_to_ipc_socket(init_msg, self.rank_monitor_socket)
         reply_for_init = read_obj_from_ipc_socket(self.rank_monitor_socket)
         if not isinstance(reply_for_init, OkMsg):
@@ -396,16 +398,23 @@ class RankMonitorClient:
 
     def init_workload_monitoring(
         self,
+        num_warmup_iters: Optional[int] = None,
     ) -> None:
         """
         Initializes the fault tolerance and connects to the RankMonitorServer.
+
+        Args:
+            num_warmup_iters (Optional[int]): Number of warmup iterations before monitoring
+                step section and out-of-section timeouts. If provided, this value will be sent
+                to the server and used for timeout monitoring logic. If None, server will use
+                its default value from config.
         """
         if self.is_initialized:
             raise RankMonitorClientError("RankMonitorClient is already initialized")
 
         self.rank_info = RankInfo.get_for_current_rank()
 
-        self._connect_to_rmon_server()
+        self._connect_to_rmon_server(num_warmup_iters=num_warmup_iters)
 
         # Install exception handler if configured
         if self.cfg.install_exception_hook:

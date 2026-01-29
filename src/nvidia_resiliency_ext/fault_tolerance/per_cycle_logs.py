@@ -15,23 +15,17 @@
 # limitations under the License.
 
 """
-Custom LogsSpecs implementations for consolidated per-cycle logging.
+Custom LogsSpecs implementation for consolidated per-cycle logging.
 
-This module provides:
-
-1. PipeBasedLogsSpecs (RECOMMENDED):
+This module provides PipeBasedLogsSpecs:
    - Uses pipes (like srun --output) to prevent buffer loss
    - Parent ft_launcher reads from pipes and writes to file
    - Line-buffered pipes ensure data isn't lost on worker termination (SIGTERM)
    - Rank prefixes added in parent (works for C++ logs too)
    - Solves the stack trace loss problem
 
-2. PerCycleLogsSpecs (DEPRECATED - will be removed):
-   - Uses O_APPEND for concurrent writes from all workers
-   - Workers redirect via sitecustomize.py
-   - PROBLEM: Block buffering causes log loss on SIGTERM
-   - PROBLEM: Rank prefixes don't work for C++ stderr
-   - Kept for backward compatibility only
+Architecture:
+   Worker → pipe (line-buffered by kernel) → parent reader thread → file
 
 Why not use PyTorch's built-in redirect?
 --------------------------------------
@@ -47,7 +41,6 @@ import select
 import subprocess
 import tempfile
 import threading
-from pathlib import Path
 from typing import Any, Optional
 
 from torch.distributed.elastic.multiprocessing import LogsDest, LogsSpecs, Std
@@ -166,7 +159,7 @@ class PipeSubprocessHandler(SubprocessHandler):
             except OSError:
                 pass
 
-        # Close file handles (but not subprocess.PIPE/STDOUT which are managed by Popen)
+        # Close file handles for non-pipe cases (when we opened actual files)
         if self._stdout and self._stdout not in (subprocess.PIPE, subprocess.STDOUT):
             try:
                 self._stdout.close()
@@ -178,202 +171,6 @@ class PipeSubprocessHandler(SubprocessHandler):
                 self._stderr.close()
             except Exception:
                 pass
-
-
-class PerCycleLogsSpecs(LogsSpecs):
-    """
-    LogsSpecs that consolidates all ranks' logs into a single file per cycle using O_APPEND.
-
-    Designed for SLURM environments where you want:
-    - One log file per restart cycle (e.g., job_cycle0.log)
-    - All ranks' output in the same file (truly consolidated)
-    - Both stdout and stderr combined (simplified debugging)
-    - Flat file structure (no nested directories)
-    - Works with both 'fork' and 'spawn' start methods
-
-    Log file structure:
-        /path/to/job_cycle0.log  # All ranks, stdout+stderr, cycle 0
-        /path/to/job_cycle1.log  # All ranks, stdout+stderr, cycle 1
-
-        /tmp/torchelastic_errors_<run_id>/
-            cycle_0/
-                0/error.json
-                1/error.json
-
-    Args:
-        base_log_file: Base path for log files (e.g., "/lustre/logs/job.log").
-                      Creates: job_cycle0.log, job_cycle1.log, etc.
-
-    Implementation:
-        Consolidated logging approach:
-        1. Parent creates log file and passes path via TORCHELASTIC_CONSOLIDATED_LOG env var
-        2. Each child opens the file with O_APPEND in sitecustomize.py (runs at startup)
-        3. Child redirects stdout/stderr to the log file before any other code runs
-        4. PyTorch's redirect mechanism is bypassed (we pass None for log paths)
-
-        Note: With Python's 'spawn' start method, file descriptors are NOT inherited,
-        so each child must open the file. O_APPEND flag ensures safe concurrent writes.
-
-        Rank prefixing is automatically enabled: each line is prefixed with [rank]:
-        (using global rank, like 'srun -l') for easy identification of which rank
-        produced each line.
-    """
-
-    logger = logging.getLogger(LogConfig.name)
-
-    def __init__(self, base_log_file: str) -> None:
-        if not base_log_file:
-            raise ValueError("base_log_file is required for PerCycleLogsSpecs")
-
-        # Convert to absolute path for multi-node safety (all nodes must access same path)
-        self._base_log_file = os.path.abspath(base_log_file)
-
-        # Extract directory and ensure it exists
-        log_dir = os.path.dirname(self._base_log_file) or "."
-        os.makedirs(log_dir, exist_ok=True)
-
-        super().__init__(
-            log_dir=log_dir,
-            redirects=Std.ALL,
-            tee=Std.NONE,
-            local_ranks_filter=None,
-        )
-
-        self._error_dir = None
-
-    @property
-    def root_log_dir(self) -> str:
-        return str(self._root_log_dir)
-
-    def reify(
-        self,
-        envs: dict[int, dict[str, str]],
-    ) -> LogsDest:
-        """
-        Creates log destination with a single consolidated log file opened with O_APPEND.
-
-        Creates:
-        - /path/to/base_cycle<N>.log (all ranks, stdout+stderr combined)
-        - /tmp/torchelastic_errors_<run_id>/cycle_<N>/<rank>/error.json (per rank)
-        - /tmp/nvrx_ft_startup_<rand>/sitecustomize.py (for early redirection)
-
-        Each child process opens the log file with O_APPEND at startup (via sitecustomize.py)
-        and redirects stdout/stderr to it before any user or PyTorch code runs.
-        """
-        nprocs = len(envs)
-        if nprocs == 0:
-            self.logger.debug("Empty envs map provided when defining logging destinations.")
-            return LogsDest({}, {}, {}, {}, {})
-
-        # Get restart count from environment
-        global_env = envs[0]
-        run_id = global_env.get("TORCHELASTIC_RUN_ID", "test_run_id")
-        restart_count = global_env.get("TORCHELASTIC_RESTART_COUNT", "0")
-        cycle_log_file = self.get_cycle_log_file(int(restart_count))
-
-        # Create the consolidated log file if it doesn't exist
-        # This serves two purposes:
-        # 1. Early detection of permission/path issues before launching workers
-        # 2. Ensures file exists for child processes (though O_CREAT would create it anyway)
-        if not os.path.exists(cycle_log_file):
-            open(cycle_log_file, 'a').close()
-            self.logger.info("Created consolidated log file: %s", cycle_log_file)
-
-        # Note: Unlike binary processes, Python multiprocessing with 'spawn'
-        # doesn't inherit file descriptors. So we pass the FILE PATH instead of fd,
-        # and each child opens it with O_APPEND in sitecustomize.py
-
-        # Create a sitecustomize.py that redirects stdout/stderr to our log file
-        if not hasattr(self, '_sitecustomize_dir'):
-            self._sitecustomize_dir = tempfile.mkdtemp(prefix="nvrx_ft_startup_")
-            sitecustomize_path = os.path.join(self._sitecustomize_dir, "sitecustomize.py")
-
-            # Read the sitecustomize template and write it to the temp directory
-            template_path = Path(__file__).parent / "sitecustomize_template.py"
-            sitecustomize_contents = template_path.read_text()
-
-            with open(sitecustomize_path, 'w') as f:
-                f.write(sitecustomize_contents)
-
-            self.logger.debug(
-                "Created sitecustomize.py for early log redirection in: %s",
-                self._sitecustomize_dir,
-            )
-
-        # Configure environment for each rank
-        for rank_env in envs.values():
-            # Pass the log file path (each child will open it with O_APPEND)
-            rank_env["TORCHELASTIC_CONSOLIDATED_LOG"] = cycle_log_file
-
-            # Add sitecustomize dir to PYTHONPATH so it auto-imports at startup
-            current_pythonpath = rank_env.get("PYTHONPATH", "")
-            if current_pythonpath:
-                rank_env["PYTHONPATH"] = f"{self._sitecustomize_dir}:{current_pythonpath}"
-            else:
-                rank_env["PYTHONPATH"] = self._sitecustomize_dir
-
-        # Bypass PyTorch's redirect mechanism by passing None
-        #
-        # Why we don't use PyTorch's redirect:
-        # - PyTorch's redirect (torch.distributed.elastic.multiprocessing.redirects.redirect)
-        #   opens files with mode="w+b" which TRUNCATES the file
-        # - If multiple ranks write to the same file, they would overwrite each other
-        # - PyTorch's redirect happens INSIDE the worker process (after it starts)
-        #
-        # Our approach instead:
-        # - We redirect stdout/stderr at Python startup (via sitecustomize.py)
-        # - BEFORE PyTorch or any user code runs
-        # - Each rank opens the file with O_APPEND flag for safe concurrent writes
-        #
-        # By passing None here, PyTorch's get_std_cm() returns nullcontext() and skips
-        # its redirect entirely, leaving our early redirection in place.
-        stdouts = {rank: None for rank in range(nprocs)}
-        stderrs = {rank: None for rank in range(nprocs)}
-
-        # Create error directory
-        if not self._error_dir:
-            self._error_dir = tempfile.mkdtemp(prefix=f"torchelastic_errors_{run_id}_")
-
-        error_base_dir = os.path.join(self._error_dir, f"cycle_{restart_count}")
-        os.makedirs(error_base_dir, exist_ok=True)
-
-        # No tee
-        tee_stdouts: dict[int, str] = {}
-        tee_stderrs: dict[int, str] = {}
-
-        # Create error files (per rank, required by PyTorch)
-        error_files = {}
-        for local_rank in range(nprocs):
-            error_dir = os.path.join(error_base_dir, str(local_rank))
-            os.makedirs(error_dir, exist_ok=True)
-            error_file = os.path.join(error_dir, "error.json")
-            error_files[local_rank] = error_file
-            envs[local_rank]["TORCHELASTIC_ERROR_FILE"] = error_file
-
-        self.logger.debug(
-            "Cycle %s log: %s (consolidated via O_APPEND, %d ranks)",
-            restart_count,
-            cycle_log_file,
-            nprocs,
-        )
-
-        return LogsDest(stdouts, stderrs, tee_stdouts, tee_stderrs, error_files)
-
-    def __repr__(self) -> str:
-        return f"PerCycleLogsSpecs(base_log_file={self._base_log_file})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, PerCycleLogsSpecs):
-            return False
-        return self._base_log_file == other._base_log_file
-
-    def get_cycle_log_file(self, cycle_index: int) -> str:
-        """
-        Instance helper to build cycle logfile for this spec's base path.
-        """
-        base_without_ext = os.path.splitext(self._base_log_file)[0]
-        ext = os.path.splitext(self._base_log_file)[1] or ".log"
-        return f"{base_without_ext}_cycle{cycle_index}{ext}"
 
 
 class MultiplexingReaderThread(threading.Thread):
@@ -543,6 +340,11 @@ class MultiplexingReaderThread(threading.Thread):
                                 # Decode with error replacement to handle any encoding issues
                                 text = data.decode('utf-8', errors='replace')
 
+                                # Clean NULL bytes to prevent log file from being detected as binary
+                                # This can happen during worker crashes when binary data ends up in stdout/stderr
+                                if '\x00' in text:
+                                    text = text.replace('\x00', '<NUL>')
+
                                 # Split into lines, keeping line endings
                                 # Important: splitlines(keepends=True) on "abc\ndef" returns ['abc\n', 'def']
                                 # The last element 'def' has NO newline - it's an incomplete line!
@@ -580,8 +382,9 @@ class PipeBasedLogsSpecs(LogsSpecs):
     """
     LogsSpecs using pipes + reader thread (like srun --output) for consolidated per-cycle logging.
 
-    This is the RECOMMENDED implementation for consolidated logging as it solves the buffer loss
-    problem that affects PerCycleLogsSpecs.
+    This implementation solves buffer loss problems by using a pipe-based architecture where
+    workers write to pipes and a parent thread reads from all pipes and writes to the consolidated
+    log file.
 
     Architecture:
         1. Each worker's stdout/stderr is redirected to a pipe (via subprocess.PIPE)
@@ -589,7 +392,7 @@ class PipeBasedLogsSpecs(LogsSpecs):
         3. Reader thread adds rank prefixes and writes to consolidated log file
         4. When workers exit, pipes close and reader thread terminates automatically
 
-    Benefits over PerCycleLogsSpecs:
+    Benefits:
         - Line-buffered pipes prevent log loss on worker termination (SIGTERM)
         - Rank prefixes work for C++ logs (added in parent, not child)
         - Reduced Lustre lock contention (one writer per node vs N workers)
@@ -739,32 +542,40 @@ class PipeBasedLogsSpecs(LogsSpecs):
         Returns:
             The reader thread (already started)
         """
-        # Ensure old reader thread has terminated (should have already)
-        # The thread exits automatically when all worker pipes close (workers killed)
-        # This is just a safety check - in normal flow, thread should already be dead
+        # Check if previous reader thread is still alive
+        #
+        # WHY THIS HAPPENS:
+        # The reader thread exits when all pipes close. However, pipes don't close immediately
+        # when workers die because:
+        # 1. PyTorch's SubprocessContext._close() only calls handler.close() if proc.poll() is None
+        # 2. By the time _close() runs, workers have often already died (proc.poll() != None)
+        # 3. So handler.close() is never called, and Popen.stdout pipes remain open
+        # 4. Pipes only close when Python's GC collects the old Popen objects
+        #
+        # WHEN THIS IS OK:
+        # - With hour-long restart intervals: plenty of time for GC to run, FD reuse unlikely
+        # - Old thread will exit within minutes when GC closes pipes
+        # - New thread uses different FDs, so no conflict
+        #
+        # WHEN THIS COULD BE PROBLEMATIC:
+        # - Fast restart scenarios (seconds apart): old FDs might be reused before cleanup
+        # - Could cause log corruption if same FD monitored by multiple threads
+        #
+        # WHAT HAPPENS:
+        # - We proceed immediately without waiting (old thread will exit via GC)
+        # - Old thread monitors old FDs, new thread monitors new FDs
+        # - No conflict as long as FDs are different (typical with hour-long intervals)
         if self._reader_thread and self._reader_thread.is_alive():
-            self.logger.warning(
-                "Previous reader thread still alive (unexpected), waiting up to 10s for termination"
+            self.logger.debug(
+                "Previous reader thread still alive (expected, will exit when GC closes old pipes). "
+                "Proceeding with new cycle."
             )
-            self._reader_thread.join(timeout=10)
-
-            if self._reader_thread.is_alive():
-                # Thread still alive after 10s - this shouldn't happen
-                # Pipes should have closed when workers were killed
-                self.logger.error(
-                    "Previous reader thread did not terminate after 10s! "
-                    "This indicates workers were not properly killed or pipes not closed. "
-                    "Proceeding anyway, but this may cause issues."
-                )
-                # We proceed anyway because blocking here would prevent restart
-                # The old thread should eventually exit when pipes close
 
         # Check if log file path is set up
         if self._current_cycle_log is None:
-            self.logger.info(
-                "start_reader() called but _current_cycle_log is None. "
-                "This is normal for standby/hot spare nodes - reify() will be called again "
-                "when the node becomes active and spawns workers."
+            self.logger.debug(
+                "start_reader() called but _current_cycle_log is None "
+                "(normal for hot spare nodes - will be set up when node becomes active)"
             )
             return None
 
@@ -782,8 +593,10 @@ class PipeBasedLogsSpecs(LogsSpecs):
                 pipes[rank] = handler.proc.stdout.fileno()
 
         if not pipes:
-            self.logger.warning(
-                "No pipes available from subprocess handlers, logs may not be captured"
+            # No pipes available - this is expected for hot spare nodes with no workers
+            # Only log at debug level since it's normal behavior
+            self.logger.debug(
+                "No pipes available from subprocess handlers (likely hot spare node with no workers)"
             )
             return None
 
