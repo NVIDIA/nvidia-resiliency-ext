@@ -36,6 +36,8 @@ dependencies = [
     "langchain-nvidia-ai-endpoints>=0.3.15",
     "mcp>=1.15.0",
     "logsage>=0.1.5",
+    "slack-bolt>=1.23.0",
+    "slack-sdk>=3.35.0"
 ]
 
 [project.optional-dependencies]
