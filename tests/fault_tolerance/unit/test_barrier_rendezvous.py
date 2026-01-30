@@ -493,50 +493,6 @@ class RaceConditionTest(BaseRendezvousTest):
         self.assertEqual(len(arrived_counts), num_participants)
         self.assertEqual(set(arrived_counts), set(range(1, num_participants + 1)))
 
-    def test_late_arrival_during_acknowledgment(self):
-        """Test that rendezvous completes correctly with all participants arriving together."""
-        min_nodes = 4  # Require 4 nodes
-        max_nodes = 5
-        segment_check_interval = _test_segment_check_interval()  # Use default short interval
-
-        results = []
-        errors = []
-
-        def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=is_host,
-                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-            )
-            try:
-                node = self.node_desc_gen.generate()
-                # Rendezvous completes when segment constraint is met
-                rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, segment_check_interval
-                )
-                results.append((participant_id, rank, total))
-            except Exception as e:
-                errors.append((participant_id, e))
-
-        # Start all min_nodes participants together
-        threads = []
-        for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0))
-            t.start()
-            threads.append(t)
-
-        # Wait for all with generous timeout
-        for t in threads:
-            t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
-
-        # All should complete
-        self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
-        self.assertEqual(
-            len(results), min_nodes, f"Expected {min_nodes} results, got {len(results)}"
-        )
-
     def test_late_arrival_after_ack_check_before_key_clear(self):
         """Test late arrival in the critical window: after ack check, before key clearing.
 

@@ -50,8 +50,8 @@ defusedxml = "*"
 langchain-nvidia-ai-endpoints = ">=0.3.15"
 mcp = ">=1.15.0"
 logsage = ">=0.1.5"
-grpcio = "^1.76.0"
-grpcio-tools = "^1.76.0"
+grpcio = ">=1.60.0"
+grpcio-tools = ">=1.60.0"
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
@@ -104,3 +104,6 @@ ignore = ["F841"]
 [tool.ruff.lint.per-file-ignores]
 # avoid "unused import" warnings for __init__.py files
 "__init__.py" = ["F401"]
+
+[tool.pytest.ini_options]
+markers = []

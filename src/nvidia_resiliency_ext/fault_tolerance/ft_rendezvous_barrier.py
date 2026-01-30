@@ -1730,7 +1730,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         prev_signal_handlers = _install_rdzv_signal_handlers()
         try:
             # Check node health and control requests before starting rendezvous
+            health_check_start = time.monotonic()
             self.ensure_node_is_healthy()
+            health_check_elapsed = time.monotonic() - health_check_start
+            log.debug(
+                f"[{self._this_node}] Node health check completed in {health_check_elapsed:.3f}s"
+            )
+
             self.handle_control_requests_from_rank()
 
             # Perform the complete rendezvous process

@@ -23,6 +23,7 @@ import logging
 import os
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -69,6 +70,7 @@ from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
+    UpdateConfigMsg,
 )
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
@@ -79,6 +81,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     patched_method,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
+    write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
@@ -99,7 +102,8 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
-# Logger will be configured in run() after parsing args
+# Logger instance (configured later in run() via setup_logger())
+# Note: Must call run() before using logger to ensure proper configuration
 logger = logging.getLogger(LogConfig.name)
 
 _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
@@ -333,6 +337,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         workers_stop_timeout: float = 30,
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
+        rank_monitors: Optional[Dict[int, RankMonitorState]] = None,
     ):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
@@ -345,8 +350,13 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
         # Rank monitor state (process, IPC connections, listener tasks) per local rank
-        self._rank_monitors: Dict[int, RankMonitorState] = dict()
+        # Pre-created rank monitors passed from config (created before gRPC)
+        self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
         self._ft_cfg = fault_tol_cfg
+
+        # Setup IPC connections to pre-created rank monitors
+        if self._rank_monitors:
+            self._setup_rank_monitor_connections()
 
         # Fix _remaining_restarts for job array deployments
         # The base class (SimpleElasticAgent) sets _remaining_restarts = spec.max_restarts,
@@ -754,37 +764,91 @@ class LocalElasticAgent(SimpleElasticAgent):
     def get_rank_mon_socket_path(self, local_rank):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
 
-    def setup_rank_monitors(self, envs: Dict[int, Dict[str, str]]) -> None:
+    @staticmethod
+    def setup_rank_monitors_early(
+        nproc_per_node: int,
+        ft_cfg: FaultToleranceConfig,
+        launcher_pid: int,
+    ) -> Dict[int, "RankMonitorState"]:
+        """
+        Setup rank monitors before gRPC threads start (fork-safe).
+
+        This creates rank monitor subprocesses using fork multiprocessing context.
+        Must be called BEFORE PipeBasedLogsSpecs is created to avoid fork-after-thread issues.
+
+        Args:
+            nproc_per_node: Number of workers per node (typically number of GPUs)
+            ft_cfg: Fault tolerance configuration
+            launcher_pid: Launcher process PID for socket naming
+
+        Returns:
+            Dictionary mapping local_rank -> RankMonitorState
+        """
+        if os.getenv('NVRX_DISABLE_RANK_MONITORS'):
+            return {}
+
         fork_mp_ctx = torch.multiprocessing.get_context("fork")
-        new_monitors = []  # Track newly started monitors
+        rank_monitors = {}
+        new_monitors = []
 
-        for worker_env in envs.values():
-            # Start rank monitors if not already started
-            # Each rank (re)connects to its rank monitor when it starts
-            # Monitor of the local rank0 on the store hosting node is the restarter logger
-            local_rank = int(worker_env['LOCAL_RANK'])
-            is_restarter_logger = self._is_store_host and local_rank == 0
-            rmon_ipc_socket = worker_env[FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR]
-            if local_rank not in self._rank_monitors:
-                rmon_proc = RankMonitorServer.run_in_subprocess(
-                    cfg=self._ft_cfg,
-                    ipc_socket_path=rmon_ipc_socket,
-                    is_restarter_logger=is_restarter_logger,
-                    mp_ctx=fork_mp_ctx,
-                    env=worker_env,
-                )
-                self._rank_monitors[local_rank] = RankMonitorState(process=rmon_proc)
-                new_monitors.append((local_rank, rmon_proc))
+        for local_rank in range(nproc_per_node):
+            # Generate socket path
+            rmon_ipc_socket = f"{tempfile.gettempdir()}/_ft_launcher{launcher_pid}_rmon{local_rank}.socket"
 
-        # Establish bidirectional IPC connections to new rank monitors
+            # Minimal env - only what rank monitor needs for basic operation
+            # Other env vars (NVRX_LOG_DEBUG, OMP_NUM_THREADS, etc.) are inherited automatically
+            minimal_env = {
+                'LOCAL_RANK': str(local_rank),
+                'FT_RANK_MONITOR_IPC_SOCKET': rmon_ipc_socket,
+            }
+
+            # Always False to disable nested restarter (not needed anymore)
+            is_restarter_logger = False
+
+            rmon_proc = RankMonitorServer.run_in_subprocess(
+                cfg=ft_cfg,
+                ipc_socket_path=rmon_ipc_socket,
+                is_restarter_logger=is_restarter_logger,
+                mp_ctx=fork_mp_ctx,
+                env=minimal_env,
+            )
+
+            rank_monitors[local_rank] = RankMonitorState(
+                process=rmon_proc,
+                socket_path="",  # Will be set later in _connect_to_rank_monitor
+                listener_thread=None,
+                stop_event=None,
+            )
+            new_monitors.append((local_rank, rmon_proc))
+
+        return rank_monitors
+
+
+    def _setup_rank_monitor_connections(self):
+        """
+        Setup IPC connections to pre-created rank monitors.
+
+        This establishes bidirectional communication channels between the launcher
+        and each rank monitor subprocess for progress tracking and control.
+        """
+        new_monitors = [
+            (local_rank, state.process)
+            for local_rank, state in self._rank_monitors.items()
+        ]
+
         if new_monitors:
             async def connect_all():
                 await asyncio.gather(
                     *[self._connect_to_rank_monitor(lr, rmon) for lr, rmon in new_monitors]
                 )
             asyncio.run(connect_all())
+            logger.debug(f"Established IPC connections to {len(new_monitors)} rank monitors")
 
     def shutdown_rank_monitors(self):
+        # Skip if rank monitors were disabled
+        if os.getenv('NVRX_DISABLE_RANK_MONITORS'):
+            return
+
         # Stop listener threads and terminate rank monitor processes
         for local_rank, state in self._rank_monitors.items():
             # Signal listener thread to stop
@@ -882,6 +946,45 @@ class LocalElasticAgent(SimpleElasticAgent):
         finally:
             loop.close()
 
+    def _send_cycle_to_rank_monitors(self, current_cycle: int) -> None:
+        """Send current cycle number to all rank monitors.
+
+        This updates the cycle number in rank monitors so they can include it in timeout logs.
+        Should be called at the start of each cycle (in _start_workers).
+
+        Note: Creates short-lived connections for sending. The persistent listener connections
+        are read-only and run in separate thread event loops, so we can't reuse them for writing.
+
+        Args:
+            current_cycle: The current training cycle number (0 = initial, 1 = first restart, etc.)
+        """
+        async def send_cycle_to_monitor(local_rank: int, socket_path: str):
+            try:
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+                # Send cycle update message (fire and forget)
+                msg = UpdateConfigMsg(current_cycle=current_cycle)
+                await write_obj_to_ipc_stream(msg, writer)
+
+                # Clean up connection
+                writer.close()
+                await writer.wait_closed()
+            except Exception as e:
+                logger.warning(f"Failed to send cycle to rank monitor {local_rank}: {e}")
+
+        async def send_to_all():
+            tasks = []
+            for local_rank, state in self._rank_monitors.items():
+                if state.socket_path:
+                    tasks.append(send_cycle_to_monitor(local_rank, state.socket_path))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Run the async operations
+        try:
+            asyncio.run(send_to_all())
+        except Exception as e:
+            logger.error(f"Error sending cycle to rank monitors: {e}")
+
     def _setup_local_watchdog(self, envs: Dict[int, Dict[str, str]]) -> None:
         enable_watchdog_env_name = TORCHELASTIC_ENABLE_FILE_TIMER
         watchdog_enabled = os.getenv(enable_watchdog_env_name)
@@ -901,11 +1004,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             )
             self._worker_watchdog.start()
             logger.info("FileTimerServer started")
-        else:
-            logger.debug(
-                "Environment variable '%s' not found. Do not start FileTimerServer.",
-                enable_watchdog_env_name,
-            )
         # Propagate the watchdog file env to worker processes
         if watchdog_file_path is not None:
             for worker_env in envs.values():
@@ -963,16 +1061,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Rank monitors will detect worker shutdown when worker processes disconnect
         self._shutdown(timeout=self._workers_stop_timeout)
 
-        # Wait for reader thread to drain pipes (polls every 100ms, wait 3 cycles)
-        # then close pipe file objects to prevent FD reuse bugs
-        if isinstance(self._logs_specs, PipeBasedLogsSpecs):
-            time.sleep(0.3)
-            for handler in self._pcontext.subprocess_handlers.values():
-                for stream in (handler.proc.stdout, handler.proc.stderr):
-                    if stream:
-                        with contextlib.suppress(Exception):
-                            stream.close()
-
         # Check for remaining processes if configured
         if self._ft_cfg.check_remaining_processes and self._children_pgids:
             remaining = get_processes_by_pgids(self._children_pgids)
@@ -1003,6 +1091,22 @@ class LocalElasticAgent(SimpleElasticAgent):
             )
             self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
 
+        # Wait for reader thread to drain pipes (polls every 100ms, wait 3 cycles)
+        # then close pipe file objects to prevent FD reuse bugs
+        if isinstance(self._logs_specs, PipeBasedLogsSpecs):
+            time.sleep(0.3)
+            for handler in self._pcontext.subprocess_handlers.values():
+                for stream in (handler.proc.stdout, handler.proc.stderr):
+                    if stream:
+                        with contextlib.suppress(Exception):
+                            stream.close()
+
+            # Tell reader to unregister all FDs immediately (blocks until done)
+            # This prevents FD reuse bugs: when OS reuses FD numbers for cycle N+1
+            # workers, the reader's poller won't have stale registrations from cycle N
+            # that would cause cycle N+1 data to be written to cycle N log files.
+            self._logs_specs.clear_all_pipes_from_reader()
+
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
@@ -1024,6 +1128,9 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Note: We use _get_global_restart_count() because in the context of worker startup,
         # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
         restart_count = self._get_global_restart_count()  # Actually cycle number
+
+        # Send current cycle number to rank monitors for logging
+        self._send_cycle_to_rank_monitors(restart_count)
 
         # Record worker start start event
         record_profiling_event(
@@ -1106,7 +1213,8 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._setup_local_watchdog(envs=envs)
 
-        self.setup_rank_monitors(envs=envs)
+        # Rank monitors are already created early (before gRPC) and connections established
+        # in LocalElasticAgent.__init__(), so no need to call setup_rank_monitors here
 
         # Standby nodes are those assigned a group_rank >= min_nodes after rendezvous.
         # The rendezvous handler sets local_world_size to 0 for standby nodes, so no workers are created.
@@ -1154,7 +1262,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     "works with script/binary entrypoints (e.g., 'python train.py')."
                 )
 
-            self._logs_specs.start_reader(self._pcontext.subprocess_handlers)
+            self._logs_specs.update_reader_for_cycle(self._pcontext.subprocess_handlers)
 
         # Record worker start completion event
         record_profiling_event(
@@ -1430,6 +1538,7 @@ class LaunchConfig:
     log_line_prefix_template: Optional[str] = None
     metrics_cfg: Dict[str, str] = field(default_factory=dict)
     local_addr: Optional[str] = None
+    rank_monitors: Dict[int, "RankMonitorState"] = field(default_factory=dict)
 
     def __post_init__(self):
         default_timeout = 900
@@ -1624,6 +1733,7 @@ def launch_agent(
         workers_stop_timeout=config.workers_stop_timeout,
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
+        rank_monitors=config.rank_monitors,  # Pass pre-created rank monitors
     )
 
     # Set agent reference in rendezvous handler for callbacks
@@ -1728,6 +1838,7 @@ def launch_agent(
         # This must be the final cleanup step to avoid losing logs during shutdown
         if isinstance(config.logs_specs, PipeBasedLogsSpecs):
             config.logs_specs.cleanup()
+
 
 
 # Source
@@ -2256,20 +2367,86 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-base-logfile",
-        "--ft_base_logfile",
+        "--ft-per-cycle-applog-prefix",
+        "--ft_per_cycle_applog_prefix",
         action=env,
         type=str,
         default=None,
-        dest="ft_base_logfile",
-        help="Base log file path for consolidated logging (e.g. /lustre/logs/job_12345.log). "
-        "Creates two types of log files: "
-        "(1) InJob launcher logs: /lustre/logs/job_12345.log (all launcher instances from all nodes), "
-        "(2) Training worker logs per cycle: /lustre/logs/job_12345_cycle0.log, job_12345_cycle1.log, etc. "
-        "All ranks/nodes write to the same files with automatic rank prefixes (like 'srun -l'). "
-        "Uses O_APPEND flag for safe concurrent writes from multiple processes. "
-        "Avoids filesystem pressure at scale (2 files per cycle instead of N*ranks files). "
-        "Ideal for SLURM job arrays with thousands of ranks across multiple nodes.",
+        dest="ft_per_cycle_applog_prefix",
+        help="Prefix for per-cycle application log files (must be absolute path, e.g. /lustre/logs/job_12345.log). "
+        "Creates training worker logs per cycle: /lustre/logs/job_12345_cycle0.log, job_12345_cycle1.log, etc. "
+        "All ranks/nodes capture logs with automatic rank prefixes (like 'srun -l'). "
+        "Without --ft-enable-log-server: Each node writes directly to Lustre with O_APPEND (safe concurrent writes). "
+        "With --ft-enable-log-server (recommended): All nodes stream logs to gRPC server on rank 0, which becomes the single Lustre writer. "
+        "gRPC mode eliminates Lustre lock contention and scales to 1000+ nodes. "
+        "Note: NVRx launcher logs go to stdout/stderr by default unless --ft-nvrx-logfile is specified.",
+    )
+
+    parser.add_argument(
+        "--ft-nvrx-logfile",
+        "--ft_nvrx_logfile",
+        action=env,
+        type=str,
+        default=None,
+        dest="ft_nvrx_logfile",
+        help="Optional: Path for NVRx launcher's own logs (must be absolute path if specified). "
+        "If not specified, launcher logs go to stdout/stderr (default, captured by orchestrator). "
+        "If specified, launcher logs are redirected via pipe → gRPC → server writes to this file. "
+        "This routes launcher logs through the same infrastructure as worker logs. "
+        "Example: --ft-nvrx-logfile /lustre/logs/launcher.log",
+    )
+
+    parser.add_argument(
+        "--ft-enable-log-server",
+        "--ft_enable_log_server",
+        action=env,
+        type=lambda x: x.lower() == 'true',
+        default=False,
+        dest="ft_enable_log_server",
+        help="Enable gRPC-based log funneling to a single Lustre file. "
+        "When enabled with --ft-per-cycle-applog-prefix, the launcher automatically: "
+        "(1) Starts gRPC log server on TCP store host (rank 0 node), "
+        "(2) Configures all nodes as gRPC clients to stream logs to server, "
+        "(3) Server writes to single Lustre file (eliminates O_APPEND contention). "
+        "Benefits: No Lustre lock contention, no log corruption, scales to 1500+ nodes. "
+        "Requires: pip install grpcio grpcio-tools (protobufs auto-compiled during install). "
+        "Default: False (direct file writing). Set to 'true' to enable.",
+    )
+
+    parser.add_argument(
+        "--ft-log-server-port",
+        "--ft_log_server_port",
+        action=env,
+        type=int,
+        default=50051,
+        dest="ft_log_server_port",
+        help="Port for gRPC log funnel server (only used if --ft-enable-log-server is enabled). "
+        "Default: 50051",
+    )
+
+    parser.add_argument(
+        "--ft-log-server-log",
+        "--ft_log_server_log",
+        action=env,
+        type=str,
+        default=None,
+        dest="ft_log_server_log",
+        help="Path to gRPC server's own log file (only used if --ft-enable-log-server is enabled). "
+        "If not specified, derives from --ft-per-cycle-applog-prefix by appending '_log_server.log'. "
+        "Example: If --ft-per-cycle-applog-prefix=/path/to/app.log, server log defaults to /path/to/app_log_server.log",
+    )
+
+    parser.add_argument(
+        "--ft-log-server-graceful-shutdown-timeout",
+        "--ft_log_server_graceful_shutdown_timeout",
+        action=env,
+        type=float,
+        default=60.0,
+        dest="ft_log_server_graceful_shutdown_timeout",
+        help="Maximum seconds to wait for clients during gRPC server graceful shutdown (only used if --ft-enable-log-server is enabled). "
+        "When store host exits, server will continue accepting logs from other ranks for up to this timeout "
+        "or until all clients disconnect, whichever comes first. This ensures other nodes can flush their final logs. "
+        "Default: 60.0",
     )
 
     parser.add_argument(
@@ -2353,7 +2530,7 @@ def get_args_parser() -> ArgumentParser:
         help="Logging behavior configuration. Options: "
         "(1) None (default): Creates separate log files per rank per restart cycle. "
         "(2) Custom entrypoint name from torchrun.logs_specs group for advanced customization. "
-        "Note: For consolidated logging, use --ft-base-logfile instead (automatically uses PipeBasedLogsSpecs).",
+        "Note: For consolidated logging, use --ft-per-cycle-applog-prefix instead (automatically uses PipeBasedLogsSpecs).",
     )
 
     #
@@ -2809,7 +2986,7 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     Built-in options:
     - None (default): Uses DefaultLogsSpecs (per-rank log files per cycle)
 
-    Note: The legacy 'per_cycle' option has been removed. Use --ft-base-logfile instead,
+    Note: The legacy 'per_cycle' option has been removed. Use --ft-per-cycle-applog-prefix instead,
     which automatically uses PipeBasedLogsSpecs for consolidated logging.
     """
     logs_specs_cls = None
@@ -2837,11 +3014,14 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     return logs_specs_cls
 
 
-def config_from_args(args, launcher_pipe_read_fd=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
+def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str], Optional[subprocess.Popen]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
+
+    # Initialize grpc_server_process early so it's always defined for return statement
+    grpc_server_process = None
 
     if hasattr(args, "master_addr") and args.rdzv_backend not in ["static", "c10d"] and not args.rdzv_endpoint:
         logger.warning(
@@ -2955,21 +3135,93 @@ def config_from_args(args, launcher_pipe_read_fd=None) -> Tuple[LaunchConfig, Un
                 "--local_ranks_filter must be a comma-separated list of integers e.g. --local_ranks_filter=0,1,2"
             ) from e
 
-    # Determine logs_specs based on ft_base_logfile or logs_specs argument
-    base_log_file = getattr(args, 'ft_base_logfile', None)
+    # Determine logs_specs based on ft_per_cycle_applog_prefix or logs_specs argument
+    base_log_file = getattr(args, 'ft_per_cycle_applog_prefix', None)
 
     if base_log_file:
-        # If --ft-base-logfile is specified, automatically use PipeBasedLogsSpecs
+        # Validate that the path is absolute (not relative)
+        if not os.path.isabs(base_log_file):
+            raise ValueError(
+                f"--ft-per-cycle-applog-prefix must be an absolute path, got: {base_log_file}. "
+                f"Example: /lustre/logs/job.log (not logs/job.log)"
+            )
+
+        # If --ft-per-cycle-applog-prefix is specified, automatically use PipeBasedLogsSpecs
         # This provides pipe-based logging (like srun --output) to prevent log loss
         if args.logs_specs is not None:
             logger.warning(
-                "--logs-specs is ignored when --ft-base-logfile is specified. "
+                "--logs-specs is ignored when --ft-per-cycle-applog-prefix is specified. "
                 "Using PipeBasedLogsSpecs automatically."
             )
-        logs_specs = PipeBasedLogsSpecs(base_log_file=base_log_file, launcher_pipe_fd=launcher_pipe_read_fd)
+
+        # Configure gRPC if enabled
+        grpc_server_address = None
+        node_id = None
+
+        if getattr(args, 'ft_enable_log_server', False):
+            # Build gRPC server address
+            rdzv_endpoint = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=-1)[0]
+            grpc_port = getattr(args, 'ft_log_server_port', 50051)
+
+            # Node ID: hostname + PID for uniqueness in simulated multi-launcher environments
+            hostname = socket.gethostname()
+            pid = os.getpid()
+            node_id = f"{hostname}_{pid}"
+
+            # CRITICAL: Start gRPC server BEFORE creating PipeBasedLogsSpecs
+            # If we're the TCP store host and server fails to start, we need to know
+            # NOW before we configure logging to use gRPC (chicken-and-egg problem)
+            host, _ = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=0)
+            is_tcp_store_host = _matches_machine_hostname(host)
+
+            if is_tcp_store_host:
+                # When writer is on the same host as the gRPC server, use localhost
+                # to ensure loopback connection. This avoids DNS/hostname resolution
+                # issues that could prevent the local writer from connecting to the
+                # local server.
+                grpc_server_address = f"localhost:{grpc_port}"
+
+                grpc_server_process = _start_grpc_log_server(args, base_log_file)
+
+                if grpc_server_process is None:
+                    # CRITICAL: Server failed to start on TCP store host
+                    # Disable gRPC for this node to prevent log loss
+                    logger.error(
+                        "Failed to start gRPC server on TCP store host. "
+                        "Disabling gRPC log aggregation for all nodes (falling back to direct file writing)."
+                    )
+                    grpc_server_address = None
+                    node_id = None
+            else:
+                # Writer is on a different host than the gRPC server
+                # Use the rendezvous endpoint to connect to the remote server
+                grpc_server_address = f"{rdzv_endpoint}:{grpc_port}"
+
+        # CRITICAL: Create rank monitors BEFORE PipeBasedLogsSpecs (which starts gRPC client thread)
+        # This ensures rank monitors are forked before any threads exist (fork-safe)
+        rank_monitors = LocalElasticAgent.setup_rank_monitors_early(
+            nproc_per_node=nproc_per_node,
+            ft_cfg=fault_tol_cfg,
+            launcher_pid=os.getpid(),
+        )
+
+        logs_specs = PipeBasedLogsSpecs(
+            base_log_file=base_log_file,
+            launcher_pipe_fd=launcher_pipe_read_fd,
+            launcher_log_file=launcher_log_file,
+            grpc_server_address=grpc_server_address,
+            node_id=node_id,
+        )
         # Note: PipeBasedLogsSpecs handles rank prefixing in parent process
     else:
         # Standard logs_specs creation for other cases
+        # Create rank monitors before logs_specs (fork-safe even without gRPC)
+        rank_monitors = LocalElasticAgent.setup_rank_monitors_early(
+            nproc_per_node=nproc_per_node,
+            ft_cfg=fault_tol_cfg,
+            launcher_pid=os.getpid(),
+        )
+
         logs_specs_cls: Type[LogsSpecs] = _get_logs_specs_class(args.logs_specs)
         logs_specs = logs_specs_cls(
             log_dir=args.log_dir,
@@ -2997,6 +3249,7 @@ def config_from_args(args, launcher_pipe_read_fd=None) -> Tuple[LaunchConfig, Un
         local_addr=args.local_addr,
         logs_specs=logs_specs,
         fault_tol_cfg=fault_tol_cfg,
+        rank_monitors=rank_monitors,  # Pass pre-created rank monitors
     )
 
     with_python = not args.no_python
@@ -3024,7 +3277,7 @@ def config_from_args(args, launcher_pipe_read_fd=None) -> Tuple[LaunchConfig, Un
         cmd_args.append(f"--local-rank={macros.local_rank}")
     cmd_args.extend(args.training_script_args)
 
-    return config, cmd, cmd_args
+    return config, cmd, cmd_args, grpc_server_process
 
 
 def run_script_path(training_script: str, *training_script_args: str):
@@ -3040,14 +3293,104 @@ def run_script_path(training_script: str, *training_script_args: str):
     runpy.run_path(sys.argv[0], run_name="__main__")
 
 
+def _start_grpc_log_server(args, base_log_file: str) -> Optional[subprocess.Popen]:
+    """
+    Start gRPC log aggregation server as subprocess.
+
+    This should only be called on the TCP store host (rank 0 node).
+    The server accepts log chunks from clients, with each chunk specifying its target file_path.
+
+    Args:
+        args: Parsed command-line arguments (Namespace)
+        base_log_file: Base log file path (used to derive server log file name if not specified)
+
+    Returns:
+        subprocess.Popen object for the server process, or None if failed
+
+    Notes:
+        max_workers is dynamically sized: min(4096, max(100, num_nodes + 10))
+        - Each node runs one GrpcWriterThread (long-lived streaming connection)
+        - Floor of 100: Handles small clusters and parsing failures gracefully
+        - Cap at 4096: Safety limit for extremely large clusters
+        - Threads are I/O-bound (blocked on queue), so 2048 threads ≈ 20MB memory
+        - Insufficient workers cause clients beyond Nth to queue indefinitely!
+    """
+    # Determine server log file path
+    grpc_server_log = getattr(args, 'ft_log_server_log', None)
+    if grpc_server_log is None:
+        # Derive from base_log_file: replace .log with _grpc_server.log
+        if base_log_file.endswith('.log'):
+            grpc_server_log = base_log_file[:-4] + '_grpc_server.log'
+        else:
+            grpc_server_log = base_log_file + '_grpc_server.log'
+
+    # Parse nnodes to get max expected nodes for worker pool sizing
+    # Each node maintains one long-lived streaming connection
+    _, max_nodes = parse_min_max_nnodes(args.nnodes)
+
+    # Get gRPC port
+    grpc_port = getattr(args, 'ft_log_server_port', 50051)
+
+    # Get graceful shutdown timeout
+    graceful_shutdown_timeout = getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
+
+    # Calculate max_workers based on expected number of nodes
+    max_workers = min(4096, max(100, max_nodes + 10))
+
+    try:
+        # Open server log file for writing
+        # Note: Launcher manages this file handle, not the server itself
+        server_log_fd = open(grpc_server_log, 'w')
+
+        # Start gRPC server as subprocess with stdout/stderr redirected
+        # Note: No --output-file argument - clients specify file_path in each chunk
+        server_process = subprocess.Popen(
+            [
+                sys.executable, '-m',
+                'nvidia_resiliency_ext.shared_utils.grpc_log_server',
+                '--host', '0.0.0.0',
+                '--port', str(grpc_port),
+                '--max-workers', str(max_workers),
+                '--graceful-shutdown-timeout', str(graceful_shutdown_timeout),
+            ],
+            stdout=server_log_fd,
+            stderr=subprocess.STDOUT,  # Redirect stderr to stdout (both go to same file)
+        )
+
+        logger.info(
+            f"gRPC log server started: PID={server_process.pid}, port={grpc_port}, "
+            f"max_workers={max_workers} (for {max_nodes} nodes)"
+        )
+
+        # Note: server_log_fd will be closed when server_process terminates
+        # Clients will wait for server readiness using their own health check retry logic
+        return server_process
+
+    except Exception as e:
+        logger.error(f"Failed to start gRPC log server: {e}", exc_info=True)
+        return None
+
+
 def run(args):
-    # Configure logger based on whether --ft-base-logfile is specified
-    base_log_file = getattr(args, 'ft_base_logfile', None)
+    # Configure logger based on whether launcher logs should be redirected
+    base_log_file = getattr(args, 'ft_per_cycle_applog_prefix', None)
+    launcher_log_file = getattr(args, 'ft_nvrx_logfile', None)
     launcher_pipe_read_fd = None
 
-    if base_log_file:
+    # Validate launcher log file path is absolute if specified
+    if launcher_log_file and not os.path.isabs(launcher_log_file):
+        raise ValueError(
+            f"--ft-nvrx-logfile must be an absolute path, got: {launcher_log_file}. "
+            f"Example: /lustre/logs/launcher.log (not logs/launcher.log)"
+        )
+
+    # Setup launcher logging
+    if launcher_log_file:
+        # Option 1: Redirect launcher logs via pipe → gRPC → server writes to file
+        # This route launcher logs through the same infrastructure as worker logs
+        # The gRPC server becomes the single writer for launcher logs
+
         # Setup pipe-based logging for launcher logs
-        # This avoids slow Lustre writes blocking the launcher
         launcher_pipe_read_fd, launcher_pipe_write_fd = os.pipe()
 
         # Redirect launcher's stdout and stderr to the pipe
@@ -3066,8 +3409,12 @@ def run(args):
         sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
         sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
 
-    # Setup logger - writes to redirected stderr (pipe or console)
-    setup_logger(node_local_tmp_prefix="ftlauncher")
+        # Setup logger - writes to redirected stderr (pipe)
+        setup_logger(node_local_tmp_prefix="ftlauncher")
+    else:
+        # Option 2: Default - launcher logs go to stdout/stderr (console)
+        # Setup logger - writes to console
+        setup_logger(node_local_tmp_prefix="ftlauncher")
 
     if args.standalone:
         args.rdzv_backend = "c10d"
@@ -3092,28 +3439,60 @@ def run(args):
     # Initialize NodeHealthCheck singleton at launcher start
     init_node_health_check(ft_hc_endpoint)
 
-    config, cmd, cmd_args = config_from_args(args, launcher_pipe_read_fd)
+    # Start gRPC log server if enabled and on TCP store host
+    # NOTE: This is now handled earlier in config_from_args() before PipeBasedLogsSpecs creation
+    # to avoid chicken-and-egg problem (logging to gRPC before server is up)
+    # Server cleanup is handled by main() to ensure final logs aren't lost
+
+    config, cmd, cmd_args, grpc_server_process = config_from_args(args, launcher_pipe_read_fd, launcher_log_file)
     elastic_launch(
         config=config,
         entrypoint=cmd,
     )(*cmd_args)
 
+    # Return grpc_server_process so main() can clean it up after all logging
+    return grpc_server_process
+
 
 @record
 def main(args=None):
     args = parse_args(args)
+    grpc_server_process = None
     try:
-        run(args)
+        grpc_server_process = run(args)
     except ChildFailedError as e:
         logger.error(
             f"Some rank(s) exited with non-zero exit code: {e.failures}. Agent's exit code = 1"
         )
-        sys.exit(1)
+        exit_code = 1
     except Exception as e:
         logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
-        sys.exit(1)
-    logger.info("Agent exits with exit code = 0.")
-    sys.exit(0)
+        exit_code = 1
+    else:
+        logger.info("Agent exits with exit code = 0.")
+        exit_code = 0
+    finally:
+        # Clean up gRPC server AFTER all logging is done
+        # (logging cleanup already happened in run()'s finally block)
+        if grpc_server_process:
+            grpc_server_process.terminate()
+            try:
+                # CRITICAL: Server has graceful_shutdown_timeout to wait for clients
+                # We must wait at least that long + margin before force-killing
+                # The server will exit earlier if all clients disconnect
+                # Read timeout directly from args (already parsed and available here)
+                grpc_graceful_shutdown_timeout = getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
+                wait_timeout = grpc_graceful_shutdown_timeout + 5.0
+                grpc_server_process.wait(timeout=wait_timeout)
+            except subprocess.TimeoutExpired:
+                # Server didn't shut down within graceful period, force kill
+                logger.warning(
+                    f"gRPC server did not shut down within {wait_timeout}s, killing..."
+                )
+                grpc_server_process.kill()
+                grpc_server_process.wait()
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

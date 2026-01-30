@@ -159,13 +159,16 @@ class TestLauncherPipeFunctionality:
         """Test that PipeBasedLogsSpecs starts thread immediately when launcher pipe provided."""
         with tempfile.TemporaryDirectory() as tmpdir:
             base_log = os.path.join(tmpdir, "base.log")
+            launcher_log = os.path.join(tmpdir, "launcher.log")
 
             # Create launcher pipe
             launcher_read_fd, launcher_write_fd = os.pipe()
 
             # Create PipeBasedLogsSpecs - should start thread immediately
             logs_specs = PipeBasedLogsSpecs(
-                base_log_file=base_log, launcher_pipe_fd=launcher_read_fd
+                base_log_file=base_log,
+                launcher_pipe_fd=launcher_read_fd,
+                launcher_log_file=launcher_log,
             )
 
             # Verify thread was started
@@ -182,9 +185,9 @@ class TestLauncherPipeFunctionality:
             # Cleanup
             logs_specs.cleanup()
 
-            # Verify log was written
-            assert os.path.exists(base_log)
-            with open(base_log, 'r') as f:
+            # Verify log was written to launcher log file
+            assert os.path.exists(launcher_log)
+            with open(launcher_log, 'r') as f:
                 content = f.read()
             assert 'Early launcher log\n' in content
 

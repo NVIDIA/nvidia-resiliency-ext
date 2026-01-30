@@ -207,16 +207,16 @@ class TestGetInfrastructureRank:
         rank = get_infrastructure_rank()
         assert rank == -1
 
-    def test_precedence_topology_addr_over_nodename(self):
-        """Test that SLURM_TOPOLOGY_ADDR takes precedence over NVRX_INFRA_RANK_FROM_NODENAME."""
+    def test_precedence_nodename_over_topology_addr(self):
+        """Test that NVRX_INFRA_RANK_FROM_NODENAME takes precedence over SLURM_TOPOLOGY_ADDR."""
         os.environ['SLURM_TOPOLOGY_ADDR'] = 'block1.node2'
         os.environ['SLURM_TOPOLOGY_ADDR_PATTERN'] = 'block.node'
         os.environ['NVRX_INFRA_RANK_FROM_NODENAME'] = '1'
         os.environ['SLURMD_NODENAME'] = 'node999'
 
         rank = get_infrastructure_rank()
-        # Should use topology: 1*10^10 + 2 = 10000000002 (not nodename 999)
-        assert rank == 10000000002
+        # Should use nodename: 999 (not topology 1*10^10 + 2 = 10000000002)
+        assert rank == 999
 
     def test_precedence_nodename_over_cross_slurm_procid(self):
         """Test that NVRX_INFRA_RANK_FROM_NODENAME takes precedence over CROSS_SLURM_PROCID."""

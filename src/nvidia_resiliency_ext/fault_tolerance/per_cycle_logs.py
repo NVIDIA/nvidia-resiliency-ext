@@ -39,18 +39,23 @@ import errno
 import logging
 import os
 import queue
+import random
+import re
 import select
 import subprocess
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
+# gRPC imports for log aggregation
+import grpc
 from torch.distributed.elastic.multiprocessing import LogsDest, LogsSpecs, Std
 from torch.distributed.elastic.multiprocessing.subprocess_handler import SubprocessHandler
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
 
 # Special marker string to signal pipe-based logging
 # We can't use subprocess.PIPE directly because PyTorch expects strings
@@ -62,8 +67,71 @@ _PIPE_MARKER = "__SUBPROCESS_PIPE__"
 _WRITE_BATCH_SIZE = 256 * 1024  # 256 KB batches
 _FLUSH_INTERVAL_SECONDS = 1.0  # Flush at least every 1 second
 
+# gRPC configuration for distributed log aggregation
+_GRPC_MAX_CHUNK_SIZE = 256 * 1024  # 256 KB chunks for gRPC transmission
+_GRPC_RECONNECT_INTERVAL = 5.0  # Retry connection every 5 seconds
+
 # Module-level flag to track if we've patched get_subprocess_handler
 _SUBPROCESS_HANDLER_PATCHED = False
+
+# Pre-compiled regex and constants for log filtering (module-level for performance)
+# These patterns match Nvidia driver /proc/devices dumps that appear on process exit
+_DEVICE_SECTION_HEADERS = frozenset(["Character devices:", "Block devices:"])
+# Pattern matches: "252 device-mapper", "1 mem", "195 nvidia" (after stripping)
+_DEVICE_ENTRY_PATTERN = re.compile(r'^\d{1,3}\s+[a-zA-Z0-9_\-/]+$')
+
+
+def _should_filter_line(line: str) -> bool:
+    """
+    Filter out noisy lines that clutter logs but provide no useful information.
+
+    Currently filters:
+    - Nvidia driver /proc/devices dumps on process exit (Character/Block devices listings)
+
+    Optimized for minimal overhead:
+    - Pre-compiled regex at module level
+    - Fast early-exit checks before expensive operations
+    - Defers strip() until actually needed (avoids string allocation on fast path)
+
+    Args:
+        line: Log line to check (without rank prefix)
+
+    Returns:
+        True if line should be filtered out (dropped), False if it should be kept
+    """
+    # Fast path #1: Most log lines are much longer than device dumps
+    # Device dump lines are typically < 50 chars: "NNN device-name" or "Character devices:"
+    # Check original line length (no strip needed yet)
+    # ~99% of lines exit here in typical workloads
+    if len(line) > 65:  # Extra buffer for trailing newlines/spaces
+        return False
+
+    # Fast path #2: Empty lines - keep them (they're intentional formatting)
+    if not line:
+        return False
+
+    # Now we know it's a short line that's not empty - strip for pattern matching
+    # Only ~1% of lines reach this point in typical workloads
+    stripped = line.strip()
+
+    # Whitespace-only lines (e.g., "   \n", "\t\n") - keep them too
+    # These happen when workers output blank lines for readability
+    if not stripped:
+        return False
+
+    # Check for section headers (very fast frozenset lookup)
+    if stripped in _DEVICE_SECTION_HEADERS:
+        return True
+
+    # Check for device number entries: "NNN device-name"
+    # Pattern: 1-3 digits, space(s), device name
+    # Examples: "252 device-mapper", "1 mem", "195 nvidia"
+    # After stripping, device entries always start with a digit (fast pre-check before regex)
+    first_char = stripped[0]
+    if first_char.isdigit() and _DEVICE_ENTRY_PATTERN.match(stripped):
+        return True
+
+    return False
 
 
 def _patch_subprocess_handler_once():
@@ -194,6 +262,273 @@ class PipeSubprocessHandler(SubprocessHandler):
                     stream.close()
 
 
+class GrpcWriterThread(threading.Thread):
+    """
+    Writer thread that sends logs to gRPC server instead of writing to local file.
+
+    This replaces the local file writer when using centralized log aggregation.
+    All Lustre O_APPEND multi-writer problems are eliminated because only the
+    gRPC server writes to the Lustre file (single writer).
+
+    Benefits:
+    - No Lustre lock contention (single writer at server)
+    - No line corruption/interleaving at Lustre level
+    - Deterministic ordering (controlled by server)
+    - Can scale to thousands of nodes
+
+    Trade-offs:
+    - Network overhead (sends logs to server)
+    - Single point of failure (server must be reliable)
+    - Latency (network + server processing)
+    """
+
+    def __init__(
+        self,
+        write_queue: queue.Queue,
+        grpc_server_address: str,
+        node_id: Union[int, str],
+        logger: logging.Logger,
+    ):
+        """
+        Initialize gRPC writer thread.
+
+        Args:
+            write_queue: Queue of (log_file_path, data) tuples from reader thread
+            grpc_server_address: Address of gRPC server (e.g., "localhost:50051")
+            node_id: Unique node identifier (int for rank, or string for hostname/UUID)
+            logger: Logger instance
+        """
+        super().__init__(daemon=True, name="GrpcLogWriter")
+
+        self.write_queue = write_queue
+        self.grpc_server_address = grpc_server_address
+        # Convert node_id to string for protobuf (allows int ranks or string UUIDs)
+        self.node_id = str(node_id)
+        self.logger = logger
+        self.shutdown_requested = False
+
+        # Statistics
+        self.total_bytes_sent = 0
+        self.total_chunks_sent = 0
+        self.connection_errors = 0
+
+    def _wait_for_server_ready(self) -> Optional['grpc.Channel']:
+        """
+        Wait for gRPC server to be ready using health checks.
+
+        This method performs lightweight health check probes instead of heavy
+        connection attempts. It prevents thundering herd when 1000+ clients
+        start before the server is ready.
+
+        Returns:
+            gRPC channel if server is ready (caller must close it)
+            None if shutdown was requested
+        """
+        attempt = 0
+        logged_waiting = False
+
+        while not self.shutdown_requested:
+            try:
+                # Create channel with streaming-ready settings (will be reused)
+                # This avoids double TCP handshake (health check + streaming)
+                channel = grpc.insecure_channel(
+                    self.grpc_server_address,
+                    options=[
+                        ('grpc.max_send_message_length', 10 * 1024 * 1024),  # 10MB
+                        ('grpc.max_receive_message_length', 10 * 1024 * 1024),
+                        ('grpc.keepalive_time_ms', 10000),
+                        ('grpc.keepalive_timeout_ms', 5000),
+                    ],
+                )
+                stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
+
+                # Lightweight health check (not a full streaming connection)
+                response = stub.HealthCheck(log_aggregation_pb2.HealthRequest(), timeout=1.0)
+
+                if response.healthy:
+                    self.logger.info(
+                        f"gRPC server ready ({response.connected_clients} clients connected)"
+                    )
+                    # Return channel for reuse (avoids second TCP handshake!)
+                    return channel
+
+            except grpc.RpcError:
+                # Server not ready yet - expected, will retry
+                attempt += 1
+
+                # Close failed channel before retrying
+                if 'channel' in locals():
+                    channel.close()
+
+                # Log only the first time and periodically to reduce spam
+                if attempt == 1:
+                    self.logger.info(
+                        f"Waiting for gRPC server at {self.grpc_server_address} "
+                        f"(node_id={self.node_id})..."
+                    )
+                    logged_waiting = True
+                elif attempt % 30 == 0:  # Every 30 seconds
+                    self.logger.info(
+                        f"Still waiting for gRPC server (node_id={self.node_id}, "
+                        f"attempt {attempt})..."
+                    )
+
+                # Sleep with small random jitter to prevent thundering herd
+                # Base interval: 1 second, jitter: 0-0.5 seconds
+                time.sleep(1.0 + random.uniform(0, 0.5))
+
+            except Exception as e:
+                # Non-RPC errors: AttributeError (protobuf issue), ImportError, etc.
+                # These are NOT retryable - indicate a bug or misconfiguration
+                if 'channel' in locals():
+                    channel.close()
+                self.logger.error(
+                    f"Fatal error during health check (node_id={self.node_id}): {e}", exc_info=True
+                )
+                return None  # Abort, don't retry
+
+        if logged_waiting:
+            self.logger.info(
+                f"Shutdown requested while waiting for server (node_id={self.node_id})"
+            )
+        return None
+
+    def run(self):
+        """
+        Main loop: wait for server, then consume queue and stream to gRPC server.
+
+        Uses health check-based startup synchronization to avoid thundering herd
+        when many clients start before the server is ready.
+        """
+        # Add initial random delay (0-3 seconds) to stagger connection attempts
+        # This prevents all 1500 clients from hitting the server simultaneously
+        initial_delay = random.uniform(0, 3.0)
+        self.logger.debug(
+            f"Initial connection delay: {initial_delay:.2f}s (node_id={self.node_id})"
+        )
+        time.sleep(initial_delay)
+
+        # Server is ready, now stream logs
+        channel = None
+        while not self.shutdown_requested:
+            # Get channel (either from initial health check or after reconnect)
+            channel = self._wait_for_server_ready()
+            if channel is None:
+                # Shutdown requested during health check
+                break
+
+            try:
+                # Try to stream logs using the channel
+                self._stream_logs(channel)
+            except grpc.RpcError as e:
+                self.connection_errors += 1
+
+                # If shutdown was requested and streaming failed, logs may be lost
+                if self.shutdown_requested:
+                    queue_size = self.write_queue.qsize()
+                    self.logger.error(
+                        f"gRPC connection lost during shutdown (node_id={self.node_id}): {e}. "
+                        f"Queue still has {queue_size} items. Logs may be lost!"
+                    )
+                else:
+                    self.logger.warning(
+                        f"gRPC connection lost (node_id={self.node_id}): {e}. "
+                        f"Waiting for server to come back..."
+                    )
+            except Exception as e:
+                self.logger.error(
+                    f"Unexpected error in gRPC writer (node_id={self.node_id}): {e}",
+                    exc_info=True,
+                )
+                time.sleep(_GRPC_RECONNECT_INTERVAL)
+            finally:
+                # Always close channel after streaming (success or error)
+                # Next iteration will create a fresh channel
+                if channel:
+                    channel.close()
+                    channel = None
+
+        # When shutdown is requested, the generator exits immediately without draining.
+        # Any remaining items in the queue are not sent - during shutdown, the server
+        # may already be closing, so delivery cannot be guaranteed anyway.
+
+        self.logger.debug(f"gRPC writer thread exiting (node_id={self.node_id})")
+
+    def _stream_logs(self, channel: 'grpc.Channel'):
+        """
+        Stream logs to server using provided gRPC channel.
+
+        The generator consumes the queue until shutdown is requested, then exits immediately.
+        No drain phase is performed because:
+        1. During shutdown, the server may already be closing/closed
+        2. Draining adds delay that can exceed the reader's shutdown timeout
+        3. Any logs still in queue at shutdown are not guaranteed to be delivered anyway
+
+        Args:
+            channel: Existing gRPC channel (caller manages lifecycle)
+        """
+        stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
+
+        def log_generator():
+            """Generator that yields LogChunk messages from queue until shutdown."""
+            while not self.shutdown_requested:
+                try:
+                    log_file_path, data = self.write_queue.get(timeout=0.1)
+
+                    # Encode string to bytes (done once here, not in reader thread)
+                    data_bytes = data.encode('utf-8')
+
+                    # Create LogChunk message
+                    chunk = log_aggregation_pb2.LogChunk(
+                        node_id=self.node_id, data=data_bytes, file_path=log_file_path
+                    )
+
+                    # Update statistics
+                    self.total_chunks_sent += 1
+                    self.total_bytes_sent += len(data_bytes)
+
+                    yield chunk
+
+                except queue.Empty:
+                    # Timeout - normal, just check shutdown flag
+                    continue
+                except UnicodeEncodeError as e:
+                    # Log data encoding issue (rare - indicates non-UTF8 data)
+                    self.logger.error(
+                        f"Encoding error preparing log chunk (node_id={self.node_id}): {e}",
+                        exc_info=True,
+                    )
+                    return
+                except Exception as e:
+                    # Unexpected errors (should not happen)
+                    self.logger.error(
+                        f"Unexpected error preparing log chunk (node_id={self.node_id}): {e}",
+                        exc_info=True,
+                    )
+                    return
+
+        try:
+            # Stream logs to server until shutdown is requested
+            # No timeout on the RPC - let it run as long as needed during normal operation
+            # The reader thread's join(timeout=30s) provides protection during shutdown
+            response = stub.StreamLogs(log_generator())
+            self.logger.debug(
+                f"Stream completed: {response.status}, "
+                f"server received {response.bytes_received} bytes"
+            )
+        except grpc.RpcError as e:
+            # Connection lost or server error - will be caught by caller for retry
+            raise
+
+    def shutdown(self):
+        """Request graceful shutdown of writer thread."""
+        self.logger.info(
+            f"Shutting down gRPC writer. Sent {self.total_chunks_sent} chunks, "
+            f"{self.total_bytes_sent / 1024 / 1024:.2f} MB"
+        )
+        self.shutdown_requested = True
+
+
 @dataclass
 class ReaderConfig:
     """Configuration for the reader thread - all state needed for one cycle."""
@@ -237,6 +572,7 @@ class MultiplexingReaderThread(threading.Thread):
         local_to_global_rank: Optional[dict[int, int]] = None,
         launcher_pipe_fd: Optional[int] = None,
         launcher_log_file_path: Optional[str] = None,
+        grpc_config: Optional[tuple[str, int]] = None,  # (server_address, node_id)
     ):
         """
         Initialize reader thread.
@@ -251,6 +587,8 @@ class MultiplexingReaderThread(threading.Thread):
                                  If None, uses local ranks.
             launcher_pipe_fd: Optional FD for launcher logs (writes without prefix)
             launcher_log_file_path: Optional separate file for launcher logs
+            grpc_config: Optional (server_address, node_id) for gRPC-based logging.
+                        If provided, logs are sent to gRPC server instead of local file.
         """
         super().__init__(daemon=True)
 
@@ -268,15 +606,34 @@ class MultiplexingReaderThread(threading.Thread):
         self.logger = logging.getLogger(LogConfig.name)
         self._shutdown_requested = False
 
-        # Write queue for decoupling pipe reading from Lustre I/O
+        # Synchronization events for FD unregistration (prevents FD reuse bugs)
+        # Used by clear_all_pipes() to block launcher until all FDs are unregistered
+        self._clear_pipes_event = threading.Event()
+        self._pipes_cleared_event = threading.Event()
+
+        # Write queue for decoupling pipe reading from writer I/O
         # Queue items: (log_file_path, data_to_write)
         self._write_queue = queue.Queue()
         self._writer_shutdown = False
+        self._grpc_config = grpc_config
 
         # Start writer thread immediately (must be before reader starts polling)
-        self._writer_thread = threading.Thread(
-            target=self._writer_thread_loop, daemon=True, name="LogWriter"
-        )
+        # Use gRPC writer if configured, otherwise use local file writer
+        if grpc_config:
+            server_address, node_id = grpc_config
+            self._writer_thread = GrpcWriterThread(
+                write_queue=self._write_queue,
+                grpc_server_address=server_address,
+                node_id=node_id,
+                logger=self.logger,
+            )
+            self.logger.info(f"gRPC writer: {server_address}")
+        else:
+            self._writer_thread = threading.Thread(
+                target=self._writer_thread_loop, daemon=True, name="LogWriter"
+            )
+            self.logger.info("Using local file writer")
+
         self._writer_thread.start()
 
         # Pre-initialize poller and fd mapping
@@ -418,10 +775,13 @@ class MultiplexingReaderThread(threading.Thread):
             self.fd_to_local_rank[pipe_fd] = local_rank
 
         # Register launcher pipe with special rank -1 (no prefix needed)
+        # IMPORTANT: Check if already registered (happens during cycle transitions)
+        # since _cleanup_resources() preserves the launcher pipe across cycles
         if config.launcher_pipe_fd is not None:
-
-            self.poller.register(config.launcher_pipe_fd, select.POLLIN | select.POLLHUP)
-            self.fd_to_local_rank[config.launcher_pipe_fd] = -1  # Special rank for launcher
+            # Only register if not already in fd_to_local_rank (first time or after unregister)
+            if config.launcher_pipe_fd not in self.fd_to_local_rank:
+                self.poller.register(config.launcher_pipe_fd, select.POLLIN | select.POLLHUP)
+                self.fd_to_local_rank[config.launcher_pipe_fd] = -1  # Special rank for launcher
 
     def _cleanup_resources(self):
         """
@@ -443,53 +803,79 @@ class MultiplexingReaderThread(threading.Thread):
 
             self._line_buffers.clear()
 
-        # 3. Unregister all FDs from poller
+        # 3. Unregister all FDs from poller EXCEPT launcher pipe (it persists across cycles)
         for fd in list(self.fd_to_local_rank.keys()):
+            # Skip launcher pipe - it should persist across training cycles
+            if fd == self.launcher_pipe_fd:
+                continue
+
             with contextlib.suppress(Exception):
                 self.poller.unregister(fd)
 
-        # 4. Clear all state
+            # Remove from tracking dict
+            self.fd_to_local_rank.pop(fd, None)
+
+        # 4. Clear worker pipes state (but keep launcher pipe in fd_to_local_rank)
         self.pipes.clear()
-        self.fd_to_local_rank.clear()
         self._line_buffers.clear()
-
-    def _get_log_file_for_rank(self, local_rank: int):
-        """
-        Get the appropriate log file for a given rank.
-
-        Args:
-            local_rank: Local rank (-1 for launcher, 0+ for workers)
-
-        Returns:
-            File object to write to (launcher_log_file or worker_log_file)
-        """
-        if local_rank == -1:
-            return self.launcher_log_file
-        else:
-            return self.worker_log_file
 
     def _queue_lines_for_write(self, local_rank: int, lines: list[str]) -> None:
         """
         Queue complete lines for writing with rank prefix (unless launcher).
 
+        Uses line-aligned chunking to ensure each queued item contains only complete
+        lines and doesn't exceed the maximum chunk size. This is important for:
+        1. gRPC transmission efficiency (avoids partial lines across chunks)
+        2. Lustre write atomicity (if using direct file writing)
+        3. Network efficiency (reasonable chunk sizes)
+
         Args:
             local_rank: Local rank number (-1 for launcher, 0+ for workers)
             lines: List of lines to write (should all end with '\\n')
         """
+        # Filter out noise lines for worker logs (nvidia driver dumps, etc.)
+        # Don't filter launcher logs - they won't have this noise
+        if local_rank != -1:
+            lines = [line for line in lines if not _should_filter_line(line)]
+            # If all lines were filtered, nothing to do
+            if not lines:
+                return
+
         # Determine target file
         log_file_path = self.launcher_log_file_path if local_rank == -1 else self.log_file_path
 
+        # Prepare lines with prefix
         if local_rank == -1:
-            # Launcher logs - no prefix, queue directly
-            data = ''.join(lines)
+            # Launcher logs - no prefix
+            prefixed_lines = lines
         else:
             # Worker logs - add rank prefix to each line
             rank = self.local_to_global_rank.get(local_rank, local_rank)
             prefix = f'{rank:>{self._rank_width}}: ' if self._rank_width > 0 else f'{rank}: '
-            data = ''.join(prefix + line for line in lines)
+            prefixed_lines = [prefix + line for line in lines]
 
-        # Queue for writer thread
-        self._write_queue.put((log_file_path, data))
+        # Chunk into line-aligned groups that don't exceed max chunk size
+        # This ensures each write/transmission contains only complete lines
+        current_chunk = []
+        current_size = 0
+        max_chunk_size = _GRPC_MAX_CHUNK_SIZE  # Used for both gRPC and direct file writing
+
+        for line in prefixed_lines:
+            line_size = len(line.encode('utf-8'))  # Byte size matters for atomicity
+
+            # If adding this line would exceed max size, flush current chunk
+            if current_size > 0 and current_size + line_size > max_chunk_size:
+                # Queue complete chunk as string (writer thread will encode)
+                self._write_queue.put((log_file_path, ''.join(current_chunk)))
+                current_chunk = []
+                current_size = 0
+
+            current_chunk.append(line)
+            current_size += line_size
+
+        # Queue remaining lines as string
+        if current_chunk:
+            self._write_queue.put((log_file_path, ''.join(current_chunk)))
 
     def _flush_incomplete_line(self, local_rank: int, incomplete_data: str) -> None:
         """
@@ -513,8 +899,149 @@ class MultiplexingReaderThread(threading.Thread):
             prefix = f'{rank:>{self._rank_width}}: ' if self._rank_width > 0 else f'{rank}: '
             incomplete_data = prefix + incomplete_data
 
-        # Queue the incomplete line with newline
+        # Queue the incomplete line with newline as string
         self._write_queue.put((log_file_path, incomplete_data + '\n'))
+
+    def _final_launcher_pipe_cleanup(self) -> None:
+        """
+        Final flush and cleanup of launcher pipe before shutdown.
+
+        WHY THIS IS NEEDED:
+        During shutdown, the launcher may still be writing final logs (e.g., "Workers stopped",
+        "Checkpoint saved") to its pipe while this reader thread is shutting down. Without this
+        final drain step, those logs would be lost or cause gRPC "client aborted" errors.
+
+        WHAT IT DOES:
+        1. Non-blocking poll to read any final data from launcher pipe (last chance capture)
+        2. Wait for write queue to drain (up to 2s) - ensures buffered logs reach writer
+        3. Unregister launcher pipe from poller (prevents further events)
+        4. Remove from tracking dict (cleanup state)
+
+        WHAT HAPPENS WITHOUT IT:
+        - gRPC mode: Writer shuts down while queue has data → "client aborted" errors
+        - File mode: Final launcher logs may not be flushed → incomplete log files
+        - Both: Race condition where launcher writes after reader stops polling
+        """
+        if not self.launcher_pipe_fd:
+            return
+
+        # Read any remaining data from launcher pipe (non-blocking)
+        try:
+            final_events = self.poller.poll(0)  # Non-blocking poll
+            if final_events:
+                self._process_pipe_events(final_events)
+        except OSError:
+            pass
+
+        # Wait for write queue to drain (give writer time to send queued logs)
+        # This prevents "client aborted" by ensuring queue is empty before shutdown
+        max_wait = 2.0  # seconds
+        wait_start = time.time()
+        while time.time() - wait_start < max_wait:
+            if self._write_queue.qsize() == 0:
+                break
+            time.sleep(0.1)
+
+        # NOW unregister launcher pipe - queue is drained
+        with contextlib.suppress(Exception):
+            self.poller.unregister(self.launcher_pipe_fd)
+        self.fd_to_local_rank.pop(self.launcher_pipe_fd, None)
+
+    def _process_pipe_events(self, events):
+        """
+        Process pipe events from poll().
+
+        Helper method to avoid code duplication between main loop and final drain.
+
+        Args:
+            events: List of (fd, event) tuples from poller.poll()
+        """
+        for fd, event in events:
+            local_rank = self.fd_to_local_rank.get(fd)
+            if local_rank is None:
+                # Defensive check - should be impossible since poller only returns
+                # events for registered FDs, and we maintain the invariant that
+                # all registered FDs are in fd_to_local_rank
+                self.logger.warning(
+                    f"Received event for unknown FD {fd} - this should not happen! "
+                    f"This indicates a bug in the reader thread logic."
+                )
+                continue
+
+            if event & (select.POLLIN | select.POLLHUP):
+                try:
+                    # Read available data
+                    data = os.read(fd, 65536)
+                except OSError as e:
+                    # EINTR: system call interrupted by signal, retry
+                    if e.errno == errno.EINTR:
+                        continue
+                    # Any other OSError means FD was closed externally - expected during
+                    # worker termination. This is a race condition: launcher closes pipes
+                    # in _stop_workers() while reader thread still has FD registered.
+                    # The OS may reuse the FD number for another operation, causing various
+                    # errors (EBADF, EISDIR, ESPIPE, etc.) depending on the reuse.
+                    # Treat as pipe closure (data=None triggers cleanup below).
+                    data = None
+
+                if not data:
+                    # Pipe closed - queue any buffered incomplete data
+                    if local_rank in self._line_buffers:
+                        self._flush_incomplete_line(local_rank, self._line_buffers[local_rank])
+                        del self._line_buffers[local_rank]
+
+                    # Unregister FD from poller (FD ownership: file objects own FDs)
+                    rank_for_log = (
+                        self.local_to_global_rank.get(local_rank, local_rank)
+                        if local_rank != -1
+                        else -1
+                    )
+
+                    try:
+                        self.poller.unregister(fd)
+                    except Exception:
+                        # This is unexpected! FD should be registered (we just got an event from it)
+                        # Log with full exception details for debugging
+                        self.logger.warning(
+                            f"UNEXPECTED: Failed to unregister FD {fd} for rank {rank_for_log} after pipe closure",
+                            exc_info=True,
+                        )
+
+                    # Clean up tracking dicts
+                    self.pipes.pop(local_rank, None)
+                    self.fd_to_local_rank.pop(fd, None)
+                else:
+                    # Process data from this rank's pipe
+                    # Decode with error replacement to handle any encoding issues
+                    text = data.decode('utf-8', errors='replace')
+
+                    # Clean NULL bytes to prevent log file from being detected as binary
+                    # (rare, but can happen during worker crashes with binary data on stdout/stderr)
+                    text = text.replace('\x00', '<NUL>')
+
+                    # Split into lines, keeping line endings
+                    # Important: splitlines(keepends=True) on "abc\ndef" returns ['abc\n', 'def']
+                    # The last element 'def' has NO newline - it's an incomplete line!
+                    lines = text.splitlines(keepends=True)
+
+                    if not lines:
+                        # Empty read (shouldn't happen, but be defensive)
+                        continue
+
+                    # First, complete any previously buffered incomplete line
+                    if local_rank in self._line_buffers:
+                        # Prepend buffered text to first line of this read
+                        lines[0] = self._line_buffers[local_rank] + lines[0]
+                        del self._line_buffers[local_rank]
+
+                    # Check if last line is incomplete and buffer it
+                    if not lines[-1].endswith('\n'):
+                        # Last line incomplete - buffer it for next read
+                        self._line_buffers[local_rank] = lines.pop()
+
+                    # Queue any remaining complete lines for writing
+                    if lines:
+                        self._queue_lines_for_write(local_rank, lines)
 
     def run(self):
         """
@@ -541,6 +1068,15 @@ class MultiplexingReaderThread(threading.Thread):
             active_config = self._current_config  # Remember what we've applied
 
             while not self._shutdown_requested:
+                # Check for immediate pipe clear request (FD reuse prevention)
+                # This must happen before config changes and poll() to ensure
+                # FDs are unregistered ASAP after launcher closes pipes
+                if self._clear_pipes_event.is_set():
+                    self._cleanup_resources()  # Unregister all FDs immediately
+                    self._clear_pipes_event.clear()
+                    self._pipes_cleared_event.set()  # Signal completion to launcher
+                    continue  # Skip to next iteration
+
                 # Check if configuration changed
                 current_config = self._current_config
 
@@ -571,94 +1107,7 @@ class MultiplexingReaderThread(threading.Thread):
                         raise
 
                 # Process events
-                for fd, event in events:
-                    local_rank = self.fd_to_local_rank.get(fd)
-                    if local_rank is None:
-                        # Defensive check - should be impossible since poller only returns
-                        # events for registered FDs, and we maintain the invariant that
-                        # all registered FDs are in fd_to_local_rank
-                        self.logger.warning(
-                            f"Received event for unknown FD {fd} - this should not happen! "
-                            f"This indicates a bug in the reader thread logic."
-                        )
-                        continue
-
-                    if event & (select.POLLIN | select.POLLHUP):
-                        try:
-                            # Read available data
-                            data = os.read(fd, 65536)
-                        except OSError as e:
-                            # EINTR: system call interrupted by signal, retry
-                            if e.errno == errno.EINTR:
-                                continue
-                            # Any other OSError means FD was closed externally - expected during
-                            # worker termination. This is a race condition: launcher closes pipes
-                            # in _stop_workers() while reader thread still has FD registered.
-                            # The OS may reuse the FD number for another operation, causing various
-                            # errors (EBADF, EISDIR, ESPIPE, etc.) depending on the reuse.
-                            # Treat as pipe closure (data=None triggers cleanup below).
-                            data = None
-
-                        if not data:
-                            # Pipe closed - queue any buffered incomplete data
-                            if local_rank in self._line_buffers:
-                                self._flush_incomplete_line(
-                                    local_rank, self._line_buffers[local_rank]
-                                )
-                                del self._line_buffers[local_rank]
-
-                            # Unregister FD from poller (FD ownership: file objects own FDs)
-                            rank_for_log = (
-                                self.local_to_global_rank.get(local_rank, local_rank)
-                                if local_rank != -1
-                                else -1
-                            )
-
-                            try:
-                                self.poller.unregister(fd)
-                            except Exception:
-                                # This is unexpected! FD should be registered (we just got an event from it)
-                                # Log with full exception details for debugging
-                                self.logger.warning(
-                                    f"UNEXPECTED: Failed to unregister FD {fd} for rank {rank_for_log} after pipe closure",
-                                    exc_info=True,
-                                )
-
-                            # Clean up tracking dicts
-                            self.pipes.pop(local_rank, None)
-                            self.fd_to_local_rank.pop(fd, None)
-                        else:
-                            # Process data from this rank's pipe
-                            # Decode with error replacement to handle any encoding issues
-                            text = data.decode('utf-8', errors='replace')
-
-                            # Clean NULL bytes to prevent log file from being detected as binary
-                            # (rare, but can happen during worker crashes with binary data on stdout/stderr)
-                            text = text.replace('\x00', '<NUL>')
-
-                            # Split into lines, keeping line endings
-                            # Important: splitlines(keepends=True) on "abc\ndef" returns ['abc\n', 'def']
-                            # The last element 'def' has NO newline - it's an incomplete line!
-                            lines = text.splitlines(keepends=True)
-
-                            if not lines:
-                                # Empty read (shouldn't happen, but be defensive)
-                                continue
-
-                            # First, complete any previously buffered incomplete line
-                            if local_rank in self._line_buffers:
-                                # Prepend buffered text to first line of this read
-                                lines[0] = self._line_buffers[local_rank] + lines[0]
-                                del self._line_buffers[local_rank]
-
-                            # Check if last line is incomplete and buffer it
-                            if not lines[-1].endswith('\n'):
-                                # Last line incomplete - buffer it for next read
-                                self._line_buffers[local_rank] = lines.pop()
-
-                            # Queue any remaining complete lines for writing
-                            if lines:
-                                self._queue_lines_for_write(local_rank, lines)
+                self._process_pipe_events(events)
 
         except KeyboardInterrupt:
             raise
@@ -676,12 +1125,28 @@ class MultiplexingReaderThread(threading.Thread):
             raise
         finally:
             # Clean up all resources (queue incomplete lines for writing)
+            # Note: _cleanup_resources() preserves launcher pipe during cycle changes
             self._cleanup_resources()
 
-            # Shut down writer thread
-            self._writer_shutdown = True
+            # CRITICAL: Final flush of launcher logs before shutdown
+            # This ensures all launcher logs are captured without causing "client aborted"
+            self._final_launcher_pipe_cleanup()
+
+            # Shut down writer thread (queue should be empty or nearly empty now)
+            if isinstance(self._writer_thread, GrpcWriterThread):
+                # gRPC writer has its own shutdown method
+                self._writer_thread.shutdown()
+            else:
+                # Local file writer uses flag
+                self._writer_shutdown = True
+
             if self._writer_thread and self._writer_thread.is_alive():
-                self._writer_thread.join(timeout=5.0)  # Wait for writer to drain queue
+                self._writer_thread.join(timeout=30.0)  # Wait for writer to complete disconnect
+                if self._writer_thread.is_alive():
+                    self.logger.warning(
+                        "Writer thread did not exit within 30s timeout during reader shutdown. "
+                        "Connection may be aborted."
+                    )
 
     def update_pipes(
         self,
@@ -721,6 +1186,29 @@ class MultiplexingReaderThread(threading.Thread):
 
         # Atomic swap - thread will detect and apply this change
         self._current_config = new_config
+
+    def clear_all_pipes(self):
+        """
+        Request immediate unregistration of all pipes. Blocks until complete.
+
+        This is called by launcher after closing pipes to prevent FD reuse bugs.
+        When the OS reuses FD numbers for new cycle workers, we must ensure old
+        FD registrations in the poller are removed first. Otherwise, the poller
+        will deliver events for the NEW pipe using the OLD FD number, causing
+        data from cycle N to be written to cycle N-1's log file.
+
+        This method blocks until the reader thread confirms all FDs are unregistered,
+        guaranteeing it's safe for the launcher to spawn new workers.
+        """
+        self._pipes_cleared_event.clear()
+        self._clear_pipes_event.set()
+
+        # Block until reader confirms all FDs unregistered (5s timeout for safety)
+        if not self._pipes_cleared_event.wait(timeout=5.0):
+            self.logger.warning(
+                "Reader thread did not clear pipes within 5s. "
+                "This may indicate a deadlock or slow reader thread."
+            )
 
     def _apply_config(self, new_config: ReaderConfig):
         """
@@ -805,35 +1293,71 @@ class PipeBasedLogsSpecs(LogsSpecs):
 
     logger = logging.getLogger(LogConfig.name)
 
-    def __init__(self, base_log_file: str, launcher_pipe_fd: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        base_log_file: str,
+        launcher_pipe_fd: Optional[int] = None,
+        launcher_log_file: Optional[str] = None,
+        grpc_server_address: Optional[str] = None,
+        node_id: Optional[Union[int, str]] = None,
+    ) -> None:
+        """
+        Initialize PipeBasedLogsSpecs.
+
+        Args:
+            base_log_file: Base path for log files (e.g., "/lustre/logs/job.log")
+            launcher_pipe_fd: Optional FD for launcher logs
+            launcher_log_file: Optional separate log file for launcher logs.
+                              If not provided and launcher_pipe_fd is set, uses base_log_file.
+            grpc_server_address: Optional gRPC server address (e.g., "localhost:50051").
+                                If provided, logs are sent to gRPC server instead of
+                                writing directly to Lustre file.
+            node_id: Node identifier (int for rank, or string for hostname/UUID).
+                    Required if grpc_server_address is provided.
+        """
         if not base_log_file:
             raise ValueError("base_log_file is required for PipeBasedLogsSpecs")
 
-        # Convert to absolute path for multi-node safety
+        # Validate gRPC configuration
+        if grpc_server_address and node_id is None:
+            raise ValueError("node_id is required when grpc_server_address is provided")
+
+        # Store the base log file path (already validated as absolute by launcher)
+        # We use abspath() as a defensive measure in case this class is used standalone
         self._base_log_file = os.path.abspath(base_log_file)
 
         # Extract directory and ensure it exists
         log_dir = os.path.dirname(self._base_log_file) or "."
         os.makedirs(log_dir, exist_ok=True)
 
-        # Store launcher pipe FD
+        # Store configuration
         self._launcher_pipe_fd = launcher_pipe_fd
+        self._launcher_log_file = launcher_log_file  # Store launcher log file separately
+        self._grpc_server_address = grpc_server_address
+        self._node_id = node_id
 
-        # Start reader thread IMMEDIATELY if launcher pipe provided
-        # This prevents pipe buffer from filling up while launcher is logging
-        if launcher_pipe_fd is not None:
-            self.logger.info("Starting reader thread early for launcher logs...")
-            self._reader_thread = MultiplexingReaderThread(
-                pipes={},  # No worker pipes yet
-                log_file_path="/dev/null",  # Dummy, not used until workers start
-                world_size=None,
-                local_to_global_rank={},
-                launcher_pipe_fd=launcher_pipe_fd,
-                launcher_log_file_path=self._base_log_file,
+        # Validate launcher pipe configuration
+        if launcher_pipe_fd is not None and launcher_log_file is None:
+            raise ValueError(
+                "launcher_log_file must be provided when launcher_pipe_fd is set. "
+                "This indicates a programming error in launcher.py."
             )
-            self._reader_thread.start()
-        else:
-            self._reader_thread = None
+
+        # Always create reader thread in constructor (single construction point)
+        # Thread starts immediately to prevent launcher pipe buffer from filling up
+        # Worker pipes will be added per-cycle via update_pipes()
+        grpc_config = (grpc_server_address, node_id) if grpc_server_address else None
+
+        self._reader_thread = MultiplexingReaderThread(
+            pipes={},  # No worker pipes yet (added per-cycle)
+            log_file_path="/dev/null",  # Dummy, updated per-cycle
+            world_size=None,  # Updated per-cycle
+            local_to_global_rank={},  # Updated per-cycle
+            launcher_pipe_fd=launcher_pipe_fd,  # May be None
+            launcher_log_file_path=launcher_log_file,  # May be None
+            grpc_config=grpc_config,
+        )
+        self._reader_thread.start()
 
         super().__init__(
             log_dir=log_dir,
@@ -862,7 +1386,7 @@ class PipeBasedLogsSpecs(LogsSpecs):
         LogsDest type signature expects strings (file paths). Our custom
         PipeSubprocessHandler detects this marker and converts to subprocess.PIPE.
 
-        The actual pipe creation and reading happens in start_reader() after workers spawn.
+        Pipes are created here; reading is configured per-cycle after workers spawn.
 
         Also installs monkey-patch to use PipeSubprocessHandler (once, module-level).
 
@@ -898,13 +1422,13 @@ class PipeBasedLogsSpecs(LogsSpecs):
             local_rank: int(rank_env["RANK"]) for local_rank, rank_env in envs.items()
         }
 
-        # Store info needed for start_reader()
+        # Store cycle info for reader thread configuration
         self._restart_count = restart_count
         self._nprocs = nprocs
         self._world_size = world_size
         self._local_to_global_rank = local_to_global_rank
 
-        # Calculate cycle log file path (will be created in start_reader())
+        # Calculate cycle log file path
         self._current_cycle_log = self.get_cycle_log_file(int(restart_count))
 
         # Return pipe marker strings to signal pipe-based redirection
@@ -936,37 +1460,28 @@ class PipeBasedLogsSpecs(LogsSpecs):
 
         return LogsDest(stdouts, stderrs, tee_stdouts, tee_stderrs, error_files)
 
-    def start_reader(self, subprocess_handlers: dict) -> MultiplexingReaderThread:
+    def update_reader_for_cycle(self, subprocess_handlers: dict) -> None:
         """
-        Start the multiplexing reader thread for current cycle's workers.
+        Update the reader thread with new pipes for the current training cycle.
 
-        Called from launcher.py after workers are spawned. Creates one thread that
-        reads from all local worker pipes and writes to the consolidated log file.
+        Called from launcher.py after workers are spawned. Updates the existing reader
+        thread (created in __init__) with pipes from the new cycle's workers.
+
+        Thread Lifecycle:
+            The reader thread is created once in __init__() and lives for the entire
+            ft_launcher process lifetime. This method updates its configuration when
+            workers restart, avoiding FD reuse issues and thread creation overhead.
 
         Args:
             subprocess_handlers: {rank: SubprocessHandler} for all local workers
-
-        Returns:
-            The reader thread (already started)
         """
-        # Thread Lifecycle: ONE thread for the entire ft_launcher process
-        #
-        # The reader thread is created once and lives for the entire process lifetime.
-        # It handles log reading across ALL restart cycles by updating its configuration
-        # via update_pipes() when workers restart. This design:
-        #   - Avoids FD reuse issues from lingering threads
-        #   - Eliminates thread creation overhead per cycle
-        #   - Simplifies lifecycle management
-        #
-        # Thread is created on first call and reused for all subsequent cycles.
-
         # Check if log file path is set up
         if self._current_cycle_log is None:
             self.logger.debug(
-                "start_reader() called but _current_cycle_log is None "
+                "update_reader_for_cycle() called but _current_cycle_log is None "
                 "(normal for hot spare nodes - will be set up when node becomes active)"
             )
-            return None
+            return
 
         if not os.path.exists(self._current_cycle_log):
             open(self._current_cycle_log, 'a').close()
@@ -981,65 +1496,55 @@ class PipeBasedLogsSpecs(LogsSpecs):
                 pipes[rank] = handler.proc.stdout.fileno()
 
         if not pipes:
-            # No pipes available - this can happen in two scenarios:
-            # 1. Hot spare node from the start (no thread exists - OK to return None)
-            # 2. Active node transitioning to hot spare (thread exists - MUST update it!)
-
-            if self._reader_thread:
-                # Active → Hot spare transition: Update thread with empty pipes
-                # This ensures the thread properly closes the old log file and cleans up state
-                self.logger.info(
-                    "Node transitioned from active to hot spare - updating thread with empty pipes"
-                )
-                self._reader_thread.update_pipes(
-                    new_pipes={},  # Empty - no workers
-                    new_log_file=self._current_cycle_log,
-                    new_world_size=self._world_size,
-                    new_local_to_global_rank=self._local_to_global_rank,
-                    new_launcher_pipe_fd=self._launcher_pipe_fd,
-                    new_launcher_log_file=self._base_log_file,
-                )
-                return self._reader_thread
-            else:
-                # Hot spare from the start - no thread needed
-                self.logger.debug(
-                    "No pipes available from subprocess handlers (hot spare node with no workers)"
-                )
-                return None
-
-        # Reuse existing thread if exists, otherwise create new one
-        if self._reader_thread:
-            # Thread reuse: Just update the pipes it's monitoring!
-            # This eliminates the FD reuse catastrophe problem entirely
+            # No pipes available (hot spare node with no workers)
+            # Update thread with empty pipes to properly close old log file and clean up state
+            self.logger.debug(
+                "No pipes available from subprocess handlers (hot spare node with no workers)"
+            )
             self._reader_thread.update_pipes(
-                new_pipes=pipes,
+                new_pipes={},  # Empty - no workers
                 new_log_file=self._current_cycle_log,
                 new_world_size=self._world_size,
                 new_local_to_global_rank=self._local_to_global_rank,
                 new_launcher_pipe_fd=self._launcher_pipe_fd,
-                new_launcher_log_file=self._base_log_file,
+                new_launcher_log_file=self._launcher_log_file,
             )
-            self.logger.info(
-                f"Updated reader thread with {len(pipes)} new workers for cycle, "
-                f"writing to {self._current_cycle_log}"
-            )
-        else:
-            # First cycle or thread died - create new thread
-            self._reader_thread = MultiplexingReaderThread(
-                pipes=pipes,
-                log_file_path=self._current_cycle_log,
-                world_size=self._world_size,
-                local_to_global_rank=self._local_to_global_rank,
-                launcher_pipe_fd=self._launcher_pipe_fd,
-                launcher_log_file_path=self._base_log_file,
-            )
-            self._reader_thread.start()
-            self.logger.info(
-                f"Started new multiplexing reader thread for {len(pipes)} workers, "
-                f"writing to {self._current_cycle_log}"
-            )
+            return
 
-        return self._reader_thread
+        # Prepare gRPC config if enabled
+        grpc_config = (
+            (self._grpc_server_address, self._node_id) if self._grpc_server_address else None
+        )
+
+        # Always update the existing thread (created in __init__)
+        # This eliminates the FD reuse catastrophe problem entirely
+        self._reader_thread.update_pipes(
+            new_pipes=pipes,
+            new_log_file=self._current_cycle_log,
+            new_world_size=self._world_size,
+            new_local_to_global_rank=self._local_to_global_rank,
+            new_launcher_pipe_fd=self._launcher_pipe_fd,
+            new_launcher_log_file=self._launcher_log_file,
+        )
+        mode = "gRPC" if grpc_config else "local file"
+        self.logger.info(
+            f"Updated reader thread with {len(pipes)} workers for cycle, "
+            f"writing to {self._current_cycle_log} ({mode} mode)"
+        )
+
+    def clear_all_pipes_from_reader(self):
+        """
+        Tell reader thread to unregister all pipes immediately. Blocks until complete.
+
+        This is called by launcher._stop_workers() after closing pipes to prevent
+        FD reuse bugs. When the OS reuses FD numbers for new cycle workers, we must
+        ensure old FD registrations in the poller are removed first.
+
+        This method blocks until the reader confirms all FDs are unregistered,
+        guaranteeing it's safe for the launcher to spawn new workers without
+        FD reuse issues.
+        """
+        self._reader_thread.clear_all_pipes()
 
     def get_cycle_log_file(self, cycle_index: int) -> str:
         """
@@ -1060,13 +1565,19 @@ class PipeBasedLogsSpecs(LogsSpecs):
 
         This must be called explicitly - daemon thread alone won't flush buffers!
         """
-        if self._reader_thread:
-            self._reader_thread.shutdown()
-            self._reader_thread.join(timeout=1.0)
-            if self._reader_thread.is_alive():
-                self.logger.warning(
-                    "Reader thread did not exit within 1s timeout. " "Logs may be incomplete."
-                )
+        self._reader_thread.shutdown()
+        # Give reader thread enough time to:
+        # 1. Complete current poll cycle (0.15s sleep in shutdown())
+        # 2. Clean up resources and flush buffers
+        # 3. Shut down writer thread (which may take up to 5s to drain queue)
+        # Total: 0.15s + 5s writer timeout + 2s gRPC drain + buffer = 8s
+        self._reader_thread.join(timeout=8.0)
+        if self._reader_thread.is_alive():
+            self.logger.warning(
+                "Reader thread did not exit within 8s timeout. Logs may be incomplete."
+            )
+        else:
+            self.logger.debug("Reader thread shutdown completed successfully.")
 
     def __repr__(self) -> str:
         return f"PipeBasedLogsSpecs(base_log_file={self._base_log_file})"

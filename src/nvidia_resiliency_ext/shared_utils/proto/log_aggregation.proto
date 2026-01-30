@@ -1,0 +1,54 @@
+// Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package nvidia_resiliency_ext.fault_tolerance;
+
+// Service for aggregating logs from multiple nodes into a single file
+service LogAggregationService {
+  // Stream log chunks from clients to server
+  rpc StreamLogs(stream LogChunk) returns (StreamResponse);
+  
+  // Health check
+  rpc HealthCheck(HealthRequest) returns (HealthResponse);
+}
+
+// Log chunk sent from client to server
+message LogChunk {
+  // Node identifier (e.g., node rank, hostname, or UUID for future flexibility)
+  string node_id = 1;
+  
+  // Log data (should contain complete lines ending with \n)
+  bytes data = 2;
+  
+  // Target log file path (for multi-file support)
+  string file_path = 3;
+}
+
+// Response from server after receiving log stream
+message StreamResponse {
+  string status = 1;
+  int64 bytes_received = 2;
+}
+
+// Health check request
+message HealthRequest {
+}
+
+// Health check response
+message HealthResponse {
+  bool healthy = 1;
+  int32 connected_clients = 2;
+}

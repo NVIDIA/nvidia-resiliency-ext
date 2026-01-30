@@ -181,6 +181,7 @@ class RankMonitorServer:
         self._last_sent_iteration = 0  # Track last iteration sent to launcher (avoid duplicates)
         self._initial_iteration = None  # Track starting iteration of current cycle
         self._current_iteration = None  # Track current iteration for warmup detection
+        self.current_cycle = 0  # Track current cycle number for logging
 
         if self.cfg.enable_nic_monitor:
             self.logger.info("Enable NIC health monitoring.")
@@ -254,8 +255,8 @@ class RankMonitorServer:
         mp.current_process().authkey = msg.authkey
         await write_obj_to_ipc_stream(OkMsg(), writer)
 
-    async def _handle_update_config_msg(self, msg, writer):
-        # Reseived when new timeouts are computed by the client
+    async def _handle_update_config_msg(self, msg, writer, send_response=True):
+        # Received when new timeouts are computed by the client or cycle is updated by launcher
         if msg.hb_timeouts is not None:
             self.cfg.initial_rank_heartbeat_timeout = msg.hb_timeouts.initial
             self.cfg.rank_heartbeat_timeout = msg.hb_timeouts.subsequent
@@ -264,7 +265,10 @@ class RankMonitorServer:
             self.cfg.rank_section_timeouts = msg.section_timeouts.section
             self.cfg.rank_out_of_section_timeout = msg.section_timeouts.out_of_section
             self.logger.debug(f"Updated section timeouts: {msg.section_timeouts}")
-        await write_obj_to_ipc_stream(OkMsg(), writer)
+        if msg.current_cycle is not None:
+            self.current_cycle = msg.current_cycle
+        if send_response:
+            await write_obj_to_ipc_stream(OkMsg(), writer)
 
     async def _handle_init_msg(self, msg, writer):
         self.rank_info = msg.rank_info
@@ -424,6 +428,9 @@ class RankMonitorServer:
                 elif msg == "shutdown":
                     # Shutdown request received (not logged - normal operation)
                     break
+                elif isinstance(msg, UpdateConfigMsg):
+                    # Handle cycle updates from launcher (no response needed - fire and forget)
+                    await self._handle_update_config_msg(msg, writer, send_response=False)
                 else:
                     self.logger.warning(f"Received unknown message from launcher: {msg}")
         except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
@@ -493,7 +500,10 @@ class RankMonitorServer:
             timeout = self.cfg.initial_rank_heartbeat_timeout
             is_elapsed = timeout is not None and time_since_start > timeout
             if is_elapsed:
-                self.logger.warning(f"Did not get initial heartbeat. Waited {timeout:.2f} seconds.")
+                self.logger.warning(
+                    f"[Cycle {self.current_cycle}] Did not get initial heartbeat. "
+                    f"Waited {timeout:.2f} seconds."
+                )
         else:
             # did get some heartbeats
             time_since_last_hb = curr_time - self.last_hb_time
@@ -501,7 +511,8 @@ class RankMonitorServer:
             is_elapsed = timeout is not None and time_since_last_hb > timeout
             if is_elapsed:
                 self.logger.warning(
-                    f"Did not get subsequent heartbeat. " f"Waited {timeout:.2f} seconds."
+                    f"[Cycle {self.current_cycle}] Did not get subsequent heartbeat. "
+                    f"Waited {timeout:.2f} seconds."
                 )
         return is_elapsed
 
@@ -515,7 +526,7 @@ class RankMonitorServer:
             is_elapsed = timeout is not None and elapsed > timeout
             if is_elapsed:
                 self.logger.warning(
-                    f"Section '{section}' has been open for {elapsed:.2f} seconds. "
+                    f"[Cycle {self.current_cycle}] Section '{section}' has been open for {elapsed:.2f} seconds. "
                     f"Timeout is {timeout:.2f} seconds."
                 )
                 is_elapsed = True
@@ -533,7 +544,7 @@ class RankMonitorServer:
             is_elapsed = timeout is not None and elapsed > timeout
             if is_elapsed:
                 self.logger.warning(
-                    f"Was out of section for {elapsed:.2f} seconds. "
+                    f"[Cycle {self.current_cycle}] Was out of section for {elapsed:.2f} seconds. "
                     f"Timeout is {timeout:.2f} seconds."
                 )
         return is_elapsed

@@ -15,7 +15,65 @@ import pytest
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
     MultiplexingReaderThread,
     PipeSubprocessHandler,
+    _should_filter_line,
 )
+
+
+class TestLogFiltering:
+    """Tests for log line filtering functionality."""
+
+    def test_filter_character_devices_header(self):
+        """Test filtering of 'Character devices:' header."""
+        assert _should_filter_line("Character devices:\n") is True
+        assert _should_filter_line("  Character devices:\n") is True
+
+    def test_filter_block_devices_header(self):
+        """Test filtering of 'Block devices:' header."""
+        assert _should_filter_line("Block devices:\n") is True
+        assert _should_filter_line("  Block devices:\n") is True
+
+    def test_filter_device_entries(self):
+        """Test filtering of device number entries."""
+        # Examples from nvidia driver dumps
+        assert _should_filter_line("252 device-mapper\n") is True
+        assert _should_filter_line("253 virtblk\n") is True
+        assert _should_filter_line("195 nvidia\n") is True
+        assert _should_filter_line("195 nvidia-modeset\n") is True
+        assert _should_filter_line("195 nvidiactl\n") is True
+        assert _should_filter_line("  1 mem\n") is True
+        assert _should_filter_line("  4 /dev/vc/0\n") is True
+        assert _should_filter_line("497 gdrdrv\n") is True
+        assert _should_filter_line("500 nvidia-caps\n") is True
+
+    def test_keep_useful_log_lines(self):
+        """Test that useful log lines are NOT filtered."""
+        # Regular log messages should not be filtered
+        assert (
+            _should_filter_line("Rank 1117/12296: Raising exception to signal error...\n") is False
+        )
+        assert (
+            _should_filter_line("Rank 1117/12296: ========== EXCEPTION CAUGHT ==========\n")
+            is False
+        )
+        assert (
+            _should_filter_line("RuntimeError: Simulated collective failure (NCCL timeout)\n")
+            is False
+        )
+        assert _should_filter_line("Worker exiting with failure code 123\n") is False
+
+        # Lines with numbers that aren't device entries
+        assert _should_filter_line("Error code: 123 in function test\n") is False
+        assert _should_filter_line("Processing 195 items\n") is False
+
+        # Empty lines should be kept
+        assert _should_filter_line("\n") is False
+        assert _should_filter_line("") is False
+
+    def test_filter_without_newline(self):
+        """Test filtering works with or without trailing newline."""
+        assert _should_filter_line("252 device-mapper") is True
+        assert _should_filter_line("Character devices:") is True
+        assert _should_filter_line("Rank 1117: Error") is False
 
 
 class TestMultiplexingReaderThread:
@@ -79,6 +137,70 @@ class TestMultiplexingReaderThread:
         content = self._read_log_file(temp_log_file)
         assert '0: Hello from rank 0\n' in content
         assert '0: Second line\n' in content
+
+    def test_nvidia_driver_dump_filtering(self, temp_log_file):
+        """Test that nvidia driver dumps are filtered out from logs."""
+        # Create pipe
+        read_fd, write_fd = self._create_pipe_pair()
+
+        # Create reader thread
+        reader = MultiplexingReaderThread(
+            pipes={0: read_fd},
+            log_file_path=temp_log_file,
+            world_size=1,
+        )
+        reader.start()
+
+        # Write useful log messages mixed with nvidia driver dumps
+        self._write_to_pipe(write_fd, b'Rank 0/100: Starting worker\n')
+        self._write_to_pipe(write_fd, b'Rank 0/100: Worker exiting with failure code 123\n')
+        self._write_to_pipe(write_fd, b'\n')
+        # Nvidia driver dump that should be filtered
+        self._write_to_pipe(write_fd, b'252 device-mapper\n')
+        self._write_to_pipe(write_fd, b'253 virtblk\n')
+        self._write_to_pipe(write_fd, b'254 mdp\n')
+        self._write_to_pipe(write_fd, b'259 blkext\n')
+        self._write_to_pipe(write_fd, b'\n')
+        self._write_to_pipe(write_fd, b'Character devices:\n')
+        self._write_to_pipe(write_fd, b'  1 mem\n')
+        self._write_to_pipe(write_fd, b'  4 /dev/vc/0\n')
+        self._write_to_pipe(write_fd, b'195 nvidia\n')
+        self._write_to_pipe(write_fd, b'195 nvidia-modeset\n')
+        self._write_to_pipe(write_fd, b'195 nvidiactl\n')
+        self._write_to_pipe(write_fd, b'497 gdrdrv\n')
+        self._write_to_pipe(write_fd, b'\n')
+        self._write_to_pipe(write_fd, b'Block devices:\n')
+        self._write_to_pipe(write_fd, b'  7 loop\n')
+        self._write_to_pipe(write_fd, b'  8 sd\n')
+        # More useful logs after the dump
+        self._write_to_pipe(write_fd, b'Rank 0/100: Cleanup complete\n')
+
+        # Close pipe to signal end
+        self._close_pipe(write_fd)
+
+        # Wait for thread to finish
+        reader.shutdown()
+        reader.join(timeout=2.0)
+
+        # Check output
+        content = self._read_log_file(temp_log_file)
+
+        # Useful messages should be present
+        assert '0: Rank 0/100: Starting worker\n' in content
+        assert '0: Rank 0/100: Worker exiting with failure code 123\n' in content
+        assert '0: Rank 0/100: Cleanup complete\n' in content
+
+        # Nvidia driver dump lines should be filtered out
+        assert 'device-mapper' not in content
+        assert 'virtblk' not in content
+        assert 'Character devices:' not in content
+        assert 'Block devices:' not in content
+        assert 'nvidia-modeset' not in content
+        assert 'nvidiactl' not in content
+        assert 'gdrdrv' not in content
+
+        # Empty lines should still be present (they're intentional formatting)
+        assert '0: \n' in content
 
     def test_multiple_ranks(self, temp_log_file):
         """Test output from multiple ranks."""

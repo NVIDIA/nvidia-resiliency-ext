@@ -217,15 +217,19 @@ class UpdateConfigMsg:
     """
     Sent from rank -> rank monitor, when some config items are updated.
     Currently, only timeouts can be updated.
+
+    Also sent from launcher -> rank monitor to update the current cycle number.
     """
 
     def __init__(
         self,
-        hb_timeouts: Optional[HeartbeatTimeouts],
-        section_timeouts: Optional[SectionTimeouts],
+        hb_timeouts: Optional[HeartbeatTimeouts] = None,
+        section_timeouts: Optional[SectionTimeouts] = None,
+        current_cycle: Optional[int] = None,
     ):
         self.hb_timeouts = hb_timeouts
         self.section_timeouts = section_timeouts
+        self.current_cycle = current_cycle
 
 
 class OkMsg:

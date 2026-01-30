@@ -95,26 +95,97 @@ def get_cuda_path():
     )
 
 
-def build(setup_kwargs):
-    # Generate gRPC Python files from .proto
-    try:
-        proto_dir = os.path.join("src", "nvidia_resiliency_ext", "shared_utils", "proto")
-        proto_file = os.path.join(proto_dir, "nvhcd.proto")
+def _compile_protos(proto_dir, proto_filenames):
+    """
+    Compile multiple .proto files in a single protoc invocation.
+
+    Args:
+        proto_dir: Directory containing the .proto files and where output will be generated
+        proto_filenames: List of .proto file names (e.g., ['nvhcd.proto', 'log_aggregation.proto'])
+
+    Returns:
+        list: Names of proto files that were successfully compiled
+
+    Raises:
+        subprocess.CalledProcessError: If protoc compilation fails
+    """
+    # Filter to only existing proto files
+    existing_protos = []
+    for proto_filename in proto_filenames:
+        proto_file = os.path.join(proto_dir, proto_filename)
         if os.path.exists(proto_file):
-            # Invoke the protoc compiler provided by grpcio-tools
-            cmd = [
-                sys.executable,
-                "-m",
-                "grpc_tools.protoc",
-                f"-I{proto_dir}",
-                f"--python_out={proto_dir}",
-                f"--pyi_out={proto_dir}",
-                f"--grpc_python_out={proto_dir}",
-                proto_file,
-            ]
-            subprocess.run(cmd, check=True)
+            existing_protos.append(proto_filename)
+        else:
+            print(f"WARNING: Proto file not found: {proto_file}")
+
+    if not existing_protos:
+        return []
+
+    print(f"Compiling {len(existing_protos)} proto file(s): {', '.join(existing_protos)}")
+
+    # The key is to use -I (proto_path) pointing to src directory
+    # and specify proto files as paths relative to src
+    # This makes protoc generate imports with the full package path
+    src_dir = os.path.join(os.path.dirname(proto_dir), "..", "..")  # Go up to src/
+    src_dir = os.path.abspath(src_dir)
+
+    # Proto files relative to src directory
+    # e.g., nvidia_resiliency_ext/shared_utils/proto/nvhcd.proto
+    proto_paths_rel_to_src = [
+        os.path.join("nvidia_resiliency_ext", "shared_utils", "proto", f) for f in existing_protos
+    ]
+
+    # Compile all proto files in a single protoc invocation
+    cmd = [
+        sys.executable,
+        "-m",
+        "grpc_tools.protoc",
+        f"-I{src_dir}",  # Use src as the import path root
+        f"--python_out={src_dir}",
+        f"--pyi_out={src_dir}",
+        f"--grpc_python_out={src_dir}",
+        *proto_paths_rel_to_src,  # Pass relative paths
+    ]
+
+    subprocess.run(cmd, check=True)
+
+    # Report generated files
+    print(f"✓ Successfully compiled {len(existing_protos)} proto file(s)")
+    for proto_filename in existing_protos:
+        base_name = proto_filename.replace('.proto', '')
+        generated_files = [
+            f"{base_name}_pb2.py",
+            f"{base_name}_pb2.pyi",
+            f"{base_name}_pb2_grpc.py",
+        ]
+        for gen_file in generated_files:
+            print(f"  Generated: {os.path.join(proto_dir, gen_file)}")
+
+    return existing_protos
+
+
+def build(setup_kwargs):
+    # Generate gRPC Python files from .proto files
+    proto_dir = os.path.join("src", "nvidia_resiliency_ext", "shared_utils", "proto")
+    proto_files = [
+        "nvhcd.proto",  # Health check service
+        "log_aggregation.proto",  # gRPC logging service
+    ]
+
+    try:
+        # Compile all proto files in one go (more efficient than one-by-one)
+        compiled = _compile_protos(proto_dir, proto_files)
+
+        if not compiled:
+            print("WARNING: No proto files found to compile")
+
+    except subprocess.CalledProcessError as e:
+        print(f"\nERROR: Failed to compile protobuf files: {e}")
+        print("Note: gRPC services require grpcio-tools:")
+        print("  pip install grpcio-tools")
+        raise
     except Exception as e:
-        print(f"ERROR: Failed to generate gRPC python files from protos: {e}")
+        print(f"\nERROR: Unexpected error during proto compilation: {e}")
         raise
 
     # Optionally build the CUPTI extension
