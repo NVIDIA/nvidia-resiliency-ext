@@ -22,7 +22,7 @@ from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCP
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
-    level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
 
@@ -102,8 +102,8 @@ async def main(args: argparse.Namespace):
         combined_result = await client.run_module(
             module_name="combined_log_fr",
             input_data=[
-                (log_analysis_result, log_result['state']),
-                (fr_analysis_result, fr_result['state']),
+                (log_analysis_result, log_result["state"]),
+                (fr_analysis_result, fr_result["state"]),
             ],
             model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
             threshold=5,
@@ -112,7 +112,7 @@ async def main(args: argparse.Namespace):
         logger.info(f"Combined Result ID: {combined_result.get('result_id')}")
         logger.info(
             f"Combined Result: {combined_result.get('result')[:500]}..."
-            if isinstance(combined_result.get('result'), str)
+            if isinstance(combined_result.get("result"), str)
             else combined_result
         )
 
@@ -128,7 +128,7 @@ async def main(args: argparse.Namespace):
         if resources:
             logger.info("\n7. Retrieving Cached Result:")
             logger.info("-" * 80)
-            uri = resources[0]['uri']
+            uri = resources[0]["uri"]
             cached_result = await client.read_resource(uri)
             logger.info(f"Retrieved from {uri}")
             logger.info(f"Content preview: {str(cached_result)[:200]}...")
@@ -140,10 +140,10 @@ async def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Single MCP Server with Multiple Attribution Modules'
+        description="Single MCP Server with Multiple Attribution Modules"
     )
-    parser.add_argument('--log-path', type=str, help='Path to log file')
-    parser.add_argument('--fr-path', type=str, help='Path to FR dumps')
+    parser.add_argument("--log-path", type=str, help="Path to log file")
+    parser.add_argument("--fr-path", type=str, help="Path to FR dumps")
     args = parser.parse_args()
 
     asyncio.run(main(args))
