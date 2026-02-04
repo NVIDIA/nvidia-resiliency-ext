@@ -19,6 +19,7 @@ FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE = "SLURM_CANCELLED_JOB_REQUEUE"
 FINISHED_STATUS_TRAINING_DONE = "TRAINING_DONE"
 # pattern-based (not exact match)
 FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT = "SLURM_CANCELLED_TIME_LIMIT"
+FINISHED_STATUS_SLURM_CANCELLED_PREEMPTION_REGEX = re.compile(r"slurmstepd.*DUE TO PREEMPTION")
 
 RESTART_IMMEDIATE = "RESTART IMMEDIATE"
 STOP_NO_RESTART = "STOP - DONT RESTART IMMEDIATE"
@@ -29,6 +30,10 @@ ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE = "SLURM STEP CANCELLED JOB REQUEUE"
 ATTR_TRAINING_DONE = "TRAINING DONE"
 ATTR_ERRORS_NOT_FOUND = "ERRORS NOT FOUND"
 ATTR_NO_LOGS = "NO LOGS"
+ATTR_SLURM_CANCELLED_DUE_TO_PREEMPTION = "SLURM CANCELLED DUE TO PREEMPTION"
+
+
+MARKER_NEW_RUN_DIR_ADDED = "[sbatch_script]: New run dir added:"
 
 
 def lines_after(lines, needle):
@@ -160,6 +165,27 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     f.writelines(input_data)
             chunks = chunk_logs_strict(input_data)  # Splitting the app log to cycles
 
+        # Adding another parser for other application logs marks
+        if (
+            len(chunks) == 1
+            and input_data
+            and any(MARKER_NEW_RUN_DIR_ADDED in line for line in input_data)
+        ):
+
+            chunks = {}
+            current_chunk = []
+            cycle = -1  # will become 0 on first marker
+
+            for line in input_data:
+                if MARKER_NEW_RUN_DIR_ADDED in line:
+                    # start a new chunk
+                    cycle += 1
+                    current_chunk = []
+                    chunks[cycle] = current_chunk
+
+                if cycle >= 0:
+                    current_chunk.append(line)
+
         output_list = [
             return_application_errors(self.llm, lines, self.lru_cache)
             for cycle, lines in chunks.items()
@@ -177,6 +203,19 @@ class NVRxLogAnalyzer(NVRxAttribution):
                         STOP_NO_RESTART,
                         "",
                         f"""Attribution: Primary issues: [{ATTR_TRAINING_DONE}], Secondary issues: []""",
+                        "",
+                        str(output.checkpoint_saved),
+                    )
+                )
+            elif output.original_text and any(
+                FINISHED_STATUS_SLURM_CANCELLED_PREEMPTION_REGEX.search(line)
+                for line in output.original_text
+            ):
+                result.append(
+                    (
+                        RESTART_IMMEDIATE,
+                        "",
+                        f"""Attribution: Primary issues: [{ATTR_SLURM_CANCELLED_DUE_TO_PREEMPTION}], Secondary issues: []""",
                         "",
                         str(output.checkpoint_saved),
                     )

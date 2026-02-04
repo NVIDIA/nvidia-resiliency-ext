@@ -31,6 +31,10 @@ except ImportError:
     nv_post = None
     HAS_NVDATAFLOW = False
 
+from slack_bolt.app import App
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
 
 # Setup logging (configurable via NVRX_ATTRSVC_LOG_LEVEL_NAME env: DEBUG|INFO|WARNING|ERROR|CRITICAL)
@@ -55,6 +59,9 @@ class Settings(BaseSettings):
         default="coreai_resiliency_osiris", description="nvdataflow index"
     )
 
+    SLACK_BOT_TOKEN: str = Field(default="", description="Slack bot token")
+    SLACK_CHANNEL: str = Field(default="#osiris-alerts", description="Slack channel")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -62,6 +69,51 @@ class Settings(BaseSettings):
         case_sensitive=False,
         env_prefix="NVRX_ATTRSVC_",
     )
+
+
+def get_slack_user_email(userID: str, token: str) -> str | None:
+    client = WebClient(token=token)
+
+    try:
+        # Fetch all users (pagination may be needed for very large teams)
+        user_id = client.users_lookupByEmail(email=f"{userID}@nvidia.com").get("user")["id"]
+
+        return user_id  # User not found
+    except SlackApiError as e:
+        logger.error(f"Error fetching user email: {e.response['error']}")
+        return None
+
+
+def send_slack_notification(data: dict, slack_bot_token: str, slack_channel: str):
+    """
+    Send slack notification.
+    """
+
+    app = App(token=slack_bot_token)
+
+    client = WebClient(token=slack_bot_token)
+
+    slack_user_id = get_slack_user_email(data['s_user'], slack_bot_token)
+
+    mention = f"\n<@{slack_user_id}>" if slack_user_id else ""
+    if not slack_user_id:
+        logger.error(f"User {data['s_user']} not found in Slack")
+
+    text = (
+        f"*Job ID:* `{data['s_job_id']}`\n"
+        "*Failed due to:*\n"
+        f"```{data['s_attribution']}```\n"
+        "*Terminal issue:*\n"
+        f"```{data['s_auto_resume_explanation']}```"
+        f"{mention}"
+    )
+    try:
+        response = client.chat_postMessage(
+            channel=slack_channel,  # or channel ID like "C1234567890"
+            text=text,
+        )
+    except SlackApiError as e:
+        logger.error(f"Error posting message: {e.response['error']}")
 
 
 class RequestCoalescer:
@@ -487,7 +539,7 @@ def create_app(cfg: Settings) -> FastAPI:
                             # Split by newlines and take the first element
                             auto_resume = auto_resume_raw[0]
                             try:
-                                auto_resume_explanation = auto_resume_raw[1]
+                                auto_resume_explanation = auto_resume_raw[1][:-1]
                             except Exception as e:
                                 auto_resume_explanation = ""
                                 logger.info(f"Failed to extract auto resume explanation: {e}")
@@ -546,7 +598,7 @@ def create_app(cfg: Settings) -> FastAPI:
                             logger.info("attribution_text: %s", attribution_text)
                             data = {
                                 "s_cluster": cfg.CLUSTER_NAME,
-                                "s_user": "nemotron_run",
+                                "s_user": "user",
                                 "s_attribution": attribution_text,
                                 "s_auto_resume": auto_resume,
                                 "s_auto_resume_explanation": auto_resume_explanation,
@@ -557,6 +609,13 @@ def create_app(cfg: Settings) -> FastAPI:
                                 "d_processing_time": round(e_time - s_time, 2),
                                 "ts_current_time": round(datetime.now().timestamp() * 1000),
                             }
+
+                            if auto_resume == "STOP - DONT RESTART IMMEDIATE":
+                                # Send slack notification
+                                send_slack_notification(
+                                    data, cfg.SLACK_BOT_TOKEN, cfg.SLACK_CHANNEL
+                                )
+
                             if (
                                 HAS_NVDATAFLOW
                                 and cfg.NVDATAFLOW_PROJECT
