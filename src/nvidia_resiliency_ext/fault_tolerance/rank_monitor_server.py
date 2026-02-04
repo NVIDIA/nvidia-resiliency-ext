@@ -177,6 +177,8 @@ class RankMonitorServer:
         )
         self.launcher_server = None
         self.launcher_writer = None  # Keep connection to launcher for bidirectional IPC
+        # Track periodic tasks for cleanup on shutdown
+        self._periodic_tasks = []
         self._max_iteration_this_cycle = 0  # Track max iteration in current restart cycle
         self._last_sent_iteration = 0  # Track last iteration sent to launcher (avoid duplicates)
         self._initial_iteration = None  # Track starting iteration of current cycle
@@ -492,6 +494,11 @@ class RankMonitorServer:
             self.server.close()
             self.launcher_server.close()
 
+            # Cancel all periodic tasks to allow clean shutdown
+            for task in self._periodic_tasks:
+                if not task.done():
+                    task.cancel()
+
     def _is_hb_timeout_elapsed(self, curr_time) -> bool:
         is_elapsed = False
         if self.last_hb_time is None:
@@ -631,19 +638,27 @@ class RankMonitorServer:
             self.launcher_ipc_socket_path,
         )
 
-        # Periodic checks
-        asyncio.get_running_loop().create_task(self._periodic_rank_check())
+        # Periodic checks - track tasks for cleanup
+        self._periodic_tasks.append(
+            asyncio.get_running_loop().create_task(self._periodic_rank_check())
+        )
 
         # Periodic node health check
-        asyncio.get_running_loop().create_task(self._periodic_node_health_check())
+        self._periodic_tasks.append(
+            asyncio.get_running_loop().create_task(self._periodic_node_health_check())
+        )
 
         # Periodic nic health check
         if self.nic_health_checker is not None:
-            asyncio.get_running_loop().create_task(self._periodic_nic_health_check())
+            self._periodic_tasks.append(
+                asyncio.get_running_loop().create_task(self._periodic_nic_health_check())
+            )
 
         # Periodic progress update to launcher
         if self.cfg.is_progress_tracking_enabled:
-            asyncio.get_running_loop().create_task(self._periodic_progress_update())
+            self._periodic_tasks.append(
+                asyncio.get_running_loop().create_task(self._periodic_progress_update())
+            )
 
         self.rank_monitor_ready_event.set()
 

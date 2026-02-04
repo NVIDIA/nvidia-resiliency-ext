@@ -107,6 +107,7 @@ FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.soc
 logger = logging.getLogger(LogConfig.name)
 
 _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
+_GRPC_SERVER_PROCESS: Optional[subprocess.Popen] = None
 
 def init_node_health_check(endpoint: Optional[str]) -> None:
     global _NODE_HEALTH_CHECK_INSTANCE
@@ -863,8 +864,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         for local_rank, state in self._rank_monitors.items():
             with contextlib.suppress(Exception):
                 state.process.terminate()
+
+        # Wait for rank monitor processes to exit with timeout
+        for local_rank, state in self._rank_monitors.items():
             with contextlib.suppress(Exception):
-                state.process.join()
+                state.process.join(timeout=5.0)
+                if state.process.is_alive():
+                    logger.warning(f"Rank monitor {local_rank} did not exit after SIGTERM, force killing...")
+                    state.process.kill()
+                    state.process.join()
             with contextlib.suppress(Exception):
                 os.unlink(self.get_rank_mon_socket_path(local_rank))
 
@@ -1098,8 +1106,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             for handler in self._pcontext.subprocess_handlers.values():
                 for stream in (handler.proc.stdout, handler.proc.stderr):
                     if stream:
-                        with contextlib.suppress(Exception):
+                        try:
                             stream.close()
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to close pipe FD for process {handler.proc.pid}: {e}"
+                            )
 
             # Tell reader to unregister all FDs immediately (blocks until done)
             # This prevents FD reuse bugs: when OS reuses FD numbers for cycle N+1
@@ -3014,14 +3026,11 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     return logs_specs_cls
 
 
-def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str], Optional[subprocess.Popen]]:
+def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
-
-    # Initialize grpc_server_process early so it's always defined for return statement
-    grpc_server_process = None
 
     if hasattr(args, "master_addr") and args.rdzv_backend not in ["static", "c10d"] and not args.rdzv_endpoint:
         logger.warning(
@@ -3181,9 +3190,11 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
                 # local server.
                 grpc_server_address = f"localhost:{grpc_port}"
 
-                grpc_server_process = _start_grpc_log_server(args, base_log_file)
+                # Store gRPC server process globally for cleanup in main()
+                global _GRPC_SERVER_PROCESS
+                _GRPC_SERVER_PROCESS = _start_grpc_log_server(args, base_log_file)
 
-                if grpc_server_process is None:
+                if _GRPC_SERVER_PROCESS is None:
                     # CRITICAL: Server failed to start on TCP store host
                     # Disable gRPC for this node to prevent log loss
                     logger.error(
@@ -3277,7 +3288,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         cmd_args.append(f"--local-rank={macros.local_rank}")
     cmd_args.extend(args.training_script_args)
 
-    return config, cmd, cmd_args, grpc_server_process
+    return config, cmd, cmd_args
 
 
 def run_script_path(training_script: str, *training_script_args: str):
@@ -3444,22 +3455,19 @@ def run(args):
     # to avoid chicken-and-egg problem (logging to gRPC before server is up)
     # Server cleanup is handled by main() to ensure final logs aren't lost
 
-    config, cmd, cmd_args, grpc_server_process = config_from_args(args, launcher_pipe_read_fd, launcher_log_file)
+    config, cmd, cmd_args = config_from_args(args, launcher_pipe_read_fd, launcher_log_file)
+
     elastic_launch(
         config=config,
         entrypoint=cmd,
     )(*cmd_args)
 
-    # Return grpc_server_process so main() can clean it up after all logging
-    return grpc_server_process
-
 
 @record
 def main(args=None):
     args = parse_args(args)
-    grpc_server_process = None
     try:
-        grpc_server_process = run(args)
+        run(args)
     except ChildFailedError as e:
         logger.error(
             f"Some rank(s) exited with non-zero exit code: {e.failures}. Agent's exit code = 1"
@@ -3474,8 +3482,9 @@ def main(args=None):
     finally:
         # Clean up gRPC server AFTER all logging is done
         # (logging cleanup already happened in run()'s finally block)
-        if grpc_server_process:
-            grpc_server_process.terminate()
+        global _GRPC_SERVER_PROCESS
+        if _GRPC_SERVER_PROCESS:
+            _GRPC_SERVER_PROCESS.terminate()
             try:
                 # CRITICAL: Server has graceful_shutdown_timeout to wait for clients
                 # We must wait at least that long + margin before force-killing
@@ -3483,14 +3492,14 @@ def main(args=None):
                 # Read timeout directly from args (already parsed and available here)
                 grpc_graceful_shutdown_timeout = getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
                 wait_timeout = grpc_graceful_shutdown_timeout + 5.0
-                grpc_server_process.wait(timeout=wait_timeout)
+                _GRPC_SERVER_PROCESS.wait(timeout=wait_timeout)
             except subprocess.TimeoutExpired:
                 # Server didn't shut down within graceful period, force kill
                 logger.warning(
                     f"gRPC server did not shut down within {wait_timeout}s, killing..."
                 )
-                grpc_server_process.kill()
-                grpc_server_process.wait()
+                _GRPC_SERVER_PROCESS.kill()
+                _GRPC_SERVER_PROCESS.wait()
 
     sys.exit(exit_code)
 

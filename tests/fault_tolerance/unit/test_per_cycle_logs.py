@@ -606,16 +606,18 @@ class TestPipeSubprocessHandler:
 
     def test_close_releases_pipe_fds(self):
         """
-        Test that PipeSubprocessHandler.close() properly closes parent's pipe FDs.
+        Test that PipeSubprocessHandler provides access to pipe FDs for cleanup.
 
-        This is a regression test for the FD reuse bug where:
-        1. Workers from cycle N are shut down
-        2. Pipes remain open because close() didn't close proc.stdout/stderr
-        3. FDs get reused when cycle N+1 workers spawn quickly
-        4. Old reader thread tries to read from reused FDs → EBADF/EINVAL errors
+        Implementation note: The actual FD cleanup happens in launcher.py's
+        _stop_workers() method, not in handler.close(). This is because:
+        1. _stop_workers() handles cleanup for ALL processes (alive or crashed)
+        2. PyTorch's conditional logic may skip calling close() if process already died
+        3. Deterministic cleanup before spawning new workers prevents FD reuse bugs
 
-        The fix ensures that close() explicitly closes self.proc.stdout/stderr
-        to release the parent's read-end of the pipes.
+        This test verifies that:
+        - Pipe FDs are accessible via handler.proc.stdout/stderr
+        - FDs can be explicitly closed when needed (e.g., in _stop_workers())
+        - close() method works without errors even with pipes
         """
         # Create a worker process with pipes
         handler = PipeSubprocessHandler(
@@ -633,10 +635,16 @@ class TestPipeSubprocessHandler:
         # Verify FD is valid before close
         os.fstat(parent_fd_stdout)  # Should not raise
 
-        # Close the handler (should close parent's pipe FDs)
+        # Call close() - this sends SIGTERM but doesn't close pipe FDs
         handler.close()
 
-        # Verify FD is now closed (should raise EBADF)
+        # Verify FD is still open after close() (cleanup happens in _stop_workers())
+        os.fstat(parent_fd_stdout)  # Should not raise
+
+        # Explicitly close the pipe FD (simulates _stop_workers() behavior)
+        handler.proc.stdout.close()
+
+        # Now verify FD is closed (should raise EBADF)
         with pytest.raises(OSError) as exc_info:
             os.fstat(parent_fd_stdout)
 
@@ -677,14 +685,18 @@ class TestPipeSubprocessHandler:
 
     def test_fd_closed_immediately_when_process_alive(self):
         """
-        Test that FDs are closed immediately when process is still alive (normal case).
+        Test FD lifecycle when process is still alive (normal case).
 
         This tests PyTorch's conditional logic:
             if handler.proc.poll() is None:  # Process still alive
                 handler.close(death_sig=death_sig)  # CALLED!
 
         When proc.poll() is None (process alive), handler.close() IS called.
-        Our fix closes proc.stdout/stderr immediately, releasing FDs.
+
+        Implementation note: handler.close() sends SIGTERM but does NOT close FDs.
+        FD cleanup happens in launcher.py's _stop_workers() which is called after
+        PyTorch's SubprocessContext._close(). This ensures deterministic cleanup
+        for all workers before spawning new ones.
         """
         # Create a worker with a long-running process
         handler = PipeSubprocessHandler(
@@ -709,8 +721,13 @@ class TestPipeSubprocessHandler:
         if handler.proc.poll() is None:
             handler.close()  # This IS called (scenario 1)
 
-        # Our fix (lines 180-189 in per_cycle_logs.py) should have closed the FD
-        # immediately inside handler.close()
+        # FD should still be open after close() - cleanup happens in _stop_workers()
+        os.fstat(parent_fd)  # Should not raise
+
+        # Explicitly close FD (simulates _stop_workers() behavior)
+        handler.proc.stdout.close()
+
+        # Now FD should be closed
         with pytest.raises(OSError) as exc_info:
             os.fstat(parent_fd)
         assert exc_info.value.errno == 9  # EBADF - FD properly closed!
@@ -718,8 +735,8 @@ class TestPipeSubprocessHandler:
         # Clean up
         handler.proc.wait(timeout=2.0)
 
-        # Summary: Normal case where our fix works. When handler.close()
-        # is called, FDs are released immediately, preventing FD reuse issues.
+        # Summary: Normal case where FDs remain open after close(), then are
+        # explicitly closed in _stop_workers(), preventing FD reuse issues.
 
     def test_fd_not_closed_when_process_already_dead(self):
         """

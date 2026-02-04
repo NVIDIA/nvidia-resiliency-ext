@@ -250,16 +250,10 @@ class PipeSubprocessHandler(SubprocessHandler):
             except Exception:
                 pass
 
-        # For pipe cases, close the parent's read-end of the pipes
-        # This is defense-in-depth: PyTorch calls this for alive processes,
-        # but _stop_workers() in launcher.py also does explicit cleanup for ALL
-        # processes (alive or crashed) to handle the case where PyTorch skips
-        # this call. We keep this code for: 1) earlier cleanup timing, 2) safety
-        # if called outside launcher context, 3) code clarity.
-        for stream in (self.proc.stdout, self.proc.stderr):
-            if stream:
-                with contextlib.suppress(Exception):
-                    stream.close()
+        # For pipe cases: parent's read-end of pipes is closed in _stop_workers()
+        # in launcher.py (lines 1098-1102), which handles cleanup for ALL processes
+        # (alive or crashed). This ensures deterministic cleanup before spawning new
+        # workers, preventing FD reuse bugs.
 
 
 class GrpcWriterThread(threading.Thread):
