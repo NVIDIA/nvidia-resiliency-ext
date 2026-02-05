@@ -132,10 +132,14 @@ class FaultToleranceConfig:
     gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
     gpu_memory_poll_interval: float = 2.0  # Poll interval for GPU memory check (in seconds)
     check_remaining_processes: bool = False
-    # Progress tracking configuration (controlled by max_no_progress_restarts)
-    max_no_progress_restarts: int = 3
-    min_progress_iterations: int = 200
-    progress_update_interval: float = 30.0  # Seconds between sending progress updates to launcher
+    # Progress tracking configuration (controlled by max_no_progress_cycles)
+    max_no_progress_cycles: int = (
+        2  # Max consecutive cycles (incl. cycle 0) without progress before early terminate
+    )
+    min_progress_iterations: int = (
+        1  # Min iteration increase to count as progress (default: any increase)
+    )
+    checkpoint_iteration_file: Optional[str] = None  # Path to file with latest checkpoint iteration
     install_exception_hook: bool = False
     num_warmup_iterations: int = (
         5  # Number of warmup iterations before monitoring step section and out-of-section timeouts
@@ -149,8 +153,8 @@ class FaultToleranceConfig:
 
     @property
     def is_progress_tracking_enabled(self) -> bool:
-        """Check if progress tracking is enabled (controlled by max_no_progress_restarts > 0)."""
-        return self.max_no_progress_restarts > 0
+        """Check if progress tracking is enabled (controlled by max_no_progress_cycles > 0)."""
+        return self.max_no_progress_cycles > 0
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
