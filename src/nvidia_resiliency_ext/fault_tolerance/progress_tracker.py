@@ -56,7 +56,8 @@ class TrainingProgressTracker:
 
         Args:
             min_progress_iterations: Minimum iterations to consider as "making progress"
-            max_no_progress_restarts: Max consecutive restarts without progress before early termination
+            max_no_progress_restarts: Max consecutive restarts without progress before early termination.
+                                      Set to <= 0 to disable progress tracking.
             initial_cycle_number: Initial global cycle number (for job array replacement nodes)
                                   Cycle 0 = initial attempt, cycle 1 = first restart, etc.
         """
@@ -111,6 +112,9 @@ class TrainingProgressTracker:
         If iterations are not being reported (both current and last are 0),
         the progress check is skipped and a warning is logged once.
         """
+        # Skip if tracking is disabled
+        if self.max_no_progress_restarts <= 0:
+            return
 
         # Check if previous cycle made progress
         # Skip if this is the first cycle on this agent instance (no baseline data)
@@ -163,6 +167,10 @@ class TrainingProgressTracker:
         Returns:
             True if training should be terminated (too many restarts without progress)
         """
+        # Tracking is disabled if max_no_progress_restarts <= 0
+        if self.max_no_progress_restarts <= 0:
+            return False
+
         if self.no_progress_count >= self.max_no_progress_restarts:
             logger.error(
                 f"EARLY TERMINATION: {self.no_progress_count} consecutive training cycles "

@@ -15,13 +15,35 @@
 # limitations under the License.
 
 """
-NVRx Log Aggregator Service
+Node-Local Log Aggregator Service
 
-NVRx Log Aggregator Service
-This module provides a standalone log aggregator service that can run independently
-of training processes. The service monitors a node-local temporary directory, accessible
-to all training processes on the same node, and aggregates their log messages into
-per-node log files stored on a shared filesystem (e.g., Lustre or NFS).
+This module provides a standalone log aggregator service for single-node log collection.
+The service monitors a node-local temporary directory, accessible to all training processes
+on the same node, and aggregates their log messages into per-node log files stored on a
+shared filesystem (e.g., Lustre or NFS).
+
+**Key Features:**
+- **File-based**: Monitors temp directory for log files from local processes
+- **Single-node scope**: Aggregates logs from all processes on one node
+- **Per-node output**: Each node writes its own log file
+- **Manual deployment**: Run via sbatch/srun alongside training
+
+**Comparison with grpc_log_server.py:**
+
++--------------------+-------------------------+---------------------------+
+|                    | log_aggregator.py       | grpc_log_server.py       |
++--------------------+-------------------------+---------------------------+
+| Scope              | Single node             | Multi-node (cluster)      |
+| Transport          | File-based (temp dir)   | Network (gRPC)            |
+| Input              | All processes on 1 node | All nodes in cluster      |
+| Output             | Per-node log files      | Single centralized file   |
+| Lustre writers     | N (one per node)        | 1 (optimal)               |
+| Deployment         | Manual (sbatch)         | Automatic (launcher)      |
++--------------------+-------------------------+---------------------------+
+
+**When to use:**
+- Use `log_aggregator.py` for node-local aggregation (multiple processes → one node file)
+- Use `grpc_log_server.py` for cluster-wide centralization (multiple nodes → one global file)
 
 Example sbatch Usage:
 

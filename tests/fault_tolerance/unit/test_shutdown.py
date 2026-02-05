@@ -129,7 +129,7 @@ test_scenarios = [
     # tests end before any missing heartbeats are detected
     {
         "action": "term_ranks",
-        "delay": 2.0,
+        "delay": 0.5,
         "sig": signal.SIGTERM,
         "target_ranks": ALL_RANK_IDS,
         "should_write_chkpt": False,
@@ -139,7 +139,7 @@ test_scenarios = [
     # remaning ranks should be terminated due to missing heartbeats
     {
         "action": "term_ranks",
-        "delay": 2.0,
+        "delay": 0.5,
         "sig": signal.SIGTERM,
         "target_ranks": [0],
         "should_write_chkpt": True,
@@ -149,7 +149,7 @@ test_scenarios = [
     # remaning ranks should be terminated due to missing heartbeats
     {
         "action": "term_ranks",
-        "delay": 2.0,
+        "delay": 0.5,
         "sig": signal.SIGKILL,
         "target_ranks": [0],
         "should_write_chkpt": True,
@@ -158,7 +158,7 @@ test_scenarios = [
     # Ranks 1,2 killed, other should be terminated due to missing heartbeats
     {
         "action": "term_ranks",
-        "delay": 2.0,
+        "delay": 0.5,
         "sig": signal.SIGKILL,
         "target_ranks": [1, 2],
         "should_write_chkpt": True,
@@ -170,7 +170,7 @@ test_scenarios = [
     # tests end before any missing heartbeats are detected
     {
         "action": "term_ranks",
-        "delay": 2.0,
+        "delay": 0.5,
         "sig": signal.SIGKILL,
         "target_ranks": ALL_RANK_IDS,
         "should_write_chkpt": False,
