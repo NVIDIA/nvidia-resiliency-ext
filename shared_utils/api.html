@@ -405,12 +405,20 @@ logger.info(“Some message”)</p>
 </section>
 <section id="module-nvidia_resiliency_ext.shared_utils.log_aggregator">
 <span id="log-aggregator"></span><h2>Log Aggregator<a class="headerlink" href="#module-nvidia_resiliency_ext.shared_utils.log_aggregator" title="Link to this heading"></a></h2>
-<p>NVRx Log Aggregator Service</p>
-<p>NVRx Log Aggregator Service
-This module provides a standalone log aggregator service that can run independently
-of training processes. The service monitors a node-local temporary directory, accessible
-to all training processes on the same node, and aggregates their log messages into
-per-node log files stored on a shared filesystem (e.g., Lustre or NFS).</p>
+<p>Node-Local Log Aggregator Service</p>
+<p>This module provides a standalone log aggregator service for single-node log collection.
+The service monitors a node-local temporary directory, accessible to all training processes
+on the same node, and aggregates their log messages into per-node log files stored on a
+shared filesystem (e.g., Lustre or NFS).</p>
+<p><strong>Key Features:</strong>
+- <strong>File-based</strong>: Monitors temp directory for log files from local processes
+- <strong>Single-node scope</strong>: Aggregates logs from all processes on one node
+- <strong>Per-node output</strong>: Each node writes its own log file
+- <strong>Manual deployment</strong>: Run via sbatch/srun alongside training</p>
+<p><strong>Comparison with grpc_log_server.py:</strong></p>
+<p><strong>When to use:</strong>
+- Use <cite>log_aggregator.py</cite> for node-local aggregation (multiple processes → one node file)
+- Use <cite>grpc_log_server.py</cite> for cluster-wide centralization (multiple nodes → one global file)</p>
 <p>Example sbatch Usage:</p>
 <dl>
 <dt># For PyPI installation:</dt><dd><p>export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx

@@ -94,13 +94,35 @@
 <span class="c1"># limitations under the License.</span>
 
 <span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">NVRx Log Aggregator Service</span>
+<span class="sd">Node-Local Log Aggregator Service</span>
 
-<span class="sd">NVRx Log Aggregator Service</span>
-<span class="sd">This module provides a standalone log aggregator service that can run independently</span>
-<span class="sd">of training processes. The service monitors a node-local temporary directory, accessible</span>
-<span class="sd">to all training processes on the same node, and aggregates their log messages into</span>
-<span class="sd">per-node log files stored on a shared filesystem (e.g., Lustre or NFS).</span>
+<span class="sd">This module provides a standalone log aggregator service for single-node log collection.</span>
+<span class="sd">The service monitors a node-local temporary directory, accessible to all training processes</span>
+<span class="sd">on the same node, and aggregates their log messages into per-node log files stored on a</span>
+<span class="sd">shared filesystem (e.g., Lustre or NFS).</span>
+
+<span class="sd">**Key Features:**</span>
+<span class="sd">- **File-based**: Monitors temp directory for log files from local processes</span>
+<span class="sd">- **Single-node scope**: Aggregates logs from all processes on one node</span>
+<span class="sd">- **Per-node output**: Each node writes its own log file</span>
+<span class="sd">- **Manual deployment**: Run via sbatch/srun alongside training</span>
+
+<span class="sd">**Comparison with grpc_log_server.py:**</span>
+
+<span class="sd">+--------------------+-------------------------+---------------------------+</span>
+<span class="sd">|                    | log_aggregator.py       | grpc_log_server.py       |</span>
+<span class="sd">+--------------------+-------------------------+---------------------------+</span>
+<span class="sd">| Scope              | Single node             | Multi-node (cluster)      |</span>
+<span class="sd">| Transport          | File-based (temp dir)   | Network (gRPC)            |</span>
+<span class="sd">| Input              | All processes on 1 node | All nodes in cluster      |</span>
+<span class="sd">| Output             | Per-node log files      | Single centralized file   |</span>
+<span class="sd">| Lustre writers     | N (one per node)        | 1 (optimal)               |</span>
+<span class="sd">| Deployment         | Manual (sbatch)         | Automatic (launcher)      |</span>
+<span class="sd">+--------------------+-------------------------+---------------------------+</span>
+
+<span class="sd">**When to use:**</span>
+<span class="sd">- Use `log_aggregator.py` for node-local aggregation (multiple processes → one node file)</span>
+<span class="sd">- Use `grpc_log_server.py` for cluster-wide centralization (multiple nodes → one global file)</span>
 
 <span class="sd">Example sbatch Usage:</span>
 
