@@ -179,9 +179,7 @@ class RankMonitorServer:
         self.launcher_writer = None  # Keep connection to launcher for bidirectional IPC
         # Track periodic tasks for cleanup on shutdown
         self._periodic_tasks = []
-        self._max_iteration_this_cycle = 0  # Track max iteration in current restart cycle
-        self._last_sent_iteration = 0  # Track last iteration sent to launcher (avoid duplicates)
-        self._initial_iteration = None  # Track starting iteration of current cycle
+        self._initial_iteration = None  # Track starting iteration of current cycle (for warmup)
         self._current_iteration = None  # Track current iteration for warmup detection
         self.current_cycle = 0  # Track current cycle number for logging
 
@@ -296,30 +294,6 @@ class RankMonitorServer:
             self.nic_health_checker.set_nic_device(local_rank=self.rank_info.local_rank)
         self.rmlogger.set_connected_rank(msg.rank_info.global_rank)
 
-        # Send initial iteration to launcher if workload can report iterations
-        # If msg.iteration is None, the workload cannot report iterations and
-        # progress tracking will remain disabled (both last_restart_iteration
-        # and current_max_iteration stay at 0).
-        if self.launcher_writer is not None and msg.iteration is not None:
-            await write_obj_to_ipc_stream(
-                {
-                    "type": "iteration_update",
-                    "local_rank": self.rank_info.local_rank,
-                    "iteration": msg.iteration,
-                },
-                self.launcher_writer,
-            )
-            self._last_sent_iteration = msg.iteration
-            # Only log from rank 0 to reduce log spam
-            if self.rank_info.global_rank == 0:
-                self.logger.debug(f"Sent initial iteration to launcher: {msg.iteration}")
-        elif msg.iteration is None:
-            # Only log from rank 0 to reduce log spam
-            if self.rank_info.global_rank == 0:
-                self.logger.debug(
-                    "Workload cannot report iterations, progress tracking will be disabled"
-                )
-
         await write_obj_to_ipc_stream(OkMsg(cfg=self.cfg), writer)
 
     async def _handle_heartbeat_msg(self, msg, writer):
@@ -339,10 +313,8 @@ class RankMonitorServer:
             await self.stop_periodic_restart_check()
         self.state_machine.handle_section_msg()
 
-        # Track max iteration for this restart cycle (will be sent to launcher on next init)
+        # Track iteration for warmup detection (out-of-section timeout skip)
         if msg.iteration is not None:
-            self._max_iteration_this_cycle = max(self._max_iteration_this_cycle, msg.iteration)
-            # Reset initial_iteration on first real iteration update (in case it was a sentinel value)
             if (
                 self._initial_iteration is not None
                 and self._current_iteration == self._initial_iteration
@@ -581,34 +553,6 @@ class RankMonitorServer:
     async def _periodic_nic_health_check(self):
         await self.nic_health_checker.async_check()
 
-    async def _periodic_progress_update(self):
-        """Periodically send current max iteration to launcher for progress tracking."""
-        while True:
-            await asyncio.sleep(self.cfg.progress_update_interval)
-
-            # Only send if iteration has changed since last send
-            if (
-                self.launcher_writer is not None
-                and self._max_iteration_this_cycle > self._last_sent_iteration
-                and self.rank_info is not None
-            ):
-
-                iteration_to_send = self._max_iteration_this_cycle
-                await write_obj_to_ipc_stream(
-                    {
-                        "type": "iteration_update",
-                        "local_rank": self.rank_info.local_rank,
-                        "iteration": iteration_to_send,
-                    },
-                    self.launcher_writer,
-                )
-                self._last_sent_iteration = iteration_to_send
-                # Only log from rank 0 to reduce log spam
-                if self.rank_info.global_rank == 0:
-                    self.logger.debug(
-                        f"Sent periodic progress update to launcher: iteration={iteration_to_send}"
-                    )
-
     async def _rank_monitor_loop(self):
         # Handle usual termination signals
         for sig_to_handle in [
@@ -652,12 +596,6 @@ class RankMonitorServer:
         if self.nic_health_checker is not None:
             self._periodic_tasks.append(
                 asyncio.get_running_loop().create_task(self._periodic_nic_health_check())
-            )
-
-        # Periodic progress update to launcher
-        if self.cfg.is_progress_tracking_enabled:
-            self._periodic_tasks.append(
-                asyncio.get_running_loop().create_task(self._periodic_progress_update())
             )
 
         self.rank_monitor_ready_event.set()

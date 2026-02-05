@@ -79,7 +79,6 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
     is_slurm_job_array,
     patched_method,
-    read_obj_from_ipc_stream,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
@@ -375,10 +374,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         initial_cycle_number = self._get_global_cycle_number()
         self._progress_tracker = TrainingProgressTracker(
             min_progress_iterations=fault_tol_cfg.min_progress_iterations,
-            max_no_progress_restarts=fault_tol_cfg.max_no_progress_restarts,
+            max_no_progress_cycles=fault_tol_cfg.max_no_progress_cycles,
             initial_cycle_number=initial_cycle_number,
+            checkpoint_iteration_file=fault_tol_cfg.checkpoint_iteration_file,
         )
-        self._rank_iterations: Dict[int, int] = dict()  # Track max iteration per rank
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
@@ -850,16 +849,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         if os.getenv('NVRX_DISABLE_RANK_MONITORS'):
             return
 
-        # Stop listener threads and terminate rank monitor processes
-        for local_rank, state in self._rank_monitors.items():
-            # Signal listener thread to stop
-            if state.stop_event:
-                state.stop_event.set()
-
-            # Wait for listener thread to finish (will close connection gracefully)
-            if state.listener_thread and state.listener_thread.is_alive():
-                state.listener_thread.join(timeout=2.0)
-
         # Terminate rank monitor processes
         for local_rank, state in self._rank_monitors.items():
             with contextlib.suppress(Exception):
@@ -877,82 +866,14 @@ class LocalElasticAgent(SimpleElasticAgent):
                 os.unlink(self.get_rank_mon_socket_path(local_rank))
 
     async def _connect_to_rank_monitor(self, local_rank: int, rmon_proc) -> None:
-        """Start listener thread for rank monitor bidirectional IPC.
+        """Record rank monitor socket path for cycle updates.
 
-        Note: This is called after rank_monitor_ready_event is set, which guarantees
-        the socket file already exists. The actual connection is created inside the
-        background thread's event loop to avoid event loop conflicts.
+        The launcher sends cycle updates to rank monitors via short-lived connections.
+        Progress is tracked via the checkpoint iteration file (when set), not from rank monitor.
         """
         launcher_to_rmon_socket = f"{tempfile.gettempdir()}/_ft_launcher{rmon_proc.pid}_to_rmon.socket"
-
         state = self._rank_monitors[local_rank]
         state.socket_path = launcher_to_rmon_socket
-        state.stop_event = threading.Event()
-
-        # Start listener thread (will create connection in its own event loop)
-        state.listener_thread = threading.Thread(
-            target=self._listen_to_rank_monitor_thread,
-            args=(local_rank, launcher_to_rmon_socket, state.stop_event),
-            daemon=True,
-            name=f"RankMonitor-{local_rank}-Listener"
-        )
-        state.listener_thread.start()
-
-    def _update_progress_iteration(self, local_rank: int, iteration: int):
-        """Update iteration for a specific rank and aggregate using MIN strategy."""
-        # Update this rank's max iteration
-        self._rank_iterations[local_rank] = max(
-            self._rank_iterations.get(local_rank, 0), iteration
-        )
-
-        # Use minimum across all ranks (most conservative - slowest rank determines progress)
-        min_iteration = min(self._rank_iterations.values()) if self._rank_iterations else 0
-        self._progress_tracker.update_iteration(min_iteration)
-
-    def _listen_to_rank_monitor_thread(self, local_rank: int, socket_path: str, stop_event: threading.Event) -> None:
-        """Listen for messages from rank monitor in a background thread.
-
-        This runs in a separate thread with its own event loop to receive messages
-        from the rank monitor server. The connection is created in this thread's
-        event loop to avoid cross-loop conflicts.
-        """
-        # Create a new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def listen_loop():
-            try:
-                # Create connection in THIS thread's event loop
-                reader, writer = await asyncio.open_unix_connection(socket_path)
-
-                try:
-                    while not stop_event.is_set():
-                        # Use wait_for with timeout to allow checking stop_event periodically
-                        try:
-                            msg = await asyncio.wait_for(read_obj_from_ipc_stream(reader), timeout=1.0)
-                            if isinstance(msg, dict) and msg.get("type") == "iteration_update":
-                                # Handle iteration update from rank monitor
-                                iteration = msg["iteration"]
-                                self._update_progress_iteration(local_rank, iteration)
-                            else:
-                                logger.debug(f"Received message from rank monitor {local_rank}: {msg}")
-                        except asyncio.TimeoutError:
-                            # Timeout is expected, just check stop_event and continue
-                            continue
-                finally:
-                    # Clean up connection
-                    writer.close()
-                    await writer.wait_closed()
-            except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
-                logger.debug(f"Rank monitor {local_rank} connection closed")
-            except Exception as e:
-                if not stop_event.is_set():
-                    logger.error(f"Error listening to rank monitor {local_rank}: {e}")
-
-        try:
-            loop.run_until_complete(listen_loop())
-        finally:
-            loop.close()
 
     def _send_cycle_to_rank_monitors(self, current_cycle: int) -> None:
         """Send current cycle number to all rank monitors.
@@ -2885,25 +2806,35 @@ def get_args_parser() -> ArgumentParser:
     #
 
     parser.add_argument(
+        "--ft-max-no-progress-cycles",
+        "--ft-max_no_progress_cycles",
         "--ft-max-no-progress-restarts",
         "--ft-max_no_progress_restarts",
         type=int,
-        default=3,
-        dest="ft_max_no_progress_restarts",
-        help="Maximum consecutive restarts without progress before early termination. "
-        "Progress tracking is enabled when this value > 0. "
-        "Set to 0 or -1 to disable progress tracking. "
-        "Default: 3 (progress tracking enabled).",
+        default=2,
+        dest="ft_max_no_progress_cycles",
+        help="Maximum consecutive cycles (including initial cycle 0) without progress before early "
+        "termination. E.g. 2 = allow cycle 0 and 1 with no progress, then terminate before cycle 2. "
+        "Progress tracking is enabled when this value > 0. Set to 0 or -1 to disable. Default: 2.",
     )
 
     parser.add_argument(
         "--ft-min-progress-iterations",
         "--ft-min_progress_iterations",
         type=int,
-        default=200,
+        default=1,
         dest="ft_min_progress_iterations",
-        help="Minimum iterations required to consider a restart as making progress. "
-        "Default: 200.",
+        help="Minimum iteration increase to consider a restart as making progress (default: 1).",
+    )
+
+    parser.add_argument(
+        "--ft-checkpoint-iteration-file",
+        "--ft-checkpoint_iteration_file",
+        type=str,
+        default=None,
+        dest="ft_checkpoint_iteration_file",
+        help="Path to file containing the latest checkpoint iteration (single integer). "
+        "Used for progress tracking. Example: phase1/latest_checkpointed_iteration.txt",
     )
 
     #

@@ -147,7 +147,8 @@ class RankMonitorClient:
         Check if the workload framework supports iteration tracking.
 
         This is based on framework detection (module presence), not current state.
-        Used to "arm" progress tracking even if iterations aren't available yet.
+        Iteration is sent to the server for warmup detection (skip out-of-section
+        timeout during the first num_warmup_iterations).
 
         Returns:
             True if workload framework is detected and will provide iterations
@@ -377,12 +378,11 @@ class RankMonitorClient:
         write_object_to_ipc_socket(AuthkeyMsg(), self.rank_monitor_socket)
         self._ensure_response_is_ok(self.rank_monitor_socket)
 
-        # Send InitMsg with iteration to arm progress tracking if workload supports it
+        # Send InitMsg with iteration for warmup detection (server skips out-of-section timeout during warmup)
         initial_iteration = self._get_current_iteration()
         if initial_iteration is None and self._can_report_iterations():
             # Workload framework detected but _GLOBAL_ARGS not initialized yet
-            # Send sentinel value (1) to arm progress tracking - the real iteration
-            # will be reported later when training starts
+            # Send sentinel value (1) so server has a baseline; real iteration reported in section messages
             initial_iteration = 1
         init_msg = InitMsg(
             rank_info=self.rank_info, iteration=initial_iteration, num_warmup_iters=num_warmup_iters
