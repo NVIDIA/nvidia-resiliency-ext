@@ -208,10 +208,14 @@
     <span class="n">gpu_memory_tolerance_mb</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">512.0</span>  <span class="c1"># Maximum allowed GPU memory usage (in MB)</span>
     <span class="n">gpu_memory_poll_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.0</span>  <span class="c1"># Poll interval for GPU memory check (in seconds)</span>
     <span class="n">check_remaining_processes</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
-    <span class="c1"># Progress tracking configuration (controlled by max_no_progress_restarts)</span>
-    <span class="n">max_no_progress_restarts</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span>
-    <span class="n">min_progress_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">200</span>
-    <span class="n">progress_update_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>  <span class="c1"># Seconds between sending progress updates to launcher</span>
+    <span class="c1"># Progress tracking configuration (controlled by max_no_progress_cycles)</span>
+    <span class="n">max_no_progress_cycles</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="mi">2</span>  <span class="c1"># Max consecutive cycles (incl. cycle 0) without progress before early terminate</span>
+    <span class="p">)</span>
+    <span class="n">min_progress_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="mi">1</span>  <span class="c1"># Min iteration increase to count as progress (default: any increase)</span>
+    <span class="p">)</span>
+    <span class="n">checkpoint_iteration_file</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># Path to file with latest checkpoint iteration</span>
     <span class="n">install_exception_hook</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="n">num_warmup_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="p">(</span>
         <span class="mi">5</span>  <span class="c1"># Number of warmup iterations before monitoring step section and out-of-section timeouts</span>
@@ -222,8 +226,8 @@
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_progress_tracking_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if progress tracking is enabled (controlled by max_no_progress_restarts &gt; 0).&quot;&quot;&quot;</span>
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_no_progress_restarts</span> <span class="o">&gt;</span> <span class="mi">0</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if progress tracking is enabled (controlled by max_no_progress_cycles &gt; 0).&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_no_progress_cycles</span> <span class="o">&gt;</span> <span class="mi">0</span>
 
 <div class="viewcode-block" id="FaultToleranceConfig.from_kwargs">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs">[docs]</a>

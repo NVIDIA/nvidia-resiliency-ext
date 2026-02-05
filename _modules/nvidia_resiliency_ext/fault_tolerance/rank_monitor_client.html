@@ -231,7 +231,8 @@
 <span class="sd">        Check if the workload framework supports iteration tracking.</span>
 
 <span class="sd">        This is based on framework detection (module presence), not current state.</span>
-<span class="sd">        Used to &quot;arm&quot; progress tracking even if iterations aren&#39;t available yet.</span>
+<span class="sd">        Iteration is sent to the server for warmup detection (skip out-of-section</span>
+<span class="sd">        timeout during the first num_warmup_iterations).</span>
 
 <span class="sd">        Returns:</span>
 <span class="sd">            True if workload framework is detected and will provide iterations</span>
@@ -467,12 +468,11 @@
         <span class="n">write_object_to_ipc_socket</span><span class="p">(</span><span class="n">AuthkeyMsg</span><span class="p">(),</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_response_is_ok</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
 
-        <span class="c1"># Send InitMsg with iteration to arm progress tracking if workload supports it</span>
+        <span class="c1"># Send InitMsg with iteration for warmup detection (server skips out-of-section timeout during warmup)</span>
         <span class="n">initial_iteration</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_current_iteration</span><span class="p">()</span>
         <span class="k">if</span> <span class="n">initial_iteration</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_can_report_iterations</span><span class="p">():</span>
             <span class="c1"># Workload framework detected but _GLOBAL_ARGS not initialized yet</span>
-            <span class="c1"># Send sentinel value (1) to arm progress tracking - the real iteration</span>
-            <span class="c1"># will be reported later when training starts</span>
+            <span class="c1"># Send sentinel value (1) so server has a baseline; real iteration reported in section messages</span>
             <span class="n">initial_iteration</span> <span class="o">=</span> <span class="mi">1</span>
         <span class="n">init_msg</span> <span class="o">=</span> <span class="n">InitMsg</span><span class="p">(</span>
             <span class="n">rank_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="p">,</span> <span class="n">iteration</span><span class="o">=</span><span class="n">initial_iteration</span><span class="p">,</span> <span class="n">num_warmup_iters</span><span class="o">=</span><span class="n">num_warmup_iters</span>
