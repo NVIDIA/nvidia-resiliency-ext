@@ -180,7 +180,7 @@ class TestRankMonitorClient(unittest.TestCase):
 
     @patch('nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.get_rank')
     def test_can_report_iterations_logic(self, mock_get_rank):
-        """Test _can_report_iterations logic for arming progress tracking."""
+        """Test _can_report_iterations logic for sending iteration to server (warmup detection)."""
         mock_get_rank.return_value = 0
 
         # Case 1: No Megatron module
