@@ -38,6 +38,8 @@ requires = [
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.dependencies]
+nv-one-logger-core = ">=2.1.0"
+nv-one-logger-training-telemetry = ">=2.3.0"
 torch = ">=2.3.0"
 packaging = "*"
 python = ">=3.10"
