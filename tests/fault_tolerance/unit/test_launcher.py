@@ -21,14 +21,20 @@ import signal
 import subprocess
 import sys
 import tempfile
+<<<<<<< HEAD
 import unittest
 from unittest.mock import MagicMock, patch
+=======
+>>>>>>> origin/main
 
 import pytest
 
 from nvidia_resiliency_ext import fault_tolerance
+<<<<<<< HEAD
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
+=======
+>>>>>>> origin/main
 
 WORLD_SIZE = 4
 DEFAULT_TIMEOUT = 90
