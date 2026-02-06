@@ -15,7 +15,6 @@
 import asyncio
 
 # fmt: off
-import collections
 import contextlib
 import importlib.metadata as metadata
 import json
@@ -67,6 +66,7 @@ from torch.distributed.elastic.rendezvous.utils import (
 from torch.distributed.elastic.utils import macros
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoWriter, utc_iso_now
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -77,6 +77,7 @@ from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgr
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
+    hostnames_to_slurm_nodelist,
     is_slurm_job_array,
     patched_method,
     read_obj_from_ipc_stream,
@@ -339,6 +340,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
         rank_monitors: Optional[Dict[int, RankMonitorState]] = None,
+        cycle_info_writer: Optional[CycleInfoWriter] = None,
     ):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
@@ -350,6 +352,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._term_timeout = term_timeout
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
+        self._cycle_info_writer = cycle_info_writer
         # Rank monitor state (process, IPC connections, listener tasks) per local rank
         # Pre-created rank monitors passed from config (created before gRPC)
         self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
@@ -466,6 +469,42 @@ class LocalElasticAgent(SimpleElasticAgent):
         """
         return max(0, self._rdzv_handler.round() - 1)
 
+    def _on_cycle_end(self) -> None:
+        """Record cycle end time in cycle info file."""
+        if self._cycle_info_writer is None:
+            return
+        current_cycle = self._get_global_restart_count()
+        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
+        self._cycle_info_writer.update_cycle_end(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=current_cycle,
+            cycle_end_time=utc_iso_now(),
+        )
+
+    def _write_cycle_start_info(self, current_cycle: int) -> Optional[str]:
+        """Write NVRx cycle info at cycle start. Returns path to current cycle info file, or None."""
+        if self._cycle_info_writer is None:
+            return None
+        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
+        cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
+        active_addrs = self._rdzv_handler.get_last_rendezvous_participant_addrs()
+        standby_addrs = self._rdzv_handler.get_last_rendezvous_standby_participant_addrs()
+        active_nodes = hostnames_to_slurm_nodelist(active_addrs) if active_addrs else ""
+        standby_nodes = hostnames_to_slurm_nodelist(standby_addrs) if standby_addrs else ""
+        self._cycle_info_writer.write_cycle_start(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=current_cycle,
+            cycle_start_time=utc_iso_now(),
+            cycle_log_file=cycle_log_file,
+            active_nodes=active_nodes,
+            standby_nodes=standby_nodes,
+        )
+        return self._cycle_info_writer.get_current_cycle_info_path(job_id)
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -557,15 +596,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             return False
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
-        if self._restart_policy == 'any-failed':
-            return self._invoke_run_with_any_failed_policy(role)
-        elif self._restart_policy == 'min-healthy':
-            return self._invoke_run_with_min_healthy_policy(role)
-        else:
-            raise AssertionError(
-                f"Unexpected restart-policy: {self._restart_policy}."
-                " check CLI help for --restart-policy allowed options"
-            )
+        return self._invoke_run_with_any_failed_policy(role)
 
     def _invoke_run_with_any_failed_policy(self, role: str = DEFAULT_ROLE) -> RunResult:
         # NOTE: currently only works for a single role
@@ -590,6 +621,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
+                self._on_cycle_end()
                 logger.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
@@ -657,110 +689,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                         return RunResult(state=WorkerState.FAILED)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
-
-    def _invoke_run_with_min_healthy_policy(self, role: str = DEFAULT_ROLE) -> RunResult:
-        # NOTE: currently only works for a single role
-
-        spec = self._worker_group.spec
-        role = spec.role
-
-        logger.info(
-            f"[{role}] starting workers for entrypoint: {spec.get_entrypoint_name()} with min-healthy policy"
-        )
-
-        self._initialize_workers(self._worker_group)
-        monitor_interval = spec.monitor_interval
-        rdzv_handler = spec.rdzv_handler
-        min_nodes = rdzv_handler._settings.min_nodes
-        group_rank = self._worker_group.group_rank
-
-        while True:
-            assert self._worker_group.state != WorkerState.INIT
-            time.sleep(monitor_interval)
-            run_result = self._monitor_workers(self._worker_group)
-            state = run_result.state
-            self._worker_group.state = state
-
-            put_metric(f"workers.{role}.remaining_restarts", self._remaining_restarts)
-            put_metric(f"workers.{role}.{state.name.lower()}", 1)
-
-            if state in {
-                WorkerState.SUCCEEDED,
-                WorkerState.FAILED,
-                WorkerState.UNHEALTHY,
-                WorkerState.HEALTHY,
-            }:
-                state_in_rdzv = rdzv_handler.try_set_worker_state(state)
-                if state_in_rdzv != state:
-                    assert (
-                        state_in_rdzv == WorkerState.UNKNOWN
-                    ), f"Could not set worker group state {state=} {state_in_rdzv=}"
-                    # state in the rdzv is UNKNOWN if this node was marked as dead by other participants
-            else:
-                raise RuntimeError(f"[{role}] Worker group in unexpected state: {state.name}")
-
-            # count the number of worker groups in each state
-            all_worker_states = rdzv_handler.get_worker_states()
-            worker_state_cnt = collections.Counter(all_worker_states.values())
-            num_succ = worker_state_cnt[WorkerState.SUCCEEDED]
-            num_healthy = worker_state_cnt[WorkerState.HEALTHY]
-
-            logger.debug(
-                "[%s] group_rank=%s worker_state_cnt=%s", role, group_rank, worker_state_cnt
-            )
-
-            # check if the current run (rendezvous) ended successfully:
-            # at least "min_nodes" worker groups should succeed to consider a run successful.
-            # NOTE: if the run was successful all agents exit with WorkerState.SUCCEEDED despite
-            # their actual run result
-            if num_healthy == 0:
-                if num_succ >= min_nodes:
-                    logger.info(
-                        f"[{role}] {group_rank=} {state.name=} detected that the run ended successfuly: {worker_state_cnt=}"
-                    )
-                    # ensure this node workers are terminated
-                    self._stop_workers(self._worker_group)
-                    # WAR: return values are not meaningful in this case,
-                    # but some dummy values are required for the event logging
-                    dummy_ret_vals = {w.global_rank: None for w in self._worker_group.workers}
-                    return RunResult(state=WorkerState.SUCCEEDED, return_values=dummy_ret_vals)
-
-            # check if the current run can end successfully
-            max_possible_succ = num_succ + num_healthy
-            can_continue = max_possible_succ >= min_nodes
-
-            if can_continue:
-                # upscaling should be disabled in min-healthy mode
-                num_nodes_waiting = rdzv_handler.num_nodes_waiting()
-                if num_nodes_waiting > 0:
-                    raise RuntimeError(
-                        f"Detected {num_nodes_waiting} nodes in the waiting list. This should not happen with min-healthy mode."
-                    )
-            else:
-                # we can't have min_nodes successful worker groups.
-                # NOTE: this worker group still might be successful/healthy.
-                # all we can do is to restart if possible or shutdown otherwise
-                # NOTE: we use the global restart count so restarts are tracked globally
-                # across job array deployments. Both any-failed and min-healthy modes use this.
-                logger.warning(
-                    f"[{role}] {group_rank=} {state.name=} detected that the current run failed: {worker_state_cnt=}"
-                )
-                restarts_initiated = self._get_global_restart_count()
-                self._remaining_restarts = spec.max_restarts - restarts_initiated
-                if self._remaining_restarts > 0:
-                    logger.info(
-                        f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
-                    )
-                    self._remaining_restarts -= 1
-                    # Open rendezvous before restarting (for barrier-based rendezvous)
-                    self._open_rendezvous_for_restart()
-                    self._restart_workers(self._worker_group)
-                else:
-                    # try to stop the workers and return the updated run result
-                    logger.info(f"0/{spec.max_restarts} restart attempts left. Exiting...")
-                    self._stop_workers(self._worker_group)
-                    run_result = self._monitor_workers(self._worker_group)
-                    return run_result
 
     def get_rank_mon_socket_path(self, local_rank):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
@@ -1063,7 +991,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
-
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
@@ -1119,6 +1046,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             # that would cause cycle N+1 data to be written to cycle N log files.
             self._logs_specs.clear_all_pipes_from_reader()
 
+        # Record cycle end time in cycle info file
+        self._on_cycle_end()
+
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
@@ -1139,7 +1069,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # The cycle number is used for profiling and environment variable setting.
         # Note: We use _get_global_restart_count() because in the context of worker startup,
         # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
-        restart_count = self._get_global_restart_count()  # Actually cycle number
+        current_cycle = restart_count = self._get_global_restart_count()  # Actually cycle number
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -1178,9 +1108,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             and self._rdzv_handler._attr_service is not None
             and hasattr(self._logs_specs, 'get_cycle_log_file')
         ):
-            current_cycle = self._get_global_cycle_number() - 1
             cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
             self._rdzv_handler._attr_service._submit_log(cycle_log_file)
+
+        # Write NVRx cycle info and set env for workload
+        current_cycle_info_path = self._write_cycle_start_info(current_cycle)
 
         for worker in worker_group.workers:
             local_rank = worker.local_rank
@@ -1207,6 +1139,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
                 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
             }
+            if current_cycle_info_path is not None:
+                worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
             if "OMP_NUM_THREADS" in os.environ:
                 worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
 
@@ -1669,9 +1603,7 @@ def launch_agent(
 
     entrypoint_name = _get_entrypoint_name(entrypoint, args)
 
-    # with min-healthy restarting policy, if the rendezvous is completed (workers are running),
-    # we dont want to replace missing/dead nodes with spares nor to upscale the rendezvous with new arrivals
-    config.rdzv_configs['upscaling_enabled'] = config.restart_policy != "min-healthy"
+    config.rdzv_configs['upscaling_enabled'] = True
 
     logger.info(
         "Starting elastic_operator with launch configs:\n"
@@ -1735,6 +1667,10 @@ def launch_agent(
         local_addr=config.local_addr,
     )
 
+    cycle_info_writer = None
+    if is_store_host and config.fault_tol_cfg.cycle_info_dir:
+        cycle_info_writer = CycleInfoWriter(config.fault_tol_cfg.cycle_info_dir)
+
     agent = LocalElasticAgent(
         spec=spec,
         fault_tol_cfg=config.fault_tol_cfg,
@@ -1746,6 +1682,7 @@ def launch_agent(
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
         rank_monitors=config.rank_monitors,  # Pass pre-created rank monitors
+        cycle_info_writer=cycle_info_writer,
     )
 
     # Set agent reference in rendezvous handler for callbacks
@@ -1832,12 +1769,23 @@ def launch_agent(
             if agent._rdzv_handler._attr_service is not None:
                 agent._rdzv_handler._attr_service()
 
+            # No ordering required between cycle_info_writer and rendezvous: the writer
+            # is independent I/O. Run grace-period wait and writer shutdown in parallel
+            # so total time is max(grace_period, writer drain) instead of sum.
             grace_period = 3.0  # seconds
             logger.info(
                 f"Store host waiting {grace_period} seconds before exit "
                 f"to allow other nodes to read final TCPStore state..."
             )
-            time.sleep(grace_period)
+
+            def _wait_grace() -> None:
+                time.sleep(grace_period)
+
+            t = threading.Thread(target=_wait_grace, daemon=True)
+            t.start()
+            if cycle_info_writer is not None:
+                cycle_info_writer.shutdown()
+            t.join()
 
         # Shutdown components (may generate logs - reader thread must stay alive!)
         if shutdown_rdzv:
@@ -2665,12 +2613,10 @@ def get_args_parser() -> ArgumentParser:
         "--ft-restart-policy",
         "--ft-restart_policy",
         type=str,
-        choices=['any-failed', 'min-healthy'],
         default='any-failed',
         dest="ft_restart_policy",
-        help="Worker groups restarting policy. Options: "
-        "'any-failed' restart if any worker group fails (torchrun's default); "
-        "'min-healthy' restart if number of healthy worker groups falls below <minimum_nodes>",
+        help="[DEPRECATED; will be removed in the next release] Worker groups restarting policy. "
+        "Only 'any-failed' is supported (restart if any worker group fails). Do not rely on this option.",
     )
 
     parser.add_argument(
@@ -2875,6 +2821,17 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-cycle-info-dir",
+        "--ft_cycle_info_dir",
+        type=str,
+        default=None,
+        dest="ft_cycle_info_dir",
+        help="Full path to NVRx cycle info directory (e.g. <base>/nvrx/). TCPStore host only. "
+        "If set, writes cycle_info.<job_id>.<attempt>.<cycle> and symlink cycle_info.<job_id>.current "
+        "there. Workload receives current cycle file path via NVRX_CURRENT_CYCLE_INFO env.",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
@@ -3026,8 +2983,31 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     return logs_specs_cls
 
 
+def _validate_args(args: Any) -> None:
+    """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
+    if getattr(args, "ft_cycle_info_dir", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
+        raise ValueError(
+            "--ft-cycle-info-dir requires --ft-per-cycle-applog-prefix to be specified. "
+            "Cycle info needs per-cycle log file path from the applog prefix."
+        )
+    restart_policy = getattr(args, "ft_restart_policy", "any-failed")
+    if restart_policy != "any-failed":
+        raise ValueError(
+            f"Unsupported --ft-restart-policy: {restart_policy!r}. Only 'any-failed' is supported."
+        )
+    # Deprecation: --ft-restart-policy will be removed in the next release
+    warnings.warn(
+        "The --ft-restart-policy option is deprecated and will be removed in the next release. "
+        "Only 'any-failed' is supported; do not rely on this option.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
+    _validate_args(args)
+
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
