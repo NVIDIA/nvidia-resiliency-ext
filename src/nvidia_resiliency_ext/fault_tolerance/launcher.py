@@ -15,7 +15,6 @@
 import asyncio
 
 # fmt: off
-import collections
 import contextlib
 import importlib.metadata as metadata
 import json
@@ -556,15 +555,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             return False
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
-        if self._restart_policy == 'any-failed':
-            return self._invoke_run_with_any_failed_policy(role)
-        elif self._restart_policy == 'min-healthy':
-            return self._invoke_run_with_min_healthy_policy(role)
-        else:
-            raise AssertionError(
-                f"Unexpected restart-policy: {self._restart_policy}."
-                " check CLI help for --restart-policy allowed options"
-            )
+        return self._invoke_run_with_any_failed_policy(role)
 
     def _invoke_run_with_any_failed_policy(self, role: str = DEFAULT_ROLE) -> RunResult:
         # NOTE: currently only works for a single role
@@ -656,110 +647,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                         return RunResult(state=WorkerState.FAILED)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
-
-    def _invoke_run_with_min_healthy_policy(self, role: str = DEFAULT_ROLE) -> RunResult:
-        # NOTE: currently only works for a single role
-
-        spec = self._worker_group.spec
-        role = spec.role
-
-        logger.info(
-            f"[{role}] starting workers for entrypoint: {spec.get_entrypoint_name()} with min-healthy policy"
-        )
-
-        self._initialize_workers(self._worker_group)
-        monitor_interval = spec.monitor_interval
-        rdzv_handler = spec.rdzv_handler
-        min_nodes = rdzv_handler._settings.min_nodes
-        group_rank = self._worker_group.group_rank
-
-        while True:
-            assert self._worker_group.state != WorkerState.INIT
-            time.sleep(monitor_interval)
-            run_result = self._monitor_workers(self._worker_group)
-            state = run_result.state
-            self._worker_group.state = state
-
-            put_metric(f"workers.{role}.remaining_restarts", self._remaining_restarts)
-            put_metric(f"workers.{role}.{state.name.lower()}", 1)
-
-            if state in {
-                WorkerState.SUCCEEDED,
-                WorkerState.FAILED,
-                WorkerState.UNHEALTHY,
-                WorkerState.HEALTHY,
-            }:
-                state_in_rdzv = rdzv_handler.try_set_worker_state(state)
-                if state_in_rdzv != state:
-                    assert (
-                        state_in_rdzv == WorkerState.UNKNOWN
-                    ), f"Could not set worker group state {state=} {state_in_rdzv=}"
-                    # state in the rdzv is UNKNOWN if this node was marked as dead by other participants
-            else:
-                raise RuntimeError(f"[{role}] Worker group in unexpected state: {state.name}")
-
-            # count the number of worker groups in each state
-            all_worker_states = rdzv_handler.get_worker_states()
-            worker_state_cnt = collections.Counter(all_worker_states.values())
-            num_succ = worker_state_cnt[WorkerState.SUCCEEDED]
-            num_healthy = worker_state_cnt[WorkerState.HEALTHY]
-
-            logger.debug(
-                "[%s] group_rank=%s worker_state_cnt=%s", role, group_rank, worker_state_cnt
-            )
-
-            # check if the current run (rendezvous) ended successfully:
-            # at least "min_nodes" worker groups should succeed to consider a run successful.
-            # NOTE: if the run was successful all agents exit with WorkerState.SUCCEEDED despite
-            # their actual run result
-            if num_healthy == 0:
-                if num_succ >= min_nodes:
-                    logger.info(
-                        f"[{role}] {group_rank=} {state.name=} detected that the run ended successfuly: {worker_state_cnt=}"
-                    )
-                    # ensure this node workers are terminated
-                    self._stop_workers(self._worker_group)
-                    # WAR: return values are not meaningful in this case,
-                    # but some dummy values are required for the event logging
-                    dummy_ret_vals = {w.global_rank: None for w in self._worker_group.workers}
-                    return RunResult(state=WorkerState.SUCCEEDED, return_values=dummy_ret_vals)
-
-            # check if the current run can end successfully
-            max_possible_succ = num_succ + num_healthy
-            can_continue = max_possible_succ >= min_nodes
-
-            if can_continue:
-                # upscaling should be disabled in min-healthy mode
-                num_nodes_waiting = rdzv_handler.num_nodes_waiting()
-                if num_nodes_waiting > 0:
-                    raise RuntimeError(
-                        f"Detected {num_nodes_waiting} nodes in the waiting list. This should not happen with min-healthy mode."
-                    )
-            else:
-                # we can't have min_nodes successful worker groups.
-                # NOTE: this worker group still might be successful/healthy.
-                # all we can do is to restart if possible or shutdown otherwise
-                # NOTE: we use the global restart count so restarts are tracked globally
-                # across job array deployments. Both any-failed and min-healthy modes use this.
-                logger.warning(
-                    f"[{role}] {group_rank=} {state.name=} detected that the current run failed: {worker_state_cnt=}"
-                )
-                restarts_initiated = self._get_global_restart_count()
-                self._remaining_restarts = spec.max_restarts - restarts_initiated
-                if self._remaining_restarts > 0:
-                    logger.info(
-                        f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
-                    )
-                    self._remaining_restarts -= 1
-                    # Open rendezvous before restarting (for barrier-based rendezvous)
-                    self._open_rendezvous_for_restart()
-                    self._restart_workers(self._worker_group)
-                else:
-                    # try to stop the workers and return the updated run result
-                    logger.info(f"0/{spec.max_restarts} restart attempts left. Exiting...")
-                    self._stop_workers(self._worker_group)
-                    run_result = self._monitor_workers(self._worker_group)
-                    return run_result
 
     def get_rank_mon_socket_path(self, local_rank):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
@@ -1435,8 +1322,8 @@ class LaunchConfig:
         role: User defined role of the worker (defaults to "trainer").
         max_restarts: The maximum amount of restarts that elastic agent will conduct
                     on workers before failure.
-        restart_policy: Determines when worker groups are restarted e.g. if any worker group failed,
-                    or if number of healthy worker groups falls below min-nodes etc. see also the CLI arg
+        restart_policy: (Deprecated.) Only ``any-failed`` is supported: restart when any worker
+                    group fails. See also the CLI arg ``--ft-restart-policy``.
         monitor_interval: The interval in seconds that is used by the elastic_agent
                         as a period of monitoring workers.
         start_method: The method is used by the elastic agent to start the
@@ -1590,9 +1477,7 @@ def launch_agent(
 
     entrypoint_name = _get_entrypoint_name(entrypoint, args)
 
-    # with min-healthy restarting policy, if the rendezvous is completed (workers are running),
-    # we dont want to replace missing/dead nodes with spares nor to upscale the rendezvous with new arrivals
-    config.rdzv_configs['upscaling_enabled'] = config.restart_policy != "min-healthy"
+    config.rdzv_configs['upscaling_enabled'] = True
 
     logger.info(
         "Starting elastic_operator with launch configs:\n"
@@ -2586,12 +2471,11 @@ def get_args_parser() -> ArgumentParser:
         "--ft-restart-policy",
         "--ft-restart_policy",
         type=str,
-        choices=['any-failed', 'min-healthy'],
+        choices=['any-failed'],
         default='any-failed',
         dest="ft_restart_policy",
-        help="Worker groups restarting policy. Options: "
-        "'any-failed' restart if any worker group fails (torchrun's default); "
-        "'min-healthy' restart if number of healthy worker groups falls below <minimum_nodes>",
+        help="(Deprecated.) Worker groups restarting policy. Only 'any-failed' is supported: "
+        "restart if any worker group fails. This option may be removed in a future release.",
     )
 
     parser.add_argument(

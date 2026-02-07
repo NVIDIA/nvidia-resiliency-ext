@@ -55,10 +55,8 @@ Requirements for the wrapped function
   ``LOCAL_RANK``) from the environment. Users can use torchrun to override the environment
   variables (--master_addr=127.0.0.1, --master_port=29500, etc.) depending on
   their cluster requirements and also to run the provided examples ``torchrun --nproc_per_node=8
-  --nnodes=1 --node_rank=0 basic_example.py``. For other environment variables when running
-  with torchrun, please refer to the `run_inprocess_injob_example.sh <https://github.com/NVIDIA/nvidia-resiliency-
-  ext/blob/main/examples/fault_tolerance/run_inprocess_injob_example.sh>`_ example for the recommended
-  default values (for example, --monitor-interval=5).
+  --nnodes=1 --node_rank=0 basic_example.py``. Adjust launcher options (e.g. ``--monitor-interval``)
+  as needed for your environment.
 
     - Any objects whose lifetime crosses the restart boundary *must* be process-group independent _or_
       the workload must re-align the object, inside the wrapped function, to the new process groups

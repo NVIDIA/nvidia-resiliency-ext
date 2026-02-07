@@ -60,16 +60,8 @@ Details:
 * Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
 
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
-The restart behavior depends on the ``--ft-restart-policy`` parameter, which supports two modes:
-
-* ``any-failed`` (default)
-  All workers are restarted if any worker fails.
-
-* ``min-healthy``
-  Workers are restarted when the number of healthy nodes (nodes where all worker processes are running)
-  falls below the minimum specified in ``--nnodes``. This allows for some worker failures to be handled
-  without restarting remaining workers, e.g., with the :doc:`../inprocess/index`.
-  For details on how ``min-healthy`` policy interacts with :doc:`../inprocess/index` see :doc:`integration/inprocess`.
+The ``--ft-restart-policy`` parameter is deprecated; only ``any-failed`` is supported: all workers
+are restarted if any worker fails (torchrun-style behavior). This option may be removed in a future release.
 
 Node health check service
 ^^^^^^^^^^^^^^^^^^^^^^^^^
