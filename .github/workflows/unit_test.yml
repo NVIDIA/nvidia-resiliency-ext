@@ -12,7 +12,7 @@ jobs:
   build_wheels:
     runs-on: ubuntu-24.04
     container:
-      image: 'ghcr.io/nvidia/nvidia-resiliency-ext/builder_amd64:cuda-12.4.1-cudnn-devel-ubuntu20.04'
+      image: 'ghcr.io/nvidia/nvidia-resiliency-ext/builder_amd64:cuda-12.4.1-cudnn-devel-ubuntu22.04'
     steps:
       - name: Install git
         run: apt-get update && apt-get install -y git
@@ -22,23 +22,14 @@ jobs:
           fetch-depth: 0
       - name: Fix Git dubious ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Ensure Poetry dependencies for all Python versions
+      # Use builder image venvs (Dockerfile.builder: /opt/venv3.10, 3.11, 3.12 with poetry + dynamic-versioning)
+      - name: Build wheels
         run: |
-          python3.10 -m pip install --quiet idna requests
-          python3.11 -m pip install --quiet idna requests
-          python3.12 -m pip install --quiet idna requests
-      - name: Build wheel with Python 3.10
-        run: |
-          python3.10 -m poetry self add "poetry-dynamic-versioning[plugin]"
-          python3.10 -m poetry build -f wheel
-      - name: Build wheel with Python 3.11
-        run: |
-          python3.11 -m poetry self add "poetry-dynamic-versioning[plugin]"
-          python3.11 -m poetry build -f wheel
-      - name: Build wheel with Python 3.12
-        run: |
-          python3.12 -m poetry self add "poetry-dynamic-versioning[plugin]"
-          python3.12 -m poetry build -f wheel
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          /opt/venv3.10/bin/poetry env use /opt/venv3.10/bin/python && /opt/venv3.10/bin/poetry build -f wheel
+          /opt/venv3.11/bin/poetry env use /opt/venv3.11/bin/python && /opt/venv3.11/bin/poetry build -f wheel
+          /opt/venv3.12/bin/poetry env use /opt/venv3.12/bin/python && /opt/venv3.12/bin/poetry build -f wheel
       - name: Upload the wheel artifact
         uses: actions/upload-artifact@v4
         with:
