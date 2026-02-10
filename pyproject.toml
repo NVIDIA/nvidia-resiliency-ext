@@ -58,7 +58,7 @@ ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
 [tool.poetry-dynamic-versioning]
 enable = true
 vcs = "git"
-pattern = "^v?(?P<base>\\d+\\.\\d+\\.\\d+)(?:-main)?(-?((?P<stage>[a-zA-Z]+)\\.?(?P<revision>\\d+)?))?$"
+pattern = "^v?(?P<base>\\d+\\.\\d+\\.\\d+)(?:-main)?$"
 format-jinja = """
 {%- if distance == 0 -%}
 {{ base }}
