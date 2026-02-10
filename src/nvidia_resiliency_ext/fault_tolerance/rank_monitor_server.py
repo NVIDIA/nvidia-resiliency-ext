@@ -276,9 +276,7 @@ class RankMonitorServer:
         self.out_of_section_time = time.monotonic()
         self.open_sections.clear()
         self.last_hb_time = None
-        # Capture starting iteration for this cycle
-        self._initial_iteration = msg.iteration
-        self._current_iteration = msg.iteration
+        # Iteration baseline is set on first section message with iteration (see _handle_section_msg)
 
         # Update num_warmup_iterations if provided by the client
         if msg.num_warmup_iters is not None:
@@ -315,11 +313,8 @@ class RankMonitorServer:
 
         # Track iteration for warmup detection (out-of-section timeout skip)
         if msg.iteration is not None:
-            if (
-                self._initial_iteration is not None
-                and self._current_iteration == self._initial_iteration
-            ):
-                # First section message with iteration - reset the baseline
+            if self._initial_iteration is None:
+                # First section message with iteration - set the baseline
                 self._initial_iteration = msg.iteration
             self._current_iteration = msg.iteration
 
