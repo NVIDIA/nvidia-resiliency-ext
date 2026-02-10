@@ -1,10 +1,11 @@
 import asyncio
+import logging
 import os
 import socket
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import torch
 import torch.multiprocessing
@@ -386,6 +387,144 @@ class TestRankMonitorServer(unittest.TestCase):
             server_process.join(timeout=5)
             if os.path.exists(worker_socket_path_unidirectional):
                 os.unlink(worker_socket_path_unidirectional)
+
+
+class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
+    """Unit tests for warmup/step section logic: _step_section_seen_this_cycle, iteration tracking, and warmup timeout."""
+
+    def _create_server(
+        self, rank_section_timeouts, num_warmup_iterations=3, rank_out_of_section_timeout=10.0
+    ):
+        with patch(
+            "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.GPUHealthCheck",
+            MagicMock(),
+        ):
+            config = FaultToleranceConfig(
+                skip_section_response=True,
+                rank_section_timeouts=rank_section_timeouts,
+                num_warmup_iterations=num_warmup_iterations,
+                rank_out_of_section_timeout=rank_out_of_section_timeout,
+            )
+            event = torch.multiprocessing.get_context().Event()
+            logger = MagicMock()
+            logger.level = logging.INFO
+            server = RankMonitorServer(
+                cfg=config,
+                ipc_socket_path=tempfile.mktemp(suffix=".socket"),
+                rank_monitor_ready_event=event,
+                logger=logger,
+                is_restarter_logger=False,
+            )
+            return server
+
+    def test_out_of_section_skip_when_warmup_not_in_config_and_step_not_seen(self):
+        """Out-of-section timeout is skipped when warmup not in config and first step not seen."""
+        server = self._create_server(
+            rank_section_timeouts={"setup": 60.0, "step": 30.0},
+            rank_out_of_section_timeout=10.0,
+        )
+        server.open_sections = {}
+        server.out_of_section_time = time.monotonic() - 1000
+        server._step_section_seen_this_cycle = False
+        curr_time = time.monotonic()
+        self.assertFalse(server._is_section_timeout_elapsed(curr_time))
+
+    def test_out_of_section_checked_when_warmup_not_in_config_but_step_seen(self):
+        """Out-of-section timeout is enforced when warmup not in config but step was already seen."""
+        server = self._create_server(
+            rank_section_timeouts={"setup": 60.0, "step": 30.0},
+            rank_out_of_section_timeout=10.0,
+        )
+        server.open_sections = {}
+        server.out_of_section_time = time.monotonic() - 1000
+        server._step_section_seen_this_cycle = True
+        curr_time = time.monotonic()
+        self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+
+    def test_out_of_section_checked_when_warmup_in_config(self):
+        """Out-of-section timeout is enforced when warmup is in config (no skip)."""
+        server = self._create_server(
+            rank_section_timeouts={"setup": 60.0, "step": 30.0, "warmup": 120.0},
+            rank_out_of_section_timeout=10.0,
+        )
+        server.open_sections = {}
+        server.out_of_section_time = time.monotonic() - 1000
+        server._step_section_seen_this_cycle = False
+        curr_time = time.monotonic()
+        self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+
+    def test_step_section_uses_warmup_timeout_when_iteration_in_warmup_range(self):
+        """When step is open and iteration is in warmup range, warmup section timeout is used."""
+        server = self._create_server(
+            rank_section_timeouts={"step": 5.0, "warmup": 100.0},
+            num_warmup_iterations=3,
+        )
+        curr_time = time.monotonic()
+        server.open_sections = {"step": curr_time - 50}  # 50s elapsed
+        server._initial_iteration = 0
+        server._current_iteration = 1  # within warmup (0, 1, 2)
+        # 50 < 100 (warmup) so not elapsed
+        self.assertFalse(server._is_section_timeout_elapsed(curr_time))
+        # 150s elapsed > 100 (warmup)
+        server.open_sections = {"step": curr_time - 150}
+        self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+
+    def test_step_section_uses_step_timeout_when_iteration_past_warmup(self):
+        """When step is open and iteration is past warmup range, step section timeout is used."""
+        server = self._create_server(
+            rank_section_timeouts={"step": 5.0, "warmup": 100.0},
+            num_warmup_iterations=3,
+        )
+        curr_time = time.monotonic()
+        server.open_sections = {"step": curr_time - 10}  # 10s elapsed
+        server._initial_iteration = 0
+        server._current_iteration = 5  # past warmup
+        # 10 > 5 (step timeout) so elapsed
+        self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+
+    def test_iteration_not_updated_from_setup_section(self):
+        """Iteration is only updated from 'step' section messages, not 'setup'."""
+        server = self._create_server(
+            rank_section_timeouts={"setup": 60.0, "step": 30.0},
+        )
+
+        async def run_test():
+            writer = MagicMock()
+            msg = SectionMsg(rank=0, section="setup", action=SectionAction.OPEN, iteration=0)
+            await server._handle_section_msg(msg, writer)
+            self.assertIsNone(server._initial_iteration)
+            self.assertIsNone(server._current_iteration)
+
+        asyncio.run(run_test())
+
+    def test_iteration_and_step_seen_updated_on_step_open(self):
+        """Opening 'step' section with iteration sets iteration fields and _step_section_seen_this_cycle."""
+        server = self._create_server(
+            rank_section_timeouts={"setup": 60.0, "step": 30.0},
+        )
+
+        async def run_test():
+            writer = MagicMock()
+            msg = SectionMsg(rank=0, section="step", action=SectionAction.OPEN, iteration=5)
+            await server._handle_section_msg(msg, writer)
+            self.assertEqual(server._initial_iteration, 5)
+            self.assertEqual(server._current_iteration, 5)
+            self.assertTrue(server._step_section_seen_this_cycle)
+
+        asyncio.run(run_test())
+
+    def test_connection_lost_resets_step_seen_and_iteration(self):
+        """_handle_ipc_connection_lost resets _step_section_seen_this_cycle and iteration fields."""
+        server = self._create_server(
+            rank_section_timeouts={"step": 30.0},
+        )
+        server._initial_iteration = 0
+        server._current_iteration = 10
+        server._step_section_seen_this_cycle = True
+        server._handle_ipc_connection_lost()
+        self.assertIsNone(server._initial_iteration)
+        self.assertIsNone(server._current_iteration)
+        self.assertFalse(server._step_section_seen_this_cycle)
 
 
 if __name__ == '__main__':
