@@ -149,6 +149,44 @@ def test_grpc_server_health_check():
         proc.wait(timeout=5)
 
 
+def _wait_for_grpc_server_ready(port, timeout=10.0, poll_interval=0.2):
+    """Wait until gRPC server responds to health check or timeout."""
+    channel = grpc.insecure_channel(f'localhost:{port}')
+    stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            try:
+                response = stub.HealthCheck(log_aggregation_pb2.HealthRequest(), timeout=2.0)
+                if response.healthy:
+                    return
+            except grpc.RpcError:
+                pass
+            time.sleep(poll_interval)
+        pytest.fail(f"gRPC server at localhost:{port} did not become ready within {timeout}s")
+    finally:
+        channel.close()
+
+
+def _wait_for_file_content(path, required_substrings, timeout=5.0, poll_interval=0.1):
+    """Wait until file exists and contains all required substrings, or timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                content = f.read()
+            if all(s in content for s in required_substrings):
+                return content
+        time.sleep(poll_interval)
+    if os.path.exists(path):
+        with open(path, 'r') as f:
+            content = f.read()
+    else:
+        content = "(file did not exist)"
+    missing = [s for s in required_substrings if s not in content]
+    pytest.fail(f"File {path} missing content after {timeout}s: {missing}. Content: {content}")
+
+
 def test_grpc_client_can_connect_and_stream_logs(tmp_dir):
     """Test that a gRPC client can connect to server and stream log data."""
     import queue
@@ -176,8 +214,8 @@ def test_grpc_client_can_connect_and_stream_logs(tmp_dir):
     )
 
     try:
-        # Give server more time to start and be ready
-        time.sleep(2.0)
+        # Wait for server to be ready (avoids fixed sleep; works on slow CI)
+        _wait_for_grpc_server_ready(port, timeout=10.0)
 
         # Create writer client
         write_queue = queue.Queue()
@@ -199,14 +237,24 @@ def test_grpc_client_can_connect_and_stream_logs(tmp_dir):
 
         writer.start()
 
-        # Give writer time to connect and send logs
-        time.sleep(3.0)
+        # GrpcWriterThread has 0-3s initial random delay before connecting; wait until
+        # all 3 queued items are consumed (sync via Queue.qsize() - thread-safe) instead
+        # of polling the unsynchronized total_chunks_sent from another thread.
+        send_timeout = 20.0
+        deadline = time.monotonic() + send_timeout
+        while time.monotonic() < deadline:
+            if write_queue.qsize() == 0:
+                break
+            time.sleep(0.2)
+        assert (
+            write_queue.qsize() == 0
+        ), f"Writer should consume 3 chunks within {send_timeout}s (queue size {write_queue.qsize()})"
 
-        # Shutdown writer
+        # Shutdown writer only after we know data was sent
         writer.shutdown()
         writer.join(timeout=10)
 
-        # Verify statistics were tracked
+        # Verify statistics
         assert (
             writer.total_chunks_sent > 0
         ), f"Should have sent some chunks (sent {writer.total_chunks_sent})"
@@ -214,17 +262,12 @@ def test_grpc_client_can_connect_and_stream_logs(tmp_dir):
             writer.total_bytes_sent > 0
         ), f"Should have sent some bytes (sent {writer.total_bytes_sent})"
 
-        # Give server time to flush and write to file
-        time.sleep(1.0)
-
-        # Verify logs were written
-        assert os.path.exists(output_file), f"Output file {output_file} should exist"
-        with open(output_file, 'r') as f:
-            content = f.read()
-            assert "Test log line 1" in content, f"Missing line 1. Content: {content}"
-            assert "Test log line 2" in content, f"Missing line 2. Content: {content}"
-            assert "Test log line 3" in content, f"Missing line 3. Content: {content}"
-
+        # Wait for server to flush to disk (poll for file content instead of fixed sleep)
+        _wait_for_file_content(
+            output_file,
+            ["Test log line 1", "Test log line 2", "Test log line 3"],
+            timeout=5.0,
+        )
     finally:
         server_proc.terminate()
         server_proc.wait(timeout=5)
