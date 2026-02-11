@@ -405,9 +405,9 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
 
         self.assertTrue(torch.distributed.is_available())
 
-        for i in range(2):
+        for round_idx in range(2):
             store = common.wrap_store(
-                c10d.FileStore(self.file_name, self.world_size), nccl_abort, i
+                c10d.FileStore(self.file_name, self.world_size), nccl_abort, round_idx
             )
             _pg = self._create_process_group_nccl(
                 store, self.opts(), device_id=init_process_group_device
@@ -415,7 +415,7 @@ class ProcessGroupNCCLTest(common.MultiProcessTestCase):
             self.assertTrue(torch.distributed.is_initialized())
 
             t = torch.ones(size, dtype=torch.int64, device=device)
-            for i in range(iters):
+            for _ in range(iters):
                 torch.distributed.all_reduce(t)
 
             abort_process_group()
