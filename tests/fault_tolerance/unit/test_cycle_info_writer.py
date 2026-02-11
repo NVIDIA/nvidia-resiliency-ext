@@ -84,6 +84,7 @@ def test_cycle_info_writer_write_cycle_start_creates_file_and_symlink(tmp_dir):
     assert data["cycle_log_file"] == "/path/to/log"
     assert data["active_nodes"] == "node[001-002]"
     assert data["standby_nodes"] == "node003"
+    assert int(data.get("generation", 0)) == 0
 
     symlink_path = os.path.join(writer.get_cycle_info_dir(), f"cycle_info.{job_id}.current")
     assert os.path.islink(symlink_path)
@@ -120,6 +121,7 @@ def test_cycle_info_writer_update_cycle_end(tmp_dir):
         data = json.load(f)
     assert data["cycle_end_time"] == end_time
     assert data["cycle_start_time"] == "2024-01-01T00:00:00Z"
+    assert int(data.get("generation", 0)) == 1
 
 
 def test_cycle_info_writer_update_cycle_end_missing_file_no_crash(tmp_dir):

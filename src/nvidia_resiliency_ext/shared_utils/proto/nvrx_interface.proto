@@ -46,4 +46,9 @@ message NVRxCycleInfo {
 
   // Standby (hot spare) nodes in this cycle, in SLURM node range format. Empty if none.
   string standby_nodes = 8;
+
+  // Monotonic generation for compare-and-swap: 0 on create, increment on every
+  // write. A CAS update only succeeds when the stored generation equals the one
+  // in the request; after a successful write, the new generation is (previous + 1).
+  uint64 generation = 9;
 }

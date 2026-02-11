@@ -150,6 +150,7 @@ class CycleInfoWriter:
         for key, value in payload.items():
             if hasattr(msg, key):
                 setattr(msg, key, value)
+        msg.generation = 0
         job_id = msg.job_id
         attempt_index = msg.attempt_index
         cycle_number = msg.cycle_number
@@ -188,7 +189,7 @@ class CycleInfoWriter:
         cycle_number: int,
         update_payload: Dict[str, Any],
     ) -> None:
-        """Update the cycle info file by applying update_payload to the existing message."""
+        """Update the cycle info file by applying update_payload; increment generation by one."""
         filename = _cycle_info_filename(job_id, attempt_index, cycle_number)
         path = os.path.join(self._nvrx_dir, filename)
         if not os.path.isfile(path):
@@ -201,6 +202,7 @@ class CycleInfoWriter:
             for key, value in update_payload.items():
                 if hasattr(msg, key):
                     setattr(msg, key, value)
+            msg.generation = msg.generation + 1
             with open(tmp_path, "w") as f:
                 f.write(json_format.MessageToJson(msg, indent=2, preserving_proto_field_name=True))
                 f.flush()
