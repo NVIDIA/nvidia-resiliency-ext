@@ -490,8 +490,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
         attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
         cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
-        active_addrs = self._rdzv_handler.get_last_rendezvous_participant_addrs()
-        standby_addrs = self._rdzv_handler.get_last_rendezvous_standby_participant_addrs()
+        # Legacy FtRendezvousHandler does not define these; barrier handler does.
+        get_active = getattr(
+            self._rdzv_handler, "get_last_rendezvous_participant_addrs", None
+        )
+        get_standby = getattr(
+            self._rdzv_handler, "get_last_rendezvous_standby_participant_addrs", None
+        )
+        active_addrs = get_active() if callable(get_active) else None
+        standby_addrs = get_standby() if callable(get_standby) else None
         active_nodes = hostnames_to_slurm_nodelist(active_addrs) if active_addrs else ""
         standby_nodes = hostnames_to_slurm_nodelist(standby_addrs) if standby_addrs else ""
         self._cycle_info_writer.write_cycle_start(

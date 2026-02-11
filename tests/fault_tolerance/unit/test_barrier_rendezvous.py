@@ -139,12 +139,11 @@ class BarrierStateBasicTest(BaseRendezvousTest):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         super().setUp()  # Clears environment variables
-        import time
 
         # Reuse the shared store
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_run_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_run_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -465,13 +464,11 @@ class RaceConditionTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_race_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_race_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -697,13 +694,13 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_host_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique. time.time()-based run_id can collide
+        # when tests run in the same microsecond (retries/fast runs), leaving
+        # last_participant_arrived_key=1 so participants block at Step 0.
+        self.run_id = f"test_host_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -823,14 +820,12 @@ class GroupRankAssignmentTest(TestCase):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         # NOTE: DO NOT clear SLURM_PROCID/GROUP_RANK for this test class
         # These tests specifically test infrastructure rank behavior
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_rank_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_rank_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -1776,13 +1771,11 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_ack_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_ack_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -1896,13 +1889,11 @@ class HandlerIntegrationTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_handler_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_handler_{self._testMethodName}_{uuid.uuid4().hex}"
 
     def tearDown(self):
         """Clean up test fixtures."""
@@ -2001,14 +1992,12 @@ class InfrastructureRankTest(TestCase):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         # NOTE: DO NOT clear SLURM_PROCID/GROUP_RANK for this test class
         # These tests specifically test infrastructure rank behavior from environment
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_infra_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_infra_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -2062,8 +2051,8 @@ class StaleRoundDetectionTest(BaseRendezvousTest):
         super().setUp()
         # Use the shared_store from setUpClass
         self.store = self.shared_store
-        # Generate unique run_id to isolate each test
-        self.run_id = f"test_stale_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_stale_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def test_stale_check_interval_parameter(self):

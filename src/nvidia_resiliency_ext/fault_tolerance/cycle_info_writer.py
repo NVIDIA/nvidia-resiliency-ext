@@ -70,6 +70,7 @@ class CycleInfoWriter:
             raise ValueError("cycle_info_dir must be non-empty")
         self._nvrx_dir = os.path.abspath(cycle_info_dir.rstrip("/"))
         self._queue: queue.Queue[Optional[_CycleInfoTask]] = queue.Queue()
+        self._shutdown_requested = False
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
         logger.debug("CycleInfoWriter started with cycle_info_dir=%s", self._nvrx_dir)
@@ -85,6 +86,9 @@ class CycleInfoWriter:
         standby_nodes: str = "",
     ) -> None:
         """Enqueue writing the initial cycle info file and updating the .current symlink."""
+        if self._shutdown_requested:
+            logger.warning("CycleInfoWriter already shutdown, ignoring write_cycle_start")
+            return
         payload: Dict[str, Any] = {
             "job_id": job_id,
             "attempt_index": attempt_index,
@@ -105,6 +109,9 @@ class CycleInfoWriter:
         cycle_end_time: str,
     ) -> None:
         """Enqueue an atomic update of the cycle file to set cycle_end_time."""
+        if self._shutdown_requested:
+            logger.warning("CycleInfoWriter already shutdown, ignoring update_cycle_end")
+            return
         update_payload: Dict[str, Any] = {"cycle_end_time": cycle_end_time}
         self._queue.put(
             _CycleInfoTask(
@@ -118,6 +125,7 @@ class CycleInfoWriter:
 
     def shutdown(self) -> None:
         """Signal the worker to exit and wait for it (drains queue)."""
+        self._shutdown_requested = True
         self._queue.put(_CycleInfoTask(op=_CycleInfoTask.SHUTDOWN))
         join_timeout = 10.0
         self._thread.join(timeout=join_timeout)
@@ -127,11 +135,17 @@ class CycleInfoWriter:
     def _worker(self) -> None:
         while True:
             try:
-                task = self._queue.get()
+                if self._shutdown_requested:
+                    try:
+                        task = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                else:
+                    task = self._queue.get()
                 if task is None:
                     continue
                 if task.op == _CycleInfoTask.SHUTDOWN:
-                    break
+                    continue
                 if task.op == _CycleInfoTask.CREATE:
                     self._do_create(task.kwargs["payload"])
                 elif task.op == _CycleInfoTask.UPDATE:
