@@ -1630,6 +1630,7 @@ class ErrorCaseTest(BaseRendezvousTest):
         because the third raises and set_closed(), and the other two exit on
         _check_timeout_and_closure().
         """
+        # TCPStore does not provide close()/shutdown(); store is released when GC runs.
         store = TCPStore(
             host_name="127.0.0.1",
             port=0,
@@ -1692,6 +1693,7 @@ class ErrorCaseTest(BaseRendezvousTest):
         """
         # Dedicated store so last_participant_arrived_key does not exist; __init__ sets it to "0".
         # This avoids waiting at Step 0 when the class shared_store has leftover state.
+        # TCPStore does not provide close()/shutdown(); store is released when GC runs.
         store = TCPStore(
             host_name="127.0.0.1",
             port=0,

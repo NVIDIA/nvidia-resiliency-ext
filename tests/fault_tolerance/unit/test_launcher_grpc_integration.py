@@ -152,9 +152,9 @@ def test_grpc_server_health_check():
 def _wait_for_grpc_server_ready(port, timeout=10.0, poll_interval=0.2):
     """Wait until gRPC server responds to health check or timeout."""
     channel = grpc.insecure_channel(f'localhost:{port}')
-    stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
-    deadline = time.monotonic() + timeout
     try:
+        stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
                 response = stub.HealthCheck(log_aggregation_pb2.HealthRequest(), timeout=2.0)
