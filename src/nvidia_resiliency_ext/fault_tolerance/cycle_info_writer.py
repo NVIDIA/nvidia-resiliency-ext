@@ -209,7 +209,6 @@ class CycleInfoWriter:
             os.replace(tmp_path, path)
         except (OSError, json_format.ParseError) as e:
             logger.warning("Failed to update cycle info in %s: %s", path, e)
-        finally:
             try:
                 os.remove(tmp_path)
             except OSError:
