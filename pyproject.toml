@@ -4,7 +4,7 @@
 [tool.poetry]
 name = "nvidia-resiliency-ext"
 repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
-version = "0.5.0"
+version = "0.0.0"  # Replaced at build time by poetry-dynamic-versioning
 description = "NVIDIA Resiliency Package"
 authors = ["NVIDIA Corporation"]
 readme = "README.md"
@@ -30,16 +30,15 @@ generate-setup-file = true
 [build-system]
 requires = [
     "poetry-core>=1.0.0",
+    "poetry-dynamic-versioning[backend]>=1.0.0",
     "pybind11",
     "setuptools",
     "wheel",
     "grpcio-tools>=1.76.0,<1.77.0"
 ]
-build-backend = "poetry.core.masonry.api"
+build-backend = "poetry_dynamic_versioning.backend"
 
 [tool.poetry.dependencies]
-nv-one-logger-core = ">=2.1.0"
-nv-one-logger-training-telemetry = ">=2.3.0"
 torch = ">=2.3.0"
 packaging = "*"
 python = ">=3.10"
@@ -56,6 +55,17 @@ grpcio-tools = "^1.76.0"
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
 
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "^v?(?P<base>\\d+\\.\\d+\\.\\d+)(?:-main)?$"
+format-jinja = """
+{%- if distance == 0 -%}
+{{ base }}
+{%- else -%}
+{{ base }}.dev{{ distance }}+{{ commit }}
+{%- endif -%}
+"""
 
 [tool.isort]
 profile = "black"  # black-compatible

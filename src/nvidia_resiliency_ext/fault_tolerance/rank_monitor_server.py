@@ -181,6 +181,9 @@ class RankMonitorServer:
         self._periodic_tasks = []
         self._initial_iteration = None  # Track starting iteration of current cycle (for warmup)
         self._current_iteration = None  # Track current iteration for warmup detection
+        # True after first OPEN("step"). Skip out-of-section timeout until then when
+        # workload step reporting does not include warmup iterations.
+        self._step_section_seen_this_cycle = False
         self.current_cycle = 0  # Track current cycle number for logging
 
         if self.cfg.enable_nic_monitor:
@@ -276,9 +279,7 @@ class RankMonitorServer:
         self.out_of_section_time = time.monotonic()
         self.open_sections.clear()
         self.last_hb_time = None
-        # Capture starting iteration for this cycle
-        self._initial_iteration = msg.iteration
-        self._current_iteration = msg.iteration
+        # Iteration baseline is set on first section message with iteration (see _handle_section_msg)
 
         # Update num_warmup_iterations if provided by the client
         if msg.num_warmup_iters is not None:
@@ -313,13 +314,14 @@ class RankMonitorServer:
             await self.stop_periodic_restart_check()
         self.state_machine.handle_section_msg()
 
-        # Track iteration for warmup detection (out-of-section timeout skip)
-        if msg.iteration is not None:
-            if (
-                self._initial_iteration is not None
-                and self._current_iteration == self._initial_iteration
-            ):
-                # First section message with iteration - reset the baseline
+        # Track iteration only from "step" section (setup/checkpointing may have wrong iteration before checkpoint load)
+        if msg.section == "step" and msg.iteration is not None:
+            if self._current_iteration is not None and msg.iteration < self._current_iteration:
+                self.logger.warning(
+                    f"Step section iteration rolled back: was {self._current_iteration}, got {msg.iteration}. "
+                    "Check workload iteration reporting."
+                )
+            if self._initial_iteration is None:
                 self._initial_iteration = msg.iteration
             self._current_iteration = msg.iteration
 
@@ -329,6 +331,8 @@ class RankMonitorServer:
             if msg.section not in self.open_sections:
                 self.open_sections[msg.section] = current_time
                 self.out_of_section_time = None
+                if msg.section == "step":
+                    self._step_section_seen_this_cycle = True
                 resp = OkMsg()
             else:
                 # Log error but don't send response when skip_section_response is enabled
@@ -383,6 +387,7 @@ class RankMonitorServer:
         self.out_of_section_time = None
         self._initial_iteration = None
         self._current_iteration = None
+        self._step_section_seen_this_cycle = False
         self.rmlogger.set_connected_rank(None)
         if self.connection_lock.locked():
             self.connection_lock.release()
@@ -501,7 +506,17 @@ class RankMonitorServer:
         # otherwise check the timeout for "out of section"
         for section, section_start_time in self.open_sections.items():
             elapsed = curr_time - section_start_time
-            timeout = self.cfg.rank_section_timeouts[section]
+            timeout = self.cfg.rank_section_timeouts.get(section)
+            # When "step" is open and within warmup iterations, use "warmup" section timeout if configured
+            if (
+                section == "step"
+                and "warmup" in self.cfg.rank_section_timeouts
+                and self._initial_iteration is not None
+                and self._current_iteration is not None
+            ):
+                iterations_this_cycle = self._current_iteration - self._initial_iteration
+                if iterations_this_cycle < self.cfg.num_warmup_iterations:
+                    timeout = self.cfg.rank_section_timeouts["warmup"]
             is_elapsed = timeout is not None and elapsed > timeout
             if is_elapsed:
                 self.logger.warning(
@@ -510,13 +525,11 @@ class RankMonitorServer:
                 )
                 is_elapsed = True
         if not self.open_sections:
-            # Skip out-of-section timeout monitoring during warmup iterations
-            # Count iterations relative to when this training cycle started
-            if self._initial_iteration is not None and self._current_iteration is not None:
-                iterations_this_cycle = self._current_iteration - self._initial_iteration
-                if iterations_this_cycle < self.cfg.num_warmup_iterations:
-                    # Still in warmup period, don't check out-of-section timeout
-                    return False
+            if (
+                "warmup" not in self.cfg.rank_section_timeouts
+                and not self._step_section_seen_this_cycle
+            ):
+                return False
 
             elapsed = curr_time - self.out_of_section_time
             timeout = self.cfg.rank_out_of_section_timeout

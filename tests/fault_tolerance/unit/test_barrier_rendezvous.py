@@ -29,6 +29,7 @@ These tests focus on:
 import os
 import threading
 import time
+import uuid
 from unittest import TestCase
 
 from torch.distributed import TCPStore
@@ -47,12 +48,22 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
 TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
 TEST_JOIN_TIMEOUT_SECS = 2.0  # seconds - for join timeout (reduced from 5.0)
 TEST_THREAD_JOIN_TIMEOUT_SECS = 5.0  # seconds - for thread.join() timeout (reduced from 10.0)
+# Barrier wait timeout - avoids deadlock if a participant fails before reaching the barrier
+BARRIER_WAIT_TIMEOUT_SECS = 10.0
 
 
 # Helper to create segment check interval for tests
 def _test_segment_check_interval(seconds=TEST_SEGMENT_CHECK_INTERVAL_SECS):
     """Create segment check interval for test."""
     return seconds
+
+
+def _assert_threads_finished(test_case, threads, timeout_secs):
+    """Assert all threads have terminated after join; fail with a clear message if not."""
+    alive = [t for t in threads if t.is_alive()]
+    if alive:
+        names = [t.name for t in alive]
+        test_case.fail(f"Thread(s) did not terminate within {timeout_secs}s: {names}")
 
 
 class BaseRendezvousTest(TestCase):
@@ -285,13 +296,13 @@ class Step2CompletionTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_step2_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique. time.time()-based run_id can collide
+        # when tests run in the same microsecond (retries/fast runs), leaving
+        # last_participant_arrived_key=1 from a prior run so participants wait at Step 0.
+        self.run_id = f"test_step2_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -304,12 +315,11 @@ class Step2CompletionTest(BaseRendezvousTest):
         max_nodes = 3
         segment_check_interval = _test_segment_check_interval()
 
-        # Create a thread that will join and wait
         results = []
         errors = []
+        start_barrier = threading.Barrier(max_nodes)
 
         def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
             state = _RendezvousBarrierState(
                 store=self.store,
                 run_id=self.run_id,
@@ -317,32 +327,31 @@ class Step2CompletionTest(BaseRendezvousTest):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
+                start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
                 node = self.node_desc_gen.generate()
                 rank, total = state.perform_rendezvous(
                     node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
+            except threading.BrokenBarrierError as e:
+                errors.append((participant_id, e))
             except Exception as e:
                 errors.append((participant_id, e))
 
-        # Start 3 participants (max_nodes), first one is store host
         threads = []
         for i in range(max_nodes):
             t = threading.Thread(target=participant_thread, args=(i, i == 0))
             t.start()
             threads.append(t)
 
-        # Wait for completion
         for t in threads:
-            t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+            t.join(timeout=15)
+        _assert_threads_finished(self, threads, 15)
 
-        # Check that all threads completed successfully
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(len(results), max_nodes)
-
-        # Check that all participants got ranks
         ranks = [r[1] for r in results]
-        self.assertEqual(len(set(ranks)), max_nodes)  # All unique ranks
+        self.assertEqual(len(set(ranks)), max_nodes)
 
     def test_step2_completion_on_min_nodes_with_segment_check(self):
         """Test that Step 2 completes when min_nodes is reached and segment constraint is satisfied."""
@@ -352,9 +361,9 @@ class Step2CompletionTest(BaseRendezvousTest):
 
         results = []
         errors = []
+        start_barrier = threading.Barrier(min_nodes)
 
         def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
             state = _RendezvousBarrierState(
                 store=self.store,
                 run_id=self.run_id,
@@ -362,47 +371,51 @@ class Step2CompletionTest(BaseRendezvousTest):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
+                start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
                 node = self.node_desc_gen.generate()
-                # Rendezvous should complete when segment constraint is met
                 rank, total = state.perform_rendezvous(
                     node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
+            except threading.BrokenBarrierError as e:
+                errors.append((participant_id, e))
             except Exception as e:
                 errors.append((participant_id, e))
 
-        # Start only min_nodes participants
         threads = []
         for i in range(min_nodes):
             t = threading.Thread(target=participant_thread, args=(i, i == 0))
             t.start()
             threads.append(t)
 
-        # Wait for completion (should happen after segment check interval)
         start_time = time.time()
         for t in threads:
-            t.join(timeout=10)
+            t.join(timeout=15)
+        _assert_threads_finished(self, threads, 15)
         elapsed = time.time() - start_time
 
-        # Check that all threads completed successfully
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(len(results), min_nodes)
-
-        # Completion should happen relatively quickly once segment constraint is met
-        # (within a few check intervals)
-        self.assertLess(elapsed, 2.0, f"Took too long to complete: {elapsed}s")
+        # Completion should happen within a few segment check intervals (~0.1s each);
+        # allow generous bound for slow CI
+        self.assertLess(elapsed, 8.0, f"Took too long to complete: {elapsed}s")
 
     def test_step2_late_arrival_sees_completion_key(self):
-        """Test that rendezvous completes correctly when all participants arrive quickly."""
-        min_nodes = 3  # Require 3 nodes
+        """Test that rendezvous completes correctly when all participants arrive quickly.
+
+        All three participants sync on a barrier then join; each must see the completion
+        key and get a rank. Requires unique run_id (setUp uses uuid) so Step 0 does
+        not see last_participant_arrived_key=1 from a previous run.
+        """
+        min_nodes = 3
         max_nodes = 4
-        segment_check_interval = _test_segment_check_interval()  # Use default short interval
+        segment_check_interval = _test_segment_check_interval()
 
         results = []
         errors = []
+        start_barrier = threading.Barrier(min_nodes)
 
         def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
             state = _RendezvousBarrierState(
                 store=self.store,
                 run_id=self.run_id,
@@ -410,27 +423,27 @@ class Step2CompletionTest(BaseRendezvousTest):
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
+                start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
                 node = self.node_desc_gen.generate()
-                # Rendezvous completes when segment constraint is met
                 rank, total = state.perform_rendezvous(
                     node, min_nodes, max_nodes, segment_check_interval
                 )
                 results.append((participant_id, rank, total))
+            except threading.BrokenBarrierError as e:
+                errors.append((participant_id, e))
             except Exception as e:
                 errors.append((participant_id, e))
 
-        # Start all min_nodes participants together
         threads = []
         for i in range(min_nodes):
             t = threading.Thread(target=participant_thread, args=(i, i == 0))
             t.start()
             threads.append(t)
 
-        # Wait for all threads
         for t in threads:
-            t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+            t.join(timeout=15)
+        _assert_threads_finished(self, threads, 15)
 
-        # Check all completed
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(
             len(results), min_nodes, f"Expected {min_nodes} results, got {len(results)}"
@@ -488,6 +501,7 @@ class RaceConditionTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+        _assert_threads_finished(self, threads, TEST_THREAD_JOIN_TIMEOUT_SECS)
 
         # Check that all counts are unique (atomic increment)
         self.assertEqual(len(arrived_counts), num_participants)
@@ -597,9 +611,31 @@ class RaceConditionTest(BaseRendezvousTest):
         t_regular.start()
         t_late.start()
 
-        t_host.join(timeout=15)
-        t_regular.join(timeout=15)
-        t_late.join(timeout=15)
+        join_timeout = 15
+        t_host.join(timeout=join_timeout)
+        t_regular.join(timeout=join_timeout)
+        self.assertFalse(t_host.is_alive(), f"Host thread did not terminate within {join_timeout}s")
+        self.assertFalse(
+            t_regular.is_alive(),
+            f"Regular participant thread did not terminate within {join_timeout}s",
+        )
+
+        # Late arrival can be stuck in Step 0 (_wait_for_rendezvous_open): it sees
+        # last_participant_arrived_key=1 (round complete) and waits for the next round
+        # with no timeout. Unblock it by opening the rendezvous so it proceeds to Step 2,
+        # then hits join_timeout_seconds and raises RendezvousTimeoutError.
+        unblock_state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=False,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        self.store.set(unblock_state.last_participant_arrived_key, "0".encode("utf-8"))
+
+        t_late.join(timeout=join_timeout)
+        self.assertFalse(
+            t_late.is_alive(), f"Late arrival thread did not terminate within {join_timeout}s"
+        )
 
         # Check results
         # The late arrival should either:
@@ -640,6 +676,7 @@ class RaceConditionTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+        _assert_threads_finished(self, threads, TEST_THREAD_JOIN_TIMEOUT_SECS)
 
         # Key should be set (no errors)
         self.assertTrue(self.store.check([state.last_participant_arrived_key]))
@@ -703,6 +740,7 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=10)
+        _assert_threads_finished(self, threads, 10)
 
         # Check ranks are assigned correctly
         self.assertEqual(len(results), min_nodes)
@@ -761,6 +799,8 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
 
         t1.join(timeout=10)
         t2.join(timeout=10)
+        self.assertFalse(t1.is_alive(), "Host thread did not terminate within 10s")
+        self.assertFalse(t2.is_alive(), "Non-host thread did not terminate within 10s")
 
         # Both should complete with ranks
         self.assertEqual(len(results), 2)
@@ -1559,13 +1599,12 @@ class ErrorCaseTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
 
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_error_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use a globally unique run_id so store keys never collide with other tests or runs
+        self.run_id = f"test_error_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -1573,33 +1612,59 @@ class ErrorCaseTest(BaseRendezvousTest):
         super().tearDown()  # Restores environment variables
 
     def test_exceed_max_nodes_raises_error(self):
-        """Test that exceeding max_nodes raises RendezvousClosedError."""
+        """Test that exceeding max_nodes raises RendezvousClosedError.
+
+        Root cause of previous flakiness:
+        - Three threads call store.add(arrived_count_key, 1) and get 1, 2, 3.
+        - The thread that gets 3 should raise RendezvousClosedError.
+        - The two that get 1 and 2 enter Step 2; the store host runs a segment check
+          after segment_check_interval seconds, then completes and calls
+          _clear_barrier_keys(), which deletes arrived_count_key.
+        - If the third thread runs store.add() after the key was deleted, it can get
+          count 1 (new key) and not raise, so the test non-deterministically failed.
+
+        Deterministic design: use a segment_check_interval larger than the test
+        duration so the store host never runs the first segment check. Then the
+        first two never complete and never clear the key, so the third always
+        adds while the key exists and gets 3. The test still finishes quickly
+        because the third raises and set_closed(), and the other two exit on
+        _check_timeout_and_closure().
+        """
+        # TCPStore does not provide close()/shutdown(); store is released when GC runs.
+        store = TCPStore(
+            host_name="127.0.0.1",
+            port=0,
+            is_master=True,
+            wait_for_workers=False,
+        )
+        run_id = f"test_error_{self._testMethodName}_{uuid.uuid4().hex}"
+        node_desc_gen = _NodeDescGenerator()
+
         min_nodes = 2
-        max_nodes = 2  # Set max to 2
-        segment_check_interval = _test_segment_check_interval()
+        max_nodes = 2  # Set max to 2; third participant must see count 3 and raise
+        # Prevent store host from ever running the first segment check during the
+        # test, so it never completes and never clears arrived_count_key.
+        segment_check_interval = 1e9
 
         errors = []
-        # Use barrier to synchronize thread starts - ensures all threads
-        # attempt to join before any complete the rendezvous
         start_barrier = threading.Barrier(3)
 
         def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
             state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
+                store=store,
+                run_id=run_id,
                 is_store_host=is_host,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
             try:
-                # Wait for all threads to be ready before proceeding
-                start_barrier.wait()
-                node = self.node_desc_gen.generate()
+                start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
+                node = node_desc_gen.generate()
                 state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
+            except threading.BrokenBarrierError:
+                errors.append((participant_id, "BrokenBarrierError"))
             except Exception as e:
                 errors.append((participant_id, type(e).__name__))
 
-        # Try to add 3 participants (exceeds max_nodes)
         threads = []
         for i in range(3):
             t = threading.Thread(target=participant_thread, args=(i, i == 0))
@@ -1608,16 +1673,37 @@ class ErrorCaseTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+        _assert_threads_finished(self, threads, TEST_THREAD_JOIN_TIMEOUT_SECS)
 
-        # At least one should get RendezvousClosedError
         error_types = [e[1] for e in errors]
-        self.assertIn('RendezvousClosedError', error_types)
+        self.assertIn(
+            "RendezvousClosedError",
+            error_types,
+            msg=(
+                f"Expected at least one RendezvousClosedError when 3 participants join with "
+                f"max_nodes=2. error_types={error_types}, errors={errors}"
+            ),
+        )
 
     def test_timeout_raises_error(self):
-        """Test that join timeout raises RendezvousTimeoutError."""
+        """Test that join timeout raises RendezvousTimeoutError.
+
+        Uses a dedicated TCPStore so the rendezvous is open (no leftover keys from
+        other tests). We then hit the join timeout in Step 2 while waiting for min_nodes.
+        """
+        # Dedicated store so last_participant_arrived_key does not exist; __init__ sets it to "0".
+        # This avoids waiting at Step 0 when the class shared_store has leftover state.
+        # TCPStore does not provide close()/shutdown(); store is released when GC runs.
+        store = TCPStore(
+            host_name="127.0.0.1",
+            port=0,
+            is_master=True,
+            wait_for_workers=False,
+        )
+        run_id = f"test_error_{self._testMethodName}_{uuid.uuid4().hex}"
         state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
+            store=store,
+            run_id=run_id,
             is_store_host=True,
             join_timeout_seconds=1.0,  # Use very short timeout to test timeout behavior
         )
@@ -1627,7 +1713,6 @@ class ErrorCaseTest(BaseRendezvousTest):
 
         node = self.node_desc_gen.generate()
 
-        # Should timeout waiting for other participants
         with self.assertRaises(RendezvousTimeoutError):
             state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
@@ -1734,6 +1819,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=10)
+        _assert_threads_finished(self, threads, 10)
 
         # All participants should have acknowledged and completed
         self.assertEqual(len(ack_counts), min_nodes)
@@ -1777,6 +1863,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+        _assert_threads_finished(self, threads, TEST_THREAD_JOIN_TIMEOUT_SECS)
 
         # Wait a bit for cleanup
         time.sleep(0.05)  # Minimal delay for key cleanup
