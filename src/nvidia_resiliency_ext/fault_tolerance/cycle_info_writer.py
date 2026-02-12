@@ -26,7 +26,7 @@ import os
 import queue
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from google.protobuf import json_format
 
@@ -71,6 +71,9 @@ class CycleInfoWriter:
         self._nvrx_dir = os.path.abspath(cycle_info_dir.rstrip("/"))
         self._queue: queue.Queue[Optional[_CycleInfoTask]] = queue.Queue()
         self._shutdown_requested = False
+        # Track the current cycle (job_id, attempt_index, cycle_number) from write_cycle_start
+        # so shutdown() can write cycle_end_time if the launcher never called update_cycle_end.
+        self._current_cycle: Optional[Tuple[str, int, int]] = None
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
         logger.debug("CycleInfoWriter started with cycle_info_dir=%s", self._nvrx_dir)
@@ -99,6 +102,7 @@ class CycleInfoWriter:
             "active_nodes": active_nodes,
             "standby_nodes": standby_nodes,
         }
+        self._current_cycle = (job_id, attempt_index, cycle_number)
         self._queue.put(_CycleInfoTask(op=_CycleInfoTask.CREATE, payload=payload))
 
     def update_cycle_end(
@@ -112,6 +116,9 @@ class CycleInfoWriter:
         if self._shutdown_requested:
             logger.warning("CycleInfoWriter already shutdown, ignoring update_cycle_end")
             return
+        # Clear current cycle so shutdown() will not write cycle_end again
+        if self._current_cycle == (job_id, attempt_index, cycle_number):
+            self._current_cycle = None
         update_payload: Dict[str, Any] = {"cycle_end_time": cycle_end_time}
         self._queue.put(
             _CycleInfoTask(
@@ -124,8 +131,24 @@ class CycleInfoWriter:
         )
 
     def shutdown(self) -> None:
-        """Signal the worker to exit and wait for it (drains queue)."""
+        """Signal the worker to exit and wait for it (drains queue).
+        If a cycle was started (write_cycle_start) but cycle end was never recorded
+        (update_cycle_end not called, e.g. launcher error path), enqueue an update
+        to set cycle_end_time to now so the cycle file is still complete.
+        """
         self._shutdown_requested = True
+        if self._current_cycle is not None:
+            job_id, attempt_index, cycle_number = self._current_cycle
+            self._current_cycle = None
+            self._queue.put(
+                _CycleInfoTask(
+                    op=_CycleInfoTask.UPDATE,
+                    job_id=job_id,
+                    attempt_index=attempt_index,
+                    cycle_number=cycle_number,
+                    update_payload={"cycle_end_time": utc_iso_now()},
+                )
+            )
         self._queue.put(_CycleInfoTask(op=_CycleInfoTask.SHUTDOWN))
         join_timeout = 10.0
         self._thread.join(timeout=join_timeout)
