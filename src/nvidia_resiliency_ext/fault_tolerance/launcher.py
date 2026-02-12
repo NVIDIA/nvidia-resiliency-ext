@@ -2984,6 +2984,17 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         # This env variable will be passed down to the subprocesses
         os.environ["OMP_NUM_THREADS"] = str(omp_num_threads)
 
+    # Use PyTorch elastic "identical workers" fast path for rank assignment. This avoids
+    # the multi_get path in _assign_worker_ranks, which requires all participants to write
+    # role_info and can block or fail if one participant dies before completing that step.
+    # Ft_launcher runs homogeneous workers (same role, same nproc_per_node), so the fast
+    # path is correct. Users can override by setting TORCH_ELASTIC_WORKER_IDENTICAL=0.
+    # When identical=1, PyTorch uses the rendezvous (rank, world_size) directly; the barrier
+    # handler must return world_size = min_nodes (active participants), not total_participants,
+    # so that WORLD_SIZE = min_nodes * nproc_per_node (e.g. 32*4=128) and not (active+standby)*4.
+    if "TORCH_ELASTIC_WORKER_IDENTICAL" not in os.environ:
+        os.environ["TORCH_ELASTIC_WORKER_IDENTICAL"] = "1"
+
     log_line_prefix_template = os.getenv("TORCHELASTIC_LOG_LINE_PREFIX_TEMPLATE")
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
