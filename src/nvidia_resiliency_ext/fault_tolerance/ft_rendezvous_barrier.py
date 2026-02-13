@@ -1069,10 +1069,10 @@ class _RendezvousBarrierState:
                             cached_participants = self.get_all_participants(
                                 total_participants=current_arrived,
                             )
-                            num_new_participants = current_arrived
+                            num_fetched_participants = current_arrived
                         else:
                             assert new_participants_arrived
-                            num_new_participants = current_arrived - len(cached_participants)
+                            num_fetched_participants = current_arrived - len(cached_participants)
                             cached_participants = self.get_all_participants(
                                 total_participants=current_arrived,
                                 start_index=len(cached_participants) + 1,
@@ -1105,7 +1105,7 @@ class _RendezvousBarrierState:
                             log.info(
                                 f"[{node_desc}] [Step 2] Segment constraint satisfied with "
                                 f"{len(active_participants)} active participants (min_nodes={min_nodes}). "
-                                f"Perf: fetch {num_new_participants} new participants in {fetch_elapsed*1000:.1f}ms, "
+                                f"Perf: fetch {num_fetched_participants} participants in {fetch_elapsed*1000:.1f}ms, "
                                 f"constraint check in {check_elapsed*1000:.1f}ms"
                             )
 
