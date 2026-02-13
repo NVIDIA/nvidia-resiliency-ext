@@ -441,6 +441,10 @@ class _RendezvousBarrierState:
         # This is managed by the state since it coordinates the rendezvous
         self._rendezvous_round = 0
 
+        # Last active/standby participant addrs (set by store host in assign_group_ranks for cycle info)
+        self._last_active_participant_addrs: Optional[List[str]] = None
+        self._last_standby_participant_addrs: Optional[List[str]] = None
+
         # Reference to agent (set via set_agent() method in handler)
         # Will be set by handler via set_agent() method
         self._agent = None
@@ -1345,10 +1349,19 @@ class _RendezvousBarrierState:
         # Write rank to each active participant's slot (iterate by slot so key = arrived_{slot})
         rank_keys = []
         rank_values = []
+        self._last_active_participant_addrs = []
+        self._last_standby_participant_addrs = []
         for slot in range(1, total_participants + 1):
             node_desc_item, _, domain_id = all_participants[slot - 1]
             if domain_id != WITHDRAWN_DOMAIN_ID:
                 assigned_group_rank = assigned_group_ranks.get(node_desc_item, -1)
+
+                # Collect addrs for cycle info (active vs standby by group_rank vs world_size)
+                if assigned_group_rank < world_size:
+                    self._last_active_participant_addrs.append(node_desc_item.addr)
+                else:
+                    self._last_standby_participant_addrs.append(node_desc_item.addr)
+
                 if assigned_group_rank == -1:
                     raise RuntimeError(
                         f"Failed to assign group rank to participant {node_desc_item}. "
@@ -1978,6 +1991,22 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     def get_run_id(self) -> str:
         """See base class."""
         return self._settings.run_id
+
+    def get_last_rendezvous_participant_addrs(self) -> Optional[List[str]]:
+        """Return the list of active participant addresses from the last completed rendezvous.
+
+        Only the TCPStore host populates this (in assign_group_ranks). Other nodes
+        will get None. Used by the launcher to build NVRx cycle info (active_nodes).
+        """
+        return self._barrier_state._last_active_participant_addrs
+
+    def get_last_rendezvous_standby_participant_addrs(self) -> Optional[List[str]]:
+        """Return the list of standby (hot spare) participant addresses from the last rendezvous.
+
+        Only the TCPStore host populates this. Other nodes will get None.
+        Used by the launcher to build NVRx cycle info (standby_nodes).
+        """
+        return self._barrier_state._last_standby_participant_addrs
 
     def shutdown(self) -> bool:
         """See base class."""

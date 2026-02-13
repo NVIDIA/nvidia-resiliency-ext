@@ -170,6 +170,7 @@ def build(setup_kwargs):
     proto_files = [
         "nvhcd.proto",  # Health check service
         "log_aggregation.proto",  # gRPC logging service
+        "nvrx_interface.proto",  # NVRx cycle info
     ]
 
     try:
