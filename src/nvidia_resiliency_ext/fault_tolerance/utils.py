@@ -19,11 +19,13 @@ import ctypes
 import logging
 import multiprocessing
 import os
+import re
 import socket
 import struct
 import sys
 import time
 import traceback
+from typing import Dict, Optional
 
 import psutil
 import torch
@@ -519,3 +521,73 @@ def install_exception_handler():
 
     # Install the custom exception handler
     sys.excepthook = exception_handler
+
+
+def _parse_hostname_prefix_suffix(name: str) -> Optional[tuple[str, int, str]]:
+    """If name is 'prefix' + digits (e.g. node001, nvl73111-T01), return (prefix, num, raw_suffix). Else None."""
+    m = re.match(r"^(.*?)(\d+)$", name)
+    if not m:
+        return None
+    return (m.group(1), int(m.group(2)), m.group(2))
+
+
+def _numbers_to_slurm_ranges(numbers: list[int], pad: int) -> list[str]:
+    """Turn sorted unique numbers into SLURM range parts, e.g. [1,2,3,5] -> ['001-003', '005']."""
+    if not numbers:
+        return []
+    ranges: list[str] = []
+    start = end = numbers[0]
+    for n in numbers[1:]:
+        if n == end + 1:
+            end = n
+        else:
+            s, e = str(start).zfill(pad), str(end).zfill(pad)
+            ranges.append(f"{s}-{e}" if start != end else s)
+            start = end = n
+    s, e = str(start).zfill(pad), str(end).zfill(pad)
+    ranges.append(f"{s}-{e}" if start != end else s)
+    return ranges
+
+
+def hostnames_to_slurm_nodelist(addrs: list) -> str:
+    """Convert a list of node addresses (hostnames or FQDNs) to SLURM node range format.
+
+    Expects hostnames like "node001", "node002", "node005" or "node001.cluster.com".
+    Uses the first component (before '.') as the node name. If all names match
+    pattern prefix + numeric suffix, produces e.g. "node[001-002,005]". Otherwise
+    returns comma-separated list of (short) hostnames.
+
+    Args:
+        addrs: List of participant addresses (hostname or FQDN).
+
+    Returns:
+        SLURM-style node list string (range format or comma-separated).
+    """
+    if not addrs:
+        return ""
+    short_names = [a.split(".")[0].strip() for a in addrs if a]
+    if not short_names:
+        return ""
+
+    # Parse each name as prefix + numeric suffix; if any fail, return comma-separated list.
+    parsed: list[tuple[str, int, str] | None] = [
+        _parse_hostname_prefix_suffix(n) for n in short_names
+    ]
+    if any(p is None for p in parsed):
+        return ",".join(sorted(set(short_names)))
+
+    # Group by prefix; for each prefix keep unique node numbers and suffix for padding.
+    by_prefix: Dict[str, Dict[int, str]] = {}  # prefix -> {num: raw_suffix}
+    for p in parsed:
+        assert p is not None  # we returned above if any were None
+        prefix, num, raw_suffix = p
+        by_prefix.setdefault(prefix, {})[num] = raw_suffix  # same num keeps one suffix
+
+    result_parts = []
+    for prefix in sorted(by_prefix.keys()):
+        num_to_suffix = by_prefix[prefix]
+        nums = sorted(num_to_suffix.keys())
+        pad = max(len(num_to_suffix[n]) for n in nums)
+        range_strs = _numbers_to_slurm_ranges(nums, pad)
+        result_parts.append(f"{prefix}[{','.join(range_strs)}]")
+    return ",".join(result_parts)
