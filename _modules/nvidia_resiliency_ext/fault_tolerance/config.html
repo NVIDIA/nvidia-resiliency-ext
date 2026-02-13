@@ -180,6 +180,11 @@
 <span class="sd">      - `attrsvc_host` [str] hostname/IP of the attribution service</span>
 <span class="sd">      - `attrsvc_port` [int] port of the attribution service</span>
 
+<span class="sd">    * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.</span>
+<span class="sd">      &lt;base&gt;/nvrx/). If set, the TCPStore host writes cycle info JSON files and the</span>
+<span class="sd">      cycle_info.&lt;job_id&gt;.current symlink there. The workload receives the path to</span>
+<span class="sd">      the current cycle file via NVRX_CURRENT_CYCLE_INFO. Default: None (disabled).</span>
+
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
@@ -223,6 +228,9 @@
     <span class="c1"># Attribution service configuration (optional)</span>
     <span class="n">attrsvc_host</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">attrsvc_port</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="c1"># NVRx cycle info: base directory for cycle_info JSON files</span>
+    <span class="n">cycle_info_dir</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_progress_tracking_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
