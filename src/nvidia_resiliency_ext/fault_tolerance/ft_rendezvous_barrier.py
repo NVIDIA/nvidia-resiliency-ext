@@ -69,9 +69,23 @@ if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
 
 log = logging.getLogger(LogConfig.name)
 
+# Sentinel domain_id written to a participant's slot when they withdraw. Any use of
+# participant data (_can_meet_segment_constraint, _assign_group_ranks) must exclude
+# participants with this domain_id.
+WITHDRAWN_DOMAIN_ID = "__withdrawn__"
+
+# Module-level reference to the barrier state that has joined (Step 1) but not yet
+# completed rendezvous. Set in perform_rendezvous after add(1), cleared in finally.
+# The signal handler sets _withdraw_on_unwind on this state so the finally can
+# decrement arrived_count (no store I/O in the handler).
+_current_joined_state: Optional[Any] = None
+
 
 def _rdzv_signal_exception_handler(sig: int, frame: Optional[FrameType]) -> None:
     del frame
+    global _current_joined_state
+    if _current_joined_state is not None:
+        _current_joined_state._withdraw_on_unwind = True
     raise SignalException(f"Received signal {sig} during rendezvous", signal.Signals(sig))
 
 
@@ -418,6 +432,11 @@ class _RendezvousBarrierState:
         self._rendezvous_start_time = None
         self._last_stale_check_time = 0.0  # Track last stale round check time for rate limiting
 
+        # When True, signal was received after we joined; finally will call _withdraw_from_rendezvous
+        self._withdraw_on_unwind = False
+        # Guard so we only decrement arrived_count at most once
+        self._has_withdrawn = False
+
         # Track rendezvous round number
         # This is managed by the state since it coordinates the rendezvous
         self._rendezvous_round = 0
@@ -437,6 +456,7 @@ class _RendezvousBarrierState:
         # Key prefixes for the barrier
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
         self.arrived_count_key = f"{self.prefix}:arrived_count"
+        self.withdrawn_count_key = f"{self.prefix}:withdrawn_count"
         self.last_participant_arrived_key = f"{self.prefix}:last_participant_arrived"
         self.ack_count_key = f"{self.prefix}:ack_count"
         self.closed_key = f"{self.prefix}:closed"
@@ -691,6 +711,17 @@ class _RendezvousBarrierState:
         peer_aborted_count_bytes = self.store.get(self.peer_aborted_count_key)
         return int(peer_aborted_count_bytes.decode('utf-8'))
 
+    def _get_withdrawn_count(self) -> int:
+        """Get the number of participants that withdrew this rendezvous cycle.
+
+        Used together with arrived_count to compute active participant count.
+        Returns 0 if the key does not exist (no withdrawals yet).
+        """
+        if not self.store.check([self.withdrawn_count_key]):
+            return 0
+        withdrawn_count_bytes = self.store.get(self.withdrawn_count_key)
+        return int(withdrawn_count_bytes.decode('utf-8'))
+
     def _sync_from_global_cycle(self) -> bool:
         """Sync local _rendezvous_round from global_cycle_key if stale.
 
@@ -748,6 +779,32 @@ class _RendezvousBarrierState:
             )
             log.error(msg)
             raise RendezvousTimeoutError(msg)
+
+    def _withdraw_from_rendezvous(self) -> None:
+        """Mark this participant as withdrawn so the store host can complete Step 3b.
+
+        Increments withdrawn_count_key and overwrites this participant's slot with
+        invalid domain_id (WITHDRAWN_DOMAIN_ID). Does not decrement arrived_count_key;
+        slot space stays monotonic. Ensures at most one withdraw per rendezvous round.
+        """
+        if self._has_withdrawn:
+            return
+        self._has_withdrawn = True
+        try:
+            self.store.add(self.withdrawn_count_key, 1)
+            # Overwrite our slot so consumers (segment constraint, rank assignment)
+            # exclude us by filtering on invalid domain_id
+            arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
+            withdrawn_data = RendezvousParticipantInfo.pack(
+                _NodeDesc("", 0, 0), -1, WITHDRAWN_DOMAIN_ID
+            )
+            self.store.set(arrived_key, withdrawn_data.encode('utf-8'))
+            log.debug(
+                f"Withdrew from rendezvous (incremented {self.withdrawn_count_key}, "
+                f"marked slot {self._arrived_count} as withdrawn)"
+            )
+        except Exception as e:
+            log.warning("Failed to withdraw from rendezvous: %s", e)
 
     def _wait_for_rendezvous_open(self, node_desc: _NodeDesc) -> None:
         """Step 0: Wait if rendezvous is closed. Hot spares and late arrivals wait here.
@@ -887,12 +944,14 @@ class _RendezvousBarrierState:
 
         # Step 1: Join the rendezvous and get unique identifier
         self._arrived_count = self.store.add(self.arrived_count_key, 1)
+        withdrawn_count = self._get_withdrawn_count()
+        active_count = self._arrived_count - withdrawn_count
 
-        # Check if we exceed max_nodes (can happen due to race conditions or user misconfiguration)
-        if self._arrived_count > max_nodes:
+        # Check if active participants would exceed max_nodes
+        if active_count > max_nodes:
             msg = (
                 f"Maximum number of nodes ({max_nodes}) exceeded. "
-                f"Participant count: {self._arrived_count}. "
+                f"Active participant count would be {active_count} (arrived={self._arrived_count}, withdrawn={withdrawn_count}). "
                 f"This is likely a configuration error - please check max_nodes setting."
             )
             log.error(f"[{node_desc}] {msg}")
@@ -900,6 +959,11 @@ class _RendezvousBarrierState:
             self.set_closed()
             raise RendezvousClosedError(msg)
 
+        global _current_joined_state
+        _current_joined_state = self
+        # Only withdraw (decrement) if we died before Step 3a; once we've acked we must not decrement.
+        # Cleanup (_current_joined_state + withdraw) runs in handler's finally via _maybe_withdraw_on_unwind().
+        self._has_acked = False
         # Determine infrastructure rank
         infra_rank = get_infrastructure_rank()
 
@@ -937,6 +1001,7 @@ class _RendezvousBarrierState:
         # Store host will incrementally check segment constraint
         last_segment_check_time = 0.0  # Track when we last checked segment constraint
         last_checked_count = 0  # Track how many participants we checked last time
+        last_checked_withdrawn = 0  # Track withdrawn count so we re-check only when set changes
         cached_participants = []  # Cache participants to avoid re-fetching
 
         while True:
@@ -975,41 +1040,63 @@ class _RendezvousBarrierState:
             should_complete = False
 
             if self.is_store_host:
-                # Get current arrived count to determine if we should check
+                # Get current arrived count and withdrawn count; only check when we have
+                # at least min_nodes active (arrived - withdrawn)
                 current_arrived = int(self.store.get(self.arrived_count_key))
+                withdrawn_count = self._get_withdrawn_count()
+                active_count = current_arrived - withdrawn_count
 
-                # Only check if we have at least min_nodes
-                if current_arrived >= min_nodes:
+                if active_count >= min_nodes:
                     current_time = time.monotonic()
-
-                    # Check at interval or if new participants arrived
                     time_to_check = (
                         current_time - last_segment_check_time
                     ) >= segment_check_interval
                     new_participants_arrived = current_arrived > last_checked_count
+                    new_withdrawals = withdrawn_count > last_checked_withdrawn
 
-                    if new_participants_arrived and time_to_check:
-                        # Update check time and count
+                    # Re-check only when participant set may have changed (new arrivals or
+                    # withdrawals), and rate-limit by interval to avoid get_all_participants every loop
+                    if (new_participants_arrived or new_withdrawals) and time_to_check:
                         last_segment_check_time = current_time
-                        last_checked_count = current_arrived
 
-                        # Timing: Incremental participant fetch
+                        # When new_withdrawals, any slot may have been overwritten with withdrawn
+                        # marker, so always do full fetch. Otherwise incremental fetch is enough.
+                        assert (
+                            new_withdrawals or new_participants_arrived
+                        ), "segment check only when participant set changed"
                         fetch_start = time.monotonic()
-                        num_new_participants = current_arrived - len(cached_participants)
-
-                        # Incrementally fetch only new participants using enhanced get_all_participants
-                        cached_participants = self.get_all_participants(
-                            total_participants=current_arrived,
-                            start_index=len(cached_participants) + 1,
-                            existing_participants=cached_participants,
-                        )
+                        if new_withdrawals:
+                            cached_participants = self.get_all_participants(
+                                total_participants=current_arrived,
+                            )
+                            num_fetched_participants = current_arrived
+                        else:
+                            assert new_participants_arrived
+                            num_fetched_participants = current_arrived - len(cached_participants)
+                            cached_participants = self.get_all_participants(
+                                total_participants=current_arrived,
+                                start_index=len(cached_participants) + 1,
+                                existing_participants=cached_participants,
+                            )
 
                         fetch_elapsed = time.monotonic() - fetch_start
+
+                        # Exclude withdrawn participants (invalid domain_id) for segment constraint
+                        active_participants = [
+                            p for p in cached_participants if p[2] != WITHDRAWN_DOMAIN_ID
+                        ]
+
+                        # Only advance last_checked_* when we have complete participant data (no
+                        # placeholders). Otherwise a race (host checked before another participant
+                        # wrote its slot) would prevent re-checking and the host could spin forever.
+                        if len(active_participants) == active_count:
+                            last_checked_count = current_arrived
+                            last_checked_withdrawn = withdrawn_count
 
                         # Timing: Segment constraint check
                         check_start = time.monotonic()
                         constraint_satisfied = self._can_meet_segment_constraint(
-                            cached_participants, min_nodes
+                            active_participants, min_nodes
                         )
                         check_elapsed = time.monotonic() - check_start
 
@@ -1017,9 +1104,9 @@ class _RendezvousBarrierState:
                             should_complete = True
                             log.info(
                                 f"[{node_desc}] [Step 2] Segment constraint satisfied with "
-                                f"{current_arrived} participants (min_nodes={min_nodes}). "
-                                f"Perf: fetch {num_new_participants} new participants in {fetch_elapsed*1000:.1f}ms, "
-                                f"constraint check on {current_arrived} participants in {check_elapsed*1000:.1f}ms"
+                                f"{len(active_participants)} active participants (min_nodes={min_nodes}). "
+                                f"Perf: fetch {num_fetched_participants} participants in {fetch_elapsed*1000:.1f}ms, "
+                                f"constraint check in {check_elapsed*1000:.1f}ms"
                             )
 
             if should_complete:
@@ -1036,6 +1123,7 @@ class _RendezvousBarrierState:
         # Step 3: Perform two-step acknowledge phase
         # Step 3a: All participants acknowledge completion
         ack_count = self.store.add(self.ack_count_key, 1)
+        self._has_acked = True
         log.debug(f"[{node_desc}] [Step 3a] Acknowledged completion, ack_count={ack_count}")
 
         # Step 3b: TCPStore host participant waits for all acknowledgments, assigns ranks, and clears keys
@@ -1045,11 +1133,14 @@ class _RendezvousBarrierState:
                 self._check_timeout_and_closure(node_desc)
 
                 current_count = int(self.store.get(self.ack_count_key))
-                # arrived_count_key is guaranteed to exist since we're in perform_rendezvous()
-                total_participants = int(self.store.get(self.arrived_count_key))
+                # Wait for acks from active participants only (exclude withdrawn)
+                arrived = int(self.store.get(self.arrived_count_key))
+                withdrawn = self._get_withdrawn_count()
+                total_participants = arrived - withdrawn
                 if current_count >= total_participants:
                     log.debug(
-                        f"[{node_desc}] [Step 3b] All {total_participants} participants acknowledged (ack_count={current_count}), proceeding to clear keys and assign ranks"
+                        f"[{node_desc}] [Step 3b] All {total_participants} participants acknowledged "
+                        f"(ack_count={current_count}), proceeding to clear keys and assign ranks"
                     )
 
                     # Clear barrier keys first to prevent false positives in launcher's
@@ -1058,9 +1149,9 @@ class _RendezvousBarrierState:
                     # new rendezvous and trigger unnecessary restarts.
                     self._clear_barrier_keys(node_desc)
 
-                    # Assign group ranks after clearing keys
+                    # Assign group ranks after clearing keys (pass arrived = slot count for fetch)
                     # New comers are blocked at Step 0 by closed rendezvous, so no race condition
-                    self.assign_group_ranks(min_nodes, max_nodes, total_participants, node_desc)
+                    self.assign_group_ranks(min_nodes, max_nodes, arrived, node_desc)
                     break
 
                 time.sleep(0.1)
@@ -1097,6 +1188,22 @@ class _RendezvousBarrierState:
 
             # Delay before next check
             time.sleep(1)
+
+    def _maybe_withdraw_on_unwind(self) -> None:
+        """Clear joined-state ref and, if we received a signal before acking, withdraw (increment withdrawn_count, mark slot).
+
+        Called from the handler's finally (next_rendezvous) so cleanup lives in one place.
+        Clears _current_joined_state so the signal handler does not see a stale ref (e.g. during
+        training or between rounds). Resetting on each perform_rendezvous keeps the ref accurate
+        for the current attempt.
+        """
+        global _current_joined_state
+        if _current_joined_state is self:
+            _current_joined_state = None
+        if getattr(self, '_withdraw_on_unwind', False):
+            if not getattr(self, '_has_acked', True):
+                self._withdraw_from_rendezvous()
+            self._withdraw_on_unwind = False
 
     def get_all_participants(
         self,
@@ -1151,12 +1258,13 @@ class _RendezvousBarrierState:
         # Use multi_get to fetch data
         participant_data_list = self.store.multi_get(participant_keys)
 
-        # Unpack participant information
+        # Unpack participant information; one entry per slot so list index maps to slot
+        # (participants[i] = slot start_index + i). Use placeholder for missing/failed/withdrawn.
         num_keys = len(participant_keys)
+        placeholder = (_NodeDesc("", 0, 0), -1, WITHDRAWN_DOMAIN_ID)
         for i in range(num_keys):
             if participant_data_list[i]:
                 try:
-                    # Handle bytes to string conversion
                     participant_data = participant_data_list[i].decode('utf-8')
                     node_desc, infra_rank, domain_id = RendezvousParticipantInfo.unpack(
                         participant_data
@@ -1167,6 +1275,13 @@ class _RendezvousBarrierState:
                     log.warning(
                         f"Failed to unpack participant data for arrived_{actual_index}: {e}"
                     )
+                    participants.append(placeholder)
+            else:
+                actual_index = start_index + i
+                log.warning(
+                    f"No participant data for slot arrived_{actual_index}; treating as placeholder"
+                )
+                participants.append(placeholder)
 
         return participants
 
@@ -1189,6 +1304,7 @@ class _RendezvousBarrierState:
         # DO NOT clear unhealthy_count_key - it is a global job-level counter
         keys_to_clear = [
             self.arrived_count_key,
+            self.withdrawn_count_key,
             self.ack_count_key,
             self.peer_aborted_count_key,  # Clear peer aborted counter for next round
         ]
@@ -1211,63 +1327,55 @@ class _RendezvousBarrierState:
             total_participants: Total number of participants (passed to avoid race condition)
         """
         all_participants = self.get_all_participants(total_participants)
-        # Assert that we have participants - if arrived_count > 0, we should have participants
-        assert (
-            len(all_participants) > 0
-        ), f"Expected participants but got empty list. total_participants={total_participants}"
         assert (
             len(all_participants) == total_participants
-        ), f"Expected {total_participants} participants, got {len(all_participants)}"
+        ), f"Expected {total_participants} slots, got {len(all_participants)}"
 
-        # Ensure we don't exceed max_nodes
-        if total_participants > max_nodes:
-            # This indicates a deployment error - fail fast with clear message
+        # Exclude withdrawn participants (invalid domain_id) for rank assignment
+        active_participants = [p for p in all_participants if p[2] != WITHDRAWN_DOMAIN_ID]
+        assert (
+            len(active_participants) > 0
+        ), f"Expected at least one active participant. total_participants={total_participants}"
+
+        # Ensure active count does not exceed max_nodes
+        if len(active_participants) > max_nodes:
             raise RuntimeError(
-                f"Total participants ({total_participants}) exceeds max_nodes ({max_nodes}). "
-                f"This indicates a deployment/configuration error. Common causes:\n"
-                f"  - SLURM is launching more instances than configured (check SLURM job configuration)\n"
-                f"  - Multiple ft_launcher processes running on the same node\n"
-                f"  - Mismatch between --max-nodes setting and actual node count\n"
-                f"Please verify your deployment configuration and ensure max_nodes matches "
-                f"the actual number of nodes being launched."
+                f"Active participants ({len(active_participants)}) exceeds max_nodes ({max_nodes}). "
+                f"This indicates a deployment/configuration error."
             )
 
-        assigned_group_ranks = self._assign_group_ranks(all_participants, world_size)
+        assigned_group_ranks = self._assign_group_ranks(active_participants, world_size)
 
-        # Build lists for multi_set and collect active/standby addrs for cycle info.
+        # Write rank to each active participant's slot (iterate by slot so key = arrived_{slot})
         rank_keys = []
         rank_values = []
         self._last_active_participant_addrs = []
         self._last_standby_participant_addrs = []
+        for slot in range(1, total_participants + 1):
+            node_desc_item, _, domain_id = all_participants[slot - 1]
+            if domain_id != WITHDRAWN_DOMAIN_ID:
+                assigned_group_rank = assigned_group_ranks.get(node_desc_item, -1)
 
-        for i, (node_desc_item, infra_rank, _) in enumerate(all_participants):
-            rank_key = f"{self.prefix}:arrived_{i+1}_group_rank"
-            assigned_group_rank = assigned_group_ranks.get(node_desc_item, -1)
+                # Collect addrs for cycle info (active vs standby by group_rank vs world_size)
+                if assigned_group_rank < world_size:
+                    self._last_active_participant_addrs.append(node_desc_item.addr)
+                else:
+                    self._last_standby_participant_addrs.append(node_desc_item.addr)
 
-            # Collect addrs for cycle info (active vs standby by group_rank vs world_size)
-            if assigned_group_rank < world_size:
-                self._last_active_participant_addrs.append(node_desc_item.addr)
-            else:
-                self._last_standby_participant_addrs.append(node_desc_item.addr)
+                if assigned_group_rank == -1:
+                    raise RuntimeError(
+                        f"Failed to assign group rank to participant {node_desc_item}. "
+                        f"This should never happen - all active participants should be assigned ranks."
+                    )
+                rank_key = f"{self.prefix}:arrived_{slot}_group_rank"
+                rank_value = f"{assigned_group_rank},{total_participants}"
+                rank_keys.append(rank_key)
+                rank_values.append(rank_value.encode('utf-8'))
 
-            # Ensure every participant gets a valid rank assignment
-            if assigned_group_rank == -1:
-                raise RuntimeError(
-                    f"Failed to assign group rank to participant {node_desc_item}. "
-                    f"This should never happen - all participants should be assigned ranks."
-                )
-
-            # Store both group_rank and total_participants in the rank key
-            # Format: "group_rank,total_participants"
-            rank_value = f"{assigned_group_rank},{total_participants}"
-            rank_keys.append(rank_key)
-            rank_values.append(rank_value.encode('utf-8'))
-
-        # Use multi_set for better performance - single atomic operation
         self.store.multi_set(rank_keys, rank_values)
 
         log.debug(
-            f"[{node_desc}] [Step 3b] Assigned group ranks to {len(assigned_group_ranks)} participants"
+            f"[{node_desc}] [Step 3b] Assigned group ranks to {len(active_participants)} participants"
         )
 
     def is_closed(self) -> bool:
@@ -1718,11 +1826,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # Store the assigned rank and world size
         self._assigned_rank = group_rank
 
-        # World size should be the total number of participants (active + standby)
-        # This represents the total number of groups in the distributed system
-        # PyTorch will calculate global_world_size = sum of local_world_size across all groups
-        # Standby participants will report local_world_size = 0
-        self._world_size = total_participants
+        # World size for the training job is the number of *active* participants (min_nodes),
+        # not total_participants (active + standby). The launcher multiplies this by
+        # nproc_per_node to set WORLD_SIZE in worker env. Standby participants report
+        # local_world_size=0 and do not run workers; they must still see the same
+        # group world_size (min_nodes) so that WORLD_SIZE = min_nodes * nproc_per_node
+        # (e.g. 32*4=128) in every worker, not total_participants * nproc_per_node (e.g. 47*4=188).
+        # This is required when TORCH_ELASTIC_WORKER_IDENTICAL=1: PyTorch then uses this
+        # world_size directly (no multi_get of role_info), so it must be the active count.
+        self._world_size = self._settings.min_nodes
 
         if group_rank == GroupRankStatus.UNASSIGNED.value:
             log.warning("Failed to get group rank assignment, but continuing")
@@ -1787,6 +1899,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             )
             raise
         finally:
+            # If we received a signal after joining but before acking (Step 3a), withdraw so
+            # the store host can complete Step 3b. Centralized in handler's finally with other
+            # next_rendezvous cleanup (signal handler restore).
+            self._barrier_state._maybe_withdraw_on_unwind()
             _restore_rdzv_signal_handlers(prev_signal_handlers)
 
         msg = (
@@ -1850,13 +1966,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
     def num_nodes_waiting(self) -> int:
         """See base class."""
-        # Return the arrived count as the number of nodes waiting
+        # Return active count (arrived - withdrawn) as the number of nodes waiting
         if not self._barrier_state.store.check([self._barrier_state.arrived_count_key]):
             return 0
-
         arrived_count_bytes = self._barrier_state.store.get(self._barrier_state.arrived_count_key)
-        arrived_count_str = arrived_count_bytes.decode('utf-8')
-        return int(arrived_count_str)
+        arrived_count = int(arrived_count_bytes.decode('utf-8'))
+        withdrawn_count = self._barrier_state._get_withdrawn_count()
+        return max(0, arrived_count - withdrawn_count)
 
     def remove_this_node(self):
         raise NotImplementedError("Not implemented")
