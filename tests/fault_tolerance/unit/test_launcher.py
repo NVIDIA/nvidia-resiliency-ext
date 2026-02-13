@@ -21,10 +21,13 @@ import signal
 import subprocess
 import sys
 import tempfile
+import unittest
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from nvidia_resiliency_ext import fault_tolerance
+from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 
 WORLD_SIZE = 4
 DEFAULT_TIMEOUT = 90
@@ -281,3 +284,200 @@ def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
     assert restored_ft_conf.safety_factor == 7.7
     assert restored_ft_conf.rank_termination_signal == signal.SIGUSR1
     assert restored_ft_conf.log_level == logging.CRITICAL
+
+
+# ==============================================================================
+# Unit tests for launcher cycle_info_writer interaction
+# ==============================================================================
+
+
+def _make_agent_spec(rdzv_round=1):
+    """Minimal WorkerSpec-like object for testing cycle_info_writer interaction."""
+    spec = MagicMock()
+    spec.rdzv_handler = MagicMock()
+    spec.rdzv_handler.round.return_value = rdzv_round
+    spec.rdzv_handler.get_last_rendezvous_participant_addrs.return_value = ["node001", "node002"]
+    spec.rdzv_handler.get_last_rendezvous_standby_participant_addrs.return_value = ["node003"]
+    spec.max_restarts = 3
+    return spec
+
+
+class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
+    """Unit tests for launcher's interaction with CycleInfoWriter."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.spec = _make_agent_spec(rdzv_round=1)
+        self.fault_tol_cfg = FaultToleranceConfig()
+        self.logs_specs = MagicMock()
+        self.logs_specs.get_cycle_log_file.return_value = "/path/to/cycle_0.log"
+
+    def test_on_cycle_end_when_writer_is_none(self):
+        """_on_cycle_end does nothing when cycle_info_writer is None."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        agent = LocalElasticAgent(
+            spec=self.spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
+            cycle_info_writer=None,
+        )
+        # Should not raise; no writer to call
+        agent._on_cycle_end()
+
+    def test_on_cycle_end_calls_update_cycle_end_with_env_and_restart_count(self):
+        """_on_cycle_end calls writer.update_cycle_end with job_id, attempt_index, cycle_number, cycle_end_time."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        writer = MagicMock()
+        # rdzv_round=1 -> _get_global_restart_count() = max(0, 1-1) = 0
+        spec = _make_agent_spec(rdzv_round=1)
+        with patch.dict(
+            os.environ,
+            {
+                "SLURM_JOB_ID": "12345",
+                "SLURM_RESTART_CNT": "0",
+            },
+            clear=False,
+        ):
+            agent = LocalElasticAgent(
+                spec=spec,
+                fault_tol_cfg=self.fault_tol_cfg,
+                logs_specs=self.logs_specs,
+                cycle_info_writer=writer,
+            )
+            with patch(
+                "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
+                return_value="2024-01-01T12:00:00Z",
+            ):
+                agent._on_cycle_end()
+
+        writer.update_cycle_end.assert_called_once()
+        call_kw = writer.update_cycle_end.call_args[1]
+        self.assertEqual(call_kw["job_id"], "12345")
+        self.assertEqual(call_kw["attempt_index"], 0)
+        self.assertEqual(call_kw["cycle_number"], 0)
+        self.assertEqual(call_kw["cycle_end_time"], "2024-01-01T12:00:00Z")
+
+    def test_on_cycle_end_uses_slurm_array_job_id_when_set(self):
+        """_on_cycle_end uses SLURM_ARRAY_JOB_ID over SLURM_JOB_ID when present."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        writer = MagicMock()
+        spec = _make_agent_spec(rdzv_round=2)  # restart_count = 1
+        with patch.dict(
+            os.environ,
+            {
+                "SLURM_ARRAY_JOB_ID": "array_99",
+                "SLURM_JOB_ID": "12345",
+                "SLURM_RESTART_CNT": "1",
+            },
+            clear=False,
+        ):
+            agent = LocalElasticAgent(
+                spec=spec,
+                fault_tol_cfg=self.fault_tol_cfg,
+                logs_specs=self.logs_specs,
+                cycle_info_writer=writer,
+            )
+            with patch(
+                "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
+                return_value="2024-01-01T12:00:00Z",
+            ):
+                agent._on_cycle_end()
+
+        call_kw = writer.update_cycle_end.call_args[1]
+        self.assertEqual(call_kw["job_id"], "array_99")
+        self.assertEqual(call_kw["attempt_index"], 1)
+        self.assertEqual(call_kw["cycle_number"], 1)
+
+    def test_write_cycle_start_info_returns_none_when_writer_is_none(self):
+        """_write_cycle_start_info returns None when cycle_info_writer is None."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        agent = LocalElasticAgent(
+            spec=self.spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
+            cycle_info_writer=None,
+        )
+        result = agent._write_cycle_start_info(current_cycle=0)
+        self.assertIsNone(result)
+
+    def test_write_cycle_start_info_calls_write_cycle_start_and_returns_current_path(self):
+        """_write_cycle_start_info calls write_cycle_start and returns get_current_cycle_info_path."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        writer = MagicMock()
+        writer.get_current_cycle_info_path.return_value = "/nvrx/cycle_info.job1.current"
+        spec = _make_agent_spec(rdzv_round=1)
+        with patch.dict(
+            os.environ,
+            {"SLURM_JOB_ID": "job1", "SLURM_RESTART_CNT": "0"},
+            clear=False,
+        ):
+            agent = LocalElasticAgent(
+                spec=spec,
+                fault_tol_cfg=self.fault_tol_cfg,
+                logs_specs=self.logs_specs,
+                cycle_info_writer=writer,
+            )
+            with patch(
+                "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
+                return_value="2024-01-01T12:00:00Z",
+            ):
+                with patch(
+                    "nvidia_resiliency_ext.fault_tolerance.launcher.hostnames_to_slurm_nodelist",
+                    side_effect=["node[001-002]", "node003"],  # active_addrs, then standby_addrs
+                ):
+                    result = agent._write_cycle_start_info(current_cycle=0)
+
+        writer.write_cycle_start.assert_called_once()
+        call_kw = writer.write_cycle_start.call_args[1]
+        self.assertEqual(call_kw["job_id"], "job1")
+        self.assertEqual(call_kw["attempt_index"], 0)
+        self.assertEqual(call_kw["cycle_number"], 0)
+        self.assertEqual(call_kw["cycle_start_time"], "2024-01-01T12:00:00Z")
+        self.assertEqual(call_kw["cycle_log_file"], "/path/to/cycle_0.log")
+        self.assertEqual(call_kw["active_nodes"], "node[001-002]")
+        self.assertEqual(call_kw["standby_nodes"], "node003")
+        writer.get_current_cycle_info_path.assert_called_once_with("job1")
+        self.assertEqual(result, "/nvrx/cycle_info.job1.current")
+
+    def test_write_cycle_start_info_standby_nodes_from_rdzv(self):
+        """_write_cycle_start_info passes active and standby node lists from rdzv handler."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        writer = MagicMock()
+        writer.get_current_cycle_info_path.return_value = "/nvrx/current"
+        spec = _make_agent_spec(rdzv_round=1)
+        spec.rdzv_handler.get_last_rendezvous_participant_addrs.return_value = ["host1"]
+        spec.rdzv_handler.get_last_rendezvous_standby_participant_addrs.return_value = ["host2"]
+        with patch.dict(
+            os.environ,
+            {"SLURM_JOB_ID": "j", "SLURM_RESTART_CNT": "0"},
+            clear=False,
+        ):
+            agent = LocalElasticAgent(
+                spec=spec,
+                fault_tol_cfg=self.fault_tol_cfg,
+                logs_specs=self.logs_specs,
+                cycle_info_writer=writer,
+            )
+            with patch(
+                "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
+                return_value="2024-01-01T12:00:00Z",
+            ):
+                with patch(
+                    "nvidia_resiliency_ext.fault_tolerance.launcher.hostnames_to_slurm_nodelist",
+                    side_effect=lambda addrs: (
+                        "active"
+                        if addrs == ["host1"]
+                        else ("standby" if addrs == ["host2"] else "")
+                    ),
+                ):
+                    agent._write_cycle_start_info(current_cycle=0)
+
+        call_kw = writer.write_cycle_start.call_args[1]
+        self.assertEqual(call_kw["active_nodes"], "active")
+        self.assertEqual(call_kw["standby_nodes"], "standby")

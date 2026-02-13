@@ -67,6 +67,7 @@ from torch.distributed.elastic.rendezvous.utils import (
 from torch.distributed.elastic.utils import macros
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoWriter, utc_iso_now
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -77,6 +78,7 @@ from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgr
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
+    hostnames_to_slurm_nodelist,
     is_slurm_job_array,
     patched_method,
     terminate_mp_processes,
@@ -338,6 +340,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
         rank_monitors: Optional[Dict[int, RankMonitorState]] = None,
+        cycle_info_writer: Optional[CycleInfoWriter] = None,
     ):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
@@ -349,6 +352,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._term_timeout = term_timeout
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
+        self._cycle_info_writer = cycle_info_writer
         # Rank monitor state (process, IPC connections, listener tasks) per local rank
         # Pre-created rank monitors passed from config (created before gRPC)
         self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
@@ -464,6 +468,49 @@ class LocalElasticAgent(SimpleElasticAgent):
             - Cycle N (N >= 1) = N restarts
         """
         return max(0, self._rdzv_handler.round() - 1)
+
+    def _on_cycle_end(self) -> None:
+        """Record cycle end time in cycle info file."""
+        if self._cycle_info_writer is None:
+            return
+        current_cycle = self._get_global_restart_count()
+        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
+        self._cycle_info_writer.update_cycle_end(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=current_cycle,
+            cycle_end_time=utc_iso_now(),
+        )
+
+    def _write_cycle_start_info(self, current_cycle: int) -> Optional[str]:
+        """Write NVRx cycle info at cycle start. Returns path to current cycle info file, or None."""
+        if self._cycle_info_writer is None:
+            return None
+        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
+        cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
+        # Legacy FtRendezvousHandler does not define these; barrier handler does.
+        get_active = getattr(
+            self._rdzv_handler, "get_last_rendezvous_participant_addrs", None
+        )
+        get_standby = getattr(
+            self._rdzv_handler, "get_last_rendezvous_standby_participant_addrs", None
+        )
+        active_addrs = get_active() if callable(get_active) else None
+        standby_addrs = get_standby() if callable(get_standby) else None
+        active_nodes = hostnames_to_slurm_nodelist(active_addrs) if active_addrs else ""
+        standby_nodes = hostnames_to_slurm_nodelist(standby_addrs) if standby_addrs else ""
+        self._cycle_info_writer.write_cycle_start(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=current_cycle,
+            cycle_start_time=utc_iso_now(),
+            cycle_log_file=cycle_log_file,
+            active_nodes=active_nodes,
+            standby_nodes=standby_nodes,
+        )
+        return self._cycle_info_writer.get_current_cycle_info_path(job_id)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -589,6 +636,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
+                self._on_cycle_end()
                 logger.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
@@ -984,7 +1032,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
-
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
@@ -1040,6 +1087,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             # that would cause cycle N+1 data to be written to cycle N log files.
             self._logs_specs.clear_all_pipes_from_reader()
 
+        # Record cycle end time in cycle info file
+        self._on_cycle_end()
+
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
@@ -1060,7 +1110,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # The cycle number is used for profiling and environment variable setting.
         # Note: We use _get_global_restart_count() because in the context of worker startup,
         # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
-        restart_count = self._get_global_restart_count()  # Actually cycle number
+        current_cycle = restart_count = self._get_global_restart_count()  # Actually cycle number
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -1099,9 +1149,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             and self._rdzv_handler._attr_service is not None
             and hasattr(self._logs_specs, 'get_cycle_log_file')
         ):
-            current_cycle = self._get_global_cycle_number() - 1
             cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
             self._rdzv_handler._attr_service._submit_log(cycle_log_file)
+
+        # Write NVRx cycle info and set env for workload
+        current_cycle_info_path = self._write_cycle_start_info(current_cycle)
 
         for worker in worker_group.workers:
             local_rank = worker.local_rank
@@ -1128,6 +1180,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
                 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
             }
+            if current_cycle_info_path is not None:
+                worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
             if "OMP_NUM_THREADS" in os.environ:
                 worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
 
@@ -1656,6 +1710,10 @@ def launch_agent(
         local_addr=config.local_addr,
     )
 
+    cycle_info_writer = None
+    if is_store_host and config.fault_tol_cfg.cycle_info_dir:
+        cycle_info_writer = CycleInfoWriter(config.fault_tol_cfg.cycle_info_dir)
+
     agent = LocalElasticAgent(
         spec=spec,
         fault_tol_cfg=config.fault_tol_cfg,
@@ -1667,6 +1725,7 @@ def launch_agent(
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
         rank_monitors=config.rank_monitors,  # Pass pre-created rank monitors
+        cycle_info_writer=cycle_info_writer,
     )
 
     # Set agent reference in rendezvous handler for callbacks
@@ -1753,12 +1812,23 @@ def launch_agent(
             if agent._rdzv_handler._attr_service is not None:
                 agent._rdzv_handler._attr_service()
 
+            # No ordering required between cycle_info_writer and rendezvous: the writer
+            # is independent I/O. Run grace-period wait and writer shutdown in parallel
+            # so total time is max(grace_period, writer drain) instead of sum.
             grace_period = 3.0  # seconds
             logger.info(
                 f"Store host waiting {grace_period} seconds before exit "
                 f"to allow other nodes to read final TCPStore state..."
             )
-            time.sleep(grace_period)
+
+            def _wait_grace() -> None:
+                time.sleep(grace_period)
+
+            t = threading.Thread(target=_wait_grace, daemon=True)
+            t.start()
+            if cycle_info_writer is not None:
+                cycle_info_writer.shutdown()
+            t.join()
 
         # Shutdown components (may generate logs - reader thread must stay alive!)
         if shutdown_rdzv:
@@ -2796,6 +2866,17 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-cycle-info-dir",
+        "--ft_cycle_info_dir",
+        type=str,
+        default=None,
+        dest="ft_cycle_info_dir",
+        help="Full path to NVRx cycle info directory (e.g. <base>/nvrx/). TCPStore host only. "
+        "If set, writes cycle_info.<job_id>.<attempt>.<cycle> and symlink cycle_info.<job_id>.current "
+        "there. Workload receives current cycle file path via NVRX_CURRENT_CYCLE_INFO env.",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
@@ -2957,8 +3038,18 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     return logs_specs_cls
 
 
+def _validate_args(args: Any) -> None:
+    """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
+    if getattr(args, "ft_cycle_info_dir", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
+        raise ValueError(
+            "--ft-cycle-info-dir requires --ft-per-cycle-applog-prefix to be specified. "
+            "Cycle info needs per-cycle log file path from the applog prefix."
+        )
+
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
+    _validate_args(args)
+
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
