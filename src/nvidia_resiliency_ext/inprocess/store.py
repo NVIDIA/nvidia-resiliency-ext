@@ -74,9 +74,153 @@ class StoreMixin:
     ITERATION_BARRIER = 'iteration_barrier'
     TERMINATION_BARRIER = 'termination_barrier'
 
+    # Two-step acknowledge phase keys
+    INITIAL_BARRIER_ACK = 'initial_barrier_ack'
+
+    # Global iteration counter
+    GLOBAL_ITERATION_COUNTER = 'global_iteration_counter'
+
+    # Job restart counter and ranks restart counter
+    JOB_RESTART_COUNTER = 'job_restart_counter'
+    RANKS_RESTART_COUNTER = 'ranks_restart_counter'
+
     @property
     def critical_ranks(self):
         return ()
+
+    def clear_initial_barrier_keys(self):
+        """Clear all initial barrier related keys from the store."""
+        log = logging.getLogger(__name__)
+
+        # Keys to clear
+        keys_to_clear = [
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}:last_worker_arrived',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER}:arrived',
+            f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER_ACK}',
+        ]
+
+        try:
+            for key in keys_to_clear:
+                self.delete_key(key)
+        except Exception as e:
+            log.warning(f'Failed to clear some initial barrier keys: {e}')
+
+    def get_global_iteration_counter(self) -> int:
+        """Get the current global iteration counter value."""
+        # First check if the key exists (non-blocking)
+        if not self.check([self.GLOBAL_ITERATION_COUNTER]):
+            # Key doesn't exist, return 0 as the initial value
+            return 0
+
+        try:
+            return int(self.get(self.GLOBAL_ITERATION_COUNTER))
+        except (torch.distributed.DistStoreError, ValueError):
+            # If the key doesn't exist, return 0 as the initial value
+            return 0
+
+    def increment_global_iteration_counter(self, delta: int = 100) -> int:
+        """Increment the global iteration counter by delta and return the new value."""
+        return self.add(self.GLOBAL_ITERATION_COUNTER, delta)
+
+    def initial_barrier_acknowledge(self, rank: int, world_size: int, timeout: datetime.timedelta):
+        """Two-step acknowledge phase for initial barrier completion.
+
+        Step 1: All ranks acknowledge that initial barrier is completed
+        Step 2: Rank 0 waits for all acknowledgments and then clears the keys
+        """
+        log = logging.getLogger(__name__)
+
+        # Step 1: All ranks acknowledge completion
+        ack_key = f'{self.BARRIER_PREFIX}:barrier:{self.INITIAL_BARRIER_ACK}'
+
+        # Add this rank's acknowledgment
+        arrived_count = self.add(ack_key, 1)
+        log.debug(f'{rank=} acknowledged initial barrier completion, count={arrived_count}')
+
+        # Step 2: Rank 0 waits for all acknowledgments and clears keys
+        if rank == 0:
+            # Wait for all ranks to acknowledge
+            start = time.monotonic()
+            while True:
+                try:
+                    current_count = int(self.get(ack_key))
+                    if current_count >= world_size:
+                        log.debug(f'{rank=} all ranks acknowledged, clearing initial barrier keys.')
+                        # Start timing the acknowledge operations
+                        clear_start = time.monotonic()
+                        self.clear_initial_barrier_keys()
+                        # Increment global iteration counter by 100
+                        new_iteration = self.increment_global_iteration_counter(100)
+                        log.info(
+                            f'{rank=} clear_duration={(time.monotonic()-clear_start):.3f}s, total_duration={(time.monotonic()-start):.3f}s, new_iteration={new_iteration}'
+                        )
+                        break
+                except (torch.distributed.DistStoreError, ValueError) as ex:
+                    if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
+                        log.warning(f'{rank=} timeout waiting for all acknowledgments: {ex}')
+                        break
+                    time.sleep(sys.getswitchinterval())
+
+    def get_job_restart_counter(self) -> int:
+        """Get the current job restart counter value."""
+        # First check if the key exists (non-blocking)
+        if not self.check([self.JOB_RESTART_COUNTER]):
+            # Key doesn't exist, return 0 as the initial value
+            return 0
+
+        try:
+            return int(self.get(self.JOB_RESTART_COUNTER))
+        except (torch.distributed.DistStoreError, ValueError):
+            # If the key doesn't exist, return 0 as the initial value
+            return 0
+
+    def increment_job_restart_counter(self, delta: int = 1) -> int:
+        """Increment the job restart counter by delta and return the new value."""
+        return self.add(self.JOB_RESTART_COUNTER, delta)
+
+    def get_ranks_restart_counter(self) -> int:
+        """Get the current ranks restart counter value for the current iteration.
+
+        This method is designed to be used with PrefixStore, which automatically handles the prefixing.
+        """
+        # First check if the key exists (non-blocking)
+        if not self.check([self.RANKS_RESTART_COUNTER]):
+            # Key doesn't exist, return 0 as the initial value
+            return 0
+
+        try:
+            return int(self.get(self.RANKS_RESTART_COUNTER))
+        except (torch.distributed.DistStoreError, ValueError):
+            # If the key doesn't exist, return 0 as the initial value
+            return 0
+
+    def increment_ranks_restart_counter(self, delta: int = 1) -> int:
+        """Increment the ranks restart counter for the current iteration by delta and return the new value.
+
+        This method is designed to be used with PrefixStore, which automatically handles the prefixing.
+        """
+        return self.add(self.RANKS_RESTART_COUNTER, delta)
+
+    def should_increment_job_restart_counter(
+        self, active_world_size: int, ranks_count: int = None
+    ) -> bool:
+        """Check if the job restart counter should be incremented.
+
+        This method is designed to be used with PrefixStore, which automatically handles the prefixing.
+
+        Args:
+            active_world_size: The number of active ranks
+            ranks_count: The ranks restart counter value. If None, will read from store.
+
+        Returns True if ranks_count >= active_world_size, indicating
+        that all active ranks have completed at least one iteration.
+        """
+        # Use provided ranks_count if available, otherwise read from store
+        if ranks_count is None:
+            ranks_count = self.get_ranks_restart_counter()
+
+        return ranks_count >= active_world_size
 
     def get_packed(self, key: str, sep: str):
         return self.get(key).decode().rstrip(sep).split(sep)
@@ -198,7 +342,23 @@ class StoreMixin:
         rendezvous_count: int,
         timeout: datetime.timedelta,
         timeout_chunk: Optional[datetime.timedelta] = None,
+        max_iterations: Optional[int] = None,
     ):
+        """
+        Distributed barrier with chunked timeout support.
+
+        The barrier waits for all ranks to arrive. When timeout is timedelta.max and
+        timeout_chunk is not provided, a default chunk timeout of 60 seconds is used
+        to balance responsiveness with store load.
+
+        Args:
+            ranks: Ranks participating in the barrier
+            group_name: Name of the barrier group
+            rendezvous_count: Total number of ranks expected
+            timeout: Maximum timeout for the barrier (typically timedelta.max for initial barrier)
+            timeout_chunk: Chunk timeout for polling (defaults to 60s when timeout is timedelta.max)
+            max_iterations: Maximum job restart iterations allowed (optional)
+        """
         log = logging.getLogger(LogConfig.name)
         cn = inspect.currentframe().f_code.co_name
         log.debug(f'{ranks=} enter {group_name=} {cn} {rendezvous_count=}')
@@ -222,22 +382,45 @@ class StoreMixin:
             self.set(last_worker_arrived_key, '1')
 
         if timeout_chunk is None:
-            timeout_chunk = timeout
+            # Use a reasonable default chunk timeout if the main timeout is very large
+            if timeout == datetime.timedelta.max:
+                # Default to 60 seconds for chunk timeout to align with caching interval
+                timeout_chunk = datetime.timedelta(seconds=60)
+            else:
+                timeout_chunk = timeout
         else:
             timeout_chunk = min(timeout_chunk, timeout)
 
         if timeout and timeout_chunk:
             start = time.monotonic()
+
             while True:
                 try:
                     self.wait([last_worker_arrived_key], timeout_chunk)
                     break
                 except torch.distributed.DistStoreError as ex:
+                    # Check if job restart count limit is exceeded
+                    if max_iterations is not None:
+                        # log.debug(f'{ranks=} {group_name=} checking job_restart_count against max_iterations={max_iterations}')
+                        try:
+                            job_restart_count = self.get_job_restart_counter()
+                            if job_restart_count >= max_iterations:
+                                msg = f'Barrier abort: job_restart_count={job_restart_count} >= max_iterations={max_iterations}'
+                                log.warning(f'{ranks=} {group_name=} {msg}')
+                                raise exception.RestartAbort(msg)
+                        except (torch.distributed.DistStoreError, ValueError):
+                            # If we can't get the job restart count, continue with normal timeout logic
+                            pass
+
                     if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
                         raise BarrierTimeout(
                             f'{ranks=} {rendezvous_count=} {group_name=} ' f'{timeout=}'
                         ) from ex
                     time.sleep(sys.getswitchinterval())
+                except torch.distributed.DistNetworkError as ex:
+                    if "failed to recv, got 0 bytes" in str(ex):
+                        # TCPStore is down, exit the job
+                        raise exception.RestartAbort(f'{ranks=} {group_name=} {timeout=}')
 
         log.debug(f'{ranks=} exits {group_name=} {cn} {rendezvous_count=}')
 
@@ -305,13 +488,41 @@ class StoreMixin:
                 except torch.distributed.DistStoreError as ex:
                     if datetime.timedelta(seconds=(time.monotonic() - start)) > timeout:
                         raise BarrierTimeout(
-                            f'{ranks=} {rendezvous_count=} {group_name=} ' f'{timeout=}'
+                            f'{ranks=} {rendezvous_count=} {group_name=} {timeout=}'
                         ) from ex
                     time.sleep(sys.getswitchinterval())
 
         log.debug(f'{ranks=} exits {group_name=} {cn} {rendezvous_count=}')
 
-    initial_barrier = functools.partialmethod(
+    def initial_barrier(
+        self,
+        ranks: Iterable[int],
+        rendezvous_count: int,
+        timeout: datetime.timedelta,
+        timeout_chunk: Optional[datetime.timedelta] = None,
+        max_iterations: Optional[int] = None,
+    ):
+        """
+        Initial barrier with chunked timeout support.
+
+        Args:
+            ranks: Ranks participating in the barrier
+            rendezvous_count: Total number of ranks expected
+            timeout: Maximum timeout for the barrier
+            timeout_chunk: Chunk timeout for polling
+            max_iterations: Maximum job restart iterations allowed (optional)
+        """
+        return self.barrier(
+            ranks=ranks,
+            group_name=self.INITIAL_BARRIER,
+            rendezvous_count=rendezvous_count,
+            timeout=timeout,
+            timeout_chunk=timeout_chunk,
+            max_iterations=max_iterations,
+        )
+
+    # Keep the original partial method for backward compatibility
+    _initial_barrier = functools.partialmethod(
         barrier,
         group_name=INITIAL_BARRIER,
     )
@@ -341,6 +552,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         wait_for_workers: bool = True,
         multi_tenant: bool = False,
         use_libuv: bool = True,
+        tcp_store_host_rank: Optional[int] = None,
     ):
         log = logging.getLogger(LogConfig.name)
 
@@ -353,6 +565,9 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
 
         rank = int(os.environ['RANK'])
 
+        # Save the host rank for later use
+        self.tcp_store_host_rank = tcp_store_host_rank or self.TCP_STORE_HOST_RANK
+
         kwargs = {
             'host_name': host_name,
             'port': port,
@@ -363,7 +578,7 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
             'use_libuv': use_libuv,
         }
 
-        if rank == self.TCP_STORE_HOST_RANK:
+        if rank == self.tcp_store_host_rank:
             try:
                 super().__init__(is_master=True, **kwargs)
                 log.debug(f'{rank=} hosting {type(self).__name__}({kwargs})')
@@ -373,9 +588,15 @@ class TCPStore(torch.distributed.TCPStore, StoreMixin):
         else:
             super().__init__(is_master=False, **kwargs)
 
+        # Log successful connection
+        if rank == 0:
+            log.info(f'Rank {rank}: Successfully connected to TCPStore at {host_name}:{port}')
+
     @property
     def critical_ranks(self):
-        return (self.TCP_STORE_HOST_RANK,)
+        if self.tcp_store_host_rank == -1:
+            return ()
+        return (self.tcp_store_host_rank,)
 
 
 class PrefixStore(torch.distributed.PrefixStore, StoreMixin):
