@@ -1,0 +1,65 @@
+# NVRX Attribution Service - systemd unit file
+#
+# Quick setup (recommended):
+#   cd services/scripts
+#   sudo ./setup_systemd.sh
+#
+# Manual installation:
+#   1. Create venv:     python3 -m venv /opt/nvrx/venv
+#   2. Install:         /opt/nvrx/venv/bin/pip install -e services
+#   3. Create API key:  echo "nvapi-xxx" | sudo tee /etc/nvrx/nvidia_api_key
+#   4. Copy service:    sudo cp nvrx-attrsvc.service /etc/systemd/system/
+#   5. Reload:          sudo systemctl daemon-reload
+#   6. Enable:          sudo systemctl enable nvrx-attrsvc
+#   7. Start:           sudo systemctl start nvrx-attrsvc
+#
+# Logging:
+#   Default: File-based with timestamps
+#     Logs written to: /var/log/nvrx/attrsvc_YYYYMMDD_HHMMSS.log
+#     View: tail -f /var/log/nvrx/attrsvc_*.log
+#
+#   Alternative: journald (uncomment Option 1 ExecStart, comment Option 2)
+#     View:   journalctl -u nvrx-attrsvc -f
+#     Since:  journalctl -u nvrx-attrsvc --since "1 hour ago"
+#
+# Configuration:
+#   /etc/nvrx/nvrx.env         - All environment variables (created by setup_systemd.sh)
+
+[Unit]
+Description=NVRX Attribution Service
+Documentation=https://github.com/NVIDIA/nvidia-resiliency-ext
+After=network.target
+
+[Service]
+Type=simple
+User=nvrx
+Group=nvrx
+WorkingDirectory=/opt/nvrx
+
+# All configuration in one file (shared with smonsvc)
+EnvironmentFile=/etc/nvrx/nvrx.env
+
+# Option 1: Direct execution (uses journald for logging)
+# ExecStart=/opt/nvrx/venv/bin/nvrx-attrsvc
+
+# Option 2: File-based logging with timestamps
+# Creates logs like: /var/log/nvrx/attrsvc_20260117_143052.log
+ExecStart=/bin/bash -c 'exec /opt/nvrx/venv/bin/nvrx-attrsvc >> /var/log/nvrx/attrsvc_$(date +%%Y%%m%%d_%%H%%M%%S).log 2>&1'
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/nvrx
+
+# Logging (for Option 1 - journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nvrx-attrsvc
+
+[Install]
+WantedBy=multi-user.target
