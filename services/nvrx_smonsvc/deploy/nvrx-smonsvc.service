@@ -1,0 +1,67 @@
+# NVRX SLURM Monitor Service - systemd unit file
+#
+# Quick setup (recommended):
+#   cd services/scripts
+#   sudo ./setup_systemd.sh
+#
+# Manual installation:
+#   1. Create venv:     python3 -m venv /opt/nvrx/venv
+#   2. Install:         /opt/nvrx/venv/bin/pip install -e services
+#   3. Copy service:    sudo cp nvrx-smonsvc.service /etc/systemd/system/
+#   4. Reload:          sudo systemctl daemon-reload
+#   5. Enable:          sudo systemctl enable nvrx-smonsvc
+#   6. Start:           sudo systemctl start nvrx-smonsvc
+#
+# Logging:
+#   Default: File-based with timestamps
+#     Logs written to: /var/log/nvrx/smonsvc_YYYYMMDD_HHMMSS.log
+#     View: tail -f /var/log/nvrx/smonsvc_*.log
+#
+#   Alternative: journald (uncomment Option 1 ExecStart, comment Option 2)
+#     View:   journalctl -u nvrx-smonsvc -f
+#     Since:  journalctl -u nvrx-smonsvc --since "1 hour ago"
+#
+# Configuration:
+#   /etc/nvrx/nvrx.env         - All environment variables (created by setup_systemd.sh)
+#
+# Note: This service depends on nvrx-attrsvc being available
+
+[Unit]
+Description=NVRX SLURM Monitor Service
+Documentation=https://github.com/NVIDIA/nvidia-resiliency-ext
+After=network.target nvrx-attrsvc.service
+Wants=nvrx-attrsvc.service
+
+[Service]
+Type=simple
+User=nvrx
+Group=nvrx
+WorkingDirectory=/opt/nvrx
+
+# All configuration in one file (shared with attrsvc)
+EnvironmentFile=/etc/nvrx/nvrx.env
+
+# Option 1: Direct execution (uses journald for logging)
+# ExecStart=/opt/nvrx/venv/bin/nvrx-smonsvc
+
+# Option 2: File-based logging with timestamps
+# Creates logs like: /var/log/nvrx/smonsvc_20260117_143052.log
+ExecStart=/bin/bash -c 'exec /opt/nvrx/venv/bin/nvrx-smonsvc >> /var/log/nvrx/smonsvc_$(date +%%Y%%m%%d_%%H%%M%%S).log 2>&1'
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/nvrx
+
+# Logging (for Option 1 - journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nvrx-smonsvc
+
+[Install]
+WantedBy=multi-user.target
