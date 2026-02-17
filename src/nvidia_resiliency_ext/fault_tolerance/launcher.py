@@ -1540,6 +1540,10 @@ class LaunchConfig:
             self.rdzv_configs["close_timeout"] = 30
         if "read_timeout" not in self.rdzv_configs:
             self.rdzv_configs["read_timeout"] = 60
+        # Optional: wait for TCPStore server with short probes before connecting (avoids connect timeout).
+        # Default 2 minutes; job-array deployment can set store_connect_wait_seconds=600 in rdzv_configs.
+        if "store_connect_wait_seconds" not in self.rdzv_configs:
+            self.rdzv_configs["store_connect_wait_seconds"] = 120
 
         # Post-processing to enable refactoring to introduce logs_specs due to non-torchrun API usage
         if self.logs_specs is None:
