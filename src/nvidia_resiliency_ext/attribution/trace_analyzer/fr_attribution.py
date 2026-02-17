@@ -305,10 +305,12 @@ class CollectiveAnalyzer(NVRxAttribution):
 
                 prompt = PromptTemplate(template=template, input_variables=["analysis_output"])
 
-                # Check for API key in environment variables
-                api_key = os.getenv("NVIDIA_API_KEY")
+                # Check for API key
+                from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
+
+                api_key = load_nvidia_api_key()
                 if not api_key:
-                    eprint("NVIDIA_API_KEY environment variable not set. Cannot use AI analysis.")
+                    eprint("NVIDIA_API_KEY not found. Set env var or create ~/.nvidia_api_key")
                     return
 
                 default_values = {
@@ -330,7 +332,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                 eprint("pip install langchain langchain-nvidia-ai-endpoints")
             except Exception as e:
                 eprint(f"\nError using LangChain: {e}")
-                eprint("Make sure you have set the NVIDIA_API_KEY environment variable.")
+                eprint("Set NVIDIA_API_KEY env var or create ~/.nvidia_api_key")
         return result
 
     """

@@ -104,10 +104,15 @@ def chunk_logs_strict(lines):
 
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: argparse.Namespace):
+        from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
+
         self.args = args
-        self.api_key = os.getenv("NVIDIA_API_KEY")
+        self.api_key = load_nvidia_api_key()
         if not self.api_key:
-            raise ValueError("NVIDIA_API_KEY environment variable is not set")
+            raise ValueError(
+                "NVIDIA_API_KEY not found. Set NVIDIA_API_KEY env var, "
+                "NVIDIA_API_KEY_FILE env var, or create ~/.nvidia_api_key"
+            )
         logger.info(
             f"Using API key: {self.api_key[:10]}..." if self.api_key else "No API key found"
         )
@@ -147,8 +152,14 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         """
         path = self.args.log_path
-        with open(path, 'r', encoding="latin-1") as f:
-            input_data = f.readlines()
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                input_data = f.readlines()
+        except UnicodeDecodeError:
+            # Fallback for non-UTF-8 or mixed encoding; latin-1 never raises decode errors.
+            # Other exceptions (e.g. PermissionError, FileNotFoundError) propagate.
+            with open(path, 'r', encoding='latin-1') as f:
+                input_data = f.readlines()
 
         # If is_per_cycle is set, skip filtering and chunking (data is already single-cycle)
         if self.is_per_cycle:
