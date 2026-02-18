@@ -31,6 +31,7 @@ from torch.distributed.elastic.multiprocessing import SignalException
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
     RendezvousError,
+    RendezvousGracefulExitError,
     RendezvousHandler,
     RendezvousParameters,
     RendezvousTimeoutError,
@@ -459,15 +460,18 @@ class _RendezvousBarrierState:
         self.withdrawn_count_key = f"{self.prefix}:withdrawn_count"
         self.last_participant_arrived_key = f"{self.prefix}:last_participant_arrived"
         self.ack_count_key = f"{self.prefix}:ack_count"
-        self.closed_key = f"{self.prefix}:closed"
+        # Permanent close: once set, no further rendezvous rounds (graceful exit).
+        self.permanent_close_key = f"{self.prefix}:closed"
         self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
         self.peer_aborted_count_key = f"{self.prefix}:peer_aborted_count"
         self.global_cycle_key = f"{self.prefix}:global_cycle"
 
-        # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist
+        # Per-round open/close: last_participant_arrived_key value indicates whether
+        # the current round is accepting joiners or training is in progress.
+        # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist.
         # This key is always present and serves as the open/close indicator:
         #   0 = rendezvous is OPEN (accepting new participants)
-        #   1 = rendezvous is CLOSED (training in progress, hot spares should wait)
+        #   1 = rendezvous is CLOSED for this round (training in progress, hot spares wait)
         if not self.store.check([self.last_participant_arrived_key]):
             self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
 
@@ -761,12 +765,12 @@ class _RendezvousBarrierState:
             node_desc: Node descriptor for logging
 
         Raises:
-            RendezvousClosedError: If rendezvous was closed
+            RendezvousClosedError: If rendezvous was permanently closed
             RendezvousTimeoutError: If rendezvous has timed out
         """
-        # Check for early closure
-        if self.is_closed():
-            msg = f"The node '{node_desc}' detected that rendezvous was closed"
+        # Check for permanent close
+        if self.is_permanently_closed():
+            msg = f"The node '{node_desc}' detected that rendezvous was permanently closed"
             log.info(msg)
             raise RendezvousClosedError(msg)
 
@@ -821,12 +825,12 @@ class _RendezvousBarrierState:
             node_desc: Node descriptor for logging
 
         Raises:
-            RendezvousClosedError: If rendezvous is explicitly closed (not just waiting)
+            RendezvousGracefulExitError: If rendezvous is permanently closed (graceful exit; launcher exits 0)
 
         Note:
             Stale round detection and sync happen automatically during the wait loop.
 
-            This wait does NOT timeout unless the rendezvous is explicitly closed.
+            This wait does NOT timeout unless the rendezvous is permanently closed.
             All waiting nodes (hot spares, late arrivals) wait passively until an
             active participant detects a failure and opens the next round.
         """
@@ -834,11 +838,11 @@ class _RendezvousBarrierState:
         logged_waiting = False  # Track if we've logged the waiting message
 
         while True:
-            # Check for explicit closure (permanent shutdown)
-            if self.is_closed():
-                msg = f"The node '{node_desc}' detected that rendezvous was closed"
+            # Check for permanent close (no further rounds)
+            if self.is_permanently_closed():
+                msg = f"The node '{node_desc}' detected that rendezvous was permanently closed"
                 log.info(msg)
-                raise RendezvousClosedError(msg)
+                raise RendezvousGracefulExitError(msg)
 
             # Check for stale rendezvous round (rate-limited to avoid thundering herd on TCPStore)
             # This allows hot spares waiting at Step 0 to detect when other nodes have moved
@@ -928,7 +932,7 @@ class _RendezvousBarrierState:
         """
         # Step 0: Wait if rendezvous is closed (training in progress)
         # Hot spares arriving late will wait here until a failure opens a new round
-        # Note: This also checks for explicit closure (is_closed()), no need to check again
+        # Note: This also checks for permanent close (is_permanently_closed()), no need to check again
         self._wait_for_rendezvous_open(node_desc)
 
         # Record start time for timeout monitoring
@@ -955,8 +959,8 @@ class _RendezvousBarrierState:
                 f"This is likely a configuration error - please check max_nodes setting."
             )
             log.error(f"[{node_desc}] {msg}")
-            # Set closed to notify other nodes before exiting
-            self.set_closed()
+            # Permanently close rendezvous so other nodes see this final state before we raise
+            self.set_permanently_closed()
             raise RendezvousClosedError(msg)
 
         global _current_joined_state
@@ -1017,11 +1021,11 @@ class _RendezvousBarrierState:
                     msg = (
                         f"Rendezvous cannot complete: {unhealthy_count} unhealthy nodes detected, "
                         f"max possible healthy nodes = {max_nodes - unhealthy_count} < {min_nodes} required. "
-                        f"Closing rendezvous to terminate the job."
+                        f"Permanently closing rendezvous to terminate the job."
                     )
                     log.error(msg)
-                    self.set_closed()
-                    # Continue to next iteration to detect closure immediately.
+                    self.set_permanently_closed()
+                    # Continue to next iteration to detect permanent close immediately.
                     continue
 
             # Check if rendezvous is already complete
@@ -1378,19 +1382,16 @@ class _RendezvousBarrierState:
             f"[{node_desc}] [Step 3b] Assigned group ranks to {len(active_participants)} participants"
         )
 
-    def is_closed(self) -> bool:
-        """Check if rendezvous is closed."""
-        try:
-            return self.store.check([self.closed_key])
-        except Exception:
-            return False
+    def is_permanently_closed(self) -> bool:
+        """Check if rendezvous is permanently closed (no further rounds)."""
+        return self.store.check([self.permanent_close_key])
 
-    def set_closed(self):
-        """Mark rendezvous as closed."""
+    def set_permanently_closed(self) -> None:
+        """Mark rendezvous as permanently closed (graceful exit, no further rounds)."""
         try:
-            self.store.set(self.closed_key, "1".encode('utf-8'))
+            self.store.set(self.permanent_close_key, "1".encode('utf-8'))
         except Exception as e:
-            log.error(f"Failed to set closed: {e}")
+            log.error(f"Failed to set permanent close: {e}")
 
     def open_rendezvous(self):
         """Open rendezvous for new participants to join (typically after failure detection).
@@ -1943,9 +1944,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             return store, rank, world_size
 
     def is_closed(self) -> bool:
-        """See base class."""
+        """See base class. Returns True if rendezvous is permanently closed."""
         try:
-            return self._barrier_state.is_closed()
+            return self._barrier_state.is_permanently_closed()
         except Exception as e:
             self._record(
                 message=f"{type(e).__name__}: {str(e)}",
@@ -2029,10 +2030,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             raise
 
     def _close(self) -> None:
-        """Close the rendezvous."""
-        self._barrier_state.set_closed()
+        """Permanently close the rendezvous (no further rounds)."""
+        self._barrier_state.set_permanently_closed()
 
-        msg = f"The node '{self._this_node}' has closed the rendezvous '{self._settings.run_id}'."
+        msg = f"The node '{self._this_node}' has permanently closed the rendezvous '{self._settings.run_id}'."
         self._record(message=msg, node_state=NodeState.SUCCEEDED)
         log.info(msg)
 

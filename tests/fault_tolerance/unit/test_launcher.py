@@ -25,6 +25,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
+from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext import fault_tolerance
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
@@ -481,3 +482,50 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         call_kw = writer.write_cycle_start.call_args[1]
         self.assertEqual(call_kw["active_nodes"], "active")
         self.assertEqual(call_kw["standby_nodes"], "standby")
+
+
+class TestMaybeExitStandbyOnSuccess(unittest.TestCase):
+    """Unit tests for _maybe_exit_standby_on_success (standby detects training success via exit barrier)."""
+
+    def setUp(self):
+        self.fault_tol_cfg = FaultToleranceConfig()
+        self.logs_specs = MagicMock()
+
+    def _make_agent_standby(self, min_nodes=2, group_rank=2, store_check_returns=False):
+        """Create agent configured as standby (group_rank >= min_nodes) with optional store mock."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        spec = _make_agent_spec(rdzv_round=1)
+        spec.rdzv_handler._settings = MagicMock()
+        spec.rdzv_handler._settings.min_nodes = min_nodes
+
+        agent = LocalElasticAgent(
+            spec=spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
+            cycle_info_writer=None,
+        )
+        agent._worker_group = MagicMock()
+        agent._worker_group.group_rank = group_rank
+        agent._store = MagicMock()
+        agent._store.check.return_value = store_check_returns
+        return agent
+
+    def test_standby_raises_graceful_exit_when_exit_barrier_key_set(self):
+        """Standby (group_rank >= min_nodes) raises RendezvousGracefulExitError when exit barrier is complete."""
+        agent = self._make_agent_standby(min_nodes=2, group_rank=2, store_check_returns=True)
+        with self.assertRaises(RendezvousGracefulExitError) as ctx:
+            agent._maybe_exit_standby_on_success("trainer")
+        self.assertIn("exit barrier", str(ctx.exception).lower())
+
+    def test_standby_does_not_raise_when_exit_barrier_key_not_set(self):
+        """Standby does not raise when exit barrier key is not set (keeps waiting)."""
+        agent = self._make_agent_standby(min_nodes=2, group_rank=2, store_check_returns=False)
+        agent._maybe_exit_standby_on_success("trainer")  # no raise
+        agent._store.check.assert_called_once()
+
+    def test_active_node_does_not_raise_even_when_key_set(self):
+        """Active node (group_rank < min_nodes) returns without raising even if key is set."""
+        agent = self._make_agent_standby(min_nodes=2, group_rank=1, store_check_returns=True)
+        agent._maybe_exit_standby_on_success("trainer")  # no raise
+        agent._store.check.assert_not_called()

@@ -38,6 +38,7 @@ from unittest import TestCase
 
 from torch.distributed import TCPStore
 from torch.distributed.elastic.multiprocessing import SignalException
+from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext.fault_tolerance import (
     ft_rendezvous_barrier as ft_rendezvous_barrier_module,
@@ -45,7 +46,6 @@ from nvidia_resiliency_ext.fault_tolerance import (
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     WITHDRAWN_DOMAIN_ID,
     FtRendezvousBarrierHandler,
-    RendezvousClosedError,
     RendezvousParticipantInfo,
     RendezvousTimeout,
     RendezvousTimeoutError,
@@ -276,8 +276,8 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         self.assertIn(self.run_id, state.arrived_count_key)
         self.assertIn(self.run_id, state.last_participant_arrived_key)
 
-    def test_is_closed_initially_false(self):
-        """Test that rendezvous is not closed initially."""
+    def test_is_permanently_closed_initially_false(self):
+        """Test that rendezvous is not permanently closed initially."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -285,10 +285,10 @@ class BarrierStateBasicTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        self.assertFalse(state.is_closed())
+        self.assertFalse(state.is_permanently_closed())
 
-    def test_set_closed(self):
-        """Test that set_closed marks rendezvous as closed."""
+    def test_set_permanently_closed(self):
+        """Test that set_permanently_closed marks rendezvous as permanently closed."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -296,8 +296,8 @@ class BarrierStateBasicTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        state.set_closed()
-        self.assertTrue(state.is_closed())
+        state.set_permanently_closed()
+        self.assertTrue(state.is_permanently_closed())
 
     def test_join_increments_arrived_count(self):
         """Test that joining increments the arrived_count atomically."""
@@ -1714,7 +1714,7 @@ class ErrorCaseTest(BaseRendezvousTest):
             state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_closed_rendezvous_raises_error(self):
-        """Test that joining a closed rendezvous raises RendezvousClosedError."""
+        """Test that joining a closed rendezvous raises RendezvousGracefulExitError (exit 0)."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -1722,17 +1722,17 @@ class ErrorCaseTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        # Close the rendezvous
-        state.set_closed()
-        self.assertTrue(state.is_closed())
+        # Permanently close the rendezvous
+        state.set_permanently_closed()
+        self.assertTrue(state.is_permanently_closed())
 
         min_nodes = 2
         max_nodes = 4
         segment_check_interval = _test_segment_check_interval()
         node = self.node_desc_gen.generate()
 
-        # Should raise RendezvousClosedError
-        with self.assertRaises(RendezvousClosedError):
+        # Should raise RendezvousGracefulExitError (hot spare / Step 0 sees closed → graceful exit)
+        with self.assertRaises(RendezvousGracefulExitError):
             state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_duplicate_infra_rank_raises_error(self):
