@@ -390,6 +390,56 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         )
         self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy3)
 
+        # Test 6: Cycle filtering - mismatched cycle should be treated as placeholder
+        mismatch_key = f"{state.prefix}:arrived_3"
+        mismatch_data = RendezvousParticipantInfo.pack(
+            participants_data[2][0], participants_data[2][1], participants_data[2][2], cycle_id=1
+        )
+        self.store.set(mismatch_key, mismatch_data)
+        filtered = state.get_all_participants(total_participants=5, expected_cycle_id=0)
+        self.assertEqual(len(filtered), 5)
+        self.assertEqual(
+            filtered[2][2],
+            WITHDRAWN_DOMAIN_ID,
+            "Cycle mismatch should be converted to placeholder participant",
+        )
+
+    def test_participant_info_unpack_requires_cycle_fields(self):
+        """Test participant info unpack requires strict schema fields."""
+        missing_cycle_data = '{"addr":"n1","pid":1,"local_id":0,"infra_rank":0,"domain_id":"d1"}'
+        with self.assertRaises(ValueError):
+            RendezvousParticipantInfo.unpack(missing_cycle_data)
+
+    def test_step2_poll_interval_adaptive_scaling(self):
+        """Test adaptive Step 2 poll interval floor and cap behavior."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        # Small rendezvous should poll every 1s minimum.
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=1, segment_check_interval=5.0), 1.0
+        )
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=100, segment_check_interval=5.0), 1.0
+        )
+
+        # Mid-size scales linearly (min_nodes / 2000), capped by configured interval.
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=6000, segment_check_interval=5.0), 3.0
+        )
+
+        # Large rendezvous is capped by the configured max.
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=10000, segment_check_interval=5.0), 5.0
+        )
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=10000, segment_check_interval=2.0), 2.0
+        )
+
 
 class Step2CompletionTest(BaseRendezvousTest):
     """Test Step 2 completion signaling logic."""
@@ -1620,12 +1670,11 @@ class ErrorCaseTest(BaseRendezvousTest):
         - If the third thread runs store.add() after the key was deleted, it can get
           count 1 (new key) and not raise, so the test non-deterministically failed.
 
-        Deterministic design: use a segment_check_interval larger than the test
-        duration so the store host never runs the first segment check. Then the
-        first two never complete and never clear the key, so the third always
-        adds while the key exists and gets 3. The test still finishes quickly
-        because the third raises and set_closed(), and the other two exit on
-        _check_timeout_and_closure().
+        Deterministic design: disable Step 2 checks in this test by monkey-patching
+        the per-state poll interval helper to a very large value. Then the first
+        two never complete and never clear the key, so the third always adds while
+        the key exists and gets 3. The test still finishes quickly because the third
+        raises and set_closed(), and the other two exit on _check_timeout_and_closure().
         """
         # TCPStore does not provide close()/shutdown(); store is released when GC runs.
         store = TCPStore(
@@ -1639,8 +1688,9 @@ class ErrorCaseTest(BaseRendezvousTest):
 
         min_nodes = 2
         max_nodes = 2  # Set max to 2; third participant must see count 3 and raise
-        # Prevent store host from ever running the first segment check during the
-        # test, so it never completes and never clears arrived_count_key.
+        # Note: segment_check_interval is now adapted internally with a 1s floor.
+        # We still pass it through perform_rendezvous, but determinism in this test
+        # comes from patching _compute_step2_poll_interval on each state below.
         segment_check_interval = 1e9
 
         errors = []
@@ -1653,6 +1703,8 @@ class ErrorCaseTest(BaseRendezvousTest):
                 is_store_host=is_host,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
+            # Force Step 2 poll interval effectively off for this specific test.
+            state._compute_step2_poll_interval = lambda _min_nodes, _interval: 1e9
             try:
                 start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
                 node = node_desc_gen.generate()
@@ -2404,12 +2456,13 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
         state = handler._barrier_state
         slot_key = f"{state.prefix}:arrived_1"
         slot_data = self.store.get(slot_key).decode('utf-8')
-        _, _, domain_id = RendezvousParticipantInfo.unpack(slot_data)
+        _, _, domain_id, cycle_id = RendezvousParticipantInfo.unpack(slot_data)
         self.assertEqual(
             domain_id,
             WITHDRAWN_DOMAIN_ID,
             "Withdrawn participant's slot should have WITHDRAWN_DOMAIN_ID",
         )
+        self.assertEqual(cycle_id, state._rendezvous_round)
         self.assertEqual(len(host_result), 1, "Host should complete or error (not hang)")
         # Host either completes with world size 1 or errors (e.g. segment constraint) after
         # participant withdrew; both are acceptable as long as the host did not hang in Step 3b.
