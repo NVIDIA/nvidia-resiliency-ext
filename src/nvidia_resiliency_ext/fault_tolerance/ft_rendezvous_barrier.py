@@ -31,6 +31,7 @@ from torch.distributed.elastic.multiprocessing import SignalException
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
     RendezvousError,
+    RendezvousGracefulExitError,
     RendezvousHandler,
     RendezvousParameters,
     RendezvousTimeoutError,
@@ -274,13 +275,16 @@ class RendezvousParticipantInfo:
     """
 
     @staticmethod
-    def pack(node_desc: _NodeDesc, infra_rank: int = -1, domain_id: str = "none") -> str:
+    def pack(
+        node_desc: _NodeDesc, infra_rank: int = -1, domain_id: str = "none", cycle_id: int = 0
+    ) -> str:
         """Pack participant information into JSON format.
 
         Args:
             node_desc: Node descriptor
             infra_rank: Infrastructure rank (-1 if not assigned)
             domain_id: Domain ID string, or "none" if segment not configured
+            cycle_id: Rendezvous cycle identifier for stale-data detection
         """
         data = {
             "addr": node_desc.addr,
@@ -288,25 +292,24 @@ class RendezvousParticipantInfo:
             "local_id": node_desc.local_id,
             "infra_rank": infra_rank,
             "domain_id": domain_id,
+            "cycle_id": cycle_id,
         }
         return json.dumps(data)
 
     @staticmethod
-    def unpack(data: str) -> Tuple[_NodeDesc, int, str]:
+    def unpack(data: str) -> Tuple[_NodeDesc, int, str, int]:
         """Unpack participant information from JSON format.
 
         Returns:
-            Tuple of (node_desc, infra_rank, domain_id)
-            domain_id will be "none" if not present (backward compatibility)
+            Tuple of (node_desc, infra_rank, domain_id, cycle_id)
         """
         try:
             info = json.loads(data)
             node_desc = _NodeDesc(addr=info["addr"], pid=info["pid"], local_id=info["local_id"])
-            # Support old format without infra_rank field
-            infra_rank = info.get("infra_rank", -1)
-            # Support old format without domain_id field - default to "none"
-            domain_id = info.get("domain_id", "none")
-            return node_desc, infra_rank, domain_id
+            infra_rank = info["infra_rank"]
+            domain_id = info["domain_id"]
+            cycle_id = info["cycle_id"]
+            return node_desc, infra_rank, domain_id, cycle_id
         except (json.JSONDecodeError, KeyError) as e:
             raise ValueError(f"Invalid participant info data: {e}")
 
@@ -440,7 +443,6 @@ class _RendezvousBarrierState:
         # Track rendezvous round number
         # This is managed by the state since it coordinates the rendezvous
         self._rendezvous_round = 0
-
         # Last active/standby participant addrs (set by store host in assign_group_ranks for cycle info)
         self._last_active_participant_addrs: Optional[List[str]] = None
         self._last_standby_participant_addrs: Optional[List[str]] = None
@@ -459,15 +461,18 @@ class _RendezvousBarrierState:
         self.withdrawn_count_key = f"{self.prefix}:withdrawn_count"
         self.last_participant_arrived_key = f"{self.prefix}:last_participant_arrived"
         self.ack_count_key = f"{self.prefix}:ack_count"
-        self.closed_key = f"{self.prefix}:closed"
+        # Permanent close: once set, no further rendezvous rounds (graceful exit).
+        self.permanent_close_key = f"{self.prefix}:closed"
         self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
         self.peer_aborted_count_key = f"{self.prefix}:peer_aborted_count"
         self.global_cycle_key = f"{self.prefix}:global_cycle"
 
-        # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist
+        # Per-round open/close: last_participant_arrived_key value indicates whether
+        # the current round is accepting joiners or training is in progress.
+        # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist.
         # This key is always present and serves as the open/close indicator:
         #   0 = rendezvous is OPEN (accepting new participants)
-        #   1 = rendezvous is CLOSED (training in progress, hot spares should wait)
+        #   1 = rendezvous is CLOSED for this round (training in progress, hot spares wait)
         if not self.store.check([self.last_participant_arrived_key]):
             self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
 
@@ -754,6 +759,18 @@ class _RendezvousBarrierState:
 
         return False
 
+    @staticmethod
+    def _compute_step2_poll_interval(min_nodes: int, segment_check_interval: float) -> float:
+        """Compute adaptive Step 2 polling interval from rendezvous size.
+
+        Small rendezvous should converge quickly (1s polling), while large rendezvous
+        can use a slower poll to reduce store pressure. We cap by the configured
+        segment_check_interval.
+        """
+        # Scale from 1s up to the configured max, reaching max around 10K nodes.
+        scaled_interval = min_nodes / 2000.0
+        return max(1.0, min(segment_check_interval, max(1.0, scaled_interval)))
+
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
         """Check for early closure and timeout.
 
@@ -761,12 +778,12 @@ class _RendezvousBarrierState:
             node_desc: Node descriptor for logging
 
         Raises:
-            RendezvousClosedError: If rendezvous was closed
+            RendezvousClosedError: If rendezvous was permanently closed
             RendezvousTimeoutError: If rendezvous has timed out
         """
-        # Check for early closure
-        if self.is_closed():
-            msg = f"The node '{node_desc}' detected that rendezvous was closed"
+        # Check for permanent close
+        if self.is_permanently_closed():
+            msg = f"The node '{node_desc}' detected that rendezvous was permanently closed"
             log.info(msg)
             raise RendezvousClosedError(msg)
 
@@ -796,7 +813,10 @@ class _RendezvousBarrierState:
             # exclude us by filtering on invalid domain_id
             arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
             withdrawn_data = RendezvousParticipantInfo.pack(
-                _NodeDesc("", 0, 0), -1, WITHDRAWN_DOMAIN_ID
+                _NodeDesc("", 0, 0),
+                -1,
+                WITHDRAWN_DOMAIN_ID,
+                self._rendezvous_round,
             )
             self.store.set(arrived_key, withdrawn_data.encode('utf-8'))
             log.debug(
@@ -821,12 +841,12 @@ class _RendezvousBarrierState:
             node_desc: Node descriptor for logging
 
         Raises:
-            RendezvousClosedError: If rendezvous is explicitly closed (not just waiting)
+            RendezvousGracefulExitError: If rendezvous is permanently closed (graceful exit; launcher exits 0)
 
         Note:
             Stale round detection and sync happen automatically during the wait loop.
 
-            This wait does NOT timeout unless the rendezvous is explicitly closed.
+            This wait does NOT timeout unless the rendezvous is permanently closed.
             All waiting nodes (hot spares, late arrivals) wait passively until an
             active participant detects a failure and opens the next round.
         """
@@ -834,11 +854,11 @@ class _RendezvousBarrierState:
         logged_waiting = False  # Track if we've logged the waiting message
 
         while True:
-            # Check for explicit closure (permanent shutdown)
-            if self.is_closed():
-                msg = f"The node '{node_desc}' detected that rendezvous was closed"
+            # Check for permanent close (no further rounds)
+            if self.is_permanently_closed():
+                msg = f"The node '{node_desc}' detected that rendezvous was permanently closed"
                 log.info(msg)
-                raise RendezvousClosedError(msg)
+                raise RendezvousGracefulExitError(msg)
 
             # Check for stale rendezvous round (rate-limited to avoid thundering herd on TCPStore)
             # This allows hot spares waiting at Step 0 to detect when other nodes have moved
@@ -884,7 +904,7 @@ class _RendezvousBarrierState:
         node_desc: _NodeDesc,
         min_nodes: int,
         max_nodes: int,
-        segment_check_interval: float = 3.0,
+        segment_check_interval: float = 5.0,
     ) -> Tuple[int, int]:
         """Perform the complete rendezvous process: join, wait for completion, acknowledge, and get rank.
 
@@ -920,15 +940,17 @@ class _RendezvousBarrierState:
             node_desc: Node descriptor for this participant
             min_nodes: Minimum number of nodes required for training to proceed
             max_nodes: Maximum number of nodes allowed (active + standby)
-            segment_check_interval: Interval in seconds for store host to check segment
-                                   constraint (default 3.0 seconds)
+            segment_check_interval: Interval in seconds for store host to run a full
+                                   participant snapshot check for completion (default 5.0 seconds).
+                                   Actual poll interval is adaptive by min_nodes with a
+                                   1-second floor for small rendezvous.
 
         Returns:
             Tuple of (group_rank, total_participants)
         """
         # Step 0: Wait if rendezvous is closed (training in progress)
         # Hot spares arriving late will wait here until a failure opens a new round
-        # Note: This also checks for explicit closure (is_closed()), no need to check again
+        # Note: This also checks for permanent close (is_permanently_closed()), no need to check again
         self._wait_for_rendezvous_open(node_desc)
 
         # Record start time for timeout monitoring
@@ -955,8 +977,8 @@ class _RendezvousBarrierState:
                 f"This is likely a configuration error - please check max_nodes setting."
             )
             log.error(f"[{node_desc}] {msg}")
-            # Set closed to notify other nodes before exiting
-            self.set_closed()
+            # Permanently close rendezvous so other nodes see this final state before we raise
+            self.set_permanently_closed()
             raise RendezvousClosedError(msg)
 
         global _current_joined_state
@@ -982,10 +1004,11 @@ class _RendezvousBarrierState:
                 self._cached_domain_id = "none"
 
         domain_id = self._cached_domain_id
-
         # Store participant information in arrived_<count> key using the unique identifier
         arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
-        participant_data = RendezvousParticipantInfo.pack(node_desc, infra_rank, domain_id)
+        participant_data = RendezvousParticipantInfo.pack(
+            node_desc, infra_rank, domain_id, self._rendezvous_round
+        )
         self.store.set(arrived_key, participant_data)
 
         # Set initial group rank (unassigned)
@@ -998,11 +1021,11 @@ class _RendezvousBarrierState:
         )
 
         # Step 2: Wait for rendezvous completion
-        # Store host will incrementally check segment constraint
+        # Store host periodically performs a full participant snapshot check.
         last_segment_check_time = 0.0  # Track when we last checked segment constraint
-        last_checked_count = 0  # Track how many participants we checked last time
-        last_checked_withdrawn = 0  # Track withdrawn count so we re-check only when set changes
-        cached_participants = []  # Cache participants to avoid re-fetching
+        effective_check_interval = self._compute_step2_poll_interval(
+            min_nodes, segment_check_interval
+        )
 
         while True:
             # Check for early closure and timeout
@@ -1017,11 +1040,11 @@ class _RendezvousBarrierState:
                     msg = (
                         f"Rendezvous cannot complete: {unhealthy_count} unhealthy nodes detected, "
                         f"max possible healthy nodes = {max_nodes - unhealthy_count} < {min_nodes} required. "
-                        f"Closing rendezvous to terminate the job."
+                        f"Permanently closing rendezvous to terminate the job."
                     )
                     log.error(msg)
-                    self.set_closed()
-                    # Continue to next iteration to detect closure immediately.
+                    self.set_permanently_closed()
+                    # Continue to next iteration to detect permanent close immediately.
                     continue
 
             # Check if rendezvous is already complete
@@ -1050,48 +1073,47 @@ class _RendezvousBarrierState:
                     current_time = time.monotonic()
                     time_to_check = (
                         current_time - last_segment_check_time
-                    ) >= segment_check_interval
-                    new_participants_arrived = current_arrived > last_checked_count
-                    new_withdrawals = withdrawn_count > last_checked_withdrawn
+                    ) >= effective_check_interval
 
-                    # Re-check only when participant set may have changed (new arrivals or
-                    # withdrawals), and rate-limit by interval to avoid get_all_participants every loop
-                    if (new_participants_arrived or new_withdrawals) and time_to_check:
+                    if time_to_check:
                         last_segment_check_time = current_time
 
-                        # When new_withdrawals, any slot may have been overwritten with withdrawn
-                        # marker, so always do full fetch. Otherwise incremental fetch is enough.
-                        assert (
-                            new_withdrawals or new_participants_arrived
-                        ), "segment check only when participant set changed"
+                        # Always fetch a full snapshot to avoid races with partially written slots.
                         fetch_start = time.monotonic()
-                        if new_withdrawals:
-                            cached_participants = self.get_all_participants(
-                                total_participants=current_arrived,
-                            )
-                            num_fetched_participants = current_arrived
-                        else:
-                            assert new_participants_arrived
-                            num_fetched_participants = current_arrived - len(cached_participants)
-                            cached_participants = self.get_all_participants(
-                                total_participants=current_arrived,
-                                start_index=len(cached_participants) + 1,
-                                existing_participants=cached_participants,
-                            )
-
+                        all_participants = self.get_all_participants(
+                            total_participants=current_arrived,
+                            expected_cycle_id=self._rendezvous_round,
+                        )
                         fetch_elapsed = time.monotonic() - fetch_start
 
                         # Exclude withdrawn participants (invalid domain_id) for segment constraint
                         active_participants = [
-                            p for p in cached_participants if p[2] != WITHDRAWN_DOMAIN_ID
+                            p for p in all_participants if p[2] != WITHDRAWN_DOMAIN_ID
                         ]
 
-                        # Only advance last_checked_* when we have complete participant data (no
-                        # placeholders). Otherwise a race (host checked before another participant
-                        # wrote its slot) would prevent re-checking and the host could spin forever.
-                        if len(active_participants) == active_count:
-                            last_checked_count = current_arrived
-                            last_checked_withdrawn = withdrawn_count
+                        # If counts don't match, snapshot may be stale/incomplete; wait for next poll.
+                        if len(active_participants) != active_count:
+                            log.debug(
+                                f"[{node_desc}] [Step 2] Full snapshot incomplete "
+                                f"(active_snapshot={len(active_participants)}, active_counter={active_count}, "
+                                f"arrived={current_arrived}, withdrawn={withdrawn_count}, "
+                                f"cycle_id={self._rendezvous_round}); retrying."
+                            )
+                            continue
+
+                        # Verify counters are still stable after fetch before deciding completion.
+                        current_arrived_after_fetch = int(self.store.get(self.arrived_count_key))
+                        withdrawn_count_after_fetch = self._get_withdrawn_count()
+                        if (
+                            current_arrived_after_fetch != current_arrived
+                            or withdrawn_count_after_fetch != withdrawn_count
+                        ):
+                            log.debug(
+                                f"[{node_desc}] [Step 2] Counters changed during full snapshot "
+                                f"(arrived {current_arrived}->{current_arrived_after_fetch}, "
+                                f"withdrawn {withdrawn_count}->{withdrawn_count_after_fetch}); retrying."
+                            )
+                            continue
 
                         # Timing: Segment constraint check
                         check_start = time.monotonic()
@@ -1105,7 +1127,7 @@ class _RendezvousBarrierState:
                             log.info(
                                 f"[{node_desc}] [Step 2] Segment constraint satisfied with "
                                 f"{len(active_participants)} active participants (min_nodes={min_nodes}). "
-                                f"Perf: fetch {num_fetched_participants} participants in {fetch_elapsed*1000:.1f}ms, "
+                                f"Perf: fetch {current_arrived} participants in {fetch_elapsed*1000:.1f}ms, "
                                 f"constraint check in {check_elapsed*1000:.1f}ms"
                             )
 
@@ -1209,6 +1231,7 @@ class _RendezvousBarrierState:
         self,
         total_participants: int,
         start_index: int = 1,
+        expected_cycle_id: Optional[int] = None,
         existing_participants: Optional[List[Tuple[_NodeDesc, int, str]]] = None,
     ) -> List[Tuple[_NodeDesc, int, str]]:
         """Get participants that have arrived using multi_get.
@@ -1219,6 +1242,8 @@ class _RendezvousBarrierState:
         Args:
             total_participants: Total number of participants to fetch up to
             start_index: Starting index for fetching (1-based, inclusive). Defaults to 1 (fetch all).
+            expected_cycle_id: If provided, only participants from this cycle are accepted.
+                               Mismatched entries are treated as placeholders.
             existing_participants: Optional list of already-fetched participants to extend.
                                   If provided, new participants are appended to this list.
                                   If None, a new list is created.
@@ -1260,27 +1285,32 @@ class _RendezvousBarrierState:
 
         # Unpack participant information; one entry per slot so list index maps to slot
         # (participants[i] = slot start_index + i). Use placeholder for missing/failed/withdrawn.
-        num_keys = len(participant_keys)
         placeholder = (_NodeDesc("", 0, 0), -1, WITHDRAWN_DOMAIN_ID)
-        for i in range(num_keys):
-            if participant_data_list[i]:
-                try:
-                    participant_data = participant_data_list[i].decode('utf-8')
-                    node_desc, infra_rank, domain_id = RendezvousParticipantInfo.unpack(
-                        participant_data
-                    )
-                    participants.append((node_desc, infra_rank, domain_id))
-                except Exception as e:
-                    actual_index = start_index + i
-                    log.warning(
-                        f"Failed to unpack participant data for arrived_{actual_index}: {e}"
-                    )
-                    participants.append(placeholder)
-            else:
-                actual_index = start_index + i
+        for i, participant_data_bytes in enumerate(participant_data_list):
+            actual_index = start_index + i
+
+            if not participant_data_bytes:
                 log.warning(
                     f"No participant data for slot arrived_{actual_index}; treating as placeholder"
                 )
+                participants.append(placeholder)
+                continue
+
+            try:
+                participant_data = participant_data_bytes.decode('utf-8')
+                node_desc, infra_rank, domain_id, cycle_id = RendezvousParticipantInfo.unpack(
+                    participant_data
+                )
+                if expected_cycle_id is not None and cycle_id != expected_cycle_id:
+                    log.debug(
+                        f"Cycle mismatch for arrived_{actual_index}: expected cycle "
+                        f"{expected_cycle_id}, got {cycle_id}; treating as placeholder"
+                    )
+                    participants.append(placeholder)
+                    continue
+                participants.append((node_desc, infra_rank, domain_id))
+            except Exception as e:
+                log.warning(f"Failed to unpack participant data for arrived_{actual_index}: {e}")
                 participants.append(placeholder)
 
         return participants
@@ -1326,7 +1356,9 @@ class _RendezvousBarrierState:
             max_nodes: Maximum number of participants allowed
             total_participants: Total number of participants (passed to avoid race condition)
         """
-        all_participants = self.get_all_participants(total_participants)
+        all_participants = self.get_all_participants(
+            total_participants, expected_cycle_id=self._rendezvous_round
+        )
         assert (
             len(all_participants) == total_participants
         ), f"Expected {total_participants} slots, got {len(all_participants)}"
@@ -1378,19 +1410,16 @@ class _RendezvousBarrierState:
             f"[{node_desc}] [Step 3b] Assigned group ranks to {len(active_participants)} participants"
         )
 
-    def is_closed(self) -> bool:
-        """Check if rendezvous is closed."""
-        try:
-            return self.store.check([self.closed_key])
-        except Exception:
-            return False
+    def is_permanently_closed(self) -> bool:
+        """Check if rendezvous is permanently closed (no further rounds)."""
+        return self.store.check([self.permanent_close_key])
 
-    def set_closed(self):
-        """Mark rendezvous as closed."""
+    def set_permanently_closed(self) -> None:
+        """Mark rendezvous as permanently closed (graceful exit, no further rounds)."""
         try:
-            self.store.set(self.closed_key, "1".encode('utf-8'))
+            self.store.set(self.permanent_close_key, "1".encode('utf-8'))
         except Exception as e:
-            log.error(f"Failed to set closed: {e}")
+            log.error(f"Failed to set permanent close: {e}")
 
     def open_rendezvous(self):
         """Open rendezvous for new participants to join (typically after failure detection).
@@ -1943,9 +1972,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             return store, rank, world_size
 
     def is_closed(self) -> bool:
-        """See base class."""
+        """See base class. Returns True if rendezvous is permanently closed."""
         try:
-            return self._barrier_state.is_closed()
+            return self._barrier_state.is_permanently_closed()
         except Exception as e:
             self._record(
                 message=f"{type(e).__name__}: {str(e)}",
@@ -2029,10 +2058,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             raise
 
     def _close(self) -> None:
-        """Close the rendezvous."""
-        self._barrier_state.set_closed()
+        """Permanently close the rendezvous (no further rounds)."""
+        self._barrier_state.set_permanently_closed()
 
-        msg = f"The node '{self._this_node}' has closed the rendezvous '{self._settings.run_id}'."
+        msg = f"The node '{self._this_node}' has permanently closed the rendezvous '{self._settings.run_id}'."
         self._record(message=msg, node_state=NodeState.SUCCEEDED)
         log.info(msg)
 
