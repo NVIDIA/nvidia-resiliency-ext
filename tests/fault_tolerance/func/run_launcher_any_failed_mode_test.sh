@@ -17,7 +17,7 @@
 
 # This is a test of the FT launcher --restart-policy=any-failed
 # It verifies that a workload is not restarted until the number of runnign nodes falls below the minimum
-# To run the script: ./tests/fault_tolerance/func/run_launcher_min_healthy_mode_test.sh
+# To run the script: ./tests/fault_tolerance/func/run_launcher_any_failed_mode_test.sh
 # Expected result: TEST PASSED is printed and the exit code is 0
 
 set -e
