@@ -60,8 +60,10 @@ class RetryController(Initialize):
     when the conditions are not met.
 
     Args:
-        max_iterations: the maximum number of iterations allowed before
-            aborting retries. If :py:obj:`None`, there is no iteration limit
+        max_iterations: the maximum number of job restarts allowed before
+            aborting retries. If :py:obj:`None`, there is no restart limit.
+            Note: This is different from the global iteration counter which
+            increments by 100 for unique identification.
         min_world_size: The minimum required world size to proceed with
             execution
         min_active_world_size: The minimum required active world size to
@@ -82,10 +84,10 @@ class RetryController(Initialize):
         if (
             state.world_size < self.min_world_size
             or state.active_world_size < self.min_active_world_size
-            or (self.max_iterations is not None and state.iteration >= self.max_iterations)
+            or (self.max_iterations is not None and state.job_restart_count >= self.max_iterations)
         ):
             msg = (
-                f'{state.iteration=} {self.max_iterations=} '
+                f'{state.job_restart_count=} {self.max_iterations=} '
                 f'{state.world_size=} {self.min_world_size=} '
                 f'{state.active_world_size=} {self.min_active_world_size=} '
             )

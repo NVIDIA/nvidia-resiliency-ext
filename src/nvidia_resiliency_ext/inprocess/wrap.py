@@ -36,7 +36,7 @@ from .abort import Abort, AbortTorchDistributed
 from .attribution import Interruption, InterruptionRecord
 from .completion import Completion
 from .compose import Compose
-from .exception import HealthCheckError, InternalError
+from .exception import HealthCheckError, InternalError, RestartAbort
 from .finalize import Finalize
 from .health_check import (
     ChainedGPUHealthCheck,
@@ -166,6 +166,7 @@ class Wrapper:
         enabled: bool = True,
         completion: Optional[Completion] = None,
         terminate: Optional[Terminate] = None,
+        max_iterations: Optional[int] = None,
     ):
         enforce_subclass('store_factory', StoreMixin)
         enforce_type('store_kwargs', (dict, type(None)))
@@ -191,6 +192,7 @@ class Wrapper:
         enforce_type('enabled', bool)
         enforce_type('completion', (Completion, type(None)))
         enforce_type('terminate', (Terminate, type(None)))
+        enforce_type('max_iterations', (int, type(None)))
 
         enforce_value(soft_timeout < hard_timeout < barrier_timeout)
         enforce_value(monitor_process_interval < barrier_timeout)
@@ -240,6 +242,7 @@ class Wrapper:
         self.enabled = enabled
         self.completion = completion
         self.terminate = terminate
+        self.max_iterations = max_iterations
 
     def __call__(self, fn):
         if not self.enabled:
@@ -313,7 +316,19 @@ class CallWrapper:
 
             enforce_value(not torch.distributed.is_initialized())
 
-            state = State.from_env()
+            # Determine if TCP store is hosted externally or internally
+            store_kwargs = wrapper.store_kwargs
+            is_external_tcp_store = store_kwargs.get('tcp_store_host_rank', None) == -1
+
+            if is_external_tcp_store:
+                # TCP store is hosted externally. The initial state.iteration value is
+                # persisted in the store.
+                base_store = wrapper.store_factory(**store_kwargs)
+                log.debug(f'{base_store=} {store_kwargs=}')
+                state = State.from_env(store=base_store)
+            else:
+                # TCP store should be hosted by the MonitorProcess when it is hosted internally.
+                state = State.from_env()
 
             self.monitor_process = MonitorProcess(
                 rank=state.rank,
@@ -331,15 +346,40 @@ class CallWrapper:
                 store_kwargs=wrapper.store_kwargs,
             )
 
-            store_kwargs = wrapper.store_kwargs
-            base_store = wrapper.store_factory(**store_kwargs)
-            log.debug(f'{base_store=} {store_kwargs=}')
+            if not is_external_tcp_store:
+                # TCP store is hosted internally by the MonitorProcess.
+                # Here we just create a TCPStore client.
+                base_store = wrapper.store_factory(**store_kwargs)
+                log.debug(f'{base_store=} {store_kwargs=}')
+
+            # Use different timeout strategies based on iteration
+            if state.iteration == 0:
+                # Very first start: use configured barrier timeout
+                initial_barrier_timeout = wrapper.barrier_timeout
+                log.debug(
+                    f'{state.rank=} first iteration: using configured barrier timeout {initial_barrier_timeout}'
+                )
+            else:
+                # Restart scenario: use max timeout to wait indefinitely
+                initial_barrier_timeout = datetime.timedelta.max
+                log.debug(
+                    f'{state.rank=} restart iteration: using max timeout, job_restart_count={state.job_restart_count}'
+                )
 
             base_store.initial_barrier(
                 ranks=[state.rank],
                 rendezvous_count=state.world_size,
+                timeout=initial_barrier_timeout,
+                max_iterations=wrapper.max_iterations,
+            )
+
+            # Two-step acknowledge phase for Rank 0 to clear initial barrier keys
+            base_store.initial_barrier_acknowledge(
+                rank=state.rank,
+                world_size=state.world_size,
                 timeout=wrapper.barrier_timeout,
             )
+
             base_store.set_initial_rank(state.rank, state.initial_rank)
             self.monitor_process.can_create_store()
 
@@ -357,9 +397,18 @@ class CallWrapper:
             self.state = state
             self.wrapper = wrapper
 
-        except Exception:
+        except BaseException as exc:
             self.shutdown()
+            self._handle_restart_abort(exc, "initialization")
             raise
+
+    def _handle_restart_abort(self, exc, context=""):
+        """Handle RestartAbort by exiting with code 130."""
+        if isinstance(exc, RestartAbort):
+            log = logging.getLogger(__name__)
+            log.info(f'RestartAbort detected in {context}, exiting with code {exc.exit_code}')
+            sys.exit(exc.exit_code)
+        return exc
 
     def shutdown(self):
         if self.state is not None and self.state.initial_rank in self.base_store.critical_ranks:
@@ -643,7 +692,7 @@ class CallWrapper:
                 else:
                     break
 
-                state.advance()
+                state.advance(base_store=base_store, prefix_store=store)
 
                 while gc.collect():
                     pass
@@ -666,9 +715,14 @@ class CallWrapper:
                     wrapper.terminate(state.freeze())
             except Exception as terminate_ex:
                 log.error(log_exc(state, terminate_ex, 'terminate_ex'))
+
+                # Re-raise other terminate exceptions
                 raise terminate_ex from exit_ex
 
-            # Re-raise the final exception without preserving the chain
+            # Check if the main exit_ex is RestartAbort and exit with code 130
+            self._handle_restart_abort(exit_ex, "main execution")
+
+            # Re-raise other exceptions without preserving the chain
             raise exit_ex from None
 
         try:
