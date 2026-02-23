@@ -93,20 +93,32 @@ class AttributionService:
         if cfg.LLM_MAX_TOKENS is not None:
             analyzer_kwargs["llm_max_tokens"] = cfg.LLM_MAX_TOKENS
 
+        analyzer_kwargs["use_lib_log_analysis"] = cfg.LOG_ANALYSIS_BACKEND.lower() == "lib"
+
         analyzer_config = AnalyzerConfig(**analyzer_kwargs)
 
         # Create library LogAnalyzer (calls postprocessing.post_results when it has results)
         self._analyzer = LogAnalyzer(config=analyzer_config)
 
         timeout_str = f"{cfg.COMPUTE_TIMEOUT}s" if cfg.COMPUTE_TIMEOUT else "default"
+        backend_str = cfg.LOG_ANALYSIS_BACKEND
         logger.info(
             f"Initialized AttributionService with ALLOWED_ROOT={cfg.ALLOWED_ROOT}, "
-            f"compute_timeout={timeout_str}"
+            f"compute_timeout={timeout_str}, log_analysis_backend={backend_str}"
         )
 
     def shutdown(self) -> None:
-        """Shutdown the service and stop background threads."""
+        """Shutdown the service and stop background threads.
+
+        For full shutdown including MCP client cleanup, use shutdown_async() from
+        an async context (e.g. app lifespan).
+        """
         self._analyzer.shutdown()
+        logger.info("AttributionService shutdown complete")
+
+    async def shutdown_async(self) -> None:
+        """Shutdown the service including MCP client. Call from async context (e.g. lifespan)."""
+        await self._analyzer.shutdown_async()
         logger.info("AttributionService shutdown complete")
 
     def save_cache(self, cache_file: str) -> bool:
@@ -198,6 +210,14 @@ class AttributionService:
         """
         self._analyzer.set_event_loop(loop)
 
+    async def connect_mcp(self) -> None:
+        """Connect the MCP client when using MCP log analysis backend. No-op for lib backend."""
+        await self._analyzer.connect_mcp()
+
+    async def check_mcp_health(self, timeout_seconds: float = 5.0) -> tuple[str, str]:
+        """Check MCP backend health. Returns (status, message). See LogAnalyzer.check_mcp_health."""
+        return await self._analyzer.check_mcp_health(timeout_seconds)
+
     # ─── Delegate to LogAnalyzer ───
 
     def validate_path(
@@ -229,7 +249,12 @@ class AttributionService:
         file: str | None = None,
         wl_restart: int | None = None,
     ) -> AnalysisResult | SplitlogAnalysisResult | AnalyzerError:
-        """Analyze a log file using LLM (GET /logs)."""
+        """Analyze a log file using LLM (GET /logs).
+
+        Caching: the analyzer's RequestCoalescer caches results per file path.
+        Repeat requests for the same path (any wl_restart) get the cached full
+        result; the analyzer returns the slice for the requested wl_restart.
+        """
         return await self._analyzer.analyze(log_path, file=file, wl_restart=wl_restart)
 
     def read_file_preview(
@@ -280,6 +305,11 @@ class AttributionService:
         df_stats = get_dataflow_stats()
         issues = []
 
+        # MCP backend health (when using MCP)
+        mcp_status, mcp_message = await self.check_mcp_health()
+        if mcp_status == "disconnected":
+            issues.append(f"MCP disconnected: {mcp_message}")
+
         # Use typed helper so we don't depend on raw stats dict keys
         compute = await self._analyzer.get_compute_health_metrics()
         if compute.total > 0:
@@ -304,4 +334,7 @@ class AttributionService:
         else:
             status = "degraded"
 
-        return {"status": status, "issues": issues}
+        result: dict[str, Any] = {"status": status, "issues": issues}
+        if mcp_status != "unused":
+            result["mcp"] = {"status": mcp_status, "message": mcp_message}
+        return result
