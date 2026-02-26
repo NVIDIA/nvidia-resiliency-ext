@@ -4,6 +4,8 @@ import sys
 from contextlib import contextmanager
 from io import StringIO
 
+logger = logging.getLogger(__name__)
+
 
 def load_nvidia_api_key() -> str:
     """Load NVIDIA API key from environment or file.
@@ -44,19 +46,19 @@ def load_nvidia_api_key() -> str:
 
 @contextmanager
 def capture_logs(logger_name=None):
-    logger = logging.getLogger(logger_name)
+    target_logger = logging.getLogger(logger_name)
     # Save original handlers
-    original_handlers = logger.handlers.copy()
+    original_handlers = target_logger.handlers.copy()
     # Create capture handler
     log_capture = StringIO()
     capture_handler = logging.StreamHandler(log_capture)
-    logger.handlers = [capture_handler]
+    target_logger.handlers = [capture_handler]
 
     try:
         yield log_capture
     finally:
         # Restore original handlers
-        logger.handlers = original_handlers
+        target_logger.handlers = original_handlers
 
 
 @contextmanager

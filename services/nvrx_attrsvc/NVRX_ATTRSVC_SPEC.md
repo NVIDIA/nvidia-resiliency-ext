@@ -278,6 +278,7 @@ src/nvidia_resiliency_ext/attribution/
 │   ├── __init__.py          # Exports config, configure(), ResultPoster, post_results, Slack
 │   ├── config.py            # PostprocessingConfig singleton and configure()
 │   ├── base.py              # ResultPoster, post_results (generic framework)
+│   ├── dataflow.py          # nvdataflow posting (post, get_nvdataflow_post_fn)
 │   └── slack.py             # Slack notifications for terminal failures
 │
 └── mcp_integration/         # MCP client/server for LLM communication
@@ -306,7 +307,7 @@ File organization by layer:
         app.py
 
     POSTPROCESSING:
-        config.setup() wires lib postprocessing (ResultPoster(dataflow.post), Slack); dataflow.py
+        config.setup() wires lib postprocessing (ResultPoster(post_fn=postprocessing.dataflow.post), Slack)
 
 PYTHON API REFERENCE:
 
@@ -2477,14 +2478,15 @@ This is optional and proprietary - implemented in separate module for easy
 exclusion or replacement.
 
 Files (see section 2 PROJECT STRUCTURE):
-    - nvrx_attrsvc/dataflow.py                # Elasticsearch posting via nvdataflow
+    - nvidia_resiliency_ext.attribution.postprocessing.dataflow  # nvdataflow posting (post, get_nvdataflow_post_fn)
     - nvrx_attrsvc/config.py setup()         # Wires lib postprocessing via configure(poster, cluster_name, dataflow_index, slack_*)
     - nvidia_resiliency_ext/attribution/postprocessing/  # config, configure(), ResultPoster, post_results, Slack
 
 Configuration:
     - CLUSTER_NAME, DATAFLOW_INDEX: env prefix NVRX_ATTRSVC_ (e.g. NVRX_ATTRSVC_CLUSTER_NAME)
-    - SLACK_BOT_TOKEN, SLACK_CHANNEL: no prefix (env vars SLACK_BOT_TOKEN, SLACK_CHANNEL)
-    - If DATAFLOW_INDEX empty, dataflow posting disabled; if SLACK_BOT_TOKEN empty, Slack disabled
+    - SLACK_BOT_TOKEN, SLACK_BOT_TOKEN_FILE, SLACK_CHANNEL: no prefix
+    - SLACK_BOT_TOKEN_FILE takes precedence (path to file containing token)
+    - If DATAFLOW_INDEX empty, dataflow posting disabled; if Slack token empty, Slack disabled
     - Slack notifications sent for auto_resume = "STOP - DONT RESTART IMMEDIATE"
 
 When triggered:

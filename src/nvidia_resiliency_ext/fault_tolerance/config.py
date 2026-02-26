@@ -24,6 +24,41 @@ from typing import Mapping, Optional
 import yaml
 
 
+def _read_token_from_file(path: str) -> Optional[str]:
+    """Read token from file path. Returns stripped content or None on error."""
+    if not path or not path.strip():
+        return None
+    try:
+        with open(path.strip(), "r") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+@dataclass(frozen=True)
+class SlackConfig:
+    """Slack notification config. Reusable by attribution and other FT modules."""
+
+    bot_token: Optional[str] = None
+    channel: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {"bot_token": self.bot_token, "channel": self.channel}
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> Optional["SlackConfig"]:
+        if not d:
+            return None
+        tok = d.get("bot_token")
+        token_file = d.get("bot_token_file")
+        if token_file:
+            tok = _read_token_from_file(token_file) or tok
+        ch = d.get("channel")
+        if tok is None and ch is None:
+            return None
+        return cls(bot_token=tok, channel=ch)
+
+
 @dataclass
 class FaultToleranceConfig:
     """
@@ -95,9 +130,15 @@ class FaultToleranceConfig:
       out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
       timeout monitoring as they can be significantly slower than steady-state iterations.
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
-    * Attribution service (optional):
-      - `attrsvc_host` [str] hostname/IP of the attribution service
-      - `attrsvc_port` [int] port of the attribution service
+    * Attribution (optional): `attribution_loganalysis` [str|None] enables log analysis. None = disabled;
+      ``"lib"`` = in-process log analysis (default); ``"mcp"`` = log analysis in MCP subprocess;
+      URL string = HTTP attribution service.
+      `attribution_timeout_seconds` [int] = wait/timeout in seconds (default 60).
+      `attribution_dry_run` [bool] = if True, run attribution chain but do not apply the action
+      (log what would happen; useful for validation). Default: False.
+    * Slack (shared by attribution and other FT modules): `slack` [SlackConfig|None].
+      Token via `bot_token_file` (CLI/yaml) or SLACK_BOT_TOKEN/SLACK_BOT_TOKEN_FILE env.
+    * `dataflow_index` [str|None] = Elasticsearch/dataflow index for attribution posting (lib/mcp). None = disabled.
 
     * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.
       <base>/nvrx/). If set, the TCPStore host writes cycle info JSON files and the
@@ -144,9 +185,13 @@ class FaultToleranceConfig:
     num_warmup_iterations: int = (
         5  # Number of warmup iterations before monitoring step section and out-of-section timeouts
     )
-    # Attribution service configuration (optional)
-    attrsvc_host: Optional[str] = None
-    attrsvc_port: Optional[int] = None
+    # Attribution: None = off; "lib" = in-process; "mcp" = MCP subprocess; URL = HTTP service
+    attribution_loganalysis: Optional[str] = None
+    attribution_timeout_seconds: int = 60
+    attribution_dry_run: bool = False  # Run attribution chain but don't apply action; log only
+    # Slack (shared by attribution and other FT modules)
+    slack: Optional["SlackConfig"] = None
+    dataflow_index: Optional[str] = None
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None
@@ -171,6 +216,25 @@ class FaultToleranceConfig:
         Raises:
             ValueError: If there are unrecognized arguments and ignore_not_recognized is False.
         """
+        # Preprocess slack: build from nested slack: {...} or flat slack_bot_token/slack_channel/slack_bot_token_file
+        kwargs = dict(kwargs)
+        if "slack" not in kwargs and (
+            "slack_bot_token" in kwargs
+            or "slack_bot_token_file" in kwargs
+            or "slack_channel" in kwargs
+        ):
+            tok = kwargs.pop("slack_bot_token", None)
+            token_file = kwargs.pop("slack_bot_token_file", None)
+            if token_file:
+                tok = _read_token_from_file(token_file) or tok
+            kwargs["slack"] = SlackConfig(
+                bot_token=tok,
+                channel=kwargs.pop("slack_channel", None),
+            )
+        slack_val = kwargs.get("slack")
+        if isinstance(slack_val, dict):
+            kwargs["slack"] = SlackConfig.from_dict(slack_val)
+
         fields_set = {f.name for f in fields(FaultToleranceConfig) if f.init}
         matching_args = {k: v for k, v in kwargs.items() if k in fields_set}
         extra_args = {k: v for k, v in kwargs.items() if k not in fields_set}
@@ -289,6 +353,8 @@ class FaultToleranceConfig:
             'gpu_memory_poll_interval',
         ]
         for field in fields(FaultToleranceConfig):
+            if field.name == "slack":
+                continue  # Handled below from ft_slack_bot_token / ft_slack_channel
             cli_field_name = f"ft_{field.name}"
             val = getattr(args, cli_field_name, None)
             if val is not None:
@@ -297,6 +363,13 @@ class FaultToleranceConfig:
                 elif field.name in timeout_fields and isinstance(val, str):
                     val = FaultToleranceConfig._parse_timeout_arg(val)
                 cli_ft_args[field.name] = val
+
+        # Slack from --ft-slack-token-file / --ft-slack-channel (token from file only; env fallback in ft_attribution)
+        slack_token_file = getattr(args, "ft_slack_bot_token_file", None)
+        slack_tok = _read_token_from_file(slack_token_file) if slack_token_file else None
+        slack_ch = getattr(args, "ft_slack_channel", None)
+        if slack_tok is not None or slack_ch is not None:
+            cli_ft_args["slack"] = SlackConfig(bot_token=slack_tok, channel=slack_ch)
 
         # Update config with CLI args
         for arg_name, arg_val in cli_ft_args.items():

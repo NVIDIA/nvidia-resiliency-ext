@@ -53,6 +53,7 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SLACK_BOT_TOKEN` | `""` | Slack bot OAuth token (empty = disabled) |
+| `SLACK_BOT_TOKEN_FILE` | `""` | Path to file containing token (preferred over SLACK_BOT_TOKEN) |
 | `SLACK_CHANNEL` | `""` | Slack channel for terminal failure alerts |
 
 When configured, sends alerts to Slack for jobs with `auto_resume = "STOP - DONT RESTART IMMEDIATE"`.
@@ -271,7 +272,7 @@ asyncio.run(main())
 | `app.py` | FastAPI routes and middleware |
 | `service.py` | `AttributionService` - wraps LogAnalyzer |
 | `config.py` | `Settings` (pydantic), `setup()` wires postprocessing (poster + Slack) from cfg |
-| `dataflow.py` | NVIDIA-proprietary Elasticsearch posting |
+| lib `postprocessing.dataflow` | nvdataflow Elasticsearch posting (used via ResultPoster) |
 | `deploy/run_attrsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_attrsvc.sh` | Periodic endpoint snapshot for debugging |
 | `deploy/Dockerfile` | Docker build instructions |

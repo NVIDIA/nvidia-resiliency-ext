@@ -3,7 +3,7 @@
 
 """Postprocessing for attribution results.
 
-- config: Singleton PostprocessingConfig; set config.default_poster, config.cluster_name, config.dataflow_index, config.slack_bot_token, config.slack_channel at startup.
+- config: Singleton PostprocessingConfig; set via configure() at startup.
 - base: ResultPoster, post_results, get_default_poster.
 - slack: API and maybe_send_slack_notification (used by post_results).
 
@@ -26,9 +26,14 @@ from .base import (
     get_default_poster,
     post_results,
 )
-from .config import PostprocessingConfig, config, configure
+from .config import (
+    PostprocessingConfig,
+    config,
+    configure,
+    configure_postprocessing_resolved,
+    load_slack_from_env,
+)
 from .slack import (
-    HAS_SLACK,
     SlackStats,
     get_slack_stats,
     get_slack_user_id,
@@ -42,6 +47,8 @@ __all__ = [
     "PostprocessingConfig",
     "config",
     "configure",
+    "configure_postprocessing_resolved",
+    "load_slack_from_env",
     # Base
     "DataflowStats",
     "PostFunction",
@@ -50,7 +57,6 @@ __all__ = [
     "get_default_poster",
     "post_results",
     # Slack
-    "HAS_SLACK",
     "SlackStats",
     "get_slack_stats",
     "get_slack_user_id",
