@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     LLM_TOP_P: float | None = Field(default=None, description="LLM top-p for nucleus sampling")
     LLM_MAX_TOKENS: int | None = Field(default=None, description="Max tokens for LLM response")
 
+    # Log analysis backend: "lib" = in-process (reusable cache, lower latency), "mcp" = subprocess
+    LOG_ANALYSIS_BACKEND: str = Field(
+        default="lib",
+        description="How to run log analysis: 'lib' (in-process, default) or 'mcp' (subprocess).",
+    )
+
     CLUSTER_NAME: str = Field(default="", description="Cluster name for dataflow")
     DATAFLOW_INDEX: str = Field(
         default="", description="Dataflow/elasticsearch index for posting results"
@@ -105,6 +111,15 @@ class Settings(BaseSettings):
         case_sensitive=False,
         env_prefix="NVRX_ATTRSVC_",
     )
+
+    @field_validator("LOG_ANALYSIS_BACKEND")
+    @classmethod
+    def validate_log_analysis_backend(cls, v: str) -> str:
+        allowed = ("lib", "mcp")
+        v_lower = v.strip().lower()
+        if v_lower not in allowed:
+            raise ValueError(f"LOG_ANALYSIS_BACKEND must be one of {allowed}, got '{v}'")
+        return v_lower
 
     @field_validator("PORT")
     @classmethod

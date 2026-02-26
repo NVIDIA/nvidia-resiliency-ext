@@ -37,7 +37,9 @@ Job modes:
 - SPLITLOG: Split logging mode (analyze per-restart log files in LOGS_DIR)
 """
 
+import argparse
 import asyncio
+import errno
 import logging
 import os
 import re
@@ -47,6 +49,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from nvidia_resiliency_ext.attribution.base import AttributionState
 from nvidia_resiliency_ext.attribution.mcp_integration import create_mcp_client
 from nvidia_resiliency_ext.attribution.postprocessing import post_results
 
@@ -66,6 +69,7 @@ from .config import (
     ErrorCode,
 )
 from .job import Job, JobMode
+from .nvrx_logsage import NVRxLogAnalyzer
 from .slurm_parser import read_and_parse_slurm_output
 from .splitlog import SplitlogTracker
 from .utils import CYCLE_LOG_PATTERN, JobMetadata, extract_job_metadata, parse_llm_response
@@ -88,6 +92,9 @@ class AnalyzerConfig:
         llm_temperature: Temperature for LLM (0.0 = deterministic)
         llm_top_p: Top-p for LLM nucleus sampling
         llm_max_tokens: Max tokens for LLM response
+        use_lib_log_analysis: If True, run LogSage in-process (no MCP subprocess).
+            Enables reusable cache and lower latency. Use in service or when subprocess
+            overhead is undesirable.
     """
 
     allowed_root: str
@@ -97,6 +104,7 @@ class AnalyzerConfig:
     llm_temperature: float = 0.0
     llm_top_p: float = 1.0
     llm_max_tokens: int = 8192
+    use_lib_log_analysis: bool = False
 
     def __post_init__(self) -> None:
         """Validate configuration."""
@@ -219,6 +227,22 @@ class LogAnalyzer:
         self._file_permission_errors: int = 0
         self._pending_expired: int = 0
 
+        # Lib log analysis backend: one NVRxLogAnalyzer per process (reusable cache).
+        # LogSage (both lib and MCP) is not reentrant: shared args/cache. _log_analysis_lock
+        # serializes all log analysis execution (lib run() and MCP run_module()).
+        self._lib_log_analyzer: Any = None
+        self._log_analysis_lock = asyncio.Lock()
+
+        # MCP backend: long-lived singleton client, created at init when use_lib_log_analysis
+        # is False. Must call connect_mcp() during async startup before first use.
+        if config.use_lib_log_analysis:
+            self._mcp_client: Any = None
+        else:
+            try:
+                self._mcp_client = create_mcp_client()
+            except Exception as e:
+                raise RuntimeError(f"failed to create MCP client: {e}") from e
+
         # Set up splitlog tracker callbacks
         # IMPORTANT: Use fire-and-forget callback to avoid blocking the async event loop.
         # The splitlog tracker runs in a background thread; calling blocking sync methods
@@ -239,7 +263,19 @@ class LogAnalyzer:
     def shutdown(self) -> None:
         """Shutdown the analyzer and stop background threads."""
         self._splitlog_tracker.stop_polling()
+        # Note: MCP client cleanup requires async context; use shutdown_async() from app lifespan.
         logger.info("LogAnalyzer shutdown complete")
+
+    async def shutdown_async(self) -> None:
+        """Shutdown the analyzer including MCP client cleanup. Call from async context (e.g. lifespan)."""
+        if self._mcp_client is not None:
+            try:
+                await self._mcp_client.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning("MCP client shutdown error: %s", e)
+            finally:
+                self._mcp_client = None
+        self.shutdown()
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set the main event loop for background thread callbacks.
@@ -253,6 +289,64 @@ class LogAnalyzer:
         """
         self._main_loop = loop
         logger.info("Event loop set for background thread callbacks")
+
+    async def connect_mcp(self) -> None:
+        """Connect the MCP client. Call during async startup when using MCP backend.
+
+        Must be called before the first analyze request when use_lib_log_analysis is False.
+        No-op when using lib (in-process) log analysis.
+        """
+        if self._mcp_client is None:
+            return
+        await self._mcp_client.__aenter__()
+        logger.info("MCP client connected")
+
+    async def check_mcp_health(self, timeout_seconds: float = 5.0) -> tuple[str, str]:
+        """Check if MCP backend is reachable.
+
+        Returns:
+            (status, message) where status is "ok" | "disconnected" | "unused".
+            "unused" when using lib backend (no MCP). "disconnected" when MCP unreachable.
+        """
+        if self._mcp_client is None:
+            return "unused", "MCP not used (lib backend)"
+        if not getattr(self._mcp_client, "session", None):
+            return "disconnected", "MCP client not connected"
+        try:
+            # Invoke our MCP server's custom "status" tool as a lightweight health check
+            # (returns server metadata; does not run LogSage).
+            await asyncio.wait_for(
+                self._mcp_client.get_status(),
+                timeout=timeout_seconds,
+            )
+            return "ok", "MCP reachable"
+        except asyncio.TimeoutError:
+            return "disconnected", "MCP health check timed out"
+        except Exception as e:
+            return "disconnected", f"MCP unreachable: {e}"
+
+    async def reconnect_mcp(self) -> bool:
+        """Reconnect the MCP client after failure. Returns True on success.
+
+        When called from _fetch_log_result_mcp (on connection error), the caller
+        already holds _log_analysis_lock, so reconnects from that path are serialized.
+        """
+        if self._mcp_client is None:
+            return True
+        old = self._mcp_client
+        self._mcp_client = None
+        try:
+            await old.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug("MCP cleanup during reconnect: %s", e)
+        try:
+            self._mcp_client = create_mcp_client()
+            await self._mcp_client.__aenter__()
+            logger.info("MCP client reconnected")
+            return True
+        except Exception as e:
+            logger.error("MCP reconnect failed: %s", e)
+            return False
 
     def validate_path(
         self,
@@ -635,10 +729,140 @@ class LogAnalyzer:
             mode=JobMode.SINGLE.value,
         )
 
+    async def _get_lib_log_analyzer(self, run_kwargs: Dict[str, Any]) -> Any:
+        """Get or create the single shared NVRxLogAnalyzer for lib (in-process) analysis.
+
+        Reuses one instance per LogAnalyzer so the LogSage LRU cache is shared across
+        requests (reduces LLM calls and improves latency). Creation is done inside
+        _log_analysis_lock so only one instance is ever created. Does not use the MCP registry.
+        """
+        if self._lib_log_analyzer is not None:
+            return self._lib_log_analyzer
+        async with self._log_analysis_lock:
+            if self._lib_log_analyzer is not None:
+                return self._lib_log_analyzer
+            args = argparse.Namespace(**run_kwargs)
+            self._lib_log_analyzer = NVRxLogAnalyzer(args)
+            return self._lib_log_analyzer
+
+    def _post_analysis_results(
+        self,
+        result_items: List[Any],
+        processing_time: float,
+        path: str,
+        user: str,
+        job_id: str,
+    ) -> None:
+        """Post each analysis result to dataflow/Slack. Shared by lib and MCP paths."""
+        if not result_items:
+            return
+        for item in result_items:
+            raw_text = item[0] if isinstance(item, (list, tuple)) else item
+            parsed = parse_llm_response(str(raw_text))
+            if job_id:
+                path_metadata = extract_job_metadata(path, warn_on_missing_job_id=False)
+                metadata = JobMetadata(job_id=job_id, cycle_id=path_metadata.cycle_id)
+            else:
+                metadata = extract_job_metadata(path)
+            post_results(parsed, metadata, path, processing_time, user)
+
+    async def _fetch_log_result_lib(self, path: str) -> tuple[Dict[str, Any], float]:
+        """Run LogSage in-process (lib backend); return (log_result dict, processing_time_seconds)."""
+        is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
+        run_kwargs = {
+            "log_path": path,
+            "model": self.config.llm_model,
+            "temperature": self.config.llm_temperature,
+            "exclude_nvrx_logs": False,
+            "is_per_cycle": is_per_cycle,
+            "top_p": self.config.llm_top_p,
+            "max_tokens": self.config.llm_max_tokens,
+        }
+        analyzer = await self._get_lib_log_analyzer(run_kwargs)
+        s_time = time.time()
+        async with self._log_analysis_lock:
+            result = await analyzer.run(run_kwargs)
+        processing_time = time.time() - s_time
+
+        if result is None:
+            logger.error("Lib log analyzer run returned None for path=%s", path)
+            raise RuntimeError("LogSage run returned None")
+
+        actual_result = result
+        state = AttributionState.CONTINUE
+        if isinstance(result, tuple) and len(result) == 2:
+            try:
+                actual_result, state = result
+            except (ValueError, TypeError) as e:
+                logger.error(
+                    "Lib log analyzer result unpack failed for path=%s: %s",
+                    path,
+                    e,
+                    exc_info=True,
+                )
+                raise RuntimeError(
+                    f"LogSage result had unexpected shape for path={path}: {e}"
+                ) from e
+
+        log_result = {
+            "result": actual_result,
+            "state": state.name if isinstance(state, AttributionState) else str(state),
+        }
+        return log_result, processing_time
+
+    def _is_mcp_connection_error(self, exc: BaseException) -> bool:
+        """True if the exception suggests MCP connection/subprocess failure."""
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionError)):
+            return True
+        if isinstance(exc, OSError) and exc.errno in (errno.EPIPE, errno.ECONNRESET):
+            return True
+        if isinstance(exc, asyncio.IncompleteReadError):
+            return True
+        return False
+
+    async def _fetch_log_result_mcp(self, path: str) -> tuple[Dict[str, Any], float]:
+        """Run LogSage via MCP subprocess; return (log_result dict, processing_time_seconds).
+
+        Uses the MCP client created at init. connect_mcp() must be called during startup.
+        On connection failure, attempts reconnect and retries once.
+        """
+        if self._mcp_client is None:
+            raise RuntimeError("MCP client not initialized (use_lib_log_analysis is True)")
+        if not getattr(self._mcp_client, "session", None):
+            raise RuntimeError("MCP client not connected; call connect_mcp() during startup")
+
+        is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
+        run_kwargs = dict(
+            module_name="log_analyzer",
+            log_path=path,
+            model=self.config.llm_model,
+            temperature=self.config.llm_temperature,
+            exclude_nvrx_logs=False,
+            is_per_cycle=is_per_cycle,
+            top_p=self.config.llm_top_p,
+            max_tokens=self.config.llm_max_tokens,
+        )
+
+        s_time = time.time()
+        async with self._log_analysis_lock:
+            try:
+                log_result = await self._mcp_client.run_module(**run_kwargs)
+            except BaseException as e:
+                if self._is_mcp_connection_error(e):
+                    logger.warning("MCP connection error, attempting reconnect: %s", e)
+                    if await self.reconnect_mcp():
+                        log_result = await self._mcp_client.run_module(**run_kwargs)
+                    else:
+                        raise RuntimeError("MCP reconnect failed after connection error") from e
+                else:
+                    raise
+        processing_time = time.time() - s_time
+        return log_result, processing_time
+
     async def _run_llm_analysis(
         self, path: str, user: str = "unknown", job_id: str = ""
     ) -> Dict[str, Any]:
-        """Run LLM analysis on a log file.
+        """Run LLM analysis on a log file (lib or MCP backend).
 
         Args:
             path: Path to the log file
@@ -650,48 +874,36 @@ class LogAnalyzer:
             self._file_permission_errors += 1
             raise PermissionError(f"Log file not readable: {path}")
 
-        try:
-            client = create_mcp_client()
-        except Exception as e:
-            raise RuntimeError(f"failed to initialize MCP client: {e}")
+        if self.config.use_lib_log_analysis:
+            log_result, processing_time = await self._fetch_log_result_lib(path)
+        else:
+            log_result, processing_time = await self._fetch_log_result_mcp(path)
 
-        async with client:
-            is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
-            s_time = time.time()
-
-            log_result = await client.run_module(
-                module_name="log_analyzer",
-                log_path=path,
-                model=self.config.llm_model,
-                temperature=self.config.llm_temperature,
-                exclude_nvrx_logs=False,
-                is_per_cycle=is_per_cycle,
-                top_p=self.config.llm_top_p,
-                max_tokens=self.config.llm_max_tokens,
+        if log_result is None:
+            logger.error("Log analyzer returned None for path=%s", path)
+            raise RuntimeError("Log analyzer returned None")
+        if not isinstance(log_result, dict):
+            logger.error(
+                "Log analyzer returned non-dict for path=%s: type=%s",
+                path,
+                type(log_result).__name__,
             )
+            raise RuntimeError(f"Log analyzer returned {type(log_result).__name__}, expected dict")
 
-            e_time = time.time()
-            processing_time = e_time - s_time
-
-            # Report results (post_results no-ops poster when dataflow_index empty; Slack when configured)
-            if "result" in log_result and len(log_result["result"]) > 0:
-                for item in log_result["result"]:
-                    raw_text = item[0]
-                    parsed = parse_llm_response(raw_text)
-                    if job_id:
-                        path_metadata = extract_job_metadata(path, warn_on_missing_job_id=False)
-                        metadata = JobMetadata(job_id=job_id, cycle_id=path_metadata.cycle_id)
-                    else:
-                        metadata = extract_job_metadata(path)
-                    post_results(
-                        parsed,
-                        metadata,
-                        path,
-                        processing_time,
-                        user,
-                    )
-
-            return log_result
+        raw_result = log_result.get("result")
+        if raw_result is not None and not isinstance(raw_result, list):
+            logger.error(
+                "Log analyzer result has unexpected type for path=%s: "
+                "expected list or None, got %s",
+                path,
+                type(raw_result).__name__,
+            )
+            raise RuntimeError(
+                f"Log analyzer result must be list or None, got {type(raw_result).__name__}"
+            )
+        result_items = raw_result or []
+        self._post_analysis_results(result_items, processing_time, path, user, job_id)
+        return log_result
 
     async def _analyze_splitlog_mode(
         self,
