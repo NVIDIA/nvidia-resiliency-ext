@@ -32,8 +32,7 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from . import exception, utils
 from .attribution import InterruptionRecord
-from .state import Mode
-from .state import State
+from .state import Mode, State
 
 
 class BarrierError(exception.RestartError):
