@@ -116,9 +116,7 @@ class StoreMixin:
 
     def get_states(self, ranks):
         states = []
-        for data in self.multi_get(
-            [self.STATE.format(rank=rank) for rank in ranks]
-        ):
+        for data in self.multi_get([self.STATE.format(rank=rank) for rank in ranks]):
             state_dict = json.loads(data)
             state_dict['mode'] = Mode[state_dict['mode']]
             states.append(State(**state_dict))
@@ -127,9 +125,7 @@ class StoreMixin:
     def get_keys(self, ranks):
         keys = [
             json.loads(data)
-            for data in self.multi_get(
-                [self.KEY.format(rank=rank) for rank in ranks]
-            )
+            for data in self.multi_get([self.KEY.format(rank=rank) for rank in ranks])
         ]
         return keys
 
