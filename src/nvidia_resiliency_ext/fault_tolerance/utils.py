@@ -20,6 +20,7 @@ import logging
 import multiprocessing
 import os
 import re
+import signal
 import socket
 import struct
 import sys
@@ -265,50 +266,46 @@ def wait_for_mp_events(events, timeout=60):
             raise RuntimeError(f"Not all events ready after {timeout} seconds")
 
 
-def terminate_mp_processes(allowed_ppids, allowed_pgids):
+def terminate_mp_processes(allowed_pgids):
     """
-    Terminate auxiliary processes spawned by the `multiprocessing` package.
+    Terminate leftover processes related to fault-tolerance workers.
 
-    If an worker is terminated with a signal (e.g. TERM) and *it has no sig handler installed*,
-    there are some leftover processes spawned by `multiprocessing`:
-      - `python -c from multiprocessing.spawn import spawn_main; spawn_main (...)`
-      - `python -c from multiprocessing.resource_tracker (...)`
-
-    Such leftover processes can block the tests, e.g., .commuminicate() in `subprocess` hangs
-    if there are some subprocesses alive after the main process is terminated.
+    When a worker exits unexpectedly, some scoped orphan processes may remain
+    alive and block shutdown/test cleanup.
 
     We don't want to terminate the processes that might be used elsewhere in the system,
-    so we use `allowed_ppids` and `allowed_pgids` to find processes that are related to the fault tolerance.
+    so we use `allowed_pgids` to find processes that are
+    related to fault tolerance.
 
     Args:
-        allowed_ppids: what parent PIDs that are allowed
         allowed_pgids: what process group IDs that are allowed
 
-    Swallow any exceptions, as this is not critical functionality.
-    NOTE: this is workaround, it should be removed after we eliminate  `Manager()` from
-    `ParametersUpdateManager`
+    Best-effort cleanup: swallow exceptions because this is non-critical.
     """
 
     if 1 in allowed_pgids:
         # workaround for sim-multinode tests, where rank monitors have PGID=1 and gets terminated.
         return
 
-    try:
-        all_processes = psutil.process_iter(attrs=['pid', 'ppid', 'name', 'cmdline'])
-        for process in all_processes:
-            try:
-                ppid_match = process.ppid() in allowed_ppids
-                pgid_match = os.getpgid(process.pid) in allowed_pgids
-                if ppid_match and pgid_match:
-                    cmd_line = " ".join(process.cmdline())
-                    patt1 = "from multiprocessing.resource_tracker import main"
-                    patt2 = "from multiprocessing.spawn import spawn_main"
-                    if patt1 in cmd_line or patt2 in cmd_line:
-                        process.terminate()
-            except Exception:
-                pass
-    except Exception:
-        pass
+    for pgid in allowed_pgids:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            # Process group already exited.
+            pass
+        except Exception:
+            logger.warning("Failed to send SIGTERM to process group %s", pgid, exc_info=True)
+
+    time.sleep(1.0)
+
+    for pgid in allowed_pgids:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            # Process group exited after SIGTERM grace period.
+            pass
+        except Exception:
+            logger.warning("Failed to send SIGKILL to process group %s", pgid, exc_info=True)
 
 
 def set_ipc_socket_timeouts(fileno, timeout):
