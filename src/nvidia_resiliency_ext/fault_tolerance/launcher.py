@@ -21,6 +21,7 @@ import importlib.metadata as metadata
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -137,13 +138,13 @@ def init_node_health_check(endpoint: Optional[str]) -> None:
 def get_node_health_check() -> Optional[NodeHealthCheck]:
     return _NODE_HEALTH_CHECK_INSTANCE
 
-def _register_ft_rdzv_handler(impl_type: str = "legacy"):
+def _register_ft_rdzv_handler(impl_type: str = "barrier"):
     """Register the fault-tolerant rendezvous handler.
 
     Args:
         impl_type: FT rendezvous implementation to use.
                   "barrier" - New atomic barrier-based algorithm
-                  "legacy" - Original compare-and-set algorithm (default)
+                  "legacy" - Original compare-and-set algorithm
     """
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
@@ -2449,7 +2450,7 @@ def get_args_parser() -> ArgumentParser:
         "--ft_enable_log_server",
         action=env,
         type=lambda x: x.lower() == 'true',
-        default=False,
+        default=None,
         dest="ft_enable_log_server",
         help="Enable gRPC-based log funneling to a single Lustre file. "
         "When enabled with --ft-per-cycle-applog-prefix, the launcher automatically: "
@@ -2730,7 +2731,7 @@ def get_args_parser() -> ArgumentParser:
         "in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE. "
         "Unlike --ft-enable-nic-monitor (which periodically monitors link_downed counters), "
         "this performs a one-time state check during rendezvous. Can be used independently "
-        "or together with --ft-enable-nic-monitor. Default: False.",
+        "or together with --ft-enable-nic-monitor. Default: True.",
     )
 
     parser.add_argument(
@@ -2828,13 +2829,13 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-numa-bind-strict",
         "--ft-numa_bind_strict",
-        action="store_true",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
         default=None,
         dest="ft_numa_bind_strict",
-        help="Enable strict NUMA binding with both CPU and memory bound to the same NUMA node "
-        "(--cpunodebind=N --membind=N). By default, only CPU is bound to NUMA node with local "
-        "memory allocation (--cpunodebind=N --localalloc). This option only affects behavior when "
-        "NVRX_GPUS_PER_NUMA environment variable is set. Default: False.",
+        help="Enable or disable strict NUMA binding with both CPU and memory bound to the same NUMA node "
+        "(--cpunodebind=N --membind=N). Set to false to use --localalloc instead of --membind. "
+        "This option only affects behavior when NVRX_GPUS_PER_NUMA environment variable is set. "
+        "Default: True. Example: --ft-numa-bind-strict false",
     )
 
     parser.add_argument(
@@ -2934,8 +2935,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-max-no-progress-cycles",
         "--ft-max_no_progress_cycles",
-        "--ft-max-no-progress-restarts",
-        "--ft-max_no_progress_restarts",
         type=int,
         default=2,
         dest="ft_max_no_progress_cycles",
@@ -3083,17 +3082,91 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     return logs_specs_cls
 
 
+def _parse_bool_env(var_name: str) -> bool:
+    """Parse a boolean-like env var. Unset means False."""
+    raw = os.getenv(var_name)
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    raise ValueError(
+        f"Invalid value for {var_name}: {raw!r}. "
+        "Expected one of: 1/0, true/false, yes/no."
+    )
+
+
+def _validate_slurm_single_launcher_per_node() -> None:
+    """
+    Validate Slurm launch shape to prevent accidental multiple ft_launchers per node.
+
+    Override for intentional simulation:
+      NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1
+    """
+    if os.getenv("SLURM_JOB_ID") is None:
+        return
+
+    if _parse_bool_env("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE"):
+        logger.warning(
+            "NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE is enabled; "
+            "skipping one-ft-launcher-per-node Slurm validation."
+        )
+        return
+
+    tasks_per_node = os.getenv("SLURM_TASKS_PER_NODE")
+    if tasks_per_node is None:
+        raise ValueError(
+            "Invalid Slurm launcher layout for ft_launcher (one launcher per node expected).\n"
+            f"Detected: SLURM_TASKS_PER_NODE={tasks_per_node!r}\n"
+            "Requirement: SLURM_TASKS_PER_NODE must be exactly '1' or '1(xN)' format.\n"
+            "Fix: launch with one task per node, e.g.:\n"
+            "  srun -l --ntasks=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 ...\n"
+            "If this is intentional simulation with multiple ft_launchers per node, set:\n"
+            "  NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1"
+        )
+
+    # SLURM_TASKS_PER_NODE is a comma-separated list of "count" or "count(xN)" entries
+    entries = [e.strip() for e in tasks_per_node.split(",") if e.strip()]
+    all_one = all(re.fullmatch(r"1(\(x\d+\))?", e) for e in entries)
+    if not entries or not all_one:
+        raise ValueError(
+            "Invalid Slurm launcher layout for ft_launcher (one launcher per node expected).\n"
+            f"Detected: SLURM_TASKS_PER_NODE={tasks_per_node!r}\n"
+            "Requirement: All task counts must be 1 (one launcher per node).\n"
+            "Fix: launch with one task per node, e.g.:\n"
+            "  srun -l --ntasks=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 ...\n"
+            "If this is intentional simulation with multiple ft_launchers per node, set:\n"
+            "  NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1"
+        )
+
 def _validate_args(args: Any) -> None:
     """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
+    _validate_slurm_single_launcher_per_node()
     if getattr(args, "ft_cycle_info_dir", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
         raise ValueError(
             "--ft-cycle-info-dir requires --ft-per-cycle-applog-prefix to be specified. "
             "Cycle info needs per-cycle log file path from the applog prefix."
         )
+    if getattr(args, "ft_nvrx_logfile", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
+        raise ValueError(
+            "--ft-nvrx-logfile requires --ft-per-cycle-applog-prefix to be specified."
+        )
+    if getattr(args, "ft_nvrx_logfile", None) and os.getenv("NVRX_NODE_LOCAL_TMPDIR"):
+        raise ValueError(
+            "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
+        )
 
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
     _validate_args(args)
+    if getattr(args, "ft_nvrx_logfile", None):
+        if getattr(args, "ft_enable_log_server", None) is None:
+            logger.info(
+                "--ft-nvrx-logfile is set; enabling --ft-enable-log-server automatically."
+            )
+            args.ft_enable_log_server = True
 
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
@@ -3247,7 +3320,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
         if getattr(args, 'ft_enable_log_server', False):
             # Build gRPC server address
-            rdzv_endpoint = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=-1)[0]
+            rdzv_endpoint_host = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=-1)[0]
             grpc_port = getattr(args, 'ft_log_server_port', 50051)
 
             # Node ID: hostname + PID for uniqueness in simulated multi-launcher environments
@@ -3284,7 +3357,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
             else:
                 # Writer is on a different host than the gRPC server
                 # Use the rendezvous endpoint to connect to the remote server
-                grpc_server_address = f"{rdzv_endpoint}:{grpc_port}"
+                grpc_server_address = f"{rdzv_endpoint_host}:{grpc_port}"
 
         # CRITICAL: Create rank monitors BEFORE PipeBasedLogsSpecs (which starts gRPC client thread)
         # This ensures rank monitors are forked before any threads exist (fork-safe)
@@ -3522,7 +3595,7 @@ def run(args):
         )
 
     # Register the selected FT rendezvous implementation
-    impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
+    impl_type = getattr(args, 'ft_rdzv_impl', 'barrier')
     _register_ft_rdzv_handler(impl_type)
     ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
     # Initialize NodeHealthCheck singleton at launcher start
