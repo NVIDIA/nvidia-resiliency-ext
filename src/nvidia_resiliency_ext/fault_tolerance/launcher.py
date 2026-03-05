@@ -38,6 +38,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 import torch
 from torch.distributed.argparse_util import check_env, env
 from torch.distributed.elastic import events, metrics, timer
+from torch.distributed.elastic.agent.server import api as _torch_elastic_agent_api
 from torch.distributed.elastic.agent.server.api import (
     RunResult,
     SimpleElasticAgent,
@@ -102,6 +103,22 @@ TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
+
+# Key set by PyTorch's _exit_barrier() when all active agents have reached the barrier
+# (success path). Standby nodes can check this to detect successful training completion
+# without relying on is_permanently_closed() (which requires the store host to have called shutdown();
+# the store host may be a standby).
+#
+# Derive the prefix from PyTorch internals and fail loudly on incompatibility
+# to avoid silently checking a stale key when upstream changes.
+if not hasattr(_torch_elastic_agent_api, "_TERMINAL_STATE_SYNC_ID"):
+    raise RuntimeError(
+        "PyTorch internal '_TERMINAL_STATE_SYNC_ID' was not found. "
+        "Cannot derive _exit_barrier store key safely; update this integration "
+        f"for torch=={torch.__version__}."
+    )
+
+_EXIT_BARRIER_LAST_MEMBER_KEY = f"{_torch_elastic_agent_api._TERMINAL_STATE_SYNC_ID}/last_member"
 
 # Logger instance (configured later in run() via setup_logger())
 # Note: Must call run() before using logger to ensure proper configuration
@@ -526,6 +543,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             return result
         except RendezvousGracefulExitError as e:
             logger.info("Rendezvous gracefully exited: %s", e)
+            return None
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
             self._shutdown(e.sigval, timeout=self._term_timeout)
@@ -674,6 +692,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # Check for cluster-wide issues: new nodes waiting or peer aborts
                 # Note: unhealthy_count is now a global job-level counter and is not used here
                 # for failure detection. It's only used in the rendezvous for early termination.
+                self._maybe_exit_standby_on_success(role)
+
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
@@ -1447,6 +1467,32 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Legacy rendezvous does not support peer aborted tracking
         return 0
 
+    def _maybe_exit_standby_on_success(self, role: str) -> None:
+        """If this node is a standby and the exit barrier is complete, exit gracefully.
+
+        Active agents only call _exit_barrier() on the SUCCEEDED path; when its
+        \"last_member\" key is set, all actives have finished. Checking this key
+        (instead of is_closed()) works even when the store host is a standby.
+
+        Raises:
+            RendezvousGracefulExitError: When standby detects success (caller should not catch).
+        """
+        min_nodes = self._rdzv_handler._settings.min_nodes
+        group_rank = self._worker_group.group_rank
+        if group_rank < min_nodes:
+            return
+        if self._store.check([_EXIT_BARRIER_LAST_MEMBER_KEY]):
+            self._on_cycle_end()
+            logger.info(
+                "[%s] Standby (group_rank=%s) detected exit barrier complete; "
+                "training finished successfully, exiting gracefully.",
+                role,
+                group_rank,
+            )
+            raise RendezvousGracefulExitError(
+                "Standby detected all active agents reached exit barrier (success)."
+            )
+
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
         spec = worker_group.spec
@@ -1747,7 +1793,7 @@ def launch_agent(
         events.record(agent.get_event_succeeded())
 
         if result is None:
-            logger.info("Agent .run() result is None. Agent was waiting at the rendezvous.")
+            logger.info("Agent .run() returned None (hot spare or standby exited successfully).")
             return None
 
         if result.is_failed():
@@ -1765,7 +1811,7 @@ def launch_agent(
         return result.return_values
     except UnhealthyNodeException as e:
         # do not shutdown rendezvous when an unhealthy node is leaving
-        # NOTE: This only prevents calling shutdown() to set closed_key.
+        # NOTE: This only prevents calling shutdown() to set the rendezvous permanent close key.
         # If this is the store host, the TCPStore will die when this process exits,
         # effectively terminating the rendezvous regardless of this flag.
         shutdown_rdzv = False
@@ -1801,16 +1847,15 @@ def launch_agent(
         events.record(agent.get_event_failed())
         raise
     finally:
-        # Store host grace period: The TCPStore is hosted in this process and will be
-        # destroyed when the process exits. To prevent race conditions where other nodes
-        # try to read final state (e.g., closed_key, unhealthy_count) from a destroyed
-        # store, the store host waits briefly before exiting to give other nodes time
-        # to detect the final state.
-        #
-        # IMPORTANT CONSTRAINT: When the store host process exits for any reason, the
-        # TCPStore dies with it, effectively terminating the rendezvous. The shutdown_rdzv
-        # flag only controls whether we explicitly signal closure via closed_key; it cannot
-        # keep the store alive if the store host process exits.
+        # Shutdown rdzv and rank monitors (may produce logs; reader thread must stay alive).
+        if shutdown_rdzv:
+            agent._rdzv_handler.shutdown()
+        agent.shutdown_rank_monitors()
+
+        # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
+        # ends. Wait a short grace period so other nodes can read final state (e.g. permanent close key,
+        # unhealthy_count) before the store goes away. shutdown_rdzv only controls explicit
+        # permanent-close signaling; it cannot keep the store alive after process exit.
         if is_store_host:
             # Trigger attribution service analysis for final cycle
             if agent._rdzv_handler._attr_service is not None:
@@ -1834,10 +1879,6 @@ def launch_agent(
                 cycle_info_writer.shutdown()
             t.join()
 
-        # Shutdown components (may generate logs - reader thread must stay alive!)
-        if shutdown_rdzv:
-            agent._rdzv_handler.shutdown()
-        agent.shutdown_rank_monitors()
         with contextlib.suppress(Exception):
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
 

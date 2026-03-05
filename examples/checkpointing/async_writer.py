@@ -2,7 +2,10 @@ import argparse
 import logging
 import shutil
 
-import multistorageclient as msc
+try:
+    import multistorageclient as msc
+except ImportError:
+    msc = None
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -154,6 +157,12 @@ def load_checkpoint(checkpoint_dir, model, thread_count, enable_msc):
 def main():
     args = parse_args()
     logging.info(f"Arguments: {args}")
+
+    if args.enable_msc and msc is None:
+        raise ImportError(
+            "multistorageclient is required when --enable_msc is set. "
+            "Install it with: pip install multistorageclient"
+        )
 
     # Initialize distributed training
     rank, world_size = init_distributed_backend(backend="nccl")

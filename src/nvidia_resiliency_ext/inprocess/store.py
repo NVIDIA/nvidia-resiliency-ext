@@ -14,17 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 import datetime
 import functools
 import inspect
+import json
 import logging
 import os
-
-# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
-# Severity: Low   Confidence: High
-# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
-# More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
-import pickle  # nosec
 import sys
 import time
 from collections.abc import Iterable
@@ -36,7 +32,7 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from . import exception, utils
 from .attribution import InterruptionRecord
-from .state import Mode
+from .state import Mode, State
 
 
 class BarrierError(exception.RestartError):
@@ -109,30 +105,26 @@ class StoreMixin:
         self.set(self.HEARTBEAT.format(rank=rank), str(time.time()))
 
     def send_state(self, state, rank: int):
-        self.set(self.STATE.format(rank=rank), pickle.dumps(state))
+        state_dict = dataclasses.asdict(state)
+        state_dict['mode'] = state.mode.name
+        state_dict['fn_exception'] = None
+        self.set(self.STATE.format(rank=rank), json.dumps(state_dict))
 
     def send_key(self, key, rank: int):
-        self.set(self.KEY.format(rank=rank), pickle.dumps(key))
+        self.set(self.KEY.format(rank=rank), json.dumps(key))
 
     def get_states(self, ranks):
-        states = [
-            # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
-            # Severity: Medium   Confidence: High
-            # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
-            # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
-            pickle.loads(state)  # nosec
-            for state in self.multi_get([self.STATE.format(rank=rank) for rank in ranks])
-        ]
+        states = []
+        for data in self.multi_get([self.STATE.format(rank=rank) for rank in ranks]):
+            state_dict = json.loads(data)
+            state_dict['mode'] = Mode[state_dict['mode']]
+            states.append(State(**state_dict))
         return states
 
     def get_keys(self, ranks):
         keys = [
-            # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
-            # Severity: Medium   Confidence: High
-            # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
-            # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
-            pickle.loads(key)  # nosec
-            for key in self.multi_get([self.KEY.format(rank=rank) for rank in ranks])
+            json.loads(data)
+            for data in self.multi_get([self.KEY.format(rank=rank) for rank in ranks])
         ]
         return keys
 

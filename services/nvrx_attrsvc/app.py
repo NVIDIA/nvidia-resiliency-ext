@@ -120,9 +120,10 @@ def create_app(cfg: Settings) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """Startup: set event loop and load cache. Shutdown: save cache and stop service."""
+        """Startup: set event loop, connect MCP (if used), load cache. Shutdown: save cache and stop service."""
         # Startup
         app.state.service.set_event_loop(asyncio.get_running_loop())
+        await app.state.service.connect_mcp()
         if app.state.cache_file:
             loaded = app.state.service.load_cache(app.state.cache_file)
             if loaded > 0:
@@ -131,7 +132,7 @@ def create_app(cfg: Settings) -> FastAPI:
         # Shutdown
         if app.state.cache_file:
             app.state.service.save_cache(app.state.cache_file)
-        app.state.service.shutdown()
+        await app.state.service.shutdown_async()
 
     app = FastAPI(
         title="NVRX Attribution Service",
