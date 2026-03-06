@@ -1,5 +1,7 @@
 build
 dist
+.claude
+CLAUDE.local.md
 *.egg-info
 __pycache__
 cupti_module.*.so
