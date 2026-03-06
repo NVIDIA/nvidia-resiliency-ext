@@ -53,7 +53,7 @@ class FaultToleranceConfig:
     * `enable_nic_healthcheck` - Enable NIC link state health check before rendezvous. This checks if
       network interface ports (RDMA/InfiniBand and Ethernet) are in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE.
       Unlike enable_nic_monitor (which periodically monitors link_downed counters), this performs a one-time
-      state check during rendezvous. Can be used independently or together with enable_nic_monitor. Default: False.
+      state check during rendezvous. Can be used independently or together with enable_nic_monitor. Default: True.
     * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.
     * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'
       placeholder which will be replaced with actual NIC device name.
@@ -77,9 +77,9 @@ class FaultToleranceConfig:
         min_nodes must be divisible by segment. When set, ClusterUUID is automatically queried.
       Note: segment=None and segment=1 have similar behavior in rank assignment, but segment=1
       requires ClusterUUID while segment=None does not.
-    * `numa_bind_strict` - If True, use strict NUMA binding with both CPU and memory bound to the
-      same NUMA node (--cpunodebind=N --membind=N). If False (default), only bind CPU to NUMA node
-      and allow local memory allocation (--cpunodebind=N --localalloc). Default: False.
+    * `numa_bind_strict` - If True (default), use strict NUMA binding with both CPU and memory bound to the
+      same NUMA node (--cpunodebind=N --membind=N). If False, only bind CPU to NUMA node
+      and allow local memory allocation (--cpunodebind=N --localalloc). Default: True.
     * `gpu_memory_reclaim_timeout` [float] timeout (in seconds) to wait for GPU memory to be reclaimed
       after worker shutdown before starting new workers. Default: 50.0.
     * `gpu_memory_tolerance_mb` [float] maximum allowed GPU memory usage (in MB) when checking if
@@ -109,8 +109,8 @@ class FaultToleranceConfig:
     """
 
     workload_check_interval: float = 5.0
-    initial_rank_heartbeat_timeout: Optional[float] = 60.0 * 60.0
-    rank_heartbeat_timeout: Optional[float] = 45.0 * 60.0
+    initial_rank_heartbeat_timeout: Optional[float] = None
+    rank_heartbeat_timeout: Optional[float] = None
     rank_section_timeouts: Mapping[str, Optional[float]] = dataclasses.field(default_factory=dict)
     rank_out_of_section_timeout: Optional[float] = None
     node_health_check_interval: float = 5.0
@@ -119,7 +119,7 @@ class FaultToleranceConfig:
     log_level: int = logging.INFO
     restart_check_interval: float = 60.0
     enable_nic_monitor: bool = False
-    enable_nic_healthcheck: bool = False
+    enable_nic_healthcheck: bool = True
     enable_dist_storage_healthcheck: bool = False
     storage_healthcheck_path: Optional[str] = None
     pci_topo_file: Optional[str] = None
@@ -127,7 +127,7 @@ class FaultToleranceConfig:
     link_state_path_template: Optional[str] = None
     skip_section_response: bool = True
     segment: Optional[int] = None
-    numa_bind_strict: bool = False
+    numa_bind_strict: bool = True
     gpu_memory_reclaim_timeout: float = 50.0
     gpu_memory_tolerance_mb: float = 512.0  # Maximum allowed GPU memory usage (in MB)
     gpu_memory_poll_interval: float = 2.0  # Poll interval for GPU memory check (in seconds)
