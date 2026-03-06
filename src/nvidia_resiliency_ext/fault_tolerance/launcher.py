@@ -1375,9 +1375,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._worker_watchdog = None
         if self._pcontext:
             self._pcontext.close(death_sig, timeout=timeout)
-            # Remove multiprocessing leftovers
-            # PID=1 become a parent if the original parent died
-            terminate_mp_processes(allowed_ppids={1}, allowed_pgids=self._children_pgids)
+            # Best-effort cleanup for orphan descendants in worker process groups.
+            # PID=1 can become parent when original worker parent exits.
+            terminate_mp_processes(allowed_pgids=self._children_pgids)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
