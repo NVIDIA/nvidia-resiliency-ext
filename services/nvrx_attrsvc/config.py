@@ -71,11 +71,16 @@ class Settings(BaseSettings):
         default="", description="Dataflow/elasticsearch index for posting results"
     )
 
-    # Slack integration (optional - set SLACK_BOT_TOKEN to enable; env vars have no NVRX_ATTRSVC_ prefix)
+    # Slack integration (optional - set SLACK_BOT_TOKEN or SLACK_BOT_TOKEN_FILE to enable; no NVRX_ATTRSVC_ prefix)
     SLACK_BOT_TOKEN: str = Field(
         default="",
         description="Slack bot token (empty = disabled)",
         validation_alias="SLACK_BOT_TOKEN",
+    )
+    SLACK_BOT_TOKEN_FILE: str = Field(
+        default="",
+        description="Path to file containing Slack bot token (preferred over SLACK_BOT_TOKEN)",
+        validation_alias="SLACK_BOT_TOKEN_FILE",
     )
     SLACK_CHANNEL: str = Field(
         default="",
@@ -217,19 +222,19 @@ def setup() -> Settings:
     logging.getLogger("nvidia_resiliency_ext.attribution.mcp_integration").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
-    # Wire postprocessing config (lib singleton)
-    from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster, configure
+    # Wire postprocessing config (lib singleton); slack resolved from env (SLACK_BOT_TOKEN/SLACK_BOT_TOKEN_FILE)
+    from nvidia_resiliency_ext.attribution.postprocessing import (
+        ResultPoster,
+        configure_postprocessing_resolved,
+    )
+    from nvidia_resiliency_ext.attribution.postprocessing.dataflow import post as dataflow_post
 
-    from . import dataflow
-
-    configure(
-        default_poster=ResultPoster(post_fn=dataflow.post),
+    configure_postprocessing_resolved(
+        default_poster=ResultPoster(post_fn=dataflow_post),
         cluster_name=cfg.CLUSTER_NAME or "",
         dataflow_index=cfg.DATAFLOW_INDEX or "",
-        slack_bot_token=cfg.SLACK_BOT_TOKEN or "",
-        slack_channel=cfg.SLACK_CHANNEL or "",
+        slack_token=None,
+        slack_channel=cfg.SLACK_CHANNEL or None,
+        cluster_name_env=None,
     )
-    if cfg.SLACK_BOT_TOKEN:
-        logger.info(f"Slack notifications enabled for channel: {cfg.SLACK_CHANNEL}")
-
     return cfg

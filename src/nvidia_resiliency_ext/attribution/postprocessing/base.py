@@ -22,6 +22,7 @@ from nvidia_resiliency_ext.attribution.log_analyzer.utils import (
     JobMetadata,
     ParsedLLMResponse,
     build_dataflow_record,
+    log_attribution_result,
 )
 
 from .config import config
@@ -107,11 +108,8 @@ def post_results(
         user=user,
     )
 
-    logger.info("jobid: %s", metadata.job_id)
+    log_attribution_result(data)
     logger.info("log_path: %s", log_path)
-    logger.info("auto_resume: %s", parsed.auto_resume)
-    logger.info("auto_resume_explanation: %s", parsed.auto_resume_explanation)
-    logger.info("attribution_text: %s", parsed.attribution_text)
 
     poster = get_default_poster()
     success = True
