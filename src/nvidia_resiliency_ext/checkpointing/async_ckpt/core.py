@@ -80,16 +80,23 @@ def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
 
     # Set I/O priority (ionice) - Linux only
     if io_priority is not None:
-        try:
-            # ionice -c <class> -p <pid>
-            # class 3 = idle (only when no other process needs I/O)
-            # class 2 = best-effort (default, can set priority 0-7)
-            subprocess.run(
-                ["ionice", "-c", str(io_priority), "-p", str(pid)], check=True, capture_output=True
+        if io_priority not in range(4):
+            logger.warning(
+                f"PID {pid}: Invalid io_priority {io_priority!r}; must be 0-3. Skipping ionice."
             )
-            logger.debug(f"PID {pid}: Set I/O priority class to {io_priority}")
-        except (subprocess.CalledProcessError, FileNotFoundError, PermissionError) as e:
-            logger.warning(f"PID {pid}: Failed to set I/O priority: {e}")
+        else:
+            try:
+                # ionice -c <class> -p <pid>
+                # class 3 = idle (only when no other process needs I/O)
+                # class 2 = best-effort (default, can set priority 0-7)
+                subprocess.run(
+                    ["ionice", "-c", str(io_priority), "-p", str(pid)],
+                    check=True,
+                    capture_output=True,
+                )
+                logger.debug(f"PID {pid}: Set I/O priority class to {io_priority}")
+            except (subprocess.CalledProcessError, FileNotFoundError, PermissionError) as e:
+                logger.warning(f"PID {pid}: Failed to set I/O priority: {e}")
 
 
 class AsyncRequest(NamedTuple):
@@ -797,6 +804,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 is_daemon=is_daemon, cpu_priority=cpu_priority, io_priority=io_priority
             )
             caller._start_worker(rank)
+            caller.rank = rank
             cls._warmup_persistent_caller = caller
 
     def schedule_async_request(self, async_request: AsyncRequest) -> int:
