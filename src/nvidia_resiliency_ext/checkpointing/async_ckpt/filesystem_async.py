@@ -831,7 +831,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                     f" an error: {local_results_or_exc}"
                 )
                 logger.error(err_msg)
-            assert isinstance(local_results_or_exc, list), type(local_results_or_exc)
+                raise local_results_or_exc
 
         for i, write_bucket in enumerate(write_buckets):
             try:
@@ -892,12 +892,23 @@ class FileSystemWriterAsync(FileSystemWriter):
                     )
                     break
                 else:
-                    check_local_output(local_results_or_exc, local_thread_idx)
+                    try:
+                        check_local_output(local_results_or_exc, local_thread_idx)
+                    except Exception as worker_exc:
+                        write_results_or_exc = worker_exc
+                        break
                     write_results_or_exc[local_thread_idx] = local_results_or_exc
             for t in thread_list:
                 t.join()
             logger.debug('FileSystemWriterAsync: collected worker results successfully')
 
+        if isinstance(write_results_or_exc, dict) and len(write_results_or_exc) != len(
+            write_buckets
+        ):
+            write_results_or_exc = RuntimeError(
+                f"Incomplete write results: expected {len(write_buckets)} buckets,"
+                f" got {len(write_results_or_exc)}"
+            )
         global_results_queue.put(write_results_or_exc)
 
         w_end = time()
@@ -982,6 +993,12 @@ class FileSystemWriterAsync(FileSystemWriter):
                 return _wrap_exception(RuntimeError('results_queue should not be empty'))
 
         if isinstance(write_results_or_exc, Exception):
+            # Worker failed — its data cache may have been lost (e.g. after a restart).
+            # Drop any identifier we recorded as cached so the next save re-populates it.
+            if self.consistent_data_identifier is not None:
+                FileSystemWriterAsync._cached_identifiers.discard(
+                    self.consistent_data_identifier.key
+                )
             try:
                 raise RuntimeError(
                     f'Worker failure: {write_results_or_exc}'

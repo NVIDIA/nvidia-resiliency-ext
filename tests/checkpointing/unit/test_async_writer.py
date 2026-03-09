@@ -304,9 +304,7 @@ class TestAsyncSave:
 
         # Run 3 iterations; iteration 0 seeds the cache, iterations 1-2 reuse it.
         for i in range(3):
-            ckpt_dir = TempNamedDir(
-                tmp_path_dist_ckpt / f'cached_structure_{i}', sync=True
-            )
+            ckpt_dir = TempNamedDir(tmp_path_dist_ckpt / f'cached_structure_{i}', sync=True)
             self.async_save_checkpoint(
                 ckpt_dir,
                 state_dict,
