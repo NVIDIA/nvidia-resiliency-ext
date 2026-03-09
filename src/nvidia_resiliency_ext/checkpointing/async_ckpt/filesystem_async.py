@@ -16,6 +16,7 @@
 """ Storage writer for PyT Distributed format allowing asynchronous save. """
 import dataclasses
 import inspect
+import hashlib
 import logging
 import os
 
@@ -73,11 +74,11 @@ class ConsistentDataIdentifier:
     the entire data structure (which includes IPC handles) across process boundaries.
     """
 
-    def __init__(self, key: int):
+    def __init__(self, key: str):
         self.key = key
 
 
-def _compute_data_structure_key_from_plan(items: List[WriteItem]) -> int:
+def _compute_data_structure_key_from_plan(items: List[WriteItem]) -> str:
     """Compute a hash key based on plan items only (no data resolution needed).
 
     This creates a deterministic key from plan metadata that's available without
@@ -87,7 +88,7 @@ def _compute_data_structure_key_from_plan(items: List[WriteItem]) -> int:
         items: List of WriteItem from the plan
 
     Returns:
-        Integer hash key representing the data structure
+        Hex-digest string key representing the data structure
     """
     structure_info = []
 
@@ -110,8 +111,9 @@ def _compute_data_structure_key_from_plan(items: List[WriteItem]) -> int:
             data_info = (("BYTE_IO",), "BYTE_IO")
         structure_info.append((item_info, data_info))
 
-    # Create a hash from the structure info
-    return hash(tuple(structure_info))
+    # Use SHA-256 for collision resistance and cross-process stability
+    # (Python's built-in hash() is randomized per-process and collision-prone)
+    return hashlib.sha256(str(structure_info).encode()).hexdigest()
 
 
 @_disable_gc()
@@ -261,7 +263,6 @@ class FileSystemWriterAsync(FileSystemWriter):
         # CPU tensors will be separated and treated like ByteIO (always resolved fresh)
         if self.use_cached_data_structure and tensor_items:
             key = _compute_data_structure_key_from_plan(tensor_items)
-            self.consistent_data_identifier = ConsistentDataIdentifier(key)
             cache_exists = key in FileSystemWriterAsync._cached_identifiers
 
             # Always resolve tensors to separate CPU tensors (which can't be cached)
@@ -272,17 +273,27 @@ class FileSystemWriterAsync(FileSystemWriter):
 
             if cache_exists:
                 # Reuse cached GPU tensors from worker
+                self.consistent_data_identifier = ConsistentDataIdentifier(key)
                 self.cached_tensor_data = None  # Signal to reuse cached data
                 logger.debug(
                     f"Reusing cached GPU tensors (key={key}), "
                     f"resolved {len(cpu_items)} CPU tensors fresh"
                 )
-            else:
+            elif gpu_items:
                 # First time caching - send GPU tensor data to worker
-                self.cached_tensor_data = (gpu_items, gpu_data) if gpu_items else None
+                self.consistent_data_identifier = ConsistentDataIdentifier(key)
+                self.cached_tensor_data = (gpu_items, gpu_data)
                 FileSystemWriterAsync._cached_identifiers.add(key)
                 logger.debug(
                     f"Caching {len(gpu_items)} GPU tensors (key={key}), "
+                    f"{len(cpu_items)} CPU tensors passed fresh"
+                )
+            else:
+                # No GPU tensors to cache; skip caching entirely
+                self.consistent_data_identifier = None
+                self.cached_tensor_data = None
+                logger.debug(
+                    f"No GPU tensors to cache (key={key}), "
                     f"{len(cpu_items)} CPU tensors passed fresh"
                 )
 
