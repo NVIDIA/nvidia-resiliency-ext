@@ -57,8 +57,8 @@ try:
 except ImportError:
     HAVE_PSUTIL = False
 
-from .core import PersistentAsyncCaller
 from ..utils import _disable_gc
+from .core import PersistentAsyncCaller
 
 logger = logging.getLogger(__name__)
 
