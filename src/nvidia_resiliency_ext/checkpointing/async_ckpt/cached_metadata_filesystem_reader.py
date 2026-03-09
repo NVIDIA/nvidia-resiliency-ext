@@ -40,6 +40,9 @@ class CachedMetadataFileSystemReader(FileSystemReader):
 
         Args:
             path (Union[str, os.PathLike]): Path to the checkpoint directory or file.
+            cache_metadata (bool): If True (default), metadata is cached at the class level
+                and shared across all instances pointing to the same checkpoint directory.
+                If False, metadata is always read from disk on each call.
         """
         super().__init__(path=path)
         self._cache_key = os.path.abspath(os.fspath(path)) if cache_metadata else None
@@ -52,6 +55,8 @@ class CachedMetadataFileSystemReader(FileSystemReader):
         Returns:
             Metadata: Checkpoint metadata.
         """
+        if self._cache_key is None:
+            return super().read_metadata()
         if self._cache_key not in CachedMetadataFileSystemReader._metadata_cache:
             CachedMetadataFileSystemReader._metadata_cache[self._cache_key] = (
                 super().read_metadata()
@@ -59,8 +64,16 @@ class CachedMetadataFileSystemReader(FileSystemReader):
         return CachedMetadataFileSystemReader._metadata_cache[self._cache_key]
 
     @classmethod
-    def clear_metadata_cache(cls):
+    def clear_metadata_cache(cls, path: Union[str, os.PathLike, None] = None):
         """
         Clear the metadata cache.
+
+        Args:
+            path (Union[str, os.PathLike, None]): If provided, only the cache entry for
+                this specific checkpoint path is removed. If None (default), the entire
+                cache is cleared.
         """
-        cls._metadata_cache.clear()
+        if path is None:
+            cls._metadata_cache.clear()
+        else:
+            cls._metadata_cache.pop(os.path.abspath(os.fspath(path)), None)
