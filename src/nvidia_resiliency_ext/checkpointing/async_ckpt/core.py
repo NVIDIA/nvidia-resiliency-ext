@@ -60,7 +60,7 @@ def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
             increment = cpu_priority - current_nice
             if increment <= 0:
                 logger.warning(
-                    "PID %s: Skipping CPU nice (current %s already <= target %s; "
+                    "PID %s: Skipping CPU nice (current %s already >= target %s; "
                     "lowering requires superuser",
                     pid,
                     current_nice,
@@ -873,6 +873,11 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             self.maybe_finalize_async_calls(blocking=True)
         if self.persistent and self.persistent_caller:
             self.persistent_caller.close(abort=abort)
+
+        # Clean up any pre-warmed worker that was never consumed by a checkpoint schedule.
+        if AsyncCallsQueue._warmup_persistent_caller is not None:
+            AsyncCallsQueue._warmup_persistent_caller.close(abort=abort)
+            AsyncCallsQueue._warmup_persistent_caller = None
 
         # Reset all class params
         self.call_idx = -1
