@@ -430,7 +430,7 @@ class PersistentAsyncCaller(AsyncCaller):
 
     def __init__(
         self,
-        is_daemon: bool = False,
+        is_daemon: bool = True,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
     ):
@@ -768,7 +768,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
     def __init__(
         self,
         persistent: bool = True,
-        is_daemon: bool = False,
+        is_daemon: bool = True,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
     ):
@@ -790,8 +790,16 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             # shared across processes (each process has its own copy), and we expect only the
             # main trainer thread to call this routine, so there is no concurrent access.
             if AsyncCallsQueue._warmup_persistent_caller is not None:
-                self.persistent_caller = AsyncCallsQueue._warmup_persistent_caller
+                warmed = AsyncCallsQueue._warmup_persistent_caller
                 AsyncCallsQueue._warmup_persistent_caller = None
+                if warmed.process is not None and not warmed.process.is_alive():
+                    logger.warning(
+                        "Pre-warmed async caller process (PID %s) is no longer alive; "
+                        "starting a fresh worker.",
+                        warmed.process.pid,
+                    )
+                    warmed.process = None
+                self.persistent_caller = warmed
             else:
                 self.persistent_caller = PersistentAsyncCaller(
                     is_daemon=self.is_daemon,
@@ -804,7 +812,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
     def warmup_persistent_caller(
         cls,
         rank: int,
-        is_daemon: bool = False,
+        is_daemon: bool = True,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
     ):
