@@ -675,32 +675,34 @@ class PersistentAsyncCaller(AsyncCaller):
         _set_process_qos(cpu_priority=cpu_priority, io_priority=io_priority)
 
         # Start busy loop waiting for and executing checkpoint saves.
-        while True:
-            item = queue.get()
-            if isinstance(item, str) and item == 'DONE':
-                queue.task_done()
-                break
-            elif isinstance(item, AsyncRequest):
-                async_fn_args = list(item.async_fn_args)
-                if item.preload_fn:
-                    call_idx = preload_q.get()
-                    # the 2nd arg is state dict
-                    async_fn_args[1] = item.preload_fn()
-                    logger.debug(f"{rank} has completed D2H of {call_idx}")
-                    preload_q.task_done()
-                if item.async_fn is not None:
-                    async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                    item.async_fn(*async_fn_args, **async_fn_kwargs)
-                logger.debug(f"{rank} has completed saving {item.call_idx}")
-                comp_q.put(item.call_idx)
-                queue.task_done()
-                del async_fn_args
-            del item
-            gc.collect()
+        try:
+            while True:
+                item = queue.get()
+                if isinstance(item, str) and item == 'DONE':
+                    queue.task_done()
+                    break
+                elif isinstance(item, AsyncRequest):
+                    async_fn_args = list(item.async_fn_args)
+                    if item.preload_fn:
+                        call_idx = preload_q.get()
+                        # the 2nd arg is state dict
+                        async_fn_args[1] = item.preload_fn()
+                        logger.debug(f"{rank} has completed D2H of {call_idx}")
+                        preload_q.task_done()
+                    if item.async_fn is not None:
+                        async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                        item.async_fn(*async_fn_args, **async_fn_kwargs)
+                    logger.debug(f"{rank} has completed saving {item.call_idx}")
+                    comp_q.put(item.call_idx)
+                    queue.task_done()
+                    del async_fn_args
+                del item
+                gc.collect()
+        finally:
+            # Cleanup worker data cache before exiting, regardless of how the loop exits
+            # (normal termination via 'DONE' sentinel or unhandled exception).
+            PersistentAsyncCaller.cleanup_worker_data_cache()
         logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank}  has terminated")
-
-        # Cleanup worker data cache before exiting
-        PersistentAsyncCaller.cleanup_worker_data_cache()
 
     @staticmethod
     @_disable_gc()
