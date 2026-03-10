@@ -44,8 +44,14 @@ def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
     Args:
         cpu_priority: Nice value for CPU scheduling (0-19, higher = lower priority).
                      Default 10 is moderately deprioritized.
-        io_priority: I/O scheduling class and priority. If None, uses best-effort class.
-                    Format: class_id (0-3) where 3 = idle (lowest priority).
+        io_priority: ionice scheduling class. If None, I/O priority is unchanged.
+                    Valid values (0-3):
+                      0 = none/unspecified (kernel default)
+                      1 = realtime — **highest** I/O priority; pre-empts all other I/O.
+                          NOT recommended for checkpoint workers; will starve training I/O.
+                      2 = best-effort (OS default)
+                      3 = idle — lowest priority; runs only when no other process needs I/O.
+                          Recommended for checkpoint deprioritization.
 
     Note: Requires appropriate permissions. Failures are logged but not fatal.
     """
@@ -85,6 +91,12 @@ def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
                 f"PID {pid}: Invalid io_priority {io_priority!r}; must be 0-3. Skipping ionice."
             )
         else:
+            if io_priority <= 2:
+                logger.warning(
+                    f"PID {pid}: io_priority={io_priority} will NOT deprioritize I/O "
+                    f"(class 1=realtime escalates priority, class 2=best-effort is OS default). "
+                    f"Use io_priority=3 (idle) to deprioritize checkpoint I/O. Proceeding anyway."
+                )
             try:
                 # ionice -c <class> -p <pid>
                 # class 3 = idle (only when no other process needs I/O)
@@ -641,8 +653,10 @@ class PersistentAsyncCaller(AsyncCaller):
                                        to get aligned with the training rank's logging level
             cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).
                                Default 10 deprioritizes checkpoint writing vs training.
-            io_priority (int, Optional): I/O scheduling class (0-3, where 3=idle).
-                                        Default None skips I/O priority setting.
+            io_priority (int, Optional): ionice scheduling class (0-3). Default None leaves
+                                        I/O priority unchanged. Use 3 (idle) to deprioritize
+                                        checkpoint I/O. NOTE: class 1 = realtime (highest
+                                        priority — NOT recommended for checkpoint workers).
 
         """
         # Set root logger level to affect all modules in this process
@@ -800,7 +814,9 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             rank (int): the current distributed rank.
             is_daemon (bool): whether to spawn the worker as a daemon process.
             cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).
-            io_priority (int, Optional): I/O scheduling class (0-3, where 3=idle).
+            io_priority (int, Optional): ionice scheduling class (0-3). Use 3 (idle) to
+                deprioritize checkpoint I/O. NOTE: class 1 = realtime (highest priority —
+                NOT recommended for checkpoint workers).
         """
         if cls._warmup_persistent_caller is None:
             caller = PersistentAsyncCaller(
