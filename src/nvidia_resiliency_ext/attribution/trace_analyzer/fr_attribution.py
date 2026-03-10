@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple
 from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
 from nvidia_resiliency_ext.attribution.utils import capture_logs
 
-log_level = logging.DEBUG if os.getenv('FR_DEBUG') else logging.INFO
+log_level = logging.DEBUG if os.getenv('FR_DEBUG', '').lower() in ('1', 'true', 'yes') else logging.INFO
 logging.basicConfig(level=log_level)
 logger = logging.getLogger()
 
@@ -164,18 +164,18 @@ class CollectiveAnalyzer(NVRxAttribution):
                     processed_files += 1
             self.collective_groups = self.group_collectives_by_windows()
 
-            def collectives_to_order():
+            def build_collectives_to_order():
                 """
                 Collectives to order.
                 """
-                collectives_to_order = {}
+                order_map = {}
                 idx = 0
                 for key, collectives in self.collective_groups.items():
-                    collectives_to_order[key] = idx
+                    order_map[key] = idx
                     idx += 1
-                return collectives_to_order
+                return order_map
 
-            self.collectives_to_order = collectives_to_order()
+            self.collectives_to_order = build_collectives_to_order()
             logger.info(f"collective_groups: {self.collective_groups.keys()}")
             logger.info(f"collectives_to_order: {self.collectives_to_order}")
             if self.args.verbose:
@@ -394,6 +394,10 @@ class CollectiveAnalyzer(NVRxAttribution):
             previous_participants = pg_window_participants[pg_window_key]
 
             has_previous_participants = len(previous_participants) > 0
+            # TODO: This heuristic is imprecise. collective_seq_id is not a reliable signal
+            # because ranks diverge in seq_id when they participate in p2p operations, making
+            # cross-rank seq_id comparison error-prone. A more principled window-split criterion
+            # is needed. For now, a fixed threshold of 2 is used as a best-effort approximation.
             has_significant_new_ranks = len(ranks_with_current_pg - previous_participants) >= 2
 
             # Create new window if:
@@ -558,8 +562,6 @@ class CollectiveAnalyzer(NVRxAttribution):
                     if c.state != 'scheduled':
                         continue
                     rank_counts['appeared'].append(c.file_id)
-                #                    if get_correct_seq_id(c) <= max_completed_collective_seq_id:
-                #                        rank_counts['mismatched'].append(c.file_id)
                 appeared_rank_counts = Counter(rank_counts['appeared'])
                 # Ranks with less number of enqueued collectives than max_enqueued_collective_seq_id -> host not making expected progress
                 for rank_id in self.pg_configs[process_group]['ranks']:
@@ -671,7 +673,6 @@ class CollectiveAnalyzer(NVRxAttribution):
                 parsed_row = tuple(row_elem[0] for row_elem in row_data)
                 if len(missing_ranks) <= 0:
                     completed_pg[(int)(parsed_row[0])].append(parsed_row)
-                    # print(row)
                     return
                 else:
                     missing_pg[(int)(parsed_row[0])].append(parsed_row)
@@ -864,7 +865,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                     visited_keys.remove(current_key)
                 return [current_path.copy()]
 
-            def find_type_val(key: tuple[str, str, int]) -> int:
+            def find_type_val(key: Tuple[str, str, int]) -> int:
                 """
                 Find the order index of a given process group type
                 """
@@ -895,7 +896,6 @@ class CollectiveAnalyzer(NVRxAttribution):
                         all_paths.extend(paths_from_neighbor)
                     else:
                         all_paths.append(current_path.copy())
-            #            visited_in_path.remove(node)
             visited_keys.remove(current_key)
             return all_paths
 
