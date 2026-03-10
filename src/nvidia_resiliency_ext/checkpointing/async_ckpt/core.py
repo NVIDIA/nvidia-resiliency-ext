@@ -771,7 +771,10 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             logger.warning("The TemporalAsyncCaller will be deprecated soon. ")
             return TemporalAsyncCaller()
         if self.persistent_caller is None:
-            # Consume the pre-warmed caller if available
+            # Consume the pre-warmed caller if available.
+            # No locking needed: _warmup_persistent_caller is a class-level variable that is not
+            # shared across processes (each process has its own copy), and we expect only the
+            # main trainer thread to call this routine, so there is no concurrent access.
             if AsyncCallsQueue._warmup_persistent_caller is not None:
                 self.persistent_caller = AsyncCallsQueue._warmup_persistent_caller
                 AsyncCallsQueue._warmup_persistent_caller = None
