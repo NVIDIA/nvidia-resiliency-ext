@@ -19,7 +19,9 @@ from typing import Dict, List, Tuple
 from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
 from nvidia_resiliency_ext.attribution.utils import capture_logs
 
-log_level = logging.DEBUG if os.getenv('FR_DEBUG', '').lower() in ('1', 'true', 'yes') else logging.INFO
+log_level = (
+    logging.DEBUG if os.getenv('FR_DEBUG', '').lower() in ('1', 'true', 'yes') else logging.INFO
+)
 logging.basicConfig(level=log_level)
 logger = logging.getLogger()
 
