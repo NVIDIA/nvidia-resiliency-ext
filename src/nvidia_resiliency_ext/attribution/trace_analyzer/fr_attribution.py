@@ -872,8 +872,9 @@ class CollectiveAnalyzer(NVRxAttribution):
                 Find the order index of a given process group type
                 """
                 type_name = key[0]
-                type_val = key[1].split(',')[0]
-                per_pg_seq = (int)(key[1].split(',')[1])
+                last_comma = key[1].rfind(',')
+                type_val = key[1][:last_comma]
+                per_pg_seq = int(key[1][last_comma + 1 :])
                 parsed_key = (type_name, type_val, per_pg_seq)
                 logger.debug(
                     f"key: {parsed_key}, self.collectives_to_order: {self.collectives_to_order[parsed_key]}"
