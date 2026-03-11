@@ -14,7 +14,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
 from nvidia_resiliency_ext.attribution.utils import capture_logs
@@ -186,8 +186,6 @@ class CollectiveAnalyzer(NVRxAttribution):
             raise ValueError(f"No files at {file_paths} were processed successfully.")
 
         logger.info(f"\nSuccessfully processed {processed_files} files.")
-        missing_pg = None
-        completed_pg = None
         # analyze collectives to find process groups with missing and completed ranks
         completed_pg, missing_pg = self.analyze_matches(verbose=self.args.verbose)
         grouped_missing_pgs = {}
@@ -252,7 +250,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         analysis_output = output.getvalue()
         return analysis_output
 
-    async def collective_analysis(self, analysis_output: str) -> str:
+    async def collective_analysis(self, analysis_output: str) -> Optional[str]:
         """
         Analyze the collective operations using a Large Language Model (LLM).
 
@@ -338,7 +336,7 @@ class CollectiveAnalyzer(NVRxAttribution):
     Helper functions to define steps for the registered attribution steps above
     """
 
-    def group_collectives_by_windows(self):
+    def group_collectives_by_windows(self) -> Dict:
         """
         Group the collectives by windows.
         """
@@ -457,7 +455,7 @@ class CollectiveAnalyzer(NVRxAttribution):
 
         return matched_groups
 
-    def analyze_matches(self, verbose: bool = False):
+    def analyze_matches(self, verbose: bool = False) -> Tuple[Dict, Dict]:
         """
         Analyze matching collectives across files, grouped by process group type and ordered by sub group.
         Dynamically identifies group types from the data.
@@ -495,22 +493,6 @@ class CollectiveAnalyzer(NVRxAttribution):
             else:
                 logger.info(f"Found group types: {', '.join(group_types)}")
 
-            # Categorize collective groups by type
-            categorized_groups = {group_type: [] for group_type in group_types}
-            other_groups = []  # For groups that don't match any of the specified types
-
-            for key, collectives in self.collective_groups.items():
-                if len(collectives) <= 1:
-                    continue
-
-                process_group, sub_group, window_idx = key
-
-                # Check if this sub_group matches any of our group types
-                if sub_group in group_types:
-                    categorized_groups[sub_group].append((key, collectives))
-                else:
-                    other_groups.append((key, collectives))
-
             # Headers for this section
             headers = [
                 ("Process Group", 15),
@@ -535,8 +517,6 @@ class CollectiveAnalyzer(NVRxAttribution):
                 logger.debug(f"collective_group: {collective_group}")
                 key, collectives = collective_group
                 process_group, sub_group, window_idx = key
-                # Count occurrences of each rank ID
-                group_by_seq_id = defaultdict(list)
                 max_completed_collective_seq_id = -1
                 max_enqueued_collective_seq_id = -1
                 local_pg_map = dict()
@@ -604,14 +584,12 @@ class CollectiveAnalyzer(NVRxAttribution):
                         if "nccl:send" in op:
                             parts = op.split()
                             if len(parts) > 1:
-                                direction = parts[1]  # e.g., "0->1"
-                                src, dst = direction.split("->")
+                                src, dst = parts[1].split("->")  # e.g., "0->1"
                                 send_ops[(src, dst)] = count
                         elif "nccl:recv" in op:
                             parts = op.split()
                             if len(parts) > 1:
-                                direction = parts[1]  # e.g., "0<-1"
-                                dst, src = direction.split("<-")
+                                dst, src = parts[1].split("<-")  # e.g., "0<-1"
                                 recv_ops[(dst, src)] = count
                         else:
                             other_ops[op] = count
@@ -789,7 +767,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         completed_pg, missing_pg = match_collectives()
         return completed_pg, missing_pg
 
-    def group_pgs(self, pgs: Dict[str, List[str]]) -> Dict[int, List[int]]:
+    def group_pgs(self, pgs: Dict[str, List]) -> Dict[int, List[int]]:
         """
         Groups process groups by finding longest paths in the graph when their ranks overlap.
         Each process group proceeds to neighbors with equal or higher index of process group type.
@@ -824,8 +802,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                     )  # identified, missing ranks
                     ranks_str = [int(rank) for rank in ranks_str if rank != '']
                     if ranks_str:
-                        ranks = set(ranks_str)
-                        logger.debug(f"ranks: {ranks}")
+                        logger.debug(f"ranks: {ranks_str}")
                         pg_rank_mapping[(int)(pg_data[0])] = ranks_str  # Use index as key
                         pg_data_list.append(pg_data)
 
@@ -866,7 +843,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                     visited_keys.remove(current_key)
                 return [current_path.copy()]
 
-            def find_type_val(key: Tuple[str, str, int]) -> int:
+            def find_type_val(key: Tuple[str, str]) -> int:
                 """
                 Find the order index of a given process group type
                 """
@@ -960,7 +937,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         logger.debug(f"unique_paths: {unique_paths}")
         return grouped_pgs
 
-    def process_file(self, filepath: str):
+    def process_file(self, filepath: str) -> bool:
         """
         Process a single file to extract collective operations and other metadata
         """
