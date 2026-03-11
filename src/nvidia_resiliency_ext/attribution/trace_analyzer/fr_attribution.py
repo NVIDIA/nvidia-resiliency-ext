@@ -97,7 +97,6 @@ class CollectiveAnalyzer(NVRxAttribution):
         self.args = args
         eprint(f"args: {args}")
         self.llm = None
-        self.type_to_order = None
         # initialize the NVRxAttribution class to run the attribution pipeline
         super().__init__(
             preprocess_input=self.preprocess_FR_dumps,
@@ -918,7 +917,7 @@ class CollectiveAnalyzer(NVRxAttribution):
 
             # Find all longest paths starting from this PG
             all_paths = find_valid_paths(graph, pg_idx, visited)
-            if all_paths is None:
+            if not all_paths:
                 logger.info(f"No paths from PG {pg_idx}. Skipping this PG")
                 continue
             else:
