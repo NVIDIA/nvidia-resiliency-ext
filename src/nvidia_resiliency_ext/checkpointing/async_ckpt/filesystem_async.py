@@ -93,7 +93,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         path: Union[str, os.PathLike],
         *args,
         separation_hint: Optional[str] = None,
-        is_multiproc_io: bool = True,
+        is_multiproc_io: bool = False,
         **kwargs,
     ):
         self.checkpoint_dir = path

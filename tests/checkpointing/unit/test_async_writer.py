@@ -78,7 +78,7 @@ class TestAsyncSave:
         thread_count=1,
         caching=False,
         open_file=open,
-        is_multiproc_io=True,
+        is_multiproc_io=False,
     ):
         """Performs an asynchronous model checkpoint save."""
         writer = FileSystemWriterAsync(
