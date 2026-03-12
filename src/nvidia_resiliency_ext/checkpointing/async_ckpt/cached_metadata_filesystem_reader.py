@@ -16,7 +16,7 @@
 """ FS Reader with metadata cached support. """
 
 import os
-from typing import Union
+from typing import Dict, Union
 
 from torch.distributed.checkpoint import FileSystemReader, Metadata
 
@@ -25,27 +25,55 @@ class CachedMetadataFileSystemReader(FileSystemReader):
     """
     Extends FileSystemReader to cache metadata for improved performance.
 
+    Metadata is shared across all reader instances that use the same checkpoint
+    directory (same path), since the loaded metadata is identical.
+
     Attributes:
-        _cached_metadata (Metadata or None): Cached metadata from the file system.
+        _metadata_cache (Dict[str, Metadata]): Class-level cache keyed by checkpoint path.
     """
 
-    def __init__(self, path: Union[str, os.PathLike]) -> None:
+    _metadata_cache: Dict[str, Metadata] = {}
+
+    def __init__(self, path: Union[str, os.PathLike], cache_metadata: bool = True) -> None:
         """
         Initialize with file system path.
 
         Args:
             path (Union[str, os.PathLike]): Path to the checkpoint directory or file.
+            cache_metadata (bool): If True (default), metadata is cached at the class level
+                and shared across all instances pointing to the same checkpoint directory.
+                If False, metadata is always read from disk on each call.
         """
         super().__init__(path=path)
-        self._cached_metadata = None
+        self._cache_key = os.path.abspath(os.fspath(path)) if cache_metadata else None
 
     def read_metadata(self) -> Metadata:
         """
         Read metadata from file system, caching for subsequent calls.
+        Shared across instances when the checkpoint directory is the same.
 
         Returns:
             Metadata: Checkpoint metadata.
         """
-        if self._cached_metadata is None:
-            self._cached_metadata = super().read_metadata()
-        return self._cached_metadata
+        if self._cache_key is None:
+            return super().read_metadata()
+        if self._cache_key not in CachedMetadataFileSystemReader._metadata_cache:
+            CachedMetadataFileSystemReader._metadata_cache[self._cache_key] = (
+                super().read_metadata()
+            )
+        return CachedMetadataFileSystemReader._metadata_cache[self._cache_key]
+
+    @classmethod
+    def clear_metadata_cache(cls, path: Union[str, os.PathLike, None] = None):
+        """
+        Clear the metadata cache.
+
+        Args:
+            path (Union[str, os.PathLike, None]): If provided, only the cache entry for
+                this specific checkpoint path is removed. If None (default), the entire
+                cache is cleared.
+        """
+        if path is None:
+            cls._metadata_cache.clear()
+        else:
+            cls._metadata_cache.pop(os.path.abspath(os.fspath(path)), None)
