@@ -98,6 +98,8 @@
 <span class="sd">&quot;&quot;&quot;</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">gc</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">subprocess</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">weakref</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">ABC</span><span class="p">,</span> <span class="n">abstractmethod</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">deque</span>
@@ -111,6 +113,81 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">..utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_disable_gc</span><span class="p">,</span> <span class="n">debug_time</span>
 
 <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_set_process_qos</span><span class="p">(</span><span class="n">cpu_priority</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">io_priority</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Set QoS (Quality of Service) for the current checkpoint writer process.</span>
+<span class="sd">    This ensures checkpoint writing doesn&#39;t interfere with training.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        cpu_priority: Nice value for CPU scheduling (0-19, higher = lower priority).</span>
+<span class="sd">                     Default 10 is moderately deprioritized.</span>
+<span class="sd">        io_priority: ionice scheduling class. If None, I/O priority is unchanged.</span>
+<span class="sd">                    Valid values (0-3):</span>
+<span class="sd">                      0 = none/unspecified (kernel default)</span>
+<span class="sd">                      1 = realtime — **highest** I/O priority; pre-empts all other I/O.</span>
+<span class="sd">                          NOT recommended for checkpoint workers; will starve training I/O.</span>
+<span class="sd">                      2 = best-effort (OS default)</span>
+<span class="sd">                      3 = idle — lowest priority; runs only when no other process needs I/O.</span>
+<span class="sd">                          Recommended for checkpoint deprioritization.</span>
+
+<span class="sd">    Note: Requires appropriate permissions. Failures are logged but not fatal.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">pid</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span>
+
+    <span class="c1"># Set CPU priority (nice value). os.nice(increment) adds to current;</span>
+    <span class="c1"># get current with os.nice(0). Only increase nice (deprioritize);</span>
+    <span class="c1"># decreasing requires superuser.</span>
+    <span class="k">if</span> <span class="n">cpu_priority</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">cpu_priority</span> <span class="o">&gt;=</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">cpu_priority</span> <span class="o">&lt;=</span> <span class="mi">19</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">current_nice</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">nice</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>  <span class="c1"># 0 = no change, returns current nice value</span>
+            <span class="n">increment</span> <span class="o">=</span> <span class="n">cpu_priority</span> <span class="o">-</span> <span class="n">current_nice</span>
+            <span class="k">if</span> <span class="n">increment</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="s2">&quot;PID </span><span class="si">%s</span><span class="s2">: Skipping CPU nice (current </span><span class="si">%s</span><span class="s2"> already &gt;= target </span><span class="si">%s</span><span class="s2">; &quot;</span>
+                    <span class="s2">&quot;lowering requires superuser&quot;</span><span class="p">,</span>
+                    <span class="n">pid</span><span class="p">,</span>
+                    <span class="n">current_nice</span><span class="p">,</span>
+                    <span class="n">cpu_priority</span><span class="p">,</span>
+                <span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">new_nice</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">nice</span><span class="p">(</span><span class="n">increment</span><span class="p">)</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                    <span class="s2">&quot;PID </span><span class="si">%s</span><span class="s2">: Set CPU nice from </span><span class="si">%s</span><span class="s2"> to </span><span class="si">%s</span><span class="s2"> (target </span><span class="si">%s</span><span class="s2">)&quot;</span><span class="p">,</span>
+                    <span class="n">pid</span><span class="p">,</span>
+                    <span class="n">current_nice</span><span class="p">,</span>
+                    <span class="n">new_nice</span><span class="p">,</span>
+                    <span class="n">cpu_priority</span><span class="p">,</span>
+                <span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">OSError</span><span class="p">,</span> <span class="ne">PermissionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PID </span><span class="si">{</span><span class="n">pid</span><span class="si">}</span><span class="s2">: Failed to set CPU priority: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Set I/O priority (ionice) - Linux only</span>
+    <span class="k">if</span> <span class="n">io_priority</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">io_priority</span> <span class="ow">not</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;PID </span><span class="si">{</span><span class="n">pid</span><span class="si">}</span><span class="s2">: Invalid io_priority </span><span class="si">{</span><span class="n">io_priority</span><span class="si">!r}</span><span class="s2">; must be 0-3. Skipping ionice.&quot;</span>
+            <span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">io_priority</span> <span class="o">&lt;=</span> <span class="mi">2</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;PID </span><span class="si">{</span><span class="n">pid</span><span class="si">}</span><span class="s2">: io_priority=</span><span class="si">{</span><span class="n">io_priority</span><span class="si">}</span><span class="s2"> will NOT deprioritize I/O &quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;(class 1=realtime escalates priority, class 2=best-effort is OS default). &quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;Use io_priority=3 (idle) to deprioritize checkpoint I/O. Proceeding anyway.&quot;</span>
+                <span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="c1"># ionice -c &lt;class&gt; -p &lt;pid&gt;</span>
+                <span class="c1"># class 3 = idle (only when no other process needs I/O)</span>
+                <span class="c1"># class 2 = best-effort (default, can set priority 0-7)</span>
+                <span class="n">subprocess</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+                    <span class="p">[</span><span class="s2">&quot;ionice&quot;</span><span class="p">,</span> <span class="s2">&quot;-c&quot;</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">io_priority</span><span class="p">),</span> <span class="s2">&quot;-p&quot;</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">pid</span><span class="p">)],</span>
+                    <span class="n">check</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                    <span class="n">capture_output</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                <span class="p">)</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PID </span><span class="si">{</span><span class="n">pid</span><span class="si">}</span><span class="s2">: Set I/O priority class to </span><span class="si">{</span><span class="n">io_priority</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="k">except</span> <span class="p">(</span><span class="n">subprocess</span><span class="o">.</span><span class="n">CalledProcessError</span><span class="p">,</span> <span class="ne">FileNotFoundError</span><span class="p">,</span> <span class="ne">PermissionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PID </span><span class="si">{</span><span class="n">pid</span><span class="si">}</span><span class="s2">: Failed to set I/O priority: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
 
 <div class="viewcode-block" id="AsyncRequest">
@@ -443,7 +520,7 @@
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;rank: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, joining self.process&quot;</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">abort</span><span class="p">:</span>
-                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Temporal worker aborted in rank </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Temporal worker aborted in rank </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
@@ -474,7 +551,18 @@
 <span class="sd">    Starts process asynchronously and allows checking if all processes on all ranks are done.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">is_daemon</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">):</span>
+    <span class="c1"># Worker-side cache for consistent data structures.</span>
+    <span class="c1"># Key: identifier key</span>
+    <span class="c1"># Value: (separation_hint, items, resolved_data, thread_count, storage_plan)</span>
+    <span class="c1"># This cache contains IPC handles and must be cleaned up properly.</span>
+    <span class="n">_worker_data_cache</span><span class="p">:</span> <span class="n">Dict</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">is_daemon</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">cpu_priority</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
+        <span class="n">io_priority</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Process</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
@@ -494,6 +582,37 @@
         <span class="c1"># the FileWriter performing the FileIO in the background process cannot</span>
         <span class="c1"># be parallelized with multi-processing.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">background_worker_is_daemon</span> <span class="o">=</span> <span class="n">is_daemon</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cpu_priority</span> <span class="o">=</span> <span class="n">cpu_priority</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">io_priority</span> <span class="o">=</span> <span class="n">io_priority</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_start_worker</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rank</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Start the background worker process.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            rank (int): the rank of the current trainer process.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Starting Async Caller&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">background_worker_is_daemon</span><span class="p">:</span>
+            <span class="n">async_loop_target</span> <span class="o">=</span> <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_loop_for_daemon_worker</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">async_loop_target</span> <span class="o">=</span> <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_loop</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span>
+            <span class="n">target</span><span class="o">=</span><span class="n">async_loop_target</span><span class="p">,</span>
+            <span class="n">args</span><span class="o">=</span><span class="p">(</span>
+                <span class="n">rank</span><span class="p">,</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="p">,</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">preload_q</span><span class="p">,</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">comp_q</span><span class="p">,</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">getEffectiveLevel</span><span class="p">(),</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">cpu_priority</span><span class="p">,</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">io_priority</span><span class="p">,</span>
+            <span class="p">),</span>
+            <span class="n">daemon</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">background_worker_is_daemon</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Started Async Caller </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
 <div class="viewcode-block" id="PersistentAsyncCaller.schedule_async_call">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.schedule_async_call">[docs]</a>
@@ -520,26 +639,7 @@
 
         <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">ctx</span> <span class="o">=</span> <span class="n">mp</span><span class="o">.</span><span class="n">get_context</span><span class="p">(</span><span class="s1">&#39;spawn&#39;</span><span class="p">)</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Starting Async Caller&quot;</span><span class="p">)</span>
-            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">background_worker_is_daemon</span><span class="p">:</span>
-                <span class="n">async_loop_target</span> <span class="o">=</span> <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_loop_for_daemon_worker</span>
-            <span class="k">else</span><span class="p">:</span>
-                <span class="n">async_loop_target</span> <span class="o">=</span> <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_loop</span>
-
-            <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Process</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">Process</span><span class="p">(</span>
-                <span class="n">target</span><span class="o">=</span><span class="n">async_loop_target</span><span class="p">,</span>
-                <span class="n">args</span><span class="o">=</span><span class="p">(</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">,</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="p">,</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">preload_q</span><span class="p">,</span>
-                    <span class="bp">self</span><span class="o">.</span><span class="n">comp_q</span><span class="p">,</span>
-                    <span class="n">logger</span><span class="o">.</span><span class="n">getEffectiveLevel</span><span class="p">(),</span>
-                <span class="p">),</span>
-                <span class="n">daemon</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">background_worker_is_daemon</span><span class="p">,</span>
-            <span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Started Async Caller </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_start_worker</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="p">)</span>
 
         <span class="k">if</span> <span class="n">async_req</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">preload_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">async_req</span><span class="o">.</span><span class="n">call_idx</span><span class="p">)</span>
@@ -626,7 +726,7 @@
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Destroying Async Caller&quot;</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">abort</span><span class="p">:</span>
-                <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Persistent worker aborted in rank </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Persistent worker aborted in rank </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s1">&#39;DONE&#39;</span><span class="p">)</span>
@@ -645,6 +745,23 @@
             <span class="k">return</span> <span class="kc">False</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()</span>
 
+<div class="viewcode-block" id="PersistentAsyncCaller.cleanup_worker_data_cache">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cleanup_worker_data_cache">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">cleanup_worker_data_cache</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Clean up the worker data cache and release IPC handles.</span>
+
+<span class="sd">        This function should be called when the async worker is being torn down</span>
+<span class="sd">        to properly release any IPC handles stored in the cache.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_worker_data_cache</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Cleaning up worker data cache with </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_worker_data_cache</span><span class="p">)</span><span class="si">}</span><span class="s2"> entries&quot;</span><span class="p">)</span>
+            <span class="c1"># Clear all cached data structures which may contain IPC handles</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">_worker_data_cache</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+            <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">empty_cache</span><span class="p">()</span></div>
+
+
 <div class="viewcode-block" id="PersistentAsyncCaller.async_process_target">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.async_process_target">[docs]</a>
     <span class="nd">@staticmethod</span>
@@ -654,6 +771,8 @@
         <span class="n">preload_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">,</span>
         <span class="n">comp_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Queue</span><span class="p">,</span>
         <span class="n">log_level</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">INFO</span><span class="p">,</span>
+        <span class="n">cpu_priority</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
+        <span class="n">io_priority</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Main function for the persistent checkpoint worker</span>
 
@@ -675,10 +794,17 @@
 <span class="sd">                               async checkpoint request</span>
 <span class="sd">            log_level (int, Optional): an integer to set log-level in this spawned process</span>
 <span class="sd">                                       to get aligned with the training rank&#39;s logging level</span>
+<span class="sd">            cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).</span>
+<span class="sd">                               Default 10 deprioritizes checkpoint writing vs training.</span>
+<span class="sd">            io_priority (int, Optional): ionice scheduling class (0-3). Default None leaves</span>
+<span class="sd">                                        I/O priority unchanged. Use 3 (idle) to deprioritize</span>
+<span class="sd">                                        checkpoint I/O. NOTE: class 1 = realtime (highest</span>
+<span class="sd">                                        priority — NOT recommended for checkpoint workers).</span>
 
 <span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Set root logger level to affect all modules in this process</span>
+        <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">()</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span><span class="n">log_level</span><span class="p">)</span>
         <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span><span class="n">log_level</span><span class="p">)</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has started&quot;</span><span class="p">)</span>
 
         <span class="c1"># Set CUDA device to appropriate local_rank to ensure allocations / CUDA contexts</span>
@@ -687,28 +813,38 @@
         <span class="c1"># this line).</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">rank</span> <span class="o">%</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">())</span>
 
+        <span class="c1"># Set QoS to deprioritize checkpoint writing vs training.</span>
+        <span class="c1"># This prevents checkpoint I/O from interfering with data loader.</span>
+        <span class="n">_set_process_qos</span><span class="p">(</span><span class="n">cpu_priority</span><span class="o">=</span><span class="n">cpu_priority</span><span class="p">,</span> <span class="n">io_priority</span><span class="o">=</span><span class="n">io_priority</span><span class="p">)</span>
+
         <span class="c1"># Start busy loop waiting for and executing checkpoint saves.</span>
-        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
-            <span class="n">item</span> <span class="o">=</span> <span class="n">queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="ow">and</span> <span class="n">item</span> <span class="o">==</span> <span class="s1">&#39;DONE&#39;</span><span class="p">:</span>
-                <span class="n">queue</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
-                <span class="k">break</span>
-            <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">AsyncRequest</span><span class="p">):</span>
-                <span class="n">async_fn_args</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">async_fn_args</span><span class="p">)</span>
-                <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
-                    <span class="n">call_idx</span> <span class="o">=</span> <span class="n">preload_q</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-                    <span class="c1"># the 2nd arg is state dict</span>
-                    <span class="n">async_fn_args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">()</span>
-                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has completed D2H of </span><span class="si">{</span><span class="n">call_idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-                    <span class="n">preload_q</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
-                <span class="n">async_fn_kwargs</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">async_fn_kwargs</span> <span class="ow">or</span> <span class="p">{})</span>
-                <span class="n">item</span><span class="o">.</span><span class="n">async_fn</span><span class="p">(</span><span class="o">*</span><span class="n">async_fn_args</span><span class="p">,</span> <span class="o">**</span><span class="n">async_fn_kwargs</span><span class="p">)</span>
-                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has completed saving </span><span class="si">{</span><span class="n">item</span><span class="o">.</span><span class="n">call_idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-                <span class="n">comp_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">call_idx</span><span class="p">)</span>
-                <span class="n">queue</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
-                <span class="k">del</span> <span class="n">async_fn_args</span>
-            <span class="k">del</span> <span class="n">item</span>
-            <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+                <span class="n">item</span> <span class="o">=</span> <span class="n">queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span> <span class="ow">and</span> <span class="n">item</span> <span class="o">==</span> <span class="s1">&#39;DONE&#39;</span><span class="p">:</span>
+                    <span class="n">queue</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
+                    <span class="k">break</span>
+                <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">AsyncRequest</span><span class="p">):</span>
+                    <span class="n">async_fn_args</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">async_fn_args</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">:</span>
+                        <span class="n">call_idx</span> <span class="o">=</span> <span class="n">preload_q</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+                        <span class="c1"># the 2nd arg is state dict</span>
+                        <span class="n">async_fn_args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">()</span>
+                        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has completed D2H of </span><span class="si">{</span><span class="n">call_idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                        <span class="n">preload_q</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
+                    <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">async_fn</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                        <span class="n">async_fn_kwargs</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">async_fn_kwargs</span> <span class="ow">or</span> <span class="p">{})</span>
+                        <span class="n">item</span><span class="o">.</span><span class="n">async_fn</span><span class="p">(</span><span class="o">*</span><span class="n">async_fn_args</span><span class="p">,</span> <span class="o">**</span><span class="n">async_fn_kwargs</span><span class="p">)</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has completed saving </span><span class="si">{</span><span class="n">item</span><span class="o">.</span><span class="n">call_idx</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                    <span class="n">comp_q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">item</span><span class="o">.</span><span class="n">call_idx</span><span class="p">)</span>
+                    <span class="n">queue</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
+                    <span class="k">del</span> <span class="n">async_fn_args</span>
+                <span class="k">del</span> <span class="n">item</span>
+                <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="c1"># Cleanup worker data cache before exiting, regardless of how the loop exits</span>
+            <span class="c1"># (normal termination via &#39;DONE&#39; sentinel or unhandled exception).</span>
+            <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">cleanup_worker_data_cache</span><span class="p">()</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">  has terminated&quot;</span><span class="p">)</span></div>
 
 
@@ -722,12 +858,16 @@
         <span class="n">preload_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">,</span>
         <span class="n">comp_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Queue</span><span class="p">,</span>
         <span class="n">log_level</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">INFO</span><span class="p">,</span>
+        <span class="n">cpu_priority</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
+        <span class="n">io_priority</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Main function for the persistent checkpoint worker called by a non daemon async process.</span>
 <span class="sd">        In this loop, child processes may be created (For example: to parallelize File IO)</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_process_target</span><span class="p">(</span><span class="n">rank</span><span class="p">,</span> <span class="n">queue</span><span class="p">,</span> <span class="n">preload_q</span><span class="p">,</span> <span class="n">comp_q</span><span class="p">,</span> <span class="n">log_level</span><span class="p">)</span></div>
+        <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_process_target</span><span class="p">(</span>
+            <span class="n">rank</span><span class="p">,</span> <span class="n">queue</span><span class="p">,</span> <span class="n">preload_q</span><span class="p">,</span> <span class="n">comp_q</span><span class="p">,</span> <span class="n">log_level</span><span class="p">,</span> <span class="n">cpu_priority</span><span class="p">,</span> <span class="n">io_priority</span>
+        <span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="PersistentAsyncCaller.async_loop_for_daemon_worker">
@@ -739,11 +879,15 @@
         <span class="n">preload_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">JoinableQueue</span><span class="p">,</span>
         <span class="n">comp_q</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Queue</span><span class="p">,</span>
         <span class="n">log_level</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">INFO</span><span class="p">,</span>
+        <span class="n">cpu_priority</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
+        <span class="n">io_priority</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Main function for the persistent checkpoint worker called by a daemon async process</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_process_target</span><span class="p">(</span><span class="n">rank</span><span class="p">,</span> <span class="n">queue</span><span class="p">,</span> <span class="n">preload_q</span><span class="p">,</span> <span class="n">comp_q</span><span class="p">,</span> <span class="n">log_level</span><span class="p">)</span></div>
+        <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">async_process_target</span><span class="p">(</span>
+            <span class="n">rank</span><span class="p">,</span> <span class="n">queue</span><span class="p">,</span> <span class="n">preload_q</span><span class="p">,</span> <span class="n">comp_q</span><span class="p">,</span> <span class="n">log_level</span><span class="p">,</span> <span class="n">cpu_priority</span><span class="p">,</span> <span class="n">io_priority</span>
+        <span class="p">)</span></div>
 </div>
 
 
@@ -772,11 +916,23 @@
 <span class="sd">    active calls with `maybe_finalize_async_calls`.</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">persistent</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="n">is_daemon</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">):</span>
+    <span class="c1"># Class-level slot for a pre-warmed persistent caller (set by warmup_persistent_caller).</span>
+    <span class="c1"># Consumed on first use by _get_async_caller.</span>
+    <span class="n">_warmup_persistent_caller</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">PersistentAsyncCaller</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">persistent</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">is_daemon</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">cpu_priority</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
+        <span class="n">io_priority</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">async_calls</span><span class="p">:</span> <span class="n">deque</span><span class="p">[</span><span class="n">_ActiveAsyncRequest</span><span class="p">]</span> <span class="o">=</span> <span class="n">deque</span><span class="p">([])</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">persistent</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">persistent</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">is_daemon</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">is_daemon</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cpu_priority</span> <span class="o">=</span> <span class="n">cpu_priority</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">io_priority</span> <span class="o">=</span> <span class="n">io_priority</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="p">:</span> <span class="n">AsyncCaller</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_get_async_caller</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -784,8 +940,58 @@
             <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;The TemporalAsyncCaller will be deprecated soon. &quot;</span><span class="p">)</span>
             <span class="k">return</span> <span class="n">TemporalAsyncCaller</span><span class="p">()</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span> <span class="o">=</span> <span class="n">PersistentAsyncCaller</span><span class="p">(</span><span class="n">is_daemon</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">is_daemon</span><span class="p">)</span>
+            <span class="c1"># Consume the pre-warmed caller if available.</span>
+            <span class="c1"># No locking needed: _warmup_persistent_caller is a class-level variable that is not</span>
+            <span class="c1"># shared across processes (each process has its own copy), and we expect only the</span>
+            <span class="c1"># main trainer thread to call this routine, so there is no concurrent access.</span>
+            <span class="k">if</span> <span class="n">AsyncCallsQueue</span><span class="o">.</span><span class="n">_warmup_persistent_caller</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">warmed</span> <span class="o">=</span> <span class="n">AsyncCallsQueue</span><span class="o">.</span><span class="n">_warmup_persistent_caller</span>
+                <span class="n">AsyncCallsQueue</span><span class="o">.</span><span class="n">_warmup_persistent_caller</span> <span class="o">=</span> <span class="kc">None</span>
+                <span class="k">if</span> <span class="n">warmed</span><span class="o">.</span><span class="n">process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">warmed</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">is_alive</span><span class="p">():</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                        <span class="s2">&quot;Pre-warmed async caller process (PID </span><span class="si">%s</span><span class="s2">) is no longer alive; &quot;</span>
+                        <span class="s2">&quot;starting a fresh worker.&quot;</span><span class="p">,</span>
+                        <span class="n">warmed</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">pid</span><span class="p">,</span>
+                    <span class="p">)</span>
+                    <span class="n">warmed</span><span class="o">.</span><span class="n">process</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>  <span class="c1"># reap the zombie before discarding</span>
+                    <span class="n">warmed</span><span class="o">.</span><span class="n">process</span> <span class="o">=</span> <span class="kc">None</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span> <span class="o">=</span> <span class="n">warmed</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span> <span class="o">=</span> <span class="n">PersistentAsyncCaller</span><span class="p">(</span>
+                    <span class="n">is_daemon</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">is_daemon</span><span class="p">,</span>
+                    <span class="n">cpu_priority</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cpu_priority</span><span class="p">,</span>
+                    <span class="n">io_priority</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">io_priority</span><span class="p">,</span>
+                <span class="p">)</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span>
+
+<div class="viewcode-block" id="AsyncCallsQueue.warmup_persistent_caller">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.warmup_persistent_caller">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">warmup_persistent_caller</span><span class="p">(</span>
+        <span class="bp">cls</span><span class="p">,</span>
+        <span class="n">rank</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="n">is_daemon</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">cpu_priority</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
+        <span class="n">io_priority</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Pre-start the persistent async worker to avoid startup latency on the first checkpoint.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            rank (int): the current distributed rank.</span>
+<span class="sd">            is_daemon (bool): whether to spawn the worker as a daemon process.</span>
+<span class="sd">            cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).</span>
+<span class="sd">            io_priority (int, Optional): ionice scheduling class (0-3). Use 3 (idle) to</span>
+<span class="sd">                deprioritize checkpoint I/O. NOTE: class 1 = realtime (highest priority —</span>
+<span class="sd">                NOT recommended for checkpoint workers).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_warmup_persistent_caller</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">caller</span> <span class="o">=</span> <span class="n">PersistentAsyncCaller</span><span class="p">(</span>
+                <span class="n">is_daemon</span><span class="o">=</span><span class="n">is_daemon</span><span class="p">,</span> <span class="n">cpu_priority</span><span class="o">=</span><span class="n">cpu_priority</span><span class="p">,</span> <span class="n">io_priority</span><span class="o">=</span><span class="n">io_priority</span>
+            <span class="p">)</span>
+            <span class="n">caller</span><span class="o">.</span><span class="n">_start_worker</span><span class="p">(</span><span class="n">rank</span><span class="p">)</span>
+            <span class="n">caller</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">rank</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">_warmup_persistent_caller</span> <span class="o">=</span> <span class="n">caller</span></div>
+
 
 <div class="viewcode-block" id="AsyncCallsQueue.schedule_async_request">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue.schedule_async_request">[docs]</a>
@@ -872,6 +1078,11 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">persistent_caller</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="n">abort</span><span class="o">=</span><span class="n">abort</span><span class="p">)</span>
+
+        <span class="c1"># Clean up any pre-warmed worker that was never consumed by a checkpoint schedule.</span>
+        <span class="k">if</span> <span class="n">AsyncCallsQueue</span><span class="o">.</span><span class="n">_warmup_persistent_caller</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">AsyncCallsQueue</span><span class="o">.</span><span class="n">_warmup_persistent_caller</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="n">abort</span><span class="o">=</span><span class="n">abort</span><span class="p">)</span>
+            <span class="n">AsyncCallsQueue</span><span class="o">.</span><span class="n">_warmup_persistent_caller</span> <span class="o">=</span> <span class="kc">None</span>
 
         <span class="c1"># Reset all class params</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">call_idx</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
