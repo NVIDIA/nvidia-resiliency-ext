@@ -800,6 +800,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                         "starting a fresh worker.",
                         warmed.process.pid,
                     )
+                    warmed.process.join()  # reap the zombie before discarding
                     warmed.process = None
                 self.persistent_caller = warmed
             else:
