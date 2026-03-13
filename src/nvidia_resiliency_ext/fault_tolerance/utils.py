@@ -233,6 +233,16 @@ def is_slurm_job_array() -> bool:
     return os.getenv('SLURM_ARRAY_TASK_ID') is not None
 
 
+def job_user_from_env() -> str:
+    """Read job user from SLURM_JOB_USER or USER env."""
+    return os.environ.get("SLURM_JOB_USER") or os.environ.get("USER", "") or ""
+
+
+def job_id_from_env() -> str:
+    """Read job id from SLURM_ARRAY_JOB_ID or SLURM_JOB_ID env."""
+    return os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "") or ""
+
+
 def is_process_alive(pid):
     try:
         process = psutil.Process(pid)

@@ -12,9 +12,76 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def attribution_no_restart(attr_result: Optional[Dict[str, Any]]) -> bool:
+    """Whether attribution recommends do not restart (stop).
+
+    Call this on the raw result from log analysis or an attribution service (or None if unavailable).
+    True = attribution recommends stop; False = recommends restart or no result (skip).
+
+    Handles result shapes: state STOP/CONTINUE/RESTART, or strings containing
+    'STOP - DONT RESTART' / 'RESTART IMMEDIATE'.
+    """
+    if attr_result is None or not isinstance(attr_result, dict):
+        return False
+    state = attr_result.get("state")
+    if state == "STOP":
+        return True
+    if state in ("CONTINUE", "RESTART"):
+        return False
+    nested = attr_result.get("result")
+    if isinstance(nested, dict):
+        nested_state = nested.get("state")
+        if nested_state == "STOP":
+            return True
+        if nested_state in ("CONTINUE", "RESTART"):
+            return False
+    if isinstance(nested, (list, tuple)) and nested:
+        first = nested[0]
+        s = first if isinstance(first, str) else str(first)
+        if "STOP" in s and "RESTART" not in s.split("STOP")[0]:
+            return True
+        if "RESTART" in s:
+            return False
+    # Fallback: string matching on stringified result (fragile)
+    s = str(attr_result)
+    logger.warning(
+        "attribution_no_restart: falling through to string matching on result: %s",
+        s[:200] + ("..." if len(s) > 200 else ""),
+    )
+    if "STOP" in s and "DONT RESTART" in s:
+        return True
+    if "RESTART" in s and "IMMEDIATE" in s:
+        return False
+    return False
+
+
+def log_attribution_result(attr_result: Any) -> None:
+    """Log attribution result in a readable format"""
+    if attr_result is None:
+        logger.info("Attribution result: None")
+    elif isinstance(attr_result, dict):
+        att = attr_result.get("s_attribution") or attr_result.get("attribution")
+        expl = attr_result.get("s_auto_resume_explanation") or attr_result.get(
+            "auto_resume_explanation"
+        )
+        job = attr_result.get("s_job_id") or attr_result.get("job_id", "?")
+        if att or expl:
+            logger.info(
+                "Attribution result (job=%s): attribution=%r explanation=%r",
+                job,
+                (att or "")[:200],
+                (expl or "")[:200],
+            )
+        else:
+            logger.info("Attribution result: %s", str(attr_result)[:300])
+    else:
+        logger.info("Attribution result: %s", str(attr_result)[:300])
+
 
 # Regex patterns for log file path parsing and splitlog file discovery
 

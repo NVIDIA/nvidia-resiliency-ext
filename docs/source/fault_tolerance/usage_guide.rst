@@ -117,33 +117,79 @@ Validation behavior:
   - Other existing types (e.g., devices/symlinks): performs ``stat`` access
 
 
-Attribution service integration
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Attribution integration
+^^^^^^^^^^^^^^^^^^^^^^
 
-Enable artifact analysis (e.g., logs) during rendezvous health checks by pointing to a running attribution service.
-The feature is enabled by specifying both host and port.
+Enable artifact analysis (e.g., logs) during rendezvous to make RESTART/STOP decisions.
+Use ``--ft-attribution-loganalysis [lib|mcp|url]`` (default: lib) for integration flexibility:
+
+* ``lib`` (default): Direct calling via API in-process.
+* ``mcp``: Log analysis in a separate MCP subprocess.
+* ``url``: HTTP attribution service (host:port or http(s)://host:port).
 
 * CLI:
 
-  - ``--ft-attrsvc-host <HOST>`` (alias: ``--ft_attrsvc_host``)
-  - ``--ft-attrsvc-port <PORT>`` (alias: ``--ft_attrsvc_port``)
+  - ``--ft-attribution-loganalysis`` (alias: ``--ft_attribution_loganalysis``): Enable log analysis attribution.
+    Accepts ``lib``, ``mcp``, or a URL string. No value = lib (default).
+  - ``--ft-attribution-timeout`` (alias: ``--ft_attribution_timeout``): Wait/timeout in seconds;
+    skip result if exceeded (default: 60).
+  - ``--ft-attribution-dry-run`` (alias: ``--ft_attribution_dry_run``): Dry run. Run the full
+    attribution chain (log analysis, Slack, dataflow) but do not apply the restart/stop decision.
+    Log what would happen instead. Useful for validating the pipeline without affecting behavior.
+  - ``--ft-slack-token-file`` (alias: ``--ft_slack_token_file``): Path to file containing Slack bot token.
+    When not set, uses ``SLACK_BOT_TOKEN`` or ``SLACK_BOT_TOKEN_FILE`` env vars.
+  - ``--ft-slack-channel`` (alias: ``--ft_slack_channel``): Slack channel for alerts.
+    When not set, uses ``SLACK_CHANNEL`` env var.
+  - ``--ft-dataflow-index`` (alias: ``--ft_dataflow_index``): Elasticsearch/dataflow index for posting
+    attribution results (lib/mcp only). Requires ``nvdataflow`` (install via ``pip install nvidia-resiliency-ext[dataflow]``).
+    When not set, dataflow posting is disabled.
 
-  Example:
+  Examples:
 
   .. code-block:: bash
 
-     ft_launcher \
-       --ft-attrsvc-host 127.0.0.1 \
-       --ft-attrsvc-port 8000 \
-       train.py
+     # Lib mode (in-process); default
+     ft_launcher --ft-attribution-loganalysis train.py
+     ft_launcher --ft-attribution-loganalysis lib train.py
 
-* YAML: under the ``fault_tolerance`` section
+     # MCP mode (log analysis in separate subprocess)
+     ft_launcher --ft-attribution-loganalysis mcp train.py
+
+     # URL mode (HTTP attribution service)
+     ft_launcher --ft-attribution-loganalysis http://127.0.0.1:8000 train.py
+
+     # Service with custom timeout
+     ft_launcher --ft-attribution-loganalysis http://127.0.0.1:8000 --ft-attribution-timeout 90 train.py
+
+     # Lib mode with Slack and dataflow (token from file; channel from env)
+     ft_launcher --ft-attribution-loganalysis lib --ft-slack-token-file /etc/secrets/slack-token train.py
+
+     # Lib mode with explicit Slack channel and dataflow index
+     ft_launcher --ft-attribution-loganalysis lib \
+       --ft-slack-token-file /etc/secrets/slack-token --ft-slack-channel "#alerts" \
+       --ft-dataflow-index my-attribution-index train.py
+
+     # Dry run: exercise full attribution chain without applying restart/stop decision
+     ft_launcher --ft-attribution-loganalysis lib --ft-attribution-dry-run train.py
+
+* YAML: under the ``fault_tolerance`` section use ``attribution_loganalysis``, ``attribution_timeout_seconds``,
+  ``slack``, and ``dataflow_index``:
 
   .. code-block:: yaml
 
      fault_tolerance:
-       attrsvc_host: "127.0.0.1"
-       attrsvc_port: 8000
+       attribution_loganalysis: "lib"        # or "mcp", or "http://127.0.0.1:8000" for service
+       attribution_timeout_seconds: 60
+       attribution_dry_run: false           # true = run chain but don't apply action; log only
+       slack:
+         bot_token_file: "/etc/secrets/slack-token"  # or bot_token for inline (less secure)
+         channel: "#alerts"
+       dataflow_index: "my-attribution-index"       # optional; requires nvdataflow
+
+* Environment (fallback when CLI/YAML not set):
+
+  - ``SLACK_BOT_TOKEN`` or ``SLACK_BOT_TOKEN_FILE``: Slack bot token for lib/mcp alerts.
+  - ``SLACK_CHANNEL``: Slack channel for alerts.
 
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^

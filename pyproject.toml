@@ -49,8 +49,15 @@ defusedxml = "*"
 langchain-nvidia-ai-endpoints = ">=0.3.15"
 mcp = ">=1.15.0"
 logsage = ">=0.1.5"
+slack-bolt = ">=1.23.0"
+slack-sdk = ">=3.35.0"
+nvdataflow = {version = "*", optional = true}
 grpcio = "^1.76.0"
 grpcio-tools = "^1.76.0"
+httpx = ">=0.24.0"
+
+[tool.poetry.extras]
+dataflow = ["nvdataflow"]
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"

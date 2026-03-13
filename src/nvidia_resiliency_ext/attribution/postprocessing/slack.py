@@ -9,12 +9,13 @@ Set config.slack_bot_token and config.slack_channel at startup.
 Usage:
     config.slack_bot_token = token; config.slack_channel = channel  # at startup
     # One-off: send_slack_notification(data, token, channel) when should_notify_slack(auto_resume)
-
-Requires slack-sdk (optional). When not installed, HAS_SLACK is False and send no-ops.
 """
 
 import logging
 from dataclasses import dataclass
+
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 
 from .config import config
 
@@ -38,16 +39,6 @@ class SlackStats:
 # Global stats instance
 _slack_stats = SlackStats()
 
-try:
-    from slack_sdk import WebClient
-    from slack_sdk.errors import SlackApiError
-
-    HAS_SLACK = True
-except ImportError:
-    HAS_SLACK = False
-    WebClient = None  # type: ignore
-    SlackApiError = Exception  # type: ignore
-
 
 def get_slack_stats() -> SlackStats:
     """Get current Slack statistics."""
@@ -64,10 +55,6 @@ def get_slack_user_id(user_id: str, token: str) -> str | None:
     Returns:
         Slack user ID if found, None otherwise
     """
-    if not HAS_SLACK:
-        logger.warning("slack-sdk not installed, cannot look up user")
-        return None
-
     _slack_stats.user_lookups += 1
     client = WebClient(token=token)
 
@@ -99,10 +86,6 @@ def send_slack_notification(
     Returns:
         True if notification sent successfully, False otherwise
     """
-    if not HAS_SLACK:
-        logger.warning("slack-sdk not installed, cannot send notification")
-        return False
-
     if not slack_bot_token:
         logger.debug("Slack notification skipped: no bot token configured")
         return False
