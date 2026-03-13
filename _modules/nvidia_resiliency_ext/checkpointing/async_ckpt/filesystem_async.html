@@ -301,63 +301,89 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">thread_count</span> <span class="o">&gt;</span> <span class="mi">1</span>
             <span class="p">),</span> <span class="s2">&quot;thread_count must be at least 2 if separation_hint is provided&quot;</span>
 
-        <span class="k">def</span><span class="w"> </span><span class="nf">_clone_if_needed</span><span class="p">(</span><span class="n">ten</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">_clone_or_dequantize_if_needed</span><span class="p">(</span><span class="n">ten</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
 <span class="w">            </span><span class="sd">&quot;&quot;&quot;Clone if we detect incontiguous storage for CPU tensors.</span>
 
 <span class="sd">            Makes sure we perform a `clone` only if we detect incontiguous storage,</span>
 <span class="sd">            so that we don&#39;t blow up host memory unnecessarily.</span>
 
 <span class="sd">            For GPU tensors, returns as-is since they&#39;ll be moved to CPU in preload_tensors.</span>
+
+<span class="sd">            Returns:</span>
+<span class="sd">                (tensor, was_dequantized): the processed tensor and a bool indicating</span>
+<span class="sd">                    whether dequantize() was called. Tracked explicitly because some</span>
+<span class="sd">                    frameworks (e.g. TransformerEngine MXFP8) use a fake bfloat16 dtype</span>
+<span class="sd">                    for quantized tensors, making dtype-based detection unreliable.</span>
 <span class="sd">            &quot;&quot;&quot;</span>
             <span class="n">ten</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span>
             <span class="k">if</span> <span class="n">ten</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">!=</span> <span class="s2">&quot;cpu&quot;</span><span class="p">:</span>
+                <span class="c1"># We call ``dequantize`` if we detect a quantized tensor on GPU.</span>
+                <span class="c1"># This is a workaround to avoid the issue of quantized tensors not being supported by the async writer.</span>
+                <span class="k">if</span> <span class="n">ten</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;cuda&quot;</span> <span class="ow">and</span> <span class="s2">&quot;dequantize&quot;</span> <span class="ow">in</span> <span class="nb">type</span><span class="p">(</span><span class="n">ten</span><span class="p">)</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">:</span>
+                    <span class="n">ten</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">dequantize</span><span class="p">()</span>
+                    <span class="c1"># GPU tensors will be moved to CPU in preload_tensors</span>
+                    <span class="k">return</span> <span class="n">ten</span><span class="p">,</span> <span class="kc">True</span>
                 <span class="c1"># GPU tensors will be moved to CPU in preload_tensors</span>
-                <span class="k">return</span> <span class="n">ten</span>
+                <span class="k">return</span> <span class="n">ten</span><span class="p">,</span> <span class="kc">False</span>
             <span class="c1"># For CPU tensors, clone if they are views to ensure contiguous storage</span>
             <span class="n">is_view</span> <span class="o">=</span> <span class="n">ten</span><span class="o">.</span><span class="n">untyped_storage</span><span class="p">()</span><span class="o">.</span><span class="n">size</span><span class="p">()</span> <span class="o">!=</span> <span class="n">ten</span><span class="o">.</span><span class="n">numel</span><span class="p">()</span> <span class="o">*</span> <span class="n">ten</span><span class="o">.</span><span class="n">itemsize</span>
-            <span class="k">return</span> <span class="n">ten</span><span class="o">.</span><span class="n">clone</span><span class="p">()</span> <span class="k">if</span> <span class="n">is_view</span> <span class="k">else</span> <span class="n">ten</span>
+            <span class="k">return</span> <span class="p">(</span><span class="n">ten</span><span class="o">.</span><span class="n">clone</span><span class="p">()</span> <span class="k">if</span> <span class="n">is_view</span> <span class="k">else</span> <span class="n">ten</span><span class="p">),</span> <span class="kc">False</span>
 
         <span class="k">def</span><span class="w"> </span><span class="nf">resolve_data</span><span class="p">(</span><span class="n">items</span><span class="p">):</span>
             <span class="n">resolved</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="n">dequantized_flags</span> <span class="o">=</span> <span class="p">[]</span>
             <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">items</span><span class="p">:</span>
                 <span class="n">data</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">resolve_data</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
-                <span class="c1"># Apply cloning logic during resolution</span>
+                <span class="c1"># Apply cloning/dequantize logic during resolution</span>
                 <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
-                    <span class="n">data</span> <span class="o">=</span> <span class="n">_clone_if_needed</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+                    <span class="n">data</span><span class="p">,</span> <span class="n">was_dequantized</span> <span class="o">=</span> <span class="n">_clone_or_dequantize_if_needed</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">was_dequantized</span> <span class="o">=</span> <span class="kc">False</span>
                 <span class="n">resolved</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
-            <span class="k">return</span> <span class="n">resolved</span>
+                <span class="n">dequantized_flags</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">was_dequantized</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">resolved</span><span class="p">,</span> <span class="n">dequantized_flags</span>
 
         <span class="c1"># Separate items by type: only GPU tensors can be cached via IPC</span>
         <span class="c1"># CPU tensors and ByteIO must be resolved fresh (cannot use IPC)</span>
         <span class="n">tensor_items</span> <span class="o">=</span> <span class="p">[</span><span class="n">item</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">plan</span><span class="o">.</span><span class="n">items</span> <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">type</span> <span class="o">!=</span> <span class="n">WriteItemType</span><span class="o">.</span><span class="n">BYTE_IO</span><span class="p">]</span>
         <span class="n">byte_io_items</span> <span class="o">=</span> <span class="p">[</span><span class="n">item</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">plan</span><span class="o">.</span><span class="n">items</span> <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="n">WriteItemType</span><span class="o">.</span><span class="n">BYTE_IO</span><span class="p">]</span>
 
-        <span class="c1"># Helper to separate resolved tensors by device</span>
-        <span class="k">def</span><span class="w"> </span><span class="nf">separate_by_device</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span><span class="p">):</span>
-<span class="w">            </span><span class="sd">&quot;&quot;&quot;Separate tensor items and data into GPU and CPU categories.&quot;&quot;&quot;</span>
-            <span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
-            <span class="n">cpu_items</span><span class="p">,</span> <span class="n">cpu_data</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+        <span class="c1"># Helper to separate resolved tensors into cacheable (GPU) vs uncached buckets.</span>
+        <span class="c1"># Uncached tensors include: CPU tensors and dequantized GPU tensors.</span>
+        <span class="c1"># Dequantized tensors are tracked explicitly via dequantized_flags because</span>
+        <span class="c1"># some frameworks (e.g. TransformerEngine MXFP8) report bfloat16 as the dtype</span>
+        <span class="c1"># for quantized tensors, making dtype-based detection unreliable.</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">separate_cacheable</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span><span class="p">,</span> <span class="n">dequantized_flags</span><span class="p">):</span>
+<span class="w">            </span><span class="sd">&quot;&quot;&quot;Separate tensor items into IPC-cacheable (GPU) and uncached categories.</span>
 
-            <span class="k">for</span> <span class="n">item</span><span class="p">,</span> <span class="n">data</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span><span class="p">):</span>
-                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="ow">and</span> <span class="n">data</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;cpu&quot;</span><span class="p">:</span>
-                    <span class="n">cpu_items</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
-                    <span class="n">cpu_data</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+<span class="sd">            GPU tensors that were not dequantized are cacheable via IPC.</span>
+<span class="sd">            CPU tensors and dequantized GPU tensors are always passed fresh and never cached.</span>
+<span class="sd">            &quot;&quot;&quot;</span>
+            <span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+            <span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+
+            <span class="k">for</span> <span class="n">item</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">was_dequantized</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span><span class="p">,</span> <span class="n">dequantized_flags</span><span class="p">):</span>
+                <span class="k">if</span> <span class="p">(</span>
+                    <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="ow">and</span> <span class="n">data</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;cpu&quot;</span>
+                <span class="p">)</span> <span class="ow">or</span> <span class="n">was_dequantized</span><span class="p">:</span>
+                    <span class="n">uncached_items</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+                    <span class="n">uncached_data</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
                 <span class="k">else</span><span class="p">:</span>
                     <span class="n">gpu_items</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
                     <span class="n">gpu_data</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
 
-            <span class="k">return</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">),</span> <span class="p">(</span><span class="n">cpu_items</span><span class="p">,</span> <span class="n">cpu_data</span><span class="p">)</span>
+            <span class="k">return</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">),</span> <span class="p">(</span><span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span><span class="p">)</span>
 
         <span class="c1"># Handle GPU tensor caching (only GPU tensors can benefit from IPC)</span>
-        <span class="c1"># CPU tensors will be separated and treated like ByteIO (always resolved fresh)</span>
+        <span class="c1"># Uncached tensors (CPU or dequantized) are always resolved fresh</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_cached_data_structure</span> <span class="ow">and</span> <span class="n">tensor_items</span><span class="p">:</span>
             <span class="n">key</span> <span class="o">=</span> <span class="n">_compute_data_structure_key_from_plan</span><span class="p">(</span><span class="n">tensor_items</span><span class="p">)</span>
             <span class="n">cache_exists</span> <span class="o">=</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_identifiers</span>
 
-            <span class="c1"># Always resolve tensors to separate CPU tensors (which can&#39;t be cached)</span>
-            <span class="n">resolved_tensors</span> <span class="o">=</span> <span class="n">resolve_data</span><span class="p">(</span><span class="n">tensor_items</span><span class="p">)</span>
-            <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">),</span> <span class="p">(</span><span class="n">cpu_items</span><span class="p">,</span> <span class="n">cpu_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">separate_by_device</span><span class="p">(</span>
-                <span class="n">tensor_items</span><span class="p">,</span> <span class="n">resolved_tensors</span>
+            <span class="c1"># Always resolve tensors to separate uncached tensors (which can&#39;t be cached)</span>
+            <span class="n">resolved_tensors</span><span class="p">,</span> <span class="n">dequantized_flags</span> <span class="o">=</span> <span class="n">resolve_data</span><span class="p">(</span><span class="n">tensor_items</span><span class="p">)</span>
+            <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">),</span> <span class="p">(</span><span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">separate_cacheable</span><span class="p">(</span>
+                <span class="n">tensor_items</span><span class="p">,</span> <span class="n">resolved_tensors</span><span class="p">,</span> <span class="n">dequantized_flags</span>
             <span class="p">)</span>
 
             <span class="k">if</span> <span class="n">cache_exists</span><span class="p">:</span>
@@ -366,7 +392,7 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># Signal to reuse cached data</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                     <span class="sa">f</span><span class="s2">&quot;Reusing cached GPU tensors (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
-                    <span class="sa">f</span><span class="s2">&quot;resolved </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">cpu_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> CPU tensors fresh&quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;resolved </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors fresh&quot;</span>
                 <span class="p">)</span>
             <span class="k">elif</span> <span class="n">gpu_items</span><span class="p">:</span>
                 <span class="c1"># First time caching - send GPU tensor data to worker</span>
@@ -375,7 +401,7 @@
                 <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_identifiers</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                     <span class="sa">f</span><span class="s2">&quot;Caching </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">gpu_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> GPU tensors (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
-                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">cpu_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> CPU tensors passed fresh&quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors passed fresh&quot;</span>
                 <span class="p">)</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="c1"># No GPU tensors to cache; skip caching entirely</span>
@@ -383,28 +409,32 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="kc">None</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                     <span class="sa">f</span><span class="s2">&quot;No GPU tensors to cache (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
-                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">cpu_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> CPU tensors passed fresh&quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors passed fresh&quot;</span>
                 <span class="p">)</span>
 
-            <span class="c1"># CPU tensors are always passed fresh (never cached)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">cpu_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">cpu_items</span><span class="p">,</span> <span class="n">cpu_data</span><span class="p">)</span> <span class="k">if</span> <span class="n">cpu_items</span> <span class="k">else</span> <span class="kc">None</span>
+            <span class="c1"># Uncached tensors are always passed fresh (never cached)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">uncached_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span><span class="p">)</span> <span class="k">if</span> <span class="n">uncached_items</span> <span class="k">else</span> <span class="kc">None</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="c1"># No caching - resolve and separate all tensors</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span> <span class="o">=</span> <span class="kc">None</span>
 
             <span class="k">if</span> <span class="n">tensor_items</span><span class="p">:</span>
-                <span class="n">resolved_tensors</span> <span class="o">=</span> <span class="n">resolve_data</span><span class="p">(</span><span class="n">tensor_items</span><span class="p">)</span>
-                <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">),</span> <span class="p">(</span><span class="n">cpu_items</span><span class="p">,</span> <span class="n">cpu_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">separate_by_device</span><span class="p">(</span>
-                    <span class="n">tensor_items</span><span class="p">,</span> <span class="n">resolved_tensors</span>
+                <span class="n">resolved_tensors</span><span class="p">,</span> <span class="n">dequantized_flags</span> <span class="o">=</span> <span class="n">resolve_data</span><span class="p">(</span><span class="n">tensor_items</span><span class="p">)</span>
+                <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">),</span> <span class="p">(</span><span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">separate_cacheable</span><span class="p">(</span>
+                    <span class="n">tensor_items</span><span class="p">,</span> <span class="n">resolved_tensors</span><span class="p">,</span> <span class="n">dequantized_flags</span>
                 <span class="p">)</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">)</span> <span class="k">if</span> <span class="n">gpu_items</span> <span class="k">else</span> <span class="kc">None</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">cpu_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">cpu_items</span><span class="p">,</span> <span class="n">cpu_data</span><span class="p">)</span> <span class="k">if</span> <span class="n">cpu_items</span> <span class="k">else</span> <span class="kc">None</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">uncached_tensor_data</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="p">(</span><span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span><span class="p">)</span> <span class="k">if</span> <span class="n">uncached_items</span> <span class="k">else</span> <span class="kc">None</span>
+                <span class="p">)</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="kc">None</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">cpu_tensor_data</span> <span class="o">=</span> <span class="kc">None</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">uncached_tensor_data</span> <span class="o">=</span> <span class="kc">None</span>
 
         <span class="c1"># Always resolve ByteIO fresh (cannot use IPC)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">byte_io_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">byte_io_items</span><span class="p">,</span> <span class="n">resolve_data</span><span class="p">(</span><span class="n">byte_io_items</span><span class="p">))</span> <span class="k">if</span> <span class="n">byte_io_items</span> <span class="k">else</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">byte_io_data</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="p">(</span><span class="n">byte_io_items</span><span class="p">,</span> <span class="n">resolve_data</span><span class="p">(</span><span class="n">byte_io_items</span><span class="p">)[</span><span class="mi">0</span><span class="p">])</span> <span class="k">if</span> <span class="n">byte_io_items</span> <span class="k">else</span> <span class="kc">None</span>
+        <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">storage_plan</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">storage_data</span>
 
         <span class="c1"># Setup results queue if there&#39;s data to write</span>
@@ -440,15 +470,15 @@
         <span class="n">transform_list</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">transforms</span><span class="p">]</span> <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;transforms&#39;</span><span class="p">)</span> <span class="k">else</span> <span class="p">[]</span>
 
         <span class="c1"># Format: (identifier, (separation_hint, cached_tensor_data,</span>
-        <span class="c1"># cpu_tensor_data, byte_io_data, thread_count, storage_plan))</span>
+        <span class="c1"># uncached_tensor_data, byte_io_data, thread_count, storage_plan))</span>
         <span class="c1"># identifier is None when caching is disabled</span>
-        <span class="c1"># cpu_tensor_data is always passed fresh (like ByteIO), never cached</span>
+        <span class="c1"># uncached_tensor_data is always passed fresh (like ByteIO), never cached</span>
         <span class="n">data_to_pass</span> <span class="o">=</span> <span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span><span class="p">,</span>
             <span class="p">(</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">separation_hint</span><span class="p">,</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span><span class="p">,</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">cpu_tensor_data</span><span class="p">,</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">uncached_tensor_data</span><span class="p">,</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">byte_io_data</span><span class="p">,</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">thread_count</span><span class="p">,</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">storage_plan</span><span class="p">,</span>
@@ -488,7 +518,7 @@
 <span class="sd">                (checkpoint_dir, (identifier, data_structure)) where:</span>
 <span class="sd">                - identifier: ConsistentDataIdentifier (caching) or None</span>
 <span class="sd">                - data_structure: (separation_hint, cached_tensor_data,</span>
-<span class="sd">                  cpu_tensor_data, byte_io_data, thread_count, storage_plan)</span>
+<span class="sd">                  uncached_tensor_data, byte_io_data, thread_count, storage_plan)</span>
 <span class="sd">            non_blocking (bool, optional): Enable pinned D2H memcpy. Default is True.</span>
 
 <span class="sd">        Returns:</span>
@@ -499,23 +529,23 @@
 
         <span class="n">checkpoint_dir</span><span class="p">,</span> <span class="n">data_or_identifier</span> <span class="o">=</span> <span class="n">resolved_plan_data</span>
 
-        <span class="c1"># Helper to combine GPU tensor, CPU tensor, and ByteIO data</span>
-        <span class="k">def</span><span class="w"> </span><span class="nf">combine_data</span><span class="p">(</span><span class="n">gpu_tensor_data</span><span class="p">,</span> <span class="n">cpu_tensor_data</span><span class="p">,</span> <span class="n">byte_io_data</span><span class="p">):</span>
+        <span class="c1"># Helper to combine GPU tensor, uncached tensor, and ByteIO data</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">combine_data</span><span class="p">(</span><span class="n">gpu_tensor_data</span><span class="p">,</span> <span class="n">uncached_tensor_data</span><span class="p">,</span> <span class="n">byte_io_data</span><span class="p">):</span>
             <span class="n">items</span><span class="p">,</span> <span class="n">resolved</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
-            <span class="k">for</span> <span class="n">data</span> <span class="ow">in</span> <span class="p">[</span><span class="n">gpu_tensor_data</span><span class="p">,</span> <span class="n">cpu_tensor_data</span><span class="p">,</span> <span class="n">byte_io_data</span><span class="p">]:</span>
+            <span class="k">for</span> <span class="n">data</span> <span class="ow">in</span> <span class="p">[</span><span class="n">gpu_tensor_data</span><span class="p">,</span> <span class="n">uncached_tensor_data</span><span class="p">,</span> <span class="n">byte_io_data</span><span class="p">]:</span>
                 <span class="k">if</span> <span class="n">data</span><span class="p">:</span>
                     <span class="n">items</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
                     <span class="n">resolved</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
             <span class="k">return</span> <span class="n">items</span><span class="p">,</span> <span class="n">resolved</span>
 
         <span class="c1"># Parse data structure: (identifier, (separation_hint, cached_tensor_data,</span>
-        <span class="c1"># cpu_tensor_data, byte_io_data, thread_count, storage_plan))</span>
+        <span class="c1"># uncached_tensor_data, byte_io_data, thread_count, storage_plan))</span>
         <span class="c1"># identifier is None when disabled, ConsistentDataIdentifier when enabled</span>
         <span class="n">identifier</span><span class="p">,</span> <span class="n">data_structure</span> <span class="o">=</span> <span class="n">data_or_identifier</span>
         <span class="p">(</span>
             <span class="n">separation_hint</span><span class="p">,</span>
             <span class="n">cached_tensor_data</span><span class="p">,</span>
-            <span class="n">cpu_tensor_data</span><span class="p">,</span>
+            <span class="n">uncached_tensor_data</span><span class="p">,</span>
             <span class="n">byte_io_data</span><span class="p">,</span>
             <span class="n">thread_count</span><span class="p">,</span>
             <span class="n">storage_plan</span><span class="p">,</span>
@@ -523,7 +553,7 @@
 
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">identifier</span><span class="p">,</span> <span class="n">ConsistentDataIdentifier</span><span class="p">):</span>
             <span class="c1"># Caching enabled: get or cache GPU tensor data in the worker process</span>
-            <span class="c1"># CPU tensors are NOT cached (treated like ByteIO)</span>
+            <span class="c1"># Uncached tensors (CPU or dequantized) are NOT cached (treated like ByteIO)</span>
             <span class="n">key</span> <span class="o">=</span> <span class="n">identifier</span><span class="o">.</span><span class="n">key</span>
             <span class="k">if</span> <span class="n">cached_tensor_data</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">_worker_data_cache</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">cached_tensor_data</span>
@@ -535,7 +565,7 @@
                 <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Worker cache miss for key </span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">. Worker may have restarted.&quot;</span><span class="p">)</span>
         <span class="c1"># else: identifier is None, no caching needed</span>
 
-        <span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span> <span class="o">=</span> <span class="n">combine_data</span><span class="p">(</span><span class="n">cached_tensor_data</span><span class="p">,</span> <span class="n">cpu_tensor_data</span><span class="p">,</span> <span class="n">byte_io_data</span><span class="p">)</span>
+        <span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span> <span class="o">=</span> <span class="n">combine_data</span><span class="p">(</span><span class="n">cached_tensor_data</span><span class="p">,</span> <span class="n">uncached_tensor_data</span><span class="p">,</span> <span class="n">byte_io_data</span><span class="p">)</span>
 
         <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;preload_tensors: thread_count: </span><span class="si">{</span><span class="n">thread_count</span><span class="si">}</span><span class="s2">, time: </span><span class="si">{</span><span class="n">start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 
