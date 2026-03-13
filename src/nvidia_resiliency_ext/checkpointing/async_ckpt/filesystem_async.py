@@ -219,6 +219,12 @@ class FileSystemWriterAsync(FileSystemWriter):
             so that we don't blow up host memory unnecessarily.
 
             For GPU tensors, returns as-is since they'll be moved to CPU in preload_tensors.
+
+            Returns:
+                (tensor, was_dequantized): the processed tensor and a bool indicating
+                    whether dequantize() was called. Tracked explicitly because some
+                    frameworks (e.g. TransformerEngine MXFP8) use a fake bfloat16 dtype
+                    for quantized tensors, making dtype-based detection unreliable.
             """
             ten = ten.detach()
             if ten.device.type != "cpu":
@@ -226,21 +232,27 @@ class FileSystemWriterAsync(FileSystemWriter):
                 # This is a workaround to avoid the issue of quantized tensors not being supported by the async writer.
                 if ten.device.type == "cuda" and "dequantize" in type(ten).__dict__:
                     ten = ten.dequantize()
+                    # GPU tensors will be moved to CPU in preload_tensors
+                    return ten, True
                 # GPU tensors will be moved to CPU in preload_tensors
-                return ten
+                return ten, False
             # For CPU tensors, clone if they are views to ensure contiguous storage
             is_view = ten.untyped_storage().size() != ten.numel() * ten.itemsize
-            return ten.clone() if is_view else ten
+            return (ten.clone() if is_view else ten), False
 
         def resolve_data(items):
             resolved = []
+            dequantized_flags = []
             for item in items:
                 data = planner.resolve_data(item)
-                # Apply cloning logic during resolution
+                # Apply cloning/dequantize logic during resolution
                 if isinstance(data, torch.Tensor):
-                    data = _clone_or_dequantize_if_needed(data)
+                    data, was_dequantized = _clone_or_dequantize_if_needed(data)
+                else:
+                    was_dequantized = False
                 resolved.append(data)
-            return resolved
+                dequantized_flags.append(was_dequantized)
+            return resolved, dequantized_flags
 
         # Separate items by type: only GPU tensors can be cached via IPC
         # CPU tensors and ByteIO must be resolved fresh (cannot use IPC)
@@ -249,27 +261,19 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         # Helper to separate resolved tensors into cacheable (GPU) vs uncached buckets.
         # Uncached tensors include: CPU tensors and dequantized GPU tensors.
-        # Dequantized tensors are detected by a dtype mismatch with the plan metadata —
-        # they are temporaries that must always be staged fresh and never reused via IPC.
-        def separate_cacheable(items, resolved_data):
+        # Dequantized tensors are tracked explicitly via dequantized_flags because
+        # some frameworks (e.g. TransformerEngine MXFP8) report bfloat16 as the dtype
+        # for quantized tensors, making dtype-based detection unreliable.
+        def separate_cacheable(items, resolved_data, dequantized_flags):
             """Separate tensor items into IPC-cacheable (GPU) and uncached categories.
 
-            GPU tensors whose dtype matches the plan are cacheable via IPC.
-            CPU tensors and dequantized GPU tensors (dtype differs from plan) are
-            always passed fresh and never cached.
+            GPU tensors that were not dequantized are cacheable via IPC.
+            CPU tensors and dequantized GPU tensors are always passed fresh and never cached.
             """
             gpu_items, gpu_data = [], []
             uncached_items, uncached_data = [], []
 
-            for item, data in zip(items, resolved_data):
-                plan_dtype = (
-                    item.tensor_data.properties.dtype if item.tensor_data is not None else None
-                )
-                was_dequantized = (
-                    isinstance(data, torch.Tensor)
-                    and plan_dtype is not None
-                    and data.dtype != plan_dtype
-                )
+            for item, data, was_dequantized in zip(items, resolved_data, dequantized_flags):
                 if (
                     isinstance(data, torch.Tensor) and data.device.type == "cpu"
                 ) or was_dequantized:
@@ -288,9 +292,9 @@ class FileSystemWriterAsync(FileSystemWriter):
             cache_exists = key in FileSystemWriterAsync._cached_identifiers
 
             # Always resolve tensors to separate uncached tensors (which can't be cached)
-            resolved_tensors = resolve_data(tensor_items)
+            resolved_tensors, dequantized_flags = resolve_data(tensor_items)
             (gpu_items, gpu_data), (uncached_items, uncached_data) = separate_cacheable(
-                tensor_items, resolved_tensors
+                tensor_items, resolved_tensors, dequantized_flags
             )
 
             if cache_exists:
@@ -326,9 +330,9 @@ class FileSystemWriterAsync(FileSystemWriter):
             self.consistent_data_identifier = None
 
             if tensor_items:
-                resolved_tensors = resolve_data(tensor_items)
+                resolved_tensors, dequantized_flags = resolve_data(tensor_items)
                 (gpu_items, gpu_data), (uncached_items, uncached_data) = separate_cacheable(
-                    tensor_items, resolved_tensors
+                    tensor_items, resolved_tensors, dequantized_flags
                 )
                 self.cached_tensor_data = (gpu_items, gpu_data) if gpu_items else None
                 self.uncached_tensor_data = (
@@ -339,7 +343,9 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.uncached_tensor_data = None
 
         # Always resolve ByteIO fresh (cannot use IPC)
-        self.byte_io_data = (byte_io_items, resolve_data(byte_io_items)) if byte_io_items else None
+        self.byte_io_data = (
+            (byte_io_items, resolve_data(byte_io_items)[0]) if byte_io_items else None
+        )
         self.storage_plan = plan.storage_data
 
         # Setup results queue if there's data to write
