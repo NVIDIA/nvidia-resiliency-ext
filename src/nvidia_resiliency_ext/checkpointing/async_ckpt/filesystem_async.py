@@ -212,63 +212,89 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.thread_count > 1
             ), "thread_count must be at least 2 if separation_hint is provided"
 
-        def _clone_if_needed(ten: torch.Tensor):
+        def _clone_or_dequantize_if_needed(ten: torch.Tensor):
             """Clone if we detect incontiguous storage for CPU tensors.
 
             Makes sure we perform a `clone` only if we detect incontiguous storage,
             so that we don't blow up host memory unnecessarily.
 
             For GPU tensors, returns as-is since they'll be moved to CPU in preload_tensors.
+
+            Returns:
+                (tensor, was_dequantized): the processed tensor and a bool indicating
+                    whether dequantize() was called. Tracked explicitly because some
+                    frameworks (e.g. TransformerEngine MXFP8) use a fake bfloat16 dtype
+                    for quantized tensors, making dtype-based detection unreliable.
             """
             ten = ten.detach()
             if ten.device.type != "cpu":
+                # We call ``dequantize`` if we detect a quantized tensor on GPU.
+                # This is a workaround to avoid the issue of quantized tensors not being supported by the async writer.
+                if ten.device.type == "cuda" and "dequantize" in type(ten).__dict__:
+                    ten = ten.dequantize()
+                    # GPU tensors will be moved to CPU in preload_tensors
+                    return ten, True
                 # GPU tensors will be moved to CPU in preload_tensors
-                return ten
+                return ten, False
             # For CPU tensors, clone if they are views to ensure contiguous storage
             is_view = ten.untyped_storage().size() != ten.numel() * ten.itemsize
-            return ten.clone() if is_view else ten
+            return (ten.clone() if is_view else ten), False
 
         def resolve_data(items):
             resolved = []
+            dequantized_flags = []
             for item in items:
                 data = planner.resolve_data(item)
-                # Apply cloning logic during resolution
+                # Apply cloning/dequantize logic during resolution
                 if isinstance(data, torch.Tensor):
-                    data = _clone_if_needed(data)
+                    data, was_dequantized = _clone_or_dequantize_if_needed(data)
+                else:
+                    was_dequantized = False
                 resolved.append(data)
-            return resolved
+                dequantized_flags.append(was_dequantized)
+            return resolved, dequantized_flags
 
         # Separate items by type: only GPU tensors can be cached via IPC
         # CPU tensors and ByteIO must be resolved fresh (cannot use IPC)
         tensor_items = [item for item in plan.items if item.type != WriteItemType.BYTE_IO]
         byte_io_items = [item for item in plan.items if item.type == WriteItemType.BYTE_IO]
 
-        # Helper to separate resolved tensors by device
-        def separate_by_device(items, resolved_data):
-            """Separate tensor items and data into GPU and CPU categories."""
-            gpu_items, gpu_data = [], []
-            cpu_items, cpu_data = [], []
+        # Helper to separate resolved tensors into cacheable (GPU) vs uncached buckets.
+        # Uncached tensors include: CPU tensors and dequantized GPU tensors.
+        # Dequantized tensors are tracked explicitly via dequantized_flags because
+        # some frameworks (e.g. TransformerEngine MXFP8) report bfloat16 as the dtype
+        # for quantized tensors, making dtype-based detection unreliable.
+        def separate_cacheable(items, resolved_data, dequantized_flags):
+            """Separate tensor items into IPC-cacheable (GPU) and uncached categories.
 
-            for item, data in zip(items, resolved_data):
-                if isinstance(data, torch.Tensor) and data.device.type == "cpu":
-                    cpu_items.append(item)
-                    cpu_data.append(data)
+            GPU tensors that were not dequantized are cacheable via IPC.
+            CPU tensors and dequantized GPU tensors are always passed fresh and never cached.
+            """
+            gpu_items, gpu_data = [], []
+            uncached_items, uncached_data = [], []
+
+            for item, data, was_dequantized in zip(items, resolved_data, dequantized_flags):
+                if (
+                    isinstance(data, torch.Tensor) and data.device.type == "cpu"
+                ) or was_dequantized:
+                    uncached_items.append(item)
+                    uncached_data.append(data)
                 else:
                     gpu_items.append(item)
                     gpu_data.append(data)
 
-            return (gpu_items, gpu_data), (cpu_items, cpu_data)
+            return (gpu_items, gpu_data), (uncached_items, uncached_data)
 
         # Handle GPU tensor caching (only GPU tensors can benefit from IPC)
-        # CPU tensors will be separated and treated like ByteIO (always resolved fresh)
+        # Uncached tensors (CPU or dequantized) are always resolved fresh
         if self.use_cached_data_structure and tensor_items:
             key = _compute_data_structure_key_from_plan(tensor_items)
             cache_exists = key in FileSystemWriterAsync._cached_identifiers
 
-            # Always resolve tensors to separate CPU tensors (which can't be cached)
-            resolved_tensors = resolve_data(tensor_items)
-            (gpu_items, gpu_data), (cpu_items, cpu_data) = separate_by_device(
-                tensor_items, resolved_tensors
+            # Always resolve tensors to separate uncached tensors (which can't be cached)
+            resolved_tensors, dequantized_flags = resolve_data(tensor_items)
+            (gpu_items, gpu_data), (uncached_items, uncached_data) = separate_cacheable(
+                tensor_items, resolved_tensors, dequantized_flags
             )
 
             if cache_exists:
@@ -277,7 +303,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.cached_tensor_data = None  # Signal to reuse cached data
                 logger.debug(
                     f"Reusing cached GPU tensors (key={key}), "
-                    f"resolved {len(cpu_items)} CPU tensors fresh"
+                    f"resolved {len(uncached_items)} uncached tensors fresh"
                 )
             elif gpu_items:
                 # First time caching - send GPU tensor data to worker
@@ -286,7 +312,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 FileSystemWriterAsync._cached_identifiers.add(key)
                 logger.debug(
                     f"Caching {len(gpu_items)} GPU tensors (key={key}), "
-                    f"{len(cpu_items)} CPU tensors passed fresh"
+                    f"{len(uncached_items)} uncached tensors passed fresh"
                 )
             else:
                 # No GPU tensors to cache; skip caching entirely
@@ -294,28 +320,32 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.cached_tensor_data = None
                 logger.debug(
                     f"No GPU tensors to cache (key={key}), "
-                    f"{len(cpu_items)} CPU tensors passed fresh"
+                    f"{len(uncached_items)} uncached tensors passed fresh"
                 )
 
-            # CPU tensors are always passed fresh (never cached)
-            self.cpu_tensor_data = (cpu_items, cpu_data) if cpu_items else None
+            # Uncached tensors are always passed fresh (never cached)
+            self.uncached_tensor_data = (uncached_items, uncached_data) if uncached_items else None
         else:
             # No caching - resolve and separate all tensors
             self.consistent_data_identifier = None
 
             if tensor_items:
-                resolved_tensors = resolve_data(tensor_items)
-                (gpu_items, gpu_data), (cpu_items, cpu_data) = separate_by_device(
-                    tensor_items, resolved_tensors
+                resolved_tensors, dequantized_flags = resolve_data(tensor_items)
+                (gpu_items, gpu_data), (uncached_items, uncached_data) = separate_cacheable(
+                    tensor_items, resolved_tensors, dequantized_flags
                 )
                 self.cached_tensor_data = (gpu_items, gpu_data) if gpu_items else None
-                self.cpu_tensor_data = (cpu_items, cpu_data) if cpu_items else None
+                self.uncached_tensor_data = (
+                    (uncached_items, uncached_data) if uncached_items else None
+                )
             else:
                 self.cached_tensor_data = None
-                self.cpu_tensor_data = None
+                self.uncached_tensor_data = None
 
         # Always resolve ByteIO fresh (cannot use IPC)
-        self.byte_io_data = (byte_io_items, resolve_data(byte_io_items)) if byte_io_items else None
+        self.byte_io_data = (
+            (byte_io_items, resolve_data(byte_io_items)[0]) if byte_io_items else None
+        )
         self.storage_plan = plan.storage_data
 
         # Setup results queue if there's data to write
@@ -348,15 +378,15 @@ class FileSystemWriterAsync(FileSystemWriter):
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
 
         # Format: (identifier, (separation_hint, cached_tensor_data,
-        # cpu_tensor_data, byte_io_data, thread_count, storage_plan))
+        # uncached_tensor_data, byte_io_data, thread_count, storage_plan))
         # identifier is None when caching is disabled
-        # cpu_tensor_data is always passed fresh (like ByteIO), never cached
+        # uncached_tensor_data is always passed fresh (like ByteIO), never cached
         data_to_pass = (
             self.consistent_data_identifier,
             (
                 self.separation_hint,
                 self.cached_tensor_data,
-                self.cpu_tensor_data,
+                self.uncached_tensor_data,
                 self.byte_io_data,
                 self.thread_count,
                 self.storage_plan,
@@ -393,7 +423,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 (checkpoint_dir, (identifier, data_structure)) where:
                 - identifier: ConsistentDataIdentifier (caching) or None
                 - data_structure: (separation_hint, cached_tensor_data,
-                  cpu_tensor_data, byte_io_data, thread_count, storage_plan)
+                  uncached_tensor_data, byte_io_data, thread_count, storage_plan)
             non_blocking (bool, optional): Enable pinned D2H memcpy. Default is True.
 
         Returns:
@@ -404,23 +434,23 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         checkpoint_dir, data_or_identifier = resolved_plan_data
 
-        # Helper to combine GPU tensor, CPU tensor, and ByteIO data
-        def combine_data(gpu_tensor_data, cpu_tensor_data, byte_io_data):
+        # Helper to combine GPU tensor, uncached tensor, and ByteIO data
+        def combine_data(gpu_tensor_data, uncached_tensor_data, byte_io_data):
             items, resolved = [], []
-            for data in [gpu_tensor_data, cpu_tensor_data, byte_io_data]:
+            for data in [gpu_tensor_data, uncached_tensor_data, byte_io_data]:
                 if data:
                     items.extend(data[0])
                     resolved.extend(data[1])
             return items, resolved
 
         # Parse data structure: (identifier, (separation_hint, cached_tensor_data,
-        # cpu_tensor_data, byte_io_data, thread_count, storage_plan))
+        # uncached_tensor_data, byte_io_data, thread_count, storage_plan))
         # identifier is None when disabled, ConsistentDataIdentifier when enabled
         identifier, data_structure = data_or_identifier
         (
             separation_hint,
             cached_tensor_data,
-            cpu_tensor_data,
+            uncached_tensor_data,
             byte_io_data,
             thread_count,
             storage_plan,
@@ -428,7 +458,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         if isinstance(identifier, ConsistentDataIdentifier):
             # Caching enabled: get or cache GPU tensor data in the worker process
-            # CPU tensors are NOT cached (treated like ByteIO)
+            # Uncached tensors (CPU or dequantized) are NOT cached (treated like ByteIO)
             key = identifier.key
             if cached_tensor_data is not None:
                 PersistentAsyncCaller._worker_data_cache[key] = cached_tensor_data
@@ -440,7 +470,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 raise RuntimeError(f"Worker cache miss for key {key}. Worker may have restarted.")
         # else: identifier is None, no caching needed
 
-        items, resolved_data = combine_data(cached_tensor_data, cpu_tensor_data, byte_io_data)
+        items, resolved_data = combine_data(cached_tensor_data, uncached_tensor_data, byte_io_data)
 
         logger.debug(f"preload_tensors: thread_count: {thread_count}, time: {start}")
 
