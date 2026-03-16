@@ -30,6 +30,7 @@ class ReportIntervalTracker:
         time_interval (float): Target time interval for reporting.
         current_iter (int): Counter for the current iteration.
         iter_interval (int, optional): Computed iteration interval based on the target time interval.
+        group: Process group for distributed collectives. If None, the default group is used.
     """
 
     INTERVAL_ESTIMATION_ITERS: int = 16
@@ -39,6 +40,7 @@ class ReportIntervalTracker:
     prev_iter_start_time: Optional[float] = None
     step_times: Sequence[float] = dataclasses.field(default_factory=list)
     profiling_interval: int = 1
+    group: Optional[object] = None
 
     def _gather_report_interval(self):
         """
@@ -51,7 +53,9 @@ class ReportIntervalTracker:
 
         gathered_interval = (self.time_interval / median_step_time).to(torch.cuda.current_device())
         if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(gathered_interval, op=torch.distributed.ReduceOp.MAX)
+            torch.distributed.all_reduce(
+                gathered_interval, op=torch.distributed.ReduceOp.MAX, group=self.group
+            )
         # it makes no sense to report more frequently than the profiling interval
         self.iter_interval = int(max(gathered_interval.item(), self.profiling_interval))
 
