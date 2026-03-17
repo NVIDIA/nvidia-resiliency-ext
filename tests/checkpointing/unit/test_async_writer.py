@@ -78,7 +78,8 @@ class TestAsyncSave:
         thread_count=1,
         caching=False,
         open_file=open,
-        is_multiproc_io=True,
+        is_multiproc_io=False,
+        use_cached_data_structure=False,
     ):
         """Performs an asynchronous model checkpoint save."""
         writer = FileSystemWriterAsync(
@@ -86,6 +87,7 @@ class TestAsyncSave:
             thread_count=thread_count,
             open_file=open_file,
             is_multiproc_io=is_multiproc_io,
+            use_cached_data_structure=use_cached_data_structure,
         )
         coordinator_rank = 0
 
@@ -274,6 +276,53 @@ class TestAsyncSave:
                 assert not any(
                     len(x) for x in diffs
                 ), f'{field.name} is different in metadata from non-cached, cached metadata impls'
+        ckpt_dir.cleanup()
+        async_queue.close()
+
+    def test_cached_data_structure(self, tmp_path_dist_ckpt):
+        """
+        Verifies that use_cached_data_structure correctly caches GPU tensors in the worker
+        and produces valid checkpoints across multiple iterations.
+
+        The first iteration populates the worker's GPU tensor cache; subsequent iterations
+        reuse it. We run 3 iterations so the 3rd definitely exercises the cache-reuse path,
+        then compare the loaded result against the original state dict.
+        """
+        Utils.initialize_distributed()
+
+        # Default path: persistent=True, is_daemon=True.
+        # async_queue.close() terminates the worker process, which calls
+        # cleanup_worker_data_cache() in async_loop on exit — so _worker_data_cache is
+        # reset inside the worker. _cached_identifiers lives in the main process and is
+        # NOT cleared by close(), so clear it here to avoid cross-test contamination.
+        FileSystemWriterAsync._cached_identifiers.clear()
+        async_queue = AsyncCallsQueue(persistent=True, is_daemon=True)
+
+        model = FSDP(Model((1024, 1024), 8))
+        state_dict = model.state_dict()
+        planner = DefaultSavePlanner()
+
+        # Run 3 iterations; iteration 0 seeds the cache, iterations 1-2 reuse it.
+        for i in range(3):
+            ckpt_dir = TempNamedDir(tmp_path_dist_ckpt / f'cached_structure_{i}', sync=True)
+            self.async_save_checkpoint(
+                ckpt_dir,
+                state_dict,
+                planner,
+                async_queue,
+                use_cached_data_structure=True,
+            )
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            if i < 2:
+                ckpt_dir.cleanup()
+
+        # Load the last checkpoint and compare against the original state dict.
+        loaded = self.load_checkpoint(ckpt_dir, deepcopy(state_dict))
+        diffs = diff(loaded, state_dict)
+        assert not any(
+            len(x) for x in diffs
+        ), 'Cached data structure produced a state_dict that differs from the original'
+
         ckpt_dir.cleanup()
         async_queue.close()
 

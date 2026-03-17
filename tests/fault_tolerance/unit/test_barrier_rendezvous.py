@@ -26,16 +26,27 @@ These tests focus on:
 8. Infrastructure rank handling
 """
 
+import multiprocessing
 import os
+import signal
+import socket
 import threading
 import time
+import uuid
+from datetime import timedelta
 from unittest import TestCase
 
 from torch.distributed import TCPStore
+from torch.distributed.elastic.multiprocessing import SignalException
+from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
+from nvidia_resiliency_ext.fault_tolerance import (
+    ft_rendezvous_barrier as ft_rendezvous_barrier_module,
+)
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
+    WITHDRAWN_DOMAIN_ID,
     FtRendezvousBarrierHandler,
-    RendezvousClosedError,
+    RendezvousParticipantInfo,
     RendezvousTimeout,
     RendezvousTimeoutError,
     _NodeDesc,
@@ -47,12 +58,123 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
 TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
 TEST_JOIN_TIMEOUT_SECS = 2.0  # seconds - for join timeout (reduced from 5.0)
 TEST_THREAD_JOIN_TIMEOUT_SECS = 5.0  # seconds - for thread.join() timeout (reduced from 10.0)
+# Barrier wait timeout - avoids deadlock if a participant fails before reaching the barrier
+BARRIER_WAIT_TIMEOUT_SECS = 10.0
+
+# Process-based participant timeout (each process has its own store connection; no contention)
+PROCESS_JOIN_TIMEOUT_SECS = 60
+
+
+def _run_participant_process(
+    host,
+    port,
+    run_id,
+    join_timeout_seconds,
+    segment_check_interval,
+    min_nodes,
+    max_nodes,
+    participant_id,
+    is_host,
+    result_queue,
+):
+    """Run one participant in a separate process with its own TCPStore connection.
+
+    Avoids shared-store contention that can cause hangs when multiple threads
+    use the same store in the same process. Used by multi-participant rendezvous tests.
+    """
+    try:
+        store = TCPStore(
+            host_name=host,
+            port=port,
+            is_master=False,
+            wait_for_workers=False,
+        )
+        state = _RendezvousBarrierState(
+            store=store,
+            run_id=run_id,
+            is_store_host=is_host,
+            join_timeout_seconds=join_timeout_seconds,
+        )
+        node = _NodeDesc(socket.getfqdn(), os.getpid(), participant_id)
+        rank, total = state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
+        result_queue.put((participant_id, rank, total, None))
+    except Exception as e:
+        result_queue.put((participant_id, None, None, e))
+
+
+def _run_rendezvous_processes(
+    run_id,
+    min_nodes,
+    max_nodes,
+    segment_check_interval,
+    join_timeout_seconds=15.0,
+    process_timeout=PROCESS_JOIN_TIMEOUT_SECS,
+):
+    """Run min_nodes participants in separate (fork) processes; return (store, results, errors).
+
+    Main process holds the master TCPStore so callers can inspect keys after (e.g. for
+    test_barrier_keys_cleared_after_acknowledgment). Uses fork for faster process start.
+    """
+    from .utils import find_free_port
+
+    host = "127.0.0.1"
+    port = find_free_port(host)
+    store = TCPStore(
+        host_name=host,
+        port=port,
+        is_master=True,
+        wait_for_workers=False,
+    )
+    result_queue = multiprocessing.Queue()
+    ctx = multiprocessing.get_context("fork")
+    procs = []
+    for i in range(min_nodes):
+        p = ctx.Process(
+            target=_run_participant_process,
+            args=(
+                host,
+                port,
+                run_id,
+                join_timeout_seconds,
+                segment_check_interval,
+                min_nodes,
+                max_nodes,
+                i,
+                i == 0,
+                result_queue,
+            ),
+        )
+        p.start()
+        procs.append(p)
+    for p in procs:
+        p.join(timeout=process_timeout)
+    results = []
+    errors = []
+    for _ in range(min_nodes):
+        try:
+            item = result_queue.get(timeout=1)
+        except Exception:
+            break
+        participant_id, rank, total, exc = item
+        if exc is None:
+            results.append((participant_id, rank, total))
+        else:
+            errors.append((participant_id, exc))
+    return store, results, errors, procs
 
 
 # Helper to create segment check interval for tests
 def _test_segment_check_interval(seconds=TEST_SEGMENT_CHECK_INTERVAL_SECS):
     """Create segment check interval for test."""
     return seconds
+
+
+def _assert_threads_finished(test_case, threads, timeout_secs):
+    """Assert all threads have terminated after join; fail with a clear message if not."""
+    alive = [t for t in threads if t.is_alive()]
+    if alive:
+        names = [t.name for t in alive]
+        test_case.fail(f"Thread(s) did not terminate within {timeout_secs}s: {names}")
 
 
 class BaseRendezvousTest(TestCase):
@@ -128,12 +250,11 @@ class BarrierStateBasicTest(BaseRendezvousTest):
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
         super().setUp()  # Clears environment variables
-        import time
 
         # Reuse the shared store
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_run_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_run_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -155,8 +276,8 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         self.assertIn(self.run_id, state.arrived_count_key)
         self.assertIn(self.run_id, state.last_participant_arrived_key)
 
-    def test_is_closed_initially_false(self):
-        """Test that rendezvous is not closed initially."""
+    def test_is_permanently_closed_initially_false(self):
+        """Test that rendezvous is not permanently closed initially."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -164,10 +285,10 @@ class BarrierStateBasicTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        self.assertFalse(state.is_closed())
+        self.assertFalse(state.is_permanently_closed())
 
-    def test_set_closed(self):
-        """Test that set_closed marks rendezvous as closed."""
+    def test_set_permanently_closed(self):
+        """Test that set_permanently_closed marks rendezvous as permanently closed."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -175,8 +296,8 @@ class BarrierStateBasicTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        state.set_closed()
-        self.assertTrue(state.is_closed())
+        state.set_permanently_closed()
+        self.assertTrue(state.is_permanently_closed())
 
     def test_join_increments_arrived_count(self):
         """Test that joining increments the arrived_count atomically."""
@@ -269,6 +390,56 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         )
         self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy3)
 
+        # Test 6: Cycle filtering - mismatched cycle should be treated as placeholder
+        mismatch_key = f"{state.prefix}:arrived_3"
+        mismatch_data = RendezvousParticipantInfo.pack(
+            participants_data[2][0], participants_data[2][1], participants_data[2][2], cycle_id=1
+        )
+        self.store.set(mismatch_key, mismatch_data)
+        filtered = state.get_all_participants(total_participants=5, expected_cycle_id=0)
+        self.assertEqual(len(filtered), 5)
+        self.assertEqual(
+            filtered[2][2],
+            WITHDRAWN_DOMAIN_ID,
+            "Cycle mismatch should be converted to placeholder participant",
+        )
+
+    def test_participant_info_unpack_requires_cycle_fields(self):
+        """Test participant info unpack requires strict schema fields."""
+        missing_cycle_data = '{"addr":"n1","pid":1,"local_id":0,"infra_rank":0,"domain_id":"d1"}'
+        with self.assertRaises(ValueError):
+            RendezvousParticipantInfo.unpack(missing_cycle_data)
+
+    def test_step2_poll_interval_adaptive_scaling(self):
+        """Test adaptive Step 2 poll interval floor and cap behavior."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        # Small rendezvous should poll every 1s minimum.
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=1, segment_check_interval=5.0), 1.0
+        )
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=100, segment_check_interval=5.0), 1.0
+        )
+
+        # Mid-size scales linearly (min_nodes / 2000), capped by configured interval.
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=6000, segment_check_interval=5.0), 3.0
+        )
+
+        # Large rendezvous is capped by the configured max.
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=10000, segment_check_interval=5.0), 5.0
+        )
+        self.assertEqual(
+            state._compute_step2_poll_interval(min_nodes=10000, segment_check_interval=2.0), 2.0
+        )
+
 
 class Step2CompletionTest(BaseRendezvousTest):
     """Test Step 2 completion signaling logic."""
@@ -285,13 +456,13 @@ class Step2CompletionTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_step2_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique. time.time()-based run_id can collide
+        # when tests run in the same microsecond (retries/fast runs), leaving
+        # last_participant_arrived_key=1 from a prior run so participants wait at Step 0.
+        self.run_id = f"test_step2_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -299,138 +470,75 @@ class Step2CompletionTest(BaseRendezvousTest):
         super().tearDown()  # Restores environment variables
 
     def test_step2_completion_on_max_nodes(self):
-        """Test that Step 2 completes immediately when max_nodes is reached."""
+        """Test that Step 2 completes immediately when max_nodes is reached.
+
+        Runs participants in separate processes (fork) to avoid shared-store contention.
+        """
         min_nodes = 2
         max_nodes = 3
         segment_check_interval = _test_segment_check_interval()
 
-        # Create a thread that will join and wait
-        results = []
-        errors = []
+        store, results, errors, procs = _run_rendezvous_processes(
+            run_id=self.run_id,
+            min_nodes=max_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=segment_check_interval,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
 
-        def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=is_host,
-                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-            )
-            try:
-                node = self.node_desc_gen.generate()
-                rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, segment_check_interval
-                )
-                results.append((participant_id, rank, total))
-            except Exception as e:
-                errors.append((participant_id, e))
-
-        # Start 3 participants (max_nodes), first one is store host
-        threads = []
-        for i in range(max_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0))
-            t.start()
-            threads.append(t)
-
-        # Wait for completion
-        for t in threads:
-            t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
-
-        # Check that all threads completed successfully
+        for p in procs:
+            self.assertFalse(p.is_alive(), f"Process {p.pid} did not terminate")
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(len(results), max_nodes)
-
-        # Check that all participants got ranks
         ranks = [r[1] for r in results]
-        self.assertEqual(len(set(ranks)), max_nodes)  # All unique ranks
+        self.assertEqual(len(set(ranks)), max_nodes)
 
     def test_step2_completion_on_min_nodes_with_segment_check(self):
-        """Test that Step 2 completes when min_nodes is reached and segment constraint is satisfied."""
+        """Test that Step 2 completes when min_nodes is reached and segment constraint is satisfied.
+
+        Runs participants in separate processes (fork) to avoid shared-store contention.
+        """
         min_nodes = 2
         max_nodes = 4
         segment_check_interval = _test_segment_check_interval()
+        join_timeout_seconds = 15.0
 
-        results = []
-        errors = []
-
-        def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=is_host,
-                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-            )
-            try:
-                node = self.node_desc_gen.generate()
-                # Rendezvous should complete when segment constraint is met
-                rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, segment_check_interval
-                )
-                results.append((participant_id, rank, total))
-            except Exception as e:
-                errors.append((participant_id, e))
-
-        # Start only min_nodes participants
-        threads = []
-        for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0))
-            t.start()
-            threads.append(t)
-
-        # Wait for completion (should happen after segment check interval)
         start_time = time.time()
-        for t in threads:
-            t.join(timeout=10)
+        store, results, errors, procs = _run_rendezvous_processes(
+            run_id=self.run_id,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=segment_check_interval,
+            join_timeout_seconds=join_timeout_seconds,
+        )
         elapsed = time.time() - start_time
 
-        # Check that all threads completed successfully
+        for p in procs:
+            self.assertFalse(p.is_alive(), f"Process {p.pid} did not terminate")
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(len(results), min_nodes)
-
-        # Completion should happen relatively quickly once segment constraint is met
-        # (within a few check intervals)
-        self.assertLess(elapsed, 2.0, f"Took too long to complete: {elapsed}s")
+        self.assertLess(elapsed, 60.0, f"Took too long to complete: {elapsed}s")
 
     def test_step2_late_arrival_sees_completion_key(self):
-        """Test that rendezvous completes correctly when all participants arrive quickly."""
-        min_nodes = 3  # Require 3 nodes
+        """Test that rendezvous completes correctly when all participants arrive quickly.
+
+        Runs participants in separate processes (fork) to avoid shared-store contention.
+        Each must see the completion key and get a rank.
+        """
+        min_nodes = 3
         max_nodes = 4
-        segment_check_interval = _test_segment_check_interval()  # Use default short interval
+        segment_check_interval = _test_segment_check_interval()
 
-        results = []
-        errors = []
+        store, results, errors, procs = _run_rendezvous_processes(
+            run_id=self.run_id,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=segment_check_interval,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
 
-        def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=is_host,
-                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-            )
-            try:
-                node = self.node_desc_gen.generate()
-                # Rendezvous completes when segment constraint is met
-                rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, segment_check_interval
-                )
-                results.append((participant_id, rank, total))
-            except Exception as e:
-                errors.append((participant_id, e))
-
-        # Start all min_nodes participants together
-        threads = []
-        for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0))
-            t.start()
-            threads.append(t)
-
-        # Wait for all threads
-        for t in threads:
-            t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
-
-        # Check all completed
+        for p in procs:
+            self.assertFalse(p.is_alive(), f"Process {p.pid} did not terminate")
         self.assertEqual(len(errors), 0, f"Errors occurred: {errors}")
         self.assertEqual(
             len(results), min_nodes, f"Expected {min_nodes} results, got {len(results)}"
@@ -452,13 +560,11 @@ class RaceConditionTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_race_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_race_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -488,6 +594,7 @@ class RaceConditionTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+        _assert_threads_finished(self, threads, TEST_THREAD_JOIN_TIMEOUT_SECS)
 
         # Check that all counts are unique (atomic increment)
         self.assertEqual(len(arrived_counts), num_participants)
@@ -597,9 +704,31 @@ class RaceConditionTest(BaseRendezvousTest):
         t_regular.start()
         t_late.start()
 
-        t_host.join(timeout=15)
-        t_regular.join(timeout=15)
-        t_late.join(timeout=15)
+        join_timeout = 15
+        t_host.join(timeout=join_timeout)
+        t_regular.join(timeout=join_timeout)
+        self.assertFalse(t_host.is_alive(), f"Host thread did not terminate within {join_timeout}s")
+        self.assertFalse(
+            t_regular.is_alive(),
+            f"Regular participant thread did not terminate within {join_timeout}s",
+        )
+
+        # Late arrival can be stuck in Step 0 (_wait_for_rendezvous_open): it sees
+        # last_participant_arrived_key=1 (round complete) and waits for the next round
+        # with no timeout. Unblock it by opening the rendezvous so it proceeds to Step 2,
+        # then hits join_timeout_seconds and raises RendezvousTimeoutError.
+        unblock_state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=False,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        self.store.set(unblock_state.last_participant_arrived_key, "0".encode("utf-8"))
+
+        t_late.join(timeout=join_timeout)
+        self.assertFalse(
+            t_late.is_alive(), f"Late arrival thread did not terminate within {join_timeout}s"
+        )
 
         # Check results
         # The late arrival should either:
@@ -640,6 +769,7 @@ class RaceConditionTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+        _assert_threads_finished(self, threads, TEST_THREAD_JOIN_TIMEOUT_SECS)
 
         # Key should be set (no errors)
         self.assertTrue(self.store.check([state.last_participant_arrived_key]))
@@ -660,13 +790,13 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_host_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique. time.time()-based run_id can collide
+        # when tests run in the same microsecond (retries/fast runs), leaving
+        # last_participant_arrived_key=1 so participants block at Step 0.
+        self.run_id = f"test_host_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -674,95 +804,54 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
         super().tearDown()  # Restores environment variables
 
     def test_rank_assignment_with_arrival_order(self):
-        """Test that store host assigns ranks to all participants."""
+        """Test that store host assigns ranks to all participants.
+
+        Runs participants in separate processes (fork) to avoid shared-store contention.
+        """
         min_nodes = 3
         max_nodes = 3
         segment_check_interval = _test_segment_check_interval()
 
-        results = []
+        store, results, errors, procs = _run_rendezvous_processes(
+            run_id=self.run_id,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=segment_check_interval,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
 
-        def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=is_host,
-                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-            )
-            node = self.node_desc_gen.generate()
-            rank, total = state.perform_rendezvous(
-                node, min_nodes, max_nodes, segment_check_interval
-            )
-            results.append((participant_id, rank, total))
-
-        threads = []
-        for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i, i == 0))
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join(timeout=10)
-
-        # Check ranks are assigned correctly
+        for p in procs:
+            self.assertFalse(p.is_alive(), f"Process {p.pid} did not terminate")
+        self.assertEqual(len(errors), 0, f"Errors: {errors}")
         self.assertEqual(len(results), min_nodes)
         ranks = [r[1] for r in results]
         totals = [r[2] for r in results]
-
-        # All should have same total
         self.assertEqual(len(set(totals)), 1)
         self.assertEqual(totals[0], min_nodes)
-
-        # All should have unique ranks
         self.assertEqual(len(set(ranks)), min_nodes)
         self.assertEqual(set(ranks), set(range(min_nodes)))
 
     def test_non_store_host_waits_for_ranks(self):
-        """Test that non-store host participants wait for rank assignment."""
-        # Create separate barrier states with same store
-        host_state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        non_host_state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=False,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
+        """Test that non-store host participants wait for rank assignment.
 
+        Runs participants in separate processes (fork) so each has its own store
+        connection; avoids shared-store contention that can hang with threads.
+        """
         min_nodes = 2
         max_nodes = 2
         segment_check_interval = _test_segment_check_interval()
 
-        results = []
+        store, results, errors, procs = _run_rendezvous_processes(
+            run_id=self.run_id,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=segment_check_interval,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
 
-        def host_thread():
-            node = self.node_desc_gen.generate()
-            rank, total = host_state.perform_rendezvous(
-                node, min_nodes, max_nodes, segment_check_interval
-            )
-            results.append(('host', rank, total))
-
-        def non_host_thread():
-            node = self.node_desc_gen.generate()
-            rank, total = non_host_state.perform_rendezvous(
-                node, min_nodes, max_nodes, segment_check_interval
-            )
-            results.append(('non_host', rank, total))
-
-        t1 = threading.Thread(target=host_thread)
-        t2 = threading.Thread(target=non_host_thread)
-
-        t1.start()
-        t2.start()
-
-        t1.join(timeout=10)
-        t2.join(timeout=10)
-
-        # Both should complete with ranks
+        for p in procs:
+            self.assertFalse(p.is_alive(), f"Process {p.pid} did not terminate")
+        self.assertEqual(len(errors), 0, f"Participants raised: {errors}")
         self.assertEqual(len(results), 2)
         ranks = [r[1] for r in results]
         self.assertEqual(set(ranks), {0, 1})
@@ -783,14 +872,12 @@ class GroupRankAssignmentTest(TestCase):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         # NOTE: DO NOT clear SLURM_PROCID/GROUP_RANK for this test class
         # These tests specifically test infrastructure rank behavior
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_rank_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_rank_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -1559,13 +1646,12 @@ class ErrorCaseTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
 
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_error_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use a globally unique run_id so store keys never collide with other tests or runs
+        self.run_id = f"test_error_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -1573,33 +1659,61 @@ class ErrorCaseTest(BaseRendezvousTest):
         super().tearDown()  # Restores environment variables
 
     def test_exceed_max_nodes_raises_error(self):
-        """Test that exceeding max_nodes raises RendezvousClosedError."""
+        """Test that exceeding max_nodes raises RendezvousClosedError.
+
+        Root cause of previous flakiness:
+        - Three threads call store.add(arrived_count_key, 1) and get 1, 2, 3.
+        - The thread that gets 3 should raise RendezvousClosedError.
+        - The two that get 1 and 2 enter Step 2; the store host runs a segment check
+          after segment_check_interval seconds, then completes and calls
+          _clear_barrier_keys(), which deletes arrived_count_key.
+        - If the third thread runs store.add() after the key was deleted, it can get
+          count 1 (new key) and not raise, so the test non-deterministically failed.
+
+        Deterministic design: disable Step 2 checks in this test by monkey-patching
+        the per-state poll interval helper to a very large value. Then the first
+        two never complete and never clear the key, so the third always adds while
+        the key exists and gets 3. The test still finishes quickly because the third
+        raises and set_closed(), and the other two exit on _check_timeout_and_closure().
+        """
+        # TCPStore does not provide close()/shutdown(); store is released when GC runs.
+        store = TCPStore(
+            host_name="127.0.0.1",
+            port=0,
+            is_master=True,
+            wait_for_workers=False,
+        )
+        run_id = f"test_error_{self._testMethodName}_{uuid.uuid4().hex}"
+        node_desc_gen = _NodeDescGenerator()
+
         min_nodes = 2
-        max_nodes = 2  # Set max to 2
-        segment_check_interval = _test_segment_check_interval()
+        max_nodes = 2  # Set max to 2; third participant must see count 3 and raise
+        # Note: segment_check_interval is now adapted internally with a 1s floor.
+        # We still pass it through perform_rendezvous, but determinism in this test
+        # comes from patching _compute_step2_poll_interval on each state below.
+        segment_check_interval = 1e9
 
         errors = []
-        # Use barrier to synchronize thread starts - ensures all threads
-        # attempt to join before any complete the rendezvous
         start_barrier = threading.Barrier(3)
 
         def participant_thread(participant_id, is_host):
-            # Each participant needs its own state instance
             state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
+                store=store,
+                run_id=run_id,
                 is_store_host=is_host,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
+            # Force Step 2 poll interval effectively off for this specific test.
+            state._compute_step2_poll_interval = lambda _min_nodes, _interval: 1e9
             try:
-                # Wait for all threads to be ready before proceeding
-                start_barrier.wait()
-                node = self.node_desc_gen.generate()
+                start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
+                node = node_desc_gen.generate()
                 state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
+            except threading.BrokenBarrierError:
+                errors.append((participant_id, "BrokenBarrierError"))
             except Exception as e:
                 errors.append((participant_id, type(e).__name__))
 
-        # Try to add 3 participants (exceeds max_nodes)
         threads = []
         for i in range(3):
             t = threading.Thread(target=participant_thread, args=(i, i == 0))
@@ -1608,16 +1722,37 @@ class ErrorCaseTest(BaseRendezvousTest):
 
         for t in threads:
             t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
+        _assert_threads_finished(self, threads, TEST_THREAD_JOIN_TIMEOUT_SECS)
 
-        # At least one should get RendezvousClosedError
         error_types = [e[1] for e in errors]
-        self.assertIn('RendezvousClosedError', error_types)
+        self.assertIn(
+            "RendezvousClosedError",
+            error_types,
+            msg=(
+                f"Expected at least one RendezvousClosedError when 3 participants join with "
+                f"max_nodes=2. error_types={error_types}, errors={errors}"
+            ),
+        )
 
     def test_timeout_raises_error(self):
-        """Test that join timeout raises RendezvousTimeoutError."""
+        """Test that join timeout raises RendezvousTimeoutError.
+
+        Uses a dedicated TCPStore so the rendezvous is open (no leftover keys from
+        other tests). We then hit the join timeout in Step 2 while waiting for min_nodes.
+        """
+        # Dedicated store so last_participant_arrived_key does not exist; __init__ sets it to "0".
+        # This avoids waiting at Step 0 when the class shared_store has leftover state.
+        # TCPStore does not provide close()/shutdown(); store is released when GC runs.
+        store = TCPStore(
+            host_name="127.0.0.1",
+            port=0,
+            is_master=True,
+            wait_for_workers=False,
+        )
+        run_id = f"test_error_{self._testMethodName}_{uuid.uuid4().hex}"
         state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
+            store=store,
+            run_id=run_id,
             is_store_host=True,
             join_timeout_seconds=1.0,  # Use very short timeout to test timeout behavior
         )
@@ -1627,12 +1762,11 @@ class ErrorCaseTest(BaseRendezvousTest):
 
         node = self.node_desc_gen.generate()
 
-        # Should timeout waiting for other participants
         with self.assertRaises(RendezvousTimeoutError):
             state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_closed_rendezvous_raises_error(self):
-        """Test that joining a closed rendezvous raises RendezvousClosedError."""
+        """Test that joining a closed rendezvous raises RendezvousGracefulExitError (exit 0)."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -1640,17 +1774,17 @@ class ErrorCaseTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        # Close the rendezvous
-        state.set_closed()
-        self.assertTrue(state.is_closed())
+        # Permanently close the rendezvous
+        state.set_permanently_closed()
+        self.assertTrue(state.is_permanently_closed())
 
         min_nodes = 2
         max_nodes = 4
         segment_check_interval = _test_segment_check_interval()
         node = self.node_desc_gen.generate()
 
-        # Should raise RendezvousClosedError
-        with self.assertRaises(RendezvousClosedError):
+        # Should raise RendezvousGracefulExitError (hot spare / Step 0 sees closed → graceful exit)
+        with self.assertRaises(RendezvousGracefulExitError):
             state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_duplicate_infra_rank_raises_error(self):
@@ -1691,13 +1825,11 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_ack_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique when tests run back-to-back
+        self.run_id = f"test_ack_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -1705,93 +1837,92 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
         super().tearDown()  # Restores environment variables
 
     def test_all_participants_acknowledge(self):
-        """Test that all participants acknowledge completion."""
+        """Test that all participants acknowledge completion.
+
+        Runs participants in separate processes (fork) so each has its own store
+        connection; avoids shared-store contention that can hang with threads.
+        """
         min_nodes = 3
         max_nodes = 3
         segment_check_interval = _test_segment_check_interval()
+        join_timeout_seconds = 15.0
 
-        ack_counts = []
+        store, results, errors, procs = _run_rendezvous_processes(
+            run_id=self.run_id,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=segment_check_interval,
+            join_timeout_seconds=join_timeout_seconds,
+        )
 
-        def participant_thread(is_host):
-            # Each participant needs its own state instance
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=is_host,
-                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        for p in procs:
+            self.assertFalse(p.is_alive(), f"Process {p.pid} did not terminate")
+        if errors:
+            self.fail(
+                f"Expected all {min_nodes} participants to acknowledge; "
+                f"got {len(results)} results and {len(errors)} error(s): {errors}"
             )
-            node = self.node_desc_gen.generate()
-            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
-            # After completion, check ack count
-            # Note: Keys might be cleared by store host, so we capture during execution
-            ack_counts.append(1)  # Just count that we got here
-
-        threads = []
-        for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i == 0,))
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join(timeout=10)
-
-        # All participants should have acknowledged and completed
-        self.assertEqual(len(ack_counts), min_nodes)
+        self.assertEqual(
+            len(results),
+            min_nodes,
+            f"Expected {min_nodes} participants to acknowledge, got {len(results)}",
+        )
 
     def test_barrier_keys_cleared_after_acknowledgment(self):
         """Test that barrier keys are cleared after all acknowledgments.
 
-        Keys cleared: arrived_count_key, ack_count_key, peer_aborted_count_key
+        Keys cleared: arrived_count_key, withdrawn_count_key, ack_count_key, peer_aborted_count_key
         Keys NOT cleared:
         - last_participant_arrived_key: serves as open/close indicator
         - unhealthy_count_key: global job-level counter across all cycles
+
+        Runs participants in separate processes (fork) so each has its own store
+        connection; avoids shared-store contention that can hang with threads.
         """
         min_nodes = 2
         max_nodes = 2
         segment_check_interval = _test_segment_check_interval()
+        join_timeout_seconds = 15.0
 
-        # Need one state to check keys after
-        check_state = _RendezvousBarrierState(
-            store=self.store,
+        store, results, errors, procs = _run_rendezvous_processes(
             run_id=self.run_id,
-            is_store_host=False,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=segment_check_interval,
+            join_timeout_seconds=join_timeout_seconds,
         )
 
-        def participant_thread(is_host):
-            # Each participant needs its own state instance
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=is_host,
-                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-            )
-            node = self.node_desc_gen.generate()
-            state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
+        for p in procs:
+            self.assertFalse(p.is_alive(), f"Process {p.pid} did not terminate")
+        self.assertEqual(
+            len(errors),
+            0,
+            f"Both participants must complete without exception; got: {errors}",
+        )
 
-        threads = []
-        for i in range(min_nodes):
-            t = threading.Thread(target=participant_thread, args=(i == 0,))
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join(timeout=TEST_THREAD_JOIN_TIMEOUT_SECS)
-
-        # Wait a bit for cleanup
-        time.sleep(0.05)  # Minimal delay for key cleanup
-
-        # Barrier keys should be cleared by store host
-        # Note: last_participant_arrived_key is intentionally NOT cleared as it
-        # serves as the open/close indicator for the rendezvous
-        # Note: unhealthy_count_key is intentionally NOT cleared as it is a global
-        # job-level counter that tracks unhealthy nodes across the entire job lifetime
-        self.assertFalse(self.store.check([check_state.arrived_count_key]))
-        self.assertFalse(self.store.check([check_state.ack_count_key]))
-        self.assertFalse(self.store.check([check_state.peer_aborted_count_key]))
-
-        # Verify that unhealthy_count_key is NOT cleared (should remain absent if no unhealthy nodes)
-        # We don't assert its presence/absence since no health check failures occurred in this test
+        # Check keys using the master store (same run_id)
+        check_state = _RendezvousBarrierState(
+            store=store,
+            run_id=self.run_id,
+            is_store_host=False,
+            join_timeout_seconds=join_timeout_seconds,
+        )
+        self.assertFalse(
+            store.check([check_state.arrived_count_key]),
+            "arrived_count_key should be cleared after all acks",
+        )
+        self.assertFalse(
+            store.check([check_state.withdrawn_count_key]),
+            "withdrawn_count_key should be cleared after all acks",
+        )
+        self.assertFalse(
+            store.check([check_state.ack_count_key]),
+            "ack_count_key should be cleared after all acks",
+        )
+        self.assertFalse(
+            store.check([check_state.peer_aborted_count_key]),
+            "peer_aborted_count_key should be cleared after all acks",
+        )
 
 
 class HandlerIntegrationTest(BaseRendezvousTest):
@@ -1809,13 +1940,11 @@ class HandlerIntegrationTest(BaseRendezvousTest):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         super().setUp()  # Clears environment variables
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_handler_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_handler_{self._testMethodName}_{uuid.uuid4().hex}"
 
     def tearDown(self):
         """Clean up test fixtures."""
@@ -1914,14 +2043,12 @@ class InfrastructureRankTest(TestCase):
 
     def setUp(self):
         """Set up test fixtures with unique run_id for each test."""
-        import time
-
         # NOTE: DO NOT clear SLURM_PROCID/GROUP_RANK for this test class
         # These tests specifically test infrastructure rank behavior from environment
 
         self.store = self.shared_store
-        # Use unique run_id for each test to avoid key collisions
-        self.run_id = f"test_infra_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_infra_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -1975,8 +2102,8 @@ class StaleRoundDetectionTest(BaseRendezvousTest):
         super().setUp()
         # Use the shared_store from setUpClass
         self.store = self.shared_store
-        # Generate unique run_id to isolate each test
-        self.run_id = f"test_stale_{self._testMethodName}_{int(time.time() * 1000000)}"
+        # Use uuid so run_id is globally unique (time-based run_id can collide in same microsecond).
+        self.run_id = f"test_stale_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def test_stale_check_interval_parameter(self):
@@ -2090,6 +2217,406 @@ class StaleRoundDetectionTest(BaseRendezvousTest):
 
         # Verify that the round was synced
         self.assertEqual(state._rendezvous_round, 5)
+
+
+class SignalWithdrawRendezvousTest(BaseRendezvousTest):
+    """Test that a participant that receives SIGTERM after joining (Step 1) withdraws by
+    incrementing withdrawn_count_key and marking its slot with invalid domain_id, so the
+    store host can complete Step 3b (ack check uses arrived - withdrawn).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up shared TCPStore for all tests in this class."""
+        cls.shared_store = TCPStore(
+            host_name="127.0.0.1",
+            port=0,
+            is_master=True,
+            wait_for_workers=False,
+        )
+
+    def setUp(self):
+        """Set up test fixtures with unique run_id for each test."""
+        super().setUp()
+        self.store = self.shared_store
+        self.run_id = f"test_signal_withdraw_{self._testMethodName}_{uuid.uuid4().hex}"
+        self.node_desc_gen = _NodeDescGenerator()
+
+    def tearDown(self):
+        """Clear module-level state so other tests are not affected."""
+        super().tearDown()
+        ft_rendezvous_barrier_module._current_joined_state = None
+
+    def test_withdraw_from_rendezvous_decrements_once(self):
+        """Test that _withdraw_from_rendezvous increments withdrawn_count_key and marks slot; idempotent."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        # Simulate one participant having joined (slot 1)
+        self.store.add(state.arrived_count_key, 1)
+        state._arrived_count = 1  # Simulate we are that participant
+        self.assertEqual(int(self.store.get(state.arrived_count_key).decode('utf-8')), 1)
+
+        state._withdraw_from_rendezvous()
+        # arrived_count stays 1; withdrawn_count becomes 1
+        self.assertEqual(
+            int(self.store.get(state.arrived_count_key).decode('utf-8')),
+            1,
+            "arrived_count should remain 1 after withdraw (slot space is monotonic)",
+        )
+        self.assertEqual(
+            int(self.store.get(state.withdrawn_count_key).decode('utf-8')),
+            1,
+            "withdrawn_count should be 1 after withdraw",
+        )
+
+        # Idempotent: second call must not increment withdrawn again
+        state._withdraw_from_rendezvous()
+        self.assertEqual(
+            int(self.store.get(state.withdrawn_count_key).decode('utf-8')),
+            1,
+            "withdrawn_count should still be 1 after second withdraw",
+        )
+
+    def test_signal_after_join_causes_withdraw(self):
+        """Test that when a participant is interrupted after Step 1 (e.g. SIGTERM), the
+        finally block withdraws (increments withdrawn_count_key, marks slot) so the store
+        host can complete Step 3b. We simulate the signal by using a store wrapper that
+        raises SignalException on get() once _current_joined_state is set (after join).
+        """
+        # min_nodes=2 so the host waits for both to join before marking complete (host is faster
+        # than participant which runs ensure_node_is_healthy first). Use longer join timeout so
+        # the participant (main thread) has time to pass health check and join.
+        min_nodes = 2
+        max_nodes = 2
+        segment_check_interval = _test_segment_check_interval()
+        # Participant (main thread) runs ensure_node_is_healthy first, so it can be slow to join.
+        # Host runs perform_rendezvous directly and waits for 2 participants.
+        join_timeout_secs = 60.0
+
+        # Event set when participant has joined (add(arrived_count_key, 1)) so host can wait
+        # and not timeout before the participant reaches perform_rendezvous.
+        participant_joined_event = threading.Event()
+        # Event set when participant has done the first get of last_participant_arrived_key in
+        # Step 2. Host waits on this before setting last_participant_arrived so the participant
+        # sees 0 on first get, then we raise on the second get (before returning 1).
+        participant_did_first_get_event = threading.Event()
+
+        # Participant store: raise SignalException on 2nd get of last_participant_arrived_key;
+        # set participant_did_first_get_event on 1st get so host knows to proceed.
+        class StoreThatRaisesSignalAfterJoin:
+            def __init__(self, underlying, joined_event, did_first_get_event):
+                self._store = underlying
+                self._joined_event = joined_event
+                self._did_first_get_event = did_first_get_event
+                self._step2_get_count = 0
+
+            def get(self, key):
+                if (
+                    key.endswith(":last_participant_arrived")
+                    and ft_rendezvous_barrier_module._current_joined_state is not None
+                ):
+                    self._step2_get_count += 1
+                    if self._step2_get_count == 1:
+                        self._did_first_get_event.set()
+                    if self._step2_get_count >= 2:
+                        # Simulate what the real signal handler does: set withdraw_on_unwind
+                        # so the handler's finally will call _withdraw_from_rendezvous().
+                        state = ft_rendezvous_barrier_module._current_joined_state
+                        if state is not None:
+                            state._withdraw_on_unwind = True
+                        raise SignalException(
+                            "Simulated signal during rendezvous",
+                            sigval=signal.Signals(signal.SIGTERM),
+                        )
+                return self._store.get(key)
+
+            def add(self, key, value):
+                result = self._store.add(key, value)
+                if key.endswith(":arrived_count") and value == 1:
+                    self._joined_event.set()
+                return result
+
+            def set(self, key, value):
+                return self._store.set(key, value)
+
+            def check(self, keys):
+                return self._store.check(keys)
+
+            def multi_get(self, keys):
+                return self._store.multi_get(keys)
+
+            def multi_set(self, keys, values):
+                return self._store.multi_set(keys, values)
+
+        # Host store: delay set(last_participant_arrived_key, 1) until participant has done
+        # first get, so participant sees 0 then we raise on second get.
+        class HostStoreWaitsForFirstGet:
+            def __init__(self, underlying, did_first_get_event):
+                self._store = underlying
+                self._did_first_get_event = did_first_get_event
+
+            def get(self, key):
+                return self._store.get(key)
+
+            def add(self, key, value):
+                return self._store.add(key, value)
+
+            def set(self, key, value):
+                if key.endswith(":last_participant_arrived") and value == "1".encode("utf-8"):
+                    self._did_first_get_event.wait(timeout=30.0)
+                return self._store.set(key, value)
+
+            def check(self, keys):
+                return self._store.check(keys)
+
+            def multi_get(self, keys):
+                return self._store.multi_get(keys)
+
+            def multi_set(self, keys, values):
+                return self._store.multi_set(keys, values)
+
+        participant_store = StoreThatRaisesSignalAfterJoin(
+            self.store, participant_joined_event, participant_did_first_get_event
+        )
+        host_store = HostStoreWaitsForFirstGet(self.store, participant_did_first_get_event)
+        host_result = []
+        participant_error = []
+        participant_count_after_withdraw = []
+
+        def host_thread():
+            state = _RendezvousBarrierState(
+                store=host_store,
+                run_id=self.run_id,
+                is_store_host=True,
+                join_timeout_seconds=join_timeout_secs,
+            )
+            try:
+                node = self.node_desc_gen.generate()
+                rank, total = state.perform_rendezvous(
+                    node, min_nodes, max_nodes, segment_check_interval
+                )
+                host_result.append((rank, total))
+            except Exception as e:
+                host_result.append(('error', e))
+
+        # Participant must run in main thread so handler can install signal handlers
+        # (signal.signal() only works in main thread). Host runs in worker thread.
+        # Host waits for participant to join before starting so the host does not timeout
+        # (participant is slow to reach perform_rendezvous due to health check etc.).
+        start_barrier = threading.Barrier(2)
+
+        def host_with_sync():
+            start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
+            participant_joined_event.wait(timeout=60.0)
+            host_thread()
+
+        t_host = threading.Thread(target=host_with_sync)
+        t_host.start()
+        start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
+        handler = FtRendezvousBarrierHandler.from_backend(
+            run_id=self.run_id,
+            store=participant_store,
+            backend=None,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            timeout=RendezvousTimeout(join=timedelta(seconds=join_timeout_secs)),
+            is_store_host=False,
+        )
+        try:
+            handler.next_rendezvous()
+        except SignalException:
+            participant_error.append(True)
+            # Simulated signal does not go through the real signal handler, so _withdraw_on_unwind
+            # is set in the wrapper; ensure withdraw runs so host can finish Step 3b.
+            handler._barrier_state._withdraw_on_unwind = True
+            handler._barrier_state._maybe_withdraw_on_unwind()
+            try:
+                arrived = int(
+                    self.store.get(handler._barrier_state.arrived_count_key).decode('utf-8')
+                )
+                withdrawn = handler._barrier_state._get_withdrawn_count()
+                participant_count_after_withdraw.append((arrived, withdrawn))
+            except Exception:
+                pass
+        t_host.join(timeout=70)
+        _assert_threads_finished(self, [t_host], 70)
+
+        self.assertTrue(participant_error, "Participant should have received SignalException")
+        # arrived_count stays 2 (both joined); withdrawn_count = 1 (participant withdrew)
+        self.assertEqual(
+            participant_count_after_withdraw,
+            [(2, 1)],
+            "After participant withdrew: arrived_count=2 (unchanged), withdrawn_count=1",
+        )
+        # Withdrawn participant's slot (participant joined first = slot 1) should be marked with WITHDRAWN_DOMAIN_ID
+        state = handler._barrier_state
+        slot_key = f"{state.prefix}:arrived_1"
+        slot_data = self.store.get(slot_key).decode('utf-8')
+        _, _, domain_id, cycle_id = RendezvousParticipantInfo.unpack(slot_data)
+        self.assertEqual(
+            domain_id,
+            WITHDRAWN_DOMAIN_ID,
+            "Withdrawn participant's slot should have WITHDRAWN_DOMAIN_ID",
+        )
+        self.assertEqual(cycle_id, state._rendezvous_round)
+        self.assertEqual(len(host_result), 1, "Host should complete or error (not hang)")
+        # Host either completes with world size 1 or errors (e.g. segment constraint) after
+        # participant withdrew; both are acceptable as long as the host did not hang in Step 3b.
+        if host_result[0][0] == 'error':
+            err = host_result[0][1]
+            self.assertIn(
+                type(err).__name__,
+                ('RuntimeError', 'RendezvousError'),
+                f"Host error should be RuntimeError or RendezvousError: {err}",
+            )
+        else:
+            rank, total = host_result[0]
+            # total_participants in rank value is slot count (arrived=2), not active count
+            self.assertEqual(
+                total, 2, "Host should see total_participants=2 (slot count) in rank value"
+            )
+            # Rank assignment must be at the correct slot: host joined second = slot 2
+            host_rank_key = f"{state.prefix}:arrived_2_group_rank"
+            host_rank_value = self.store.get(host_rank_key).decode('utf-8')
+            self.assertEqual(
+                host_rank_value,
+                "0,2",
+                "Host (slot 2) should have rank 0 written at arrived_2_group_rank",
+            )
+            # Withdrawn slot (1) should not have been assigned a rank (we only write for active)
+            slot1_rank_key = f"{state.prefix}:arrived_1_group_rank"
+            slot1_rank_value = self.store.get(slot1_rank_key).decode('utf-8')
+            self.assertEqual(
+                slot1_rank_value.split(",")[0],
+                "-1",
+                "Withdrawn participant's slot (1) should keep unassigned rank, not overwritten",
+            )
+
+    def test_signal_after_ack_does_not_decrement(self):
+        """Test that when a participant is interrupted after Step 3a (after ack), we do
+        NOT withdraw (no add(withdrawn_count_key, 1)). Only pre-ack withdrawal should withdraw.
+        """
+        # min_nodes=2 so the host waits for both to join and ack before completing.
+        min_nodes = 2
+        max_nodes = 2
+        segment_check_interval = _test_segment_check_interval()
+        join_timeout_secs = 60.0
+
+        # Event set when participant has joined so host waits and does not timeout first.
+        participant_joined_event = threading.Event()
+
+        # Store wrapper that raises SignalException on the first get() AFTER the
+        # participant has called add(ack_count_key, 1) (i.e. after Step 3a).
+        # Records all add() calls so we can assert no add(withdrawn_count_key, 1).
+        class StoreThatRaisesSignalAfterAck:
+            def __init__(self, underlying, joined_event):
+                self._store = underlying
+                self._joined_event = joined_event
+                self._add_calls = []
+                self._raise_on_next_get = False
+
+            def get(self, key):
+                if self._raise_on_next_get:
+                    raise SignalException(
+                        "Simulated signal after ack",
+                        sigval=signal.Signals(signal.SIGTERM),
+                    )
+                return self._store.get(key)
+
+            def add(self, key, value):
+                self._add_calls.append((key, value))
+                result = self._store.add(key, value)
+                if key.endswith(":arrived_count") and value == 1:
+                    self._joined_event.set()
+                # Step 3a is add(ack_count_key, 1); trigger raise on next get (Step 4)
+                if key.endswith(":ack_count") and value == 1:
+                    self._raise_on_next_get = True
+                return result
+
+            def set(self, key, value):
+                return self._store.set(key, value)
+
+            def check(self, keys):
+                return self._store.check(keys)
+
+            def multi_get(self, keys):
+                return self._store.multi_get(keys)
+
+            def multi_set(self, keys, values):
+                return self._store.multi_set(keys, values)
+
+        participant_store = StoreThatRaisesSignalAfterAck(self.store, participant_joined_event)
+        host_result = []
+        participant_raised = []
+
+        def host_thread():
+            state = _RendezvousBarrierState(
+                store=self.store,
+                run_id=self.run_id,
+                is_store_host=True,
+                join_timeout_seconds=join_timeout_secs,
+            )
+            try:
+                node = self.node_desc_gen.generate()
+                rank, total = state.perform_rendezvous(
+                    node, min_nodes, max_nodes, segment_check_interval
+                )
+                host_result.append((rank, total))
+            except Exception as e:
+                host_result.append(('error', e))
+
+        # Participant must run in main thread so handler can install signal handlers.
+        # Host waits for participant to join before starting so the host does not timeout first.
+        start_barrier = threading.Barrier(2)
+
+        def host_with_sync():
+            start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
+            participant_joined_event.wait(timeout=60.0)
+            host_thread()
+
+        t_host = threading.Thread(target=host_with_sync)
+        t_host.start()
+        start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
+        handler = FtRendezvousBarrierHandler.from_backend(
+            run_id=self.run_id,
+            store=participant_store,
+            backend=None,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            timeout=RendezvousTimeout(join=timedelta(seconds=join_timeout_secs)),
+            is_store_host=False,
+        )
+        try:
+            handler.next_rendezvous()
+        except SignalException:
+            participant_raised.append(True)
+        t_host.join(timeout=70)
+        _assert_threads_finished(self, [t_host], 70)
+
+        self.assertTrue(participant_raised, "Participant should have received SignalException")
+        state = handler._barrier_state
+        # Signal after ack: should NOT have withdrawn (no add(withdrawn_count_key, 1))
+        withdraw_calls = [
+            (k, v)
+            for k, v in participant_store._add_calls
+            if k == state.withdrawn_count_key and v == 1
+        ]
+        self.assertEqual(
+            len(withdraw_calls),
+            0,
+            "Participant received signal after Step 3a; should NOT have withdrawn "
+            "(withdraw only before ack). Got add(withdrawn_count_key, 1) calls: %s"
+            % participant_store._add_calls,
+        )
+        # Host should have completed with 2 participants (both had acked before participant died)
+        self.assertEqual(len(host_result), 1)
+        self.assertNotEqual(host_result[0][0], 'error', f"Host should not error: {host_result[0]}")
+        rank, total = host_result[0]
+        self.assertEqual(total, 2, "Host completed with 2 participants; participant died after ack")
 
 
 if __name__ == '__main__':

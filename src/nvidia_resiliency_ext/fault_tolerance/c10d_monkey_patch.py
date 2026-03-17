@@ -20,16 +20,93 @@ This patch modifies the _create_tcp_store function to accept and use the use_lib
 parameter from RendezvousParameters, allowing users to control whether to use
 the libuv backend or the traditional socket backend for TCPStore.
 
+Optionally, clients can wait for the TCPStore server to be up using short TCP
+probes (store_connect_wait_seconds) before opening the real connection, so the
+full read_timeout is not consumed by a single long connect attempt.
+
 Usage:
     from nvidia_resiliency_ext.fault_tolerance.c10d_monkey_patch import apply_c10d_patch
     apply_c10d_patch()
 """
 
 import logging
+import random
+import socket
+import time
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 logger = logging.getLogger(LogConfig.name)
+
+# Defaults for wait-for-store (short probes to avoid burning read_timeout on connect)
+_DEFAULT_STORE_PROBE_TIMEOUT_SECONDS = 5
+_DEFAULT_STORE_PROBE_INTERVAL_SECONDS = 2
+# Jitter: fraction of probe_interval added randomly to spread load at scale (e.g. 10K workers)
+_DEFAULT_STORE_PROBE_INTERVAL_JITTER_FRACTION = 0.5
+
+
+def _wait_for_tcp_store_server(
+    host: str,
+    port: int,
+    max_wait_seconds: float,
+    probe_timeout_seconds: float = _DEFAULT_STORE_PROBE_TIMEOUT_SECONDS,
+    probe_interval_seconds: float = _DEFAULT_STORE_PROBE_INTERVAL_SECONDS,
+    probe_interval_jitter_fraction: float = _DEFAULT_STORE_PROBE_INTERVAL_JITTER_FRACTION,
+) -> None:
+    """
+    Wait until a TCP server is accepting connections on host:port using short
+    probes. Use this before creating a TCPStore client so the server has time
+    to come up without consuming the full read_timeout on a single connect.
+
+    Each probe is a single TCP connect then close (low cost per client). At
+    scale (e.g. 10K workers), jitter is applied to the retry interval to avoid
+    thundering herd on the TCPStore server.
+
+    Raises:
+        TimeoutError: If the server is not reachable within max_wait_seconds.
+    """
+    deadline = time.monotonic() + max_wait_seconds
+    # Stagger first probe to spread load when many workers start together.
+    # Cap stagger so a short max_wait_seconds still leaves room for actual probes.
+    max_stagger = min(probe_interval_seconds * 0.5, max_wait_seconds * 0.2)
+    initial_stagger = random.uniform(0, max(0.0, max_stagger))
+    time.sleep(min(initial_stagger, max(0.0, deadline - time.monotonic())))
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        try:
+            with socket.create_connection((host, port), timeout=probe_timeout_seconds):
+                logger.debug(
+                    "TCPStore server at %s:%s is up (probe attempt %d).",
+                    host,
+                    port,
+                    attempt,
+                )
+                return
+        except (OSError, socket.timeout) as e:
+            remaining = max(0.0, deadline - time.monotonic())
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"TCPStore server at {host}:{port} did not become reachable within "
+                    f"{max_wait_seconds}s (last error: {e!s})."
+                ) from e
+            # Jitter: sleep interval + random so workers don't all retry at once
+            jitter = probe_interval_seconds * probe_interval_jitter_fraction * random.random()
+            sleep_duration = min(probe_interval_seconds + jitter, remaining)
+            logger.debug(
+                "TCPStore server at %s:%s not yet reachable (attempt %d): %s; "
+                "retrying in %.1fs (%.1fs remaining).",
+                host,
+                port,
+                attempt,
+                e,
+                sleep_duration,
+                remaining,
+            )
+        time.sleep(sleep_duration)
+    raise TimeoutError(
+        f"TCPStore server at {host}:{port} did not become reachable within " f"{max_wait_seconds}s."
+    )
 
 
 def _patched_create_tcp_store(params: "RendezvousParameters") -> "TCPStore":  # noqa: F821
@@ -72,6 +149,19 @@ def _patched_create_tcp_store(params: "RendezvousParameters") -> "TCPStore":  # 
 
     # The use_libuv parameter - NEW FUNCTIONALITY
     use_libuv = params.get_as_bool("use_libuv", True)
+
+    # Optional: wait for TCPStore server with short probes before connecting as client.
+    # This avoids burning the full read_timeout on a single connect when the server
+    # is not up yet (e.g. store host starts after workers).
+    store_connect_wait_seconds = params.get_as_int("store_connect_wait_seconds", 0) or 0
+    if not is_host and store_connect_wait_seconds > 0:
+        logger.debug(
+            "Waiting up to %ds for TCPStore server at %s:%s (short probes).",
+            store_connect_wait_seconds,
+            host,
+            port,
+        )
+        _wait_for_tcp_store_server(host, port, max_wait_seconds=store_connect_wait_seconds)
 
     # In specific cases we attempt to instantiate the store twice. For details
     # see the explanation in the except clause below.

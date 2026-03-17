@@ -19,6 +19,8 @@ a checkpoint save process in the background.
 """
 import gc
 import logging
+import os
+import subprocess
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
@@ -32,6 +34,81 @@ from torch import multiprocessing as mp
 from ..utils import _disable_gc, debug_time
 
 logger = logging.getLogger(__name__)
+
+
+def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
+    """
+    Set QoS (Quality of Service) for the current checkpoint writer process.
+    This ensures checkpoint writing doesn't interfere with training.
+
+    Args:
+        cpu_priority: Nice value for CPU scheduling (0-19, higher = lower priority).
+                     Default 10 is moderately deprioritized.
+        io_priority: ionice scheduling class. If None, I/O priority is unchanged.
+                    Valid values (0-3):
+                      0 = none/unspecified (kernel default)
+                      1 = realtime — **highest** I/O priority; pre-empts all other I/O.
+                          NOT recommended for checkpoint workers; will starve training I/O.
+                      2 = best-effort (OS default)
+                      3 = idle — lowest priority; runs only when no other process needs I/O.
+                          Recommended for checkpoint deprioritization.
+
+    Note: Requires appropriate permissions. Failures are logged but not fatal.
+    """
+    pid = os.getpid()
+
+    # Set CPU priority (nice value). os.nice(increment) adds to current;
+    # get current with os.nice(0). Only increase nice (deprioritize);
+    # decreasing requires superuser.
+    if cpu_priority is not None and cpu_priority >= 0 and cpu_priority <= 19:
+        try:
+            current_nice = os.nice(0)  # 0 = no change, returns current nice value
+            increment = cpu_priority - current_nice
+            if increment <= 0:
+                logger.warning(
+                    "PID %s: Skipping CPU nice (current %s already >= target %s; "
+                    "lowering requires superuser",
+                    pid,
+                    current_nice,
+                    cpu_priority,
+                )
+            else:
+                new_nice = os.nice(increment)
+                logger.debug(
+                    "PID %s: Set CPU nice from %s to %s (target %s)",
+                    pid,
+                    current_nice,
+                    new_nice,
+                    cpu_priority,
+                )
+        except (OSError, PermissionError) as e:
+            logger.warning(f"PID {pid}: Failed to set CPU priority: {e}")
+
+    # Set I/O priority (ionice) - Linux only
+    if io_priority is not None:
+        if io_priority not in range(4):
+            logger.warning(
+                f"PID {pid}: Invalid io_priority {io_priority!r}; must be 0-3. Skipping ionice."
+            )
+        else:
+            if io_priority <= 2:
+                logger.warning(
+                    f"PID {pid}: io_priority={io_priority} will NOT deprioritize I/O "
+                    f"(class 1=realtime escalates priority, class 2=best-effort is OS default). "
+                    f"Use io_priority=3 (idle) to deprioritize checkpoint I/O. Proceeding anyway."
+                )
+            try:
+                # ionice -c <class> -p <pid>
+                # class 3 = idle (only when no other process needs I/O)
+                # class 2 = best-effort (default, can set priority 0-7)
+                subprocess.run(
+                    ["ionice", "-c", str(io_priority), "-p", str(pid)],
+                    check=True,
+                    capture_output=True,
+                )
+                logger.debug(f"PID {pid}: Set I/O priority class to {io_priority}")
+            except (subprocess.CalledProcessError, FileNotFoundError, PermissionError) as e:
+                logger.warning(f"PID {pid}: Failed to set I/O priority: {e}")
 
 
 class AsyncRequest(NamedTuple):
@@ -318,7 +395,7 @@ class TemporalAsyncCaller(AsyncCaller):
         if self.process:
             logger.debug(f"rank: {self.rank}, joining self.process")
             if abort:
-                logger.warning(f"Temporal worker aborted in rank {torch.distributed.get_rank()}")
+                logger.warning(f"Temporal worker aborted in rank {self.rank}")
                 self.process.kill()
             else:
                 self.process.join()
@@ -345,7 +422,18 @@ class PersistentAsyncCaller(AsyncCaller):
     Starts process asynchronously and allows checking if all processes on all ranks are done.
     """
 
-    def __init__(self, is_daemon: bool = False):
+    # Worker-side cache for consistent data structures.
+    # Key: identifier key
+    # Value: (separation_hint, items, resolved_data, thread_count, storage_plan)
+    # This cache contains IPC handles and must be cleaned up properly.
+    _worker_data_cache: Dict = {}
+
+    def __init__(
+        self,
+        is_daemon: bool = True,
+        cpu_priority: int = 10,
+        io_priority: Optional[int] = None,
+    ):
         self.process: mp.Process = None
         self.start_time: Optional[float] = None
         ctx = mp.get_context('spawn')
@@ -365,6 +453,37 @@ class PersistentAsyncCaller(AsyncCaller):
         # the FileWriter performing the FileIO in the background process cannot
         # be parallelized with multi-processing.
         self.background_worker_is_daemon = is_daemon
+        self.cpu_priority = cpu_priority
+        self.io_priority = io_priority
+
+    def _start_worker(self, rank: int) -> None:
+        """Start the background worker process.
+
+        Args:
+            rank (int): the rank of the current trainer process.
+        """
+        ctx = mp.get_context('spawn')
+        logger.info(f"PersistentAsyncCaller: {rank}, Starting Async Caller")
+        if self.background_worker_is_daemon:
+            async_loop_target = PersistentAsyncCaller.async_loop_for_daemon_worker
+        else:
+            async_loop_target = PersistentAsyncCaller.async_loop
+
+        self.process = ctx.Process(
+            target=async_loop_target,
+            args=(
+                rank,
+                self.queue,
+                self.preload_q,
+                self.comp_q,
+                logger.getEffectiveLevel(),
+                self.cpu_priority,
+                self.io_priority,
+            ),
+            daemon=self.background_worker_is_daemon,
+        )
+        self.process.start()
+        logger.debug(f"PersistentAsyncCaller: {rank}, Started Async Caller {self.process}")
 
     def schedule_async_call(self, async_req: AsyncRequest) -> None:
         """Put `AsyncRequest` to the Persistent Async Caller
@@ -389,26 +508,7 @@ class PersistentAsyncCaller(AsyncCaller):
 
         self.start_time = time()
         if self.process is None:
-            ctx = mp.get_context('spawn')
-            logger.info(f"PersistentAsyncCaller: {self.rank}, Starting Async Caller")
-            if self.background_worker_is_daemon:
-                async_loop_target = PersistentAsyncCaller.async_loop_for_daemon_worker
-            else:
-                async_loop_target = PersistentAsyncCaller.async_loop
-
-            self.process: mp.Process = ctx.Process(
-                target=async_loop_target,
-                args=(
-                    self.rank,
-                    self.queue,
-                    self.preload_q,
-                    self.comp_q,
-                    logger.getEffectiveLevel(),
-                ),
-                daemon=self.background_worker_is_daemon,
-            )
-            self.process.start()
-            logger.debug(f"PersistentAsyncCaller: {self.rank}, Started Async Caller {self.process}")
+            self._start_worker(self.rank)
 
         if async_req.preload_fn:
             self.preload_q.put(async_req.call_idx)
@@ -489,7 +589,7 @@ class PersistentAsyncCaller(AsyncCaller):
         logger.info(f"PersistentAsyncCaller: {self.rank}, Destroying Async Caller")
         if self.process:
             if abort:
-                logger.error(f"Persistent worker aborted in rank {torch.distributed.get_rank()}")
+                logger.error(f"Persistent worker aborted in rank {self.rank}")
                 self.process.kill()
             else:
                 self.queue.put('DONE')
@@ -507,6 +607,20 @@ class PersistentAsyncCaller(AsyncCaller):
             return False
         return self.process.is_alive()
 
+    @classmethod
+    def cleanup_worker_data_cache(cls):
+        """Clean up the worker data cache and release IPC handles.
+
+        This function should be called when the async worker is being torn down
+        to properly release any IPC handles stored in the cache.
+        """
+        if cls._worker_data_cache:
+            logger.info(f"Cleaning up worker data cache with {len(cls._worker_data_cache)} entries")
+            # Clear all cached data structures which may contain IPC handles
+            cls._worker_data_cache.clear()
+            gc.collect()
+            torch.cuda.empty_cache()
+
     @staticmethod
     def async_process_target(
         rank: int,
@@ -514,6 +628,8 @@ class PersistentAsyncCaller(AsyncCaller):
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
         log_level: int = logging.INFO,
+        cpu_priority: int = 10,
+        io_priority: Optional[int] = None,
     ):
         """Main function for the persistent checkpoint worker
 
@@ -535,10 +651,17 @@ class PersistentAsyncCaller(AsyncCaller):
                                async checkpoint request
             log_level (int, Optional): an integer to set log-level in this spawned process
                                        to get aligned with the training rank's logging level
+            cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).
+                               Default 10 deprioritizes checkpoint writing vs training.
+            io_priority (int, Optional): ionice scheduling class (0-3). Default None leaves
+                                        I/O priority unchanged. Use 3 (idle) to deprioritize
+                                        checkpoint I/O. NOTE: class 1 = realtime (highest
+                                        priority — NOT recommended for checkpoint workers).
 
         """
+        # Set root logger level to affect all modules in this process
+        logging.getLogger().setLevel(log_level)
         logger = logging.getLogger(__name__)
-        logger.setLevel(log_level)
         logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has started")
 
         # Set CUDA device to appropriate local_rank to ensure allocations / CUDA contexts
@@ -547,28 +670,38 @@ class PersistentAsyncCaller(AsyncCaller):
         # this line).
         torch.cuda.set_device(rank % torch.cuda.device_count())
 
+        # Set QoS to deprioritize checkpoint writing vs training.
+        # This prevents checkpoint I/O from interfering with data loader.
+        _set_process_qos(cpu_priority=cpu_priority, io_priority=io_priority)
+
         # Start busy loop waiting for and executing checkpoint saves.
-        while True:
-            item = queue.get()
-            if isinstance(item, str) and item == 'DONE':
-                queue.task_done()
-                break
-            elif isinstance(item, AsyncRequest):
-                async_fn_args = list(item.async_fn_args)
-                if item.preload_fn:
-                    call_idx = preload_q.get()
-                    # the 2nd arg is state dict
-                    async_fn_args[1] = item.preload_fn()
-                    logger.debug(f"{rank} has completed D2H of {call_idx}")
-                    preload_q.task_done()
-                async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                item.async_fn(*async_fn_args, **async_fn_kwargs)
-                logger.debug(f"{rank} has completed saving {item.call_idx}")
-                comp_q.put(item.call_idx)
-                queue.task_done()
-                del async_fn_args
-            del item
-            gc.collect()
+        try:
+            while True:
+                item = queue.get()
+                if isinstance(item, str) and item == 'DONE':
+                    queue.task_done()
+                    break
+                elif isinstance(item, AsyncRequest):
+                    async_fn_args = list(item.async_fn_args)
+                    if item.preload_fn:
+                        call_idx = preload_q.get()
+                        # the 2nd arg is state dict
+                        async_fn_args[1] = item.preload_fn()
+                        logger.debug(f"{rank} has completed D2H of {call_idx}")
+                        preload_q.task_done()
+                    if item.async_fn is not None:
+                        async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                        item.async_fn(*async_fn_args, **async_fn_kwargs)
+                    logger.debug(f"{rank} has completed saving {item.call_idx}")
+                    comp_q.put(item.call_idx)
+                    queue.task_done()
+                    del async_fn_args
+                del item
+                gc.collect()
+        finally:
+            # Cleanup worker data cache before exiting, regardless of how the loop exits
+            # (normal termination via 'DONE' sentinel or unhandled exception).
+            PersistentAsyncCaller.cleanup_worker_data_cache()
         logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank}  has terminated")
 
     @staticmethod
@@ -579,12 +712,16 @@ class PersistentAsyncCaller(AsyncCaller):
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
         log_level: int = logging.INFO,
+        cpu_priority: int = 10,
+        io_priority: Optional[int] = None,
     ):
         """
         Main function for the persistent checkpoint worker called by a non daemon async process.
         In this loop, child processes may be created (For example: to parallelize File IO)
         """
-        PersistentAsyncCaller.async_process_target(rank, queue, preload_q, comp_q, log_level)
+        PersistentAsyncCaller.async_process_target(
+            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority
+        )
 
     @staticmethod
     def async_loop_for_daemon_worker(
@@ -593,11 +730,15 @@ class PersistentAsyncCaller(AsyncCaller):
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
         log_level: int = logging.INFO,
+        cpu_priority: int = 10,
+        io_priority: Optional[int] = None,
     ):
         """
         Main function for the persistent checkpoint worker called by a daemon async process
         """
-        PersistentAsyncCaller.async_process_target(rank, queue, preload_q, comp_q, log_level)
+        PersistentAsyncCaller.async_process_target(
+            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority
+        )
 
 
 class _ActiveAsyncRequest(NamedTuple):
@@ -622,11 +763,23 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
     active calls with `maybe_finalize_async_calls`.
     """
 
-    def __init__(self, persistent: bool = True, is_daemon: bool = False):
+    # Class-level slot for a pre-warmed persistent caller (set by warmup_persistent_caller).
+    # Consumed on first use by _get_async_caller.
+    _warmup_persistent_caller: Optional[PersistentAsyncCaller] = None
+
+    def __init__(
+        self,
+        persistent: bool = True,
+        is_daemon: bool = True,
+        cpu_priority: int = 10,
+        io_priority: Optional[int] = None,
+    ):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
         self.persistent: bool = persistent
         self.is_daemon: bool = is_daemon
+        self.cpu_priority = cpu_priority
+        self.io_priority = io_priority
         self.persistent_caller: AsyncCaller = None
 
     def _get_async_caller(self):
@@ -634,8 +787,55 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             logger.warning("The TemporalAsyncCaller will be deprecated soon. ")
             return TemporalAsyncCaller()
         if self.persistent_caller is None:
-            self.persistent_caller = PersistentAsyncCaller(is_daemon=self.is_daemon)
+            # Consume the pre-warmed caller if available.
+            # No locking needed: _warmup_persistent_caller is a class-level variable that is not
+            # shared across processes (each process has its own copy), and we expect only the
+            # main trainer thread to call this routine, so there is no concurrent access.
+            if AsyncCallsQueue._warmup_persistent_caller is not None:
+                warmed = AsyncCallsQueue._warmup_persistent_caller
+                AsyncCallsQueue._warmup_persistent_caller = None
+                if warmed.process is not None and not warmed.process.is_alive():
+                    logger.warning(
+                        "Pre-warmed async caller process (PID %s) is no longer alive; "
+                        "starting a fresh worker.",
+                        warmed.process.pid,
+                    )
+                    warmed.process.join()  # reap the zombie before discarding
+                    warmed.process = None
+                self.persistent_caller = warmed
+            else:
+                self.persistent_caller = PersistentAsyncCaller(
+                    is_daemon=self.is_daemon,
+                    cpu_priority=self.cpu_priority,
+                    io_priority=self.io_priority,
+                )
         return self.persistent_caller
+
+    @classmethod
+    def warmup_persistent_caller(
+        cls,
+        rank: int,
+        is_daemon: bool = True,
+        cpu_priority: int = 10,
+        io_priority: Optional[int] = None,
+    ):
+        """Pre-start the persistent async worker to avoid startup latency on the first checkpoint.
+
+        Args:
+            rank (int): the current distributed rank.
+            is_daemon (bool): whether to spawn the worker as a daemon process.
+            cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).
+            io_priority (int, Optional): ionice scheduling class (0-3). Use 3 (idle) to
+                deprioritize checkpoint I/O. NOTE: class 1 = realtime (highest priority —
+                NOT recommended for checkpoint workers).
+        """
+        if cls._warmup_persistent_caller is None:
+            caller = PersistentAsyncCaller(
+                is_daemon=is_daemon, cpu_priority=cpu_priority, io_priority=io_priority
+            )
+            caller._start_worker(rank)
+            caller.rank = rank
+            cls._warmup_persistent_caller = caller
 
     def schedule_async_request(self, async_request: AsyncRequest) -> int:
         """Start a new async call and add it to a queue of active async calls.
@@ -711,6 +911,11 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             self.maybe_finalize_async_calls(blocking=True)
         if self.persistent and self.persistent_caller:
             self.persistent_caller.close(abort=abort)
+
+        # Clean up any pre-warmed worker that was never consumed by a checkpoint schedule.
+        if AsyncCallsQueue._warmup_persistent_caller is not None:
+            AsyncCallsQueue._warmup_persistent_caller.close(abort=abort)
+            AsyncCallsQueue._warmup_persistent_caller = None
 
         # Reset all class params
         self.call_idx = -1

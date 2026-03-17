@@ -79,6 +79,9 @@ class TempNamedDir(TemporaryDirectory):
     def __enter__(self):
         return self.path()
 
+    def __str__(self):
+        return self.name
+
     def __fspath__(self):
         return self.path().__fspath__()
 

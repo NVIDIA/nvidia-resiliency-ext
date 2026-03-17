@@ -1,6 +1,5 @@
 import argparse
 import logging
-import os
 from typing import Any
 
 from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
@@ -60,9 +59,11 @@ class CombinedLogFR(NVRxAttribution):
         from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
         if self.llm is None:
+            from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
+
             self.llm = ChatNVIDIA(
                 model=self.args.model,
-                api_key=os.getenv("NVIDIA_API_KEY"),
+                api_key=load_nvidia_api_key(),
                 temperature=0.2,
                 top_p=0.7,
                 max_tokens=16384,

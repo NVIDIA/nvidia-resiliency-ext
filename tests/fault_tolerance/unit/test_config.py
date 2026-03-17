@@ -28,10 +28,10 @@ def test_from_kwargs():
     ref_conf = fault_tolerance.FaultToleranceConfig()
 
     conf_with_item_modified = fault_tolerance.FaultToleranceConfig.from_kwargs(
-        rank_heartbeat_timeout=ref_conf.rank_heartbeat_timeout + 1,
+        rank_heartbeat_timeout=123.0,
         ignore_not_recognized=False,
     )
-    assert conf_with_item_modified.rank_heartbeat_timeout == ref_conf.rank_heartbeat_timeout + 1
+    assert conf_with_item_modified.rank_heartbeat_timeout == 123.0
 
     not_modified_conf = fault_tolerance.FaultToleranceConfig.from_kwargs(
         ignore_not_recognized=False

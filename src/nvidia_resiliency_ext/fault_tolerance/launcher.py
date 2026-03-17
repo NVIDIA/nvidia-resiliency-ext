@@ -20,6 +20,7 @@ import importlib.metadata as metadata
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -37,6 +38,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 import torch
 from torch.distributed.argparse_util import check_env, env
 from torch.distributed.elastic import events, metrics, timer
+from torch.distributed.elastic.agent.server import api as _torch_elastic_agent_api
 from torch.distributed.elastic.agent.server.api import (
     RunResult,
     SimpleElasticAgent,
@@ -66,6 +68,7 @@ from torch.distributed.elastic.rendezvous.utils import (
 from torch.distributed.elastic.utils import macros
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoWriter, utc_iso_now
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -76,6 +79,7 @@ from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgr
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
+    hostnames_to_slurm_nodelist,
     is_slurm_job_array,
     patched_method,
     terminate_mp_processes,
@@ -100,6 +104,22 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
+# Key set by PyTorch's _exit_barrier() when all active agents have reached the barrier
+# (success path). Standby nodes can check this to detect successful training completion
+# without relying on is_permanently_closed() (which requires the store host to have called shutdown();
+# the store host may be a standby).
+#
+# Derive the prefix from PyTorch internals and fail loudly on incompatibility
+# to avoid silently checking a stale key when upstream changes.
+if not hasattr(_torch_elastic_agent_api, "_TERMINAL_STATE_SYNC_ID"):
+    raise RuntimeError(
+        "PyTorch internal '_TERMINAL_STATE_SYNC_ID' was not found. "
+        "Cannot derive _exit_barrier store key safely; update this integration "
+        f"for torch=={torch.__version__}."
+    )
+
+_EXIT_BARRIER_LAST_MEMBER_KEY = f"{_torch_elastic_agent_api._TERMINAL_STATE_SYNC_ID}/last_member"
+
 # Logger instance (configured later in run() via setup_logger())
 # Note: Must call run() before using logger to ensure proper configuration
 logger = logging.getLogger(LogConfig.name)
@@ -117,13 +137,13 @@ def init_node_health_check(endpoint: Optional[str]) -> None:
 def get_node_health_check() -> Optional[NodeHealthCheck]:
     return _NODE_HEALTH_CHECK_INSTANCE
 
-def _register_ft_rdzv_handler(impl_type: str = "legacy"):
+def _register_ft_rdzv_handler(impl_type: str = "barrier"):
     """Register the fault-tolerant rendezvous handler.
 
     Args:
         impl_type: FT rendezvous implementation to use.
                   "barrier" - New atomic barrier-based algorithm
-                  "legacy" - Original compare-and-set algorithm (default)
+                  "legacy" - Original compare-and-set algorithm
     """
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
@@ -337,6 +357,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
         rank_monitors: Optional[Dict[int, RankMonitorState]] = None,
+        cycle_info_writer: Optional[CycleInfoWriter] = None,
     ):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
@@ -348,6 +369,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._term_timeout = term_timeout
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
+        self._cycle_info_writer = cycle_info_writer
         # Rank monitor state (process, IPC connections, listener tasks) per local rank
         # Pre-created rank monitors passed from config (created before gRPC)
         self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
@@ -464,6 +486,49 @@ class LocalElasticAgent(SimpleElasticAgent):
         """
         return max(0, self._rdzv_handler.round() - 1)
 
+    def _on_cycle_end(self) -> None:
+        """Record cycle end time in cycle info file."""
+        if self._cycle_info_writer is None:
+            return
+        current_cycle = self._get_global_restart_count()
+        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
+        self._cycle_info_writer.update_cycle_end(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=current_cycle,
+            cycle_end_time=utc_iso_now(),
+        )
+
+    def _write_cycle_start_info(self, current_cycle: int) -> Optional[str]:
+        """Write NVRx cycle info at cycle start. Returns path to current cycle info file, or None."""
+        if self._cycle_info_writer is None:
+            return None
+        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
+        cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
+        # Legacy FtRendezvousHandler does not define these; barrier handler does.
+        get_active = getattr(
+            self._rdzv_handler, "get_last_rendezvous_participant_addrs", None
+        )
+        get_standby = getattr(
+            self._rdzv_handler, "get_last_rendezvous_standby_participant_addrs", None
+        )
+        active_addrs = get_active() if callable(get_active) else None
+        standby_addrs = get_standby() if callable(get_standby) else None
+        active_nodes = hostnames_to_slurm_nodelist(active_addrs) if active_addrs else ""
+        standby_nodes = hostnames_to_slurm_nodelist(standby_addrs) if standby_addrs else ""
+        self._cycle_info_writer.write_cycle_start(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=current_cycle,
+            cycle_start_time=utc_iso_now(),
+            cycle_log_file=cycle_log_file,
+            active_nodes=active_nodes,
+            standby_nodes=standby_nodes,
+        )
+        return self._cycle_info_writer.get_current_cycle_info_path(job_id)
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -478,6 +543,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             return result
         except RendezvousGracefulExitError as e:
             logger.info("Rendezvous gracefully exited: %s", e)
+            return None
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
             self._shutdown(e.sigval, timeout=self._term_timeout)
@@ -580,6 +646,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
+                self._on_cycle_end()
                 logger.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
@@ -617,6 +684,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # Check for cluster-wide issues: new nodes waiting or peer aborts
                 # Note: unhealthy_count is now a global job-level counter and is not used here
                 # for failure detection. It's only used in the rendezvous for early termination.
+                self._maybe_exit_standby_on_success(role)
+
                 num_nodes_waiting = rdzv_handler.num_nodes_waiting()
                 peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
@@ -871,7 +940,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
-
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
@@ -927,6 +995,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             # that would cause cycle N+1 data to be written to cycle N log files.
             self._logs_specs.clear_all_pipes_from_reader()
 
+        # Record cycle end time in cycle info file
+        self._on_cycle_end()
+
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
@@ -947,7 +1018,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # The cycle number is used for profiling and environment variable setting.
         # Note: We use _get_global_restart_count() because in the context of worker startup,
         # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
-        restart_count = self._get_global_restart_count()  # Actually cycle number
+        current_cycle = restart_count = self._get_global_restart_count()  # Actually cycle number
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -986,9 +1057,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             and self._rdzv_handler._attr_service is not None
             and hasattr(self._logs_specs, 'get_cycle_log_file')
         ):
-            current_cycle = self._get_global_cycle_number() - 1
             cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
             self._rdzv_handler._attr_service._submit_log(cycle_log_file)
+
+        # Write NVRx cycle info and set env for workload
+        current_cycle_info_path = self._write_cycle_start_info(current_cycle)
 
         for worker in worker_group.workers:
             local_rank = worker.local_rank
@@ -1015,6 +1088,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
                 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
             }
+            if current_cycle_info_path is not None:
+                worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
             if "OMP_NUM_THREADS" in os.environ:
                 worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
 
@@ -1188,9 +1263,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._worker_watchdog = None
         if self._pcontext:
             self._pcontext.close(death_sig, timeout=timeout)
-            # Remove multiprocessing leftovers
-            # PID=1 become a parent if the original parent died
-            terminate_mp_processes(allowed_ppids={1}, allowed_pgids=self._children_pgids)
+            # Best-effort cleanup for orphan descendants in worker process groups.
+            # PID=1 can become parent when original worker parent exits.
+            terminate_mp_processes(allowed_pgids=self._children_pgids)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -1279,6 +1354,32 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Legacy rendezvous does not support peer aborted tracking
         return 0
+
+    def _maybe_exit_standby_on_success(self, role: str) -> None:
+        """If this node is a standby and the exit barrier is complete, exit gracefully.
+
+        Active agents only call _exit_barrier() on the SUCCEEDED path; when its
+        \"last_member\" key is set, all actives have finished. Checking this key
+        (instead of is_closed()) works even when the store host is a standby.
+
+        Raises:
+            RendezvousGracefulExitError: When standby detects success (caller should not catch).
+        """
+        min_nodes = self._rdzv_handler._settings.min_nodes
+        group_rank = self._worker_group.group_rank
+        if group_rank < min_nodes:
+            return
+        if self._store.check([_EXIT_BARRIER_LAST_MEMBER_KEY]):
+            self._on_cycle_end()
+            logger.info(
+                "[%s] Standby (group_rank=%s) detected exit barrier complete; "
+                "training finished successfully, exiting gracefully.",
+                role,
+                group_rank,
+            )
+            raise RendezvousGracefulExitError(
+                "Standby detected all active agents reached exit barrier (success)."
+            )
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
@@ -1373,6 +1474,10 @@ class LaunchConfig:
             self.rdzv_configs["close_timeout"] = 30
         if "read_timeout" not in self.rdzv_configs:
             self.rdzv_configs["read_timeout"] = 60
+        # Optional: wait for TCPStore server with short probes before connecting (avoids connect timeout).
+        # Default 2 minutes; job-array deployment can set store_connect_wait_seconds=600 in rdzv_configs.
+        if "store_connect_wait_seconds" not in self.rdzv_configs:
+            self.rdzv_configs["store_connect_wait_seconds"] = 120
 
         # Post-processing to enable refactoring to introduce logs_specs due to non-torchrun API usage
         if self.logs_specs is None:
@@ -1541,6 +1646,10 @@ def launch_agent(
         local_addr=config.local_addr,
     )
 
+    cycle_info_writer = None
+    if is_store_host and config.fault_tol_cfg.cycle_info_dir:
+        cycle_info_writer = CycleInfoWriter(config.fault_tol_cfg.cycle_info_dir)
+
     agent = LocalElasticAgent(
         spec=spec,
         fault_tol_cfg=config.fault_tol_cfg,
@@ -1552,6 +1661,7 @@ def launch_agent(
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
         rank_monitors=config.rank_monitors,  # Pass pre-created rank monitors
+        cycle_info_writer=cycle_info_writer,
     )
 
     # Set agent reference in rendezvous handler for callbacks
@@ -1569,7 +1679,7 @@ def launch_agent(
         events.record(agent.get_event_succeeded())
 
         if result is None:
-            logger.info("Agent .run() result is None. Agent was waiting at the rendezvous.")
+            logger.info("Agent .run() returned None (hot spare or standby exited successfully).")
             return None
 
         if result.is_failed():
@@ -1587,7 +1697,7 @@ def launch_agent(
         return result.return_values
     except UnhealthyNodeException as e:
         # do not shutdown rendezvous when an unhealthy node is leaving
-        # NOTE: This only prevents calling shutdown() to set closed_key.
+        # NOTE: This only prevents calling shutdown() to set the rendezvous permanent close key.
         # If this is the store host, the TCPStore will die when this process exits,
         # effectively terminating the rendezvous regardless of this flag.
         shutdown_rdzv = False
@@ -1623,32 +1733,38 @@ def launch_agent(
         events.record(agent.get_event_failed())
         raise
     finally:
-        # Store host grace period: The TCPStore is hosted in this process and will be
-        # destroyed when the process exits. To prevent race conditions where other nodes
-        # try to read final state (e.g., closed_key, unhealthy_count) from a destroyed
-        # store, the store host waits briefly before exiting to give other nodes time
-        # to detect the final state.
-        #
-        # IMPORTANT CONSTRAINT: When the store host process exits for any reason, the
-        # TCPStore dies with it, effectively terminating the rendezvous. The shutdown_rdzv
-        # flag only controls whether we explicitly signal closure via closed_key; it cannot
-        # keep the store alive if the store host process exits.
+        # Shutdown rdzv and rank monitors (may produce logs; reader thread must stay alive).
+        if shutdown_rdzv:
+            agent._rdzv_handler.shutdown()
+        agent.shutdown_rank_monitors()
+
+        # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
+        # ends. Wait a short grace period so other nodes can read final state (e.g. permanent close key,
+        # unhealthy_count) before the store goes away. shutdown_rdzv only controls explicit
+        # permanent-close signaling; it cannot keep the store alive after process exit.
         if is_store_host:
             # Trigger attribution service analysis for final cycle
             if agent._rdzv_handler._attr_service is not None:
                 agent._rdzv_handler._attr_service()
 
+            # No ordering required between cycle_info_writer and rendezvous: the writer
+            # is independent I/O. Run grace-period wait and writer shutdown in parallel
+            # so total time is max(grace_period, writer drain) instead of sum.
             grace_period = 3.0  # seconds
             logger.info(
                 f"Store host waiting {grace_period} seconds before exit "
                 f"to allow other nodes to read final TCPStore state..."
             )
-            time.sleep(grace_period)
 
-        # Shutdown components (may generate logs - reader thread must stay alive!)
-        if shutdown_rdzv:
-            agent._rdzv_handler.shutdown()
-        agent.shutdown_rank_monitors()
+            def _wait_grace() -> None:
+                time.sleep(grace_period)
+
+            t = threading.Thread(target=_wait_grace, daemon=True)
+            t.start()
+            if cycle_info_writer is not None:
+                cycle_info_writer.shutdown()
+            t.join()
+
         with contextlib.suppress(Exception):
             os.unlink(FT_LAUNCHER_IPC_SOCKET)
 
@@ -2219,7 +2335,7 @@ def get_args_parser() -> ArgumentParser:
         "--ft_enable_log_server",
         action=env,
         type=lambda x: x.lower() == 'true',
-        default=False,
+        default=None,
         dest="ft_enable_log_server",
         help="Enable gRPC-based log funneling to a single Lustre file. "
         "When enabled with --ft-per-cycle-applog-prefix, the launcher automatically: "
@@ -2499,7 +2615,7 @@ def get_args_parser() -> ArgumentParser:
         "in ACTIVE state and fails if any port transitioned from ACTIVE to non-ACTIVE. "
         "Unlike --ft-enable-nic-monitor (which periodically monitors link_downed counters), "
         "this performs a one-time state check during rendezvous. Can be used independently "
-        "or together with --ft-enable-nic-monitor. Default: False.",
+        "or together with --ft-enable-nic-monitor. Default: True.",
     )
 
     parser.add_argument(
@@ -2597,13 +2713,13 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-numa-bind-strict",
         "--ft-numa_bind_strict",
-        action="store_true",
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
         default=None,
         dest="ft_numa_bind_strict",
-        help="Enable strict NUMA binding with both CPU and memory bound to the same NUMA node "
-        "(--cpunodebind=N --membind=N). By default, only CPU is bound to NUMA node with local "
-        "memory allocation (--cpunodebind=N --localalloc). This option only affects behavior when "
-        "NVRX_GPUS_PER_NUMA environment variable is set. Default: False.",
+        help="Enable or disable strict NUMA binding with both CPU and memory bound to the same NUMA node "
+        "(--cpunodebind=N --membind=N). Set to false to use --localalloc instead of --membind. "
+        "This option only affects behavior when NVRX_GPUS_PER_NUMA environment variable is set. "
+        "Default: True. Example: --ft-numa-bind-strict false",
     )
 
     parser.add_argument(
@@ -2680,6 +2796,17 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-cycle-info-dir",
+        "--ft_cycle_info_dir",
+        type=str,
+        default=None,
+        dest="ft_cycle_info_dir",
+        help="Full path to NVRx cycle info directory (e.g. <base>/nvrx/). TCPStore host only. "
+        "If set, writes cycle_info.<job_id>.<attempt>.<cycle> and symlink cycle_info.<job_id>.current "
+        "there. Workload receives current cycle file path via NVRX_CURRENT_CYCLE_INFO env.",
+    )
+
+    parser.add_argument(
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
@@ -2692,8 +2819,6 @@ def get_args_parser() -> ArgumentParser:
     parser.add_argument(
         "--ft-max-no-progress-cycles",
         "--ft-max_no_progress_cycles",
-        "--ft-max-no-progress-restarts",
-        "--ft-max_no_progress_restarts",
         type=int,
         default=2,
         dest="ft_max_no_progress_cycles",
@@ -2841,8 +2966,92 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     return logs_specs_cls
 
 
+def _parse_bool_env(var_name: str) -> bool:
+    """Parse a boolean-like env var. Unset means False."""
+    raw = os.getenv(var_name)
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    raise ValueError(
+        f"Invalid value for {var_name}: {raw!r}. "
+        "Expected one of: 1/0, true/false, yes/no."
+    )
+
+
+def _validate_slurm_single_launcher_per_node() -> None:
+    """
+    Validate Slurm launch shape to prevent accidental multiple ft_launchers per node.
+
+    Override for intentional simulation:
+      NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1
+    """
+    if os.getenv("SLURM_JOB_ID") is None:
+        return
+
+    if _parse_bool_env("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE"):
+        logger.warning(
+            "NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE is enabled; "
+            "skipping one-ft-launcher-per-node Slurm validation."
+        )
+        return
+
+    tasks_per_node = os.getenv("SLURM_TASKS_PER_NODE")
+    if tasks_per_node is None:
+        raise ValueError(
+            "Invalid Slurm launcher layout for ft_launcher (one launcher per node expected).\n"
+            f"Detected: SLURM_TASKS_PER_NODE={tasks_per_node!r}\n"
+            "Requirement: SLURM_TASKS_PER_NODE must be exactly '1' or '1(xN)' format.\n"
+            "Fix: launch with one task per node, e.g.:\n"
+            "  srun -l --ntasks=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 ...\n"
+            "If this is intentional simulation with multiple ft_launchers per node, set:\n"
+            "  NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1"
+        )
+
+    # SLURM_TASKS_PER_NODE is a comma-separated list of "count" or "count(xN)" entries
+    entries = [e.strip() for e in tasks_per_node.split(",") if e.strip()]
+    all_one = all(re.fullmatch(r"1(\(x\d+\))?", e) for e in entries)
+    if not entries or not all_one:
+        raise ValueError(
+            "Invalid Slurm launcher layout for ft_launcher (one launcher per node expected).\n"
+            f"Detected: SLURM_TASKS_PER_NODE={tasks_per_node!r}\n"
+            "Requirement: All task counts must be 1 (one launcher per node).\n"
+            "Fix: launch with one task per node, e.g.:\n"
+            "  srun -l --ntasks=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 ...\n"
+            "If this is intentional simulation with multiple ft_launchers per node, set:\n"
+            "  NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1"
+        )
+
+def _validate_args(args: Any) -> None:
+    """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
+    _validate_slurm_single_launcher_per_node()
+    if getattr(args, "ft_cycle_info_dir", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
+        raise ValueError(
+            "--ft-cycle-info-dir requires --ft-per-cycle-applog-prefix to be specified. "
+            "Cycle info needs per-cycle log file path from the applog prefix."
+        )
+    if getattr(args, "ft_nvrx_logfile", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
+        raise ValueError(
+            "--ft-nvrx-logfile requires --ft-per-cycle-applog-prefix to be specified."
+        )
+    if getattr(args, "ft_nvrx_logfile", None) and os.getenv("NVRX_NODE_LOCAL_TMPDIR"):
+        raise ValueError(
+            "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
+        )
+
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
+    _validate_args(args)
+    if getattr(args, "ft_nvrx_logfile", None):
+        if getattr(args, "ft_enable_log_server", None) is None:
+            logger.info(
+                "--ft-nvrx-logfile is set; enabling --ft-enable-log-server automatically."
+            )
+            args.ft_enable_log_server = True
+
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
     assert args.max_restarts >= 0
@@ -2867,6 +3076,17 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         )
         # This env variable will be passed down to the subprocesses
         os.environ["OMP_NUM_THREADS"] = str(omp_num_threads)
+
+    # Use PyTorch elastic "identical workers" fast path for rank assignment. This avoids
+    # the multi_get path in _assign_worker_ranks, which requires all participants to write
+    # role_info and can block or fail if one participant dies before completing that step.
+    # Ft_launcher runs homogeneous workers (same role, same nproc_per_node), so the fast
+    # path is correct. Users can override by setting TORCH_ELASTIC_WORKER_IDENTICAL=0.
+    # When identical=1, PyTorch uses the rendezvous (rank, world_size) directly; the barrier
+    # handler must return world_size = min_nodes (active participants), not total_participants,
+    # so that WORLD_SIZE = min_nodes * nproc_per_node (e.g. 32*4=128) and not (active+standby)*4.
+    if "TORCH_ELASTIC_WORKER_IDENTICAL" not in os.environ:
+        os.environ["TORCH_ELASTIC_WORKER_IDENTICAL"] = "1"
 
     log_line_prefix_template = os.getenv("TORCHELASTIC_LOG_LINE_PREFIX_TEMPLATE")
 
@@ -2984,7 +3204,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
         if getattr(args, 'ft_enable_log_server', False):
             # Build gRPC server address
-            rdzv_endpoint = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=-1)[0]
+            rdzv_endpoint_host = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=-1)[0]
             grpc_port = getattr(args, 'ft_log_server_port', 50051)
 
             # Node ID: hostname + PID for uniqueness in simulated multi-launcher environments
@@ -3021,7 +3241,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
             else:
                 # Writer is on a different host than the gRPC server
                 # Use the rendezvous endpoint to connect to the remote server
-                grpc_server_address = f"{rdzv_endpoint}:{grpc_port}"
+                grpc_server_address = f"{rdzv_endpoint_host}:{grpc_port}"
 
         # CRITICAL: Create rank monitors BEFORE PipeBasedLogsSpecs (which starts gRPC client thread)
         # This ensures rank monitors are forked before any threads exist (fork-safe)
@@ -3259,7 +3479,7 @@ def run(args):
         )
 
     # Register the selected FT rendezvous implementation
-    impl_type = getattr(args, 'ft_rdzv_impl', 'legacy')
+    impl_type = getattr(args, 'ft_rdzv_impl', 'barrier')
     _register_ft_rdzv_handler(impl_type)
     ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
     # Initialize NodeHealthCheck singleton at launcher start

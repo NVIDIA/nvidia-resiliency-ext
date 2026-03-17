@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 from contextlib import AsyncExitStack
+from importlib.resources import files as pkg_files
 from typing import Any, Dict, List
 
 from mcp.client.session import ClientSession
@@ -19,6 +20,34 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import deserialize_result
 
 logger = logging.getLogger(__name__)
+
+
+def get_server_command() -> List[str]:
+    """
+    Resolve and return the server launcher command for the MCP client.
+
+    Returns:
+        Command list to launch the MCP server subprocess.
+    """
+    pkg = "nvidia_resiliency_ext.attribution.mcp_integration"
+    try:
+        resource = pkg_files(pkg).joinpath("server_launcher.py")
+    except Exception as e:
+        raise FileNotFoundError(f"failed to locate server_launcher.py in package {pkg}: {e}")
+    if not resource.exists():
+        raise FileNotFoundError(f"server launcher not found in package: {pkg}/server_launcher.py")
+    # Use WARNING to reduce subprocess log verbosity
+    return ["python", str(resource), "--log-level", "WARNING"]
+
+
+def create_mcp_client() -> "NVRxMCPClient":
+    """
+    Create and return an NVRxMCPClient with the default server command.
+
+    Returns:
+        Configured NVRxMCPClient ready for use as async context manager.
+    """
+    return NVRxMCPClient(get_server_command())
 
 
 class NVRxMCPClient:

@@ -68,7 +68,7 @@ from typing import Any, Dict
 import grpc
 
 # Import generated protobuf code
-# Note: Proto files are in shared_utils/proto/ and compiled during build (nvrx_build.py)
+# Note: Proto files are in shared_utils/proto/ and compiled during build (build.py)
 try:
     from nvidia_resiliency_ext.shared_utils.proto import (
         log_aggregation_pb2,

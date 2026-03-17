@@ -19,11 +19,14 @@ import ctypes
 import logging
 import multiprocessing
 import os
+import re
+import signal
 import socket
 import struct
 import sys
 import time
 import traceback
+from typing import Dict, Optional
 
 import psutil
 import torch
@@ -263,50 +266,46 @@ def wait_for_mp_events(events, timeout=60):
             raise RuntimeError(f"Not all events ready after {timeout} seconds")
 
 
-def terminate_mp_processes(allowed_ppids, allowed_pgids):
+def terminate_mp_processes(allowed_pgids):
     """
-    Terminate auxiliary processes spawned by the `multiprocessing` package.
+    Terminate leftover processes related to fault-tolerance workers.
 
-    If an worker is terminated with a signal (e.g. TERM) and *it has no sig handler installed*,
-    there are some leftover processes spawned by `multiprocessing`:
-      - `python -c from multiprocessing.spawn import spawn_main; spawn_main (...)`
-      - `python -c from multiprocessing.resource_tracker (...)`
-
-    Such leftover processes can block the tests, e.g., .commuminicate() in `subprocess` hangs
-    if there are some subprocesses alive after the main process is terminated.
+    When a worker exits unexpectedly, some scoped orphan processes may remain
+    alive and block shutdown/test cleanup.
 
     We don't want to terminate the processes that might be used elsewhere in the system,
-    so we use `allowed_ppids` and `allowed_pgids` to find processes that are related to the fault tolerance.
+    so we use `allowed_pgids` to find processes that are
+    related to fault tolerance.
 
     Args:
-        allowed_ppids: what parent PIDs that are allowed
         allowed_pgids: what process group IDs that are allowed
 
-    Swallow any exceptions, as this is not critical functionality.
-    NOTE: this is workaround, it should be removed after we eliminate  `Manager()` from
-    `ParametersUpdateManager`
+    Best-effort cleanup: swallow exceptions because this is non-critical.
     """
 
     if 1 in allowed_pgids:
         # workaround for sim-multinode tests, where rank monitors have PGID=1 and gets terminated.
         return
 
-    try:
-        all_processes = psutil.process_iter(attrs=['pid', 'ppid', 'name', 'cmdline'])
-        for process in all_processes:
-            try:
-                ppid_match = process.ppid() in allowed_ppids
-                pgid_match = os.getpgid(process.pid) in allowed_pgids
-                if ppid_match and pgid_match:
-                    cmd_line = " ".join(process.cmdline())
-                    patt1 = "from multiprocessing.resource_tracker import main"
-                    patt2 = "from multiprocessing.spawn import spawn_main"
-                    if patt1 in cmd_line or patt2 in cmd_line:
-                        process.terminate()
-            except Exception:
-                pass
-    except Exception:
-        pass
+    for pgid in allowed_pgids:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            # Process group already exited.
+            pass
+        except Exception:
+            logger.warning("Failed to send SIGTERM to process group %s", pgid, exc_info=True)
+
+    time.sleep(1.0)
+
+    for pgid in allowed_pgids:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            # Process group exited after SIGTERM grace period.
+            pass
+        except Exception:
+            logger.warning("Failed to send SIGKILL to process group %s", pgid, exc_info=True)
 
 
 def set_ipc_socket_timeouts(fileno, timeout):
@@ -519,3 +518,73 @@ def install_exception_handler():
 
     # Install the custom exception handler
     sys.excepthook = exception_handler
+
+
+def _parse_hostname_prefix_suffix(name: str) -> Optional[tuple[str, int, str]]:
+    """If name is 'prefix' + digits (e.g. node001, nvl73111-T01), return (prefix, num, raw_suffix). Else None."""
+    m = re.match(r"^(.*?)(\d+)$", name)
+    if not m:
+        return None
+    return (m.group(1), int(m.group(2)), m.group(2))
+
+
+def _numbers_to_slurm_ranges(numbers: list[int], pad: int) -> list[str]:
+    """Turn sorted unique numbers into SLURM range parts, e.g. [1,2,3,5] -> ['001-003', '005']."""
+    if not numbers:
+        return []
+    ranges: list[str] = []
+    start = end = numbers[0]
+    for n in numbers[1:]:
+        if n == end + 1:
+            end = n
+        else:
+            s, e = str(start).zfill(pad), str(end).zfill(pad)
+            ranges.append(f"{s}-{e}" if start != end else s)
+            start = end = n
+    s, e = str(start).zfill(pad), str(end).zfill(pad)
+    ranges.append(f"{s}-{e}" if start != end else s)
+    return ranges
+
+
+def hostnames_to_slurm_nodelist(addrs: list) -> str:
+    """Convert a list of node addresses (hostnames or FQDNs) to SLURM node range format.
+
+    Expects hostnames like "node001", "node002", "node005" or "node001.cluster.com".
+    Uses the first component (before '.') as the node name. If all names match
+    pattern prefix + numeric suffix, produces e.g. "node[001-002,005]". Otherwise
+    returns comma-separated list of (short) hostnames.
+
+    Args:
+        addrs: List of participant addresses (hostname or FQDN).
+
+    Returns:
+        SLURM-style node list string (range format or comma-separated).
+    """
+    if not addrs:
+        return ""
+    short_names = [a.split(".")[0].strip() for a in addrs if a]
+    if not short_names:
+        return ""
+
+    # Parse each name as prefix + numeric suffix; if any fail, return comma-separated list.
+    parsed: list[tuple[str, int, str] | None] = [
+        _parse_hostname_prefix_suffix(n) for n in short_names
+    ]
+    if any(p is None for p in parsed):
+        return ",".join(sorted(set(short_names)))
+
+    # Group by prefix; for each prefix keep unique node numbers and suffix for padding.
+    by_prefix: Dict[str, Dict[int, str]] = {}  # prefix -> {num: raw_suffix}
+    for p in parsed:
+        assert p is not None  # we returned above if any were None
+        prefix, num, raw_suffix = p
+        by_prefix.setdefault(prefix, {})[num] = raw_suffix  # same num keeps one suffix
+
+    result_parts = []
+    for prefix in sorted(by_prefix.keys()):
+        num_to_suffix = by_prefix[prefix]
+        nums = sorted(num_to_suffix.keys())
+        pad = max(len(num_to_suffix[n]) for n in nums)
+        range_strs = _numbers_to_slurm_ranges(nums, pad)
+        result_parts.append(f"{prefix}[{','.join(range_strs)}]")
+    return ",".join(result_parts)

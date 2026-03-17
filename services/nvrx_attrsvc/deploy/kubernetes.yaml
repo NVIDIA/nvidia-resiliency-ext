@@ -1,0 +1,108 @@
+# NVRX Attribution Service - Kubernetes Deployment
+#
+# Deploy:
+#   kubectl apply -f services/nvrx_attrsvc/deploy/kubernetes.yaml
+#
+# Prerequisites:
+#   - Create secret: kubectl create secret generic nvidia-api-key --from-literal=api-key=nvapi-...
+#   - Ensure log volume is accessible (update hostPath as needed)
+#
+# Deployment considerations:
+#   - Single replica recommended (in-memory state not shared)
+#   - If HA needed: use sticky sessions or external state store (future)
+#   - Mount log volume as ReadOnly
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nvrx-attrsvc-config
+  labels:
+    app: nvrx-attrsvc
+data:
+  NVRX_ATTRSVC_HOST: "0.0.0.0"
+  NVRX_ATTRSVC_PORT: "8000"
+  NVRX_ATTRSVC_ALLOWED_ROOT: "/data/logs"
+  NVRX_ATTRSVC_LOG_LEVEL_NAME: "INFO"
+  # NVRX_ATTRSVC_CLUSTER_NAME: "my-cluster"
+  # NVRX_ATTRSVC_DATAFLOW_INDEX: ""  # Leave empty to disable dataflow
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nvrx-attrsvc
+  labels:
+    app: nvrx-attrsvc
+spec:
+  replicas: 1  # Single replica - in-memory state not shared
+  selector:
+    matchLabels:
+      app: nvrx-attrsvc
+  template:
+    metadata:
+      labels:
+        app: nvrx-attrsvc
+    spec:
+      containers:
+        - name: nvrx-attrsvc
+          image: nvrx-attrsvc:latest  # Build with Dockerfile in this directory
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: nvrx-attrsvc-config
+          env:
+            - name: NVIDIA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nvidia-api-key
+                  key: api-key
+          volumeMounts:
+            - name: logs
+              mountPath: /data/logs
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+      volumes:
+        - name: logs
+          hostPath:
+            path: /path/to/logs
+            type: Directory
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nvrx-attrsvc
+  labels:
+    app: nvrx-attrsvc
+spec:
+  selector:
+    app: nvrx-attrsvc
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  type: ClusterIP
