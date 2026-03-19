@@ -304,15 +304,15 @@ def test_launcher_starts_grpc_server_on_correct_port(tmp_dir):
     assert f"port={custom_port}" in output, f"Server should be started on port {custom_port}"
 
 
-def test_launcher_creates_grpc_server_log(tmp_dir):
-    """Test that launcher creates a log file for the gRPC server."""
+def test_launcher_creates_grpc_root_log(tmp_dir):
+    """Test that launcher creates a log file for the gRPC root log server."""
     ft_cfg = fault_tolerance.FaultToleranceConfig()
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
 
     base_log_file = os.path.join(tmp_dir, "test.log")
-    expected_server_log = os.path.join(tmp_dir, "test_grpc_server.log")
+    expected_server_log = os.path.join(tmp_dir, "test_grpc_root.log")
 
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
 
