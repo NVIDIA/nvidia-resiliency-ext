@@ -49,8 +49,8 @@ all nodes in a distributed training job and writing them to a single centralized
   ``max_workers >= N + 10`` (N = number of leaves, each holds one long-lived upstream stream).
 - **Leaves**: ``grpc_log_leaf_server.py`` on ports ``P .. P+N-1``; forward to root.
   Raise ``ulimit -n`` on the store host (many TCP clients + N root streams). Leaves use a
-  bounded queue (``--ft-log-leaf-max-queue-chunks``) so slow Lustre applies backpressure to
-  clients instead of unbounded RAM growth.
+  bounded queue (``--ft-log-leaf-max-queue-chunks``, auto-scaled by default when N>1)
+  so slow Lustre applies backpressure to clients; handlers block (lossless) until a slot exists.
 
 **Example Usage:**
 
@@ -72,7 +72,7 @@ import threading
 import time
 import urllib.parse
 from concurrent import futures
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import grpc
 
@@ -188,6 +188,41 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 self.logger.info(f"Opened new log file: {file_path}")
 
             return self.files[file_path]
+
+    def _pending_buffer_totals(self) -> Tuple[int, int, List[Tuple[str, int, int]]]:
+        """Sum in-memory bytes not yet flushed to disk; per-file (path, chunks, bytes)."""
+        total_bytes = 0
+        nonempty: List[Tuple[str, int, int]] = []
+        with self.files_lock:
+            snapshot = list(self.files.items())
+        for fp, fs in snapshot:
+            with fs['buffer_lock']:
+                sz = fs['buffer_size']
+                nchunks = len(fs['buffer'])
+            total_bytes += sz
+            if nchunks or sz:
+                nonempty.append((fp, nchunks, sz))
+        return total_bytes, len(nonempty), nonempty
+
+    def _log_shutdown_snapshot(self, phase: str, *, extra: str = "") -> None:
+        """Log queues / buffers that may still hold data not yet on Lustre."""
+        with self.clients_lock:
+            clients = self.connected_clients
+        pending_bytes, n_files, details = self._pending_buffer_totals()
+        line = (
+            f"Shutdown snapshot [{phase}]: connected_streams={clients}, "
+            f"in_memory_pending_bytes={pending_bytes}, files_with_pending_buffers={n_files}, "
+            f"lifetime_chunks_received={self.total_chunks_received}, "
+            f"lifetime_bytes_received={self.total_bytes_received}"
+        )
+        if extra:
+            line += f", {extra}"
+        self.logger.info(line)
+        max_detail = 15
+        for fp, nc, sz in details[:max_detail]:
+            self.logger.info(f"  buffered path={fp!r} chunks={nc} bytes={sz}")
+        if len(details) > max_detail:
+            self.logger.info(f"  ... and {len(details) - max_detail} more paths with buffered data")
 
     def StreamLogs(self, request_iterator, context):
         """
@@ -410,6 +445,10 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             f"Graceful shutdown initiated. Will wait up to {self.graceful_shutdown_timeout}s "
             f"for clients to finish..."
         )
+        self._log_shutdown_snapshot(
+            "graceful_start",
+            extra="(in-memory buffers may still flush via periodic flush until final shutdown)",
+        )
 
         # Mark graceful shutdown as initiated (but don't stop accepting connections yet)
         self.graceful_shutdown_initiated.set()
@@ -429,6 +468,9 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 self.logger.info(
                     f"All clients disconnected after {elapsed:.1f}s. Proceeding with shutdown."
                 )
+                self._log_shutdown_snapshot(
+                    "graceful_all_streams_closed", extra=f"waited_s={elapsed:.1f}"
+                )
                 break
 
             # Exit if timeout reached
@@ -437,14 +479,23 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                     f"Graceful shutdown timeout ({self.graceful_shutdown_timeout}s) reached "
                     f"with {active_clients} client(s) still connected. Proceeding with shutdown."
                 )
+                self._log_shutdown_snapshot(
+                    "graceful_timeout",
+                    extra=(
+                        f"still_connected_streams={active_clients} — "
+                        "remaining streams may be cut off by server.stop(); data may be lost"
+                    ),
+                )
                 break
 
             # Log periodic status
             remaining = self.graceful_shutdown_timeout - elapsed
             if int(elapsed / 5) != int((elapsed - check_interval) / 5):  # Log every 5s
+                pend_b, pend_nf, _ = self._pending_buffer_totals()
                 self.logger.info(
                     f"Waiting for {active_clients} client(s) to finish... "
-                    f"({remaining:.1f}s remaining)"
+                    f"({remaining:.1f}s remaining) "
+                    f"in_memory_pending_bytes={pend_b} files_with_pending_buffers={pend_nf}"
                 )
 
             time.sleep(check_interval)
@@ -455,6 +506,10 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
     def shutdown(self):
         """Perform final shutdown: flush buffers, close files, stop threads."""
         self.logger.info("Shutting down log aggregation server...")
+        self._log_shutdown_snapshot(
+            "final_before_stop_flush_thread",
+            extra="stopping periodic flush; remaining buffers will be written in final flush pass",
+        )
 
         # Stop flush thread
         self.shutdown_event.set()
@@ -486,6 +541,15 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             with file_state['buffer_lock']:
                 file_state['buffer'].clear()
                 file_state['buffer_size'] = 0
+
+        leftover_b, leftover_nf, leftover_detail = self._pending_buffer_totals()
+        if leftover_b or leftover_nf:
+            self.logger.error(
+                f"After final flush, unexpected non-empty buffers: bytes={leftover_b}, "
+                f"files={leftover_nf}, detail={leftover_detail[:5]!r}"
+            )
+        else:
+            self.logger.info("Final flush: all per-file in-memory buffers are empty.")
 
         self.logger.info(
             f"Server shutdown complete. "
@@ -550,13 +614,23 @@ def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeou
     logger.info(f"Max workers: {max_workers}")
     logger.info(f"Graceful shutdown timeout: {graceful_shutdown_timeout}s")
 
+    stop_grace_seconds = 5.0
+    termination_wait_timeout_seconds = stop_grace_seconds + 60.0
+
     # Set up signal handlers for graceful shutdown
     def signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         # Use graceful shutdown to keep server running for remaining clients
         servicer.graceful_shutdown()
-        # Now stop the gRPC server
-        server.stop(grace=5.0)
+        server.stop(grace=stop_grace_seconds)
+        # stop() returns before internal server thread exits; wait so the executor is not
+        # torn down while still scheduling RPCs (avoids RuntimeError on shutdown).
+        # wait_for_termination returns True iff the wait timed out (per grpc API).
+        if server.wait_for_termination(timeout=termination_wait_timeout_seconds):
+            logger.warning(
+                "Timed out waiting for gRPC log server to finish termination after stop() "
+                f"(>{termination_wait_timeout_seconds}s)"
+            )
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -568,7 +642,12 @@ def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeou
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received, initiating graceful shutdown...")
         servicer.graceful_shutdown()
-        server.stop(grace=5.0)
+        server.stop(grace=stop_grace_seconds)
+        if server.wait_for_termination(timeout=termination_wait_timeout_seconds):
+            logger.warning(
+                "Timed out waiting for gRPC log server after keyboard interrupt "
+                f"(>{termination_wait_timeout_seconds}s)"
+            )
 
 
 def main():

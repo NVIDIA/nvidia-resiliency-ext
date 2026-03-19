@@ -32,6 +32,7 @@ import time
 import uuid
 import warnings
 from argparse import REMAINDER, ArgumentParser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from string import Template
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
@@ -2497,9 +2498,10 @@ def get_args_parser() -> ArgumentParser:
         "--ft_log_leaf_max_queue_chunks",
         action=env,
         type=int,
-        default=8192,
+        default=-1,
         dest="ft_log_leaf_max_queue_chunks",
-        help="Max queued log chunks per leaf before client backpressure (only when N>1). Default 8192.",
+        help="Max queued log chunks per leaf (only when N>1). "
+        "Default -1: auto scale with fan-in, max(16384, min(1000000, per_leaf*256)).",
     )
 
     parser.add_argument(
@@ -2525,6 +2527,8 @@ def get_args_parser() -> ArgumentParser:
         help="Maximum seconds to wait for clients during gRPC server graceful shutdown (only used if --ft-enable-log-server is enabled). "
         "When store host exits, server will continue accepting logs from other ranks for up to this timeout "
         "or until all clients disconnect, whichever comes first. This ensures other nodes can flush their final logs. "
+        "When --ft-log-aggregator-count>1, each leaf uses this timeout; the root log server uses 2× so leaves can finish "
+        "waiting for downstream clients and drain to root first. "
         "Default: 60.0",
     )
 
@@ -3173,6 +3177,11 @@ def _validate_slurm_single_launcher_per_node() -> None:
 
 def _validate_args(args: Any) -> None:
     """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
+    n_log_agg = int(getattr(args, "ft_log_aggregator_count", 2))
+    if n_log_agg < 1:
+        raise ValueError(
+            f"--ft-log-aggregator-count must be >= 1, got {n_log_agg}"
+        )
     _validate_slurm_single_launcher_per_node()
     if getattr(args, "ft_cycle_info_dir", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
         raise ValueError(
@@ -3503,11 +3512,21 @@ class LogFunnelPorts:
             raise ValueError(f"base_port must be a valid TCP port, got {self.base_port}")
         if self.first_level_count < 1:
             raise ValueError("first_level_count must be >= 1")
+        if self.first_level_count > 1:
+            root_port = self.base_port + self.first_level_count
+            if root_port > 65535:
+                raise ValueError(
+                    f"root_listen_port (base_port + first_level_count) = {root_port} exceeds "
+                    f"65535; reduce --ft-log-server-port (base {self.base_port}) or "
+                    f"--ft-log-aggregator-count ({self.first_level_count})"
+                )
 
     @classmethod
     def from_launcher_args(cls, args: Any) -> "LogFunnelPorts":
         base = int(getattr(args, "ft_log_server_port", 50051))
-        n = max(1, int(getattr(args, "ft_log_aggregator_count", 2)))
+        n = int(getattr(args, "ft_log_aggregator_count", 2))
+        if n < 1:
+            raise ValueError(f"ft_log_aggregator_count must be >= 1, got {n}")
         return cls(base_port=base, first_level_count=n)
 
     @property
@@ -3544,14 +3563,14 @@ def _start_grpc_log_servers(
 ) -> List[subprocess.Popen]:
     """
     On TCP store host: start root log server (Lustre writer), and optionally N leaf
-    aggregators that forward to the root.
+    aggregators that forward to the root. In two-level mode the root is given
+    ``2 * graceful_shutdown_timeout`` so it outlasts leaf drain after SIGTERM.
 
     Returns:
         Non-empty list of Popen [root] or [root, leaf0, ...] on success, [] on failure.
     """
     graceful_shutdown_timeout = getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
     _, max_nodes = parse_min_max_nnodes(args.nnodes)
-    max_queue = max(64, int(getattr(args, 'ft_log_leaf_max_queue_chunks', 8192)))
 
     def _open_log(path: str):
         return open(path, 'w')
@@ -3564,23 +3583,26 @@ def _start_grpc_log_servers(
                 grpc_server_log = _grpc_log_path(base_log_file, '_grpc_root.log')
             max_workers = min(4096, max(100, max_nodes + 10))
             fd = _open_log(grpc_server_log)
-            p = subprocess.Popen(
-                [
-                    sys.executable,
-                    '-m',
-                    'nvidia_resiliency_ext.shared_utils.grpc_log_server',
-                    '--host',
-                    '0.0.0.0',
-                    '--port',
-                    str(funnel_ports.base_port),
-                    '--max-workers',
-                    str(max_workers),
-                    '--graceful-shutdown-timeout',
-                    str(graceful_shutdown_timeout),
-                ],
-                stdout=fd,
-                stderr=subprocess.STDOUT,
-            )
+            try:
+                p = subprocess.Popen(
+                    [
+                        sys.executable,
+                        '-m',
+                        'nvidia_resiliency_ext.shared_utils.grpc_log_server',
+                        '--host',
+                        '0.0.0.0',
+                        '--port',
+                        str(funnel_ports.base_port),
+                        '--max-workers',
+                        str(max_workers),
+                        '--graceful-shutdown-timeout',
+                        str(graceful_shutdown_timeout),
+                    ],
+                    stdout=fd,
+                    stderr=subprocess.STDOUT,
+                )
+            finally:
+                fd.close()
             logger.info(
                 f"gRPC log server started: PID={p.pid}, port={funnel_ports.base_port}, "
                 f"max_workers={max_workers} (for {max_nodes} nodes)"
@@ -3591,39 +3613,53 @@ def _start_grpc_log_servers(
         n = funnel_ports.first_level_count
         root_workers = max(n + 10, 32)
         per_leaf = max(100, (max_nodes + n - 1) // n + 10)
-        root_log = _grpc_log_path(base_log_file, '_grpc_root.log')
+        raw_leaf_chunks = int(getattr(args, 'ft_log_leaf_max_queue_chunks', -1))
+        if raw_leaf_chunks < 0:
+            max_queue = min(1_000_000, max(16_384, per_leaf * 256))
+        else:
+            max_queue = max(64, raw_leaf_chunks)
+        root_log = getattr(args, 'ft_log_server_log', None) or _grpc_log_path(
+            base_log_file, '_grpc_root.log'
+        )
+
+        # Root must outlive leaves: leaves may wait the full leaf grace window for downstream
+        # clients before draining their queues to root; root's own grace must still be open then.
+        root_graceful_shutdown_timeout = graceful_shutdown_timeout * 2.0
 
         root_fd = _open_log(root_log)
-        root_p = subprocess.Popen(
-            [
-                sys.executable,
-                '-m',
-                'nvidia_resiliency_ext.shared_utils.grpc_log_server',
-                '--host',
-                '0.0.0.0',
-                '--port',
-                str(root_port),
-                '--max-workers',
-                str(root_workers),
-                '--graceful-shutdown-timeout',
-                str(graceful_shutdown_timeout),
-            ],
-            stdout=root_fd,
-            stderr=subprocess.STDOUT,
-        )
+        try:
+            root_p = subprocess.Popen(
+                [
+                    sys.executable,
+                    '-m',
+                    'nvidia_resiliency_ext.shared_utils.grpc_log_server',
+                    '--host',
+                    '0.0.0.0',
+                    '--port',
+                    str(root_port),
+                    '--max-workers',
+                    str(root_workers),
+                    '--graceful-shutdown-timeout',
+                    str(root_graceful_shutdown_timeout),
+                ],
+                stdout=root_fd,
+                stderr=subprocess.STDOUT,
+            )
+        finally:
+            root_fd.close()
         procs.append(root_p)
         logger.info(
-            f"gRPC root log server: PID={root_p.pid}, port={root_port}, max_workers={root_workers}"
+            f"gRPC root log server: PID={root_p.pid}, port={root_port}, max_workers={root_workers}, "
+            f"graceful_shutdown_timeout_s={root_graceful_shutdown_timeout} (2× leaf {graceful_shutdown_timeout}s)"
         )
-        time.sleep(1.0)
 
         upstream = f'localhost:{root_port}'
         for i in range(n):
             leaf_port = funnel_ports.leaf_listen_port(i)
             leaf_log = _grpc_log_path(base_log_file, f'_grpc_leaf_{i}.log')
             lf = _open_log(leaf_log)
-            lp = subprocess.Popen(
-                [
+            try:
+                leaf_cmd = [
                     sys.executable,
                     '-m',
                     'nvidia_resiliency_ext.shared_utils.grpc_log_leaf_server',
@@ -3639,14 +3675,18 @@ def _start_grpc_log_servers(
                     str(max_queue),
                     '--graceful-shutdown-timeout',
                     str(graceful_shutdown_timeout),
-                ],
-                stdout=lf,
-                stderr=subprocess.STDOUT,
-            )
+                ]
+                lp = subprocess.Popen(
+                    leaf_cmd,
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                )
+            finally:
+                lf.close()
             procs.append(lp)
             logger.info(
                 f"gRPC leaf log server {i}: PID={lp.pid}, port={leaf_port}, "
-                f"max_workers={per_leaf}, upstream={upstream}"
+                f"max_workers={per_leaf}, max_queue_chunks={max_queue}, upstream={upstream}"
             )
 
         return procs
@@ -3655,7 +3695,32 @@ def _start_grpc_log_servers(
         for p in procs:
             with contextlib.suppress(Exception):
                 p.kill()
+            with contextlib.suppress(Exception):
+                p.wait()
         return []
+
+
+def _grpc_child_wait_timeout_after_terminate(graceful_shutdown_timeout: float) -> float:
+    """Seconds to wait after SIGTERM before SIGKILL for a gRPC funnel child.
+
+    Matches each server's graceful client-wait, ``server.stop(grace=5)``, and
+    ``wait_for_termination`` budget (see ``grpc_log_server`` / ``grpc_log_leaf_server``).
+    """
+    return float(graceful_shutdown_timeout) + 5.0 + 65.0
+
+
+def _wait_grpc_subprocess_after_terminate(p: subprocess.Popen, wait_timeout: float) -> None:
+    """Wait for one gRPC funnel child after SIGTERM; force-kill if still alive past timeout."""
+    try:
+        p.wait(timeout=wait_timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            f"gRPC server PID={p.pid} did not shut down within {wait_timeout}s, killing..."
+        )
+        with contextlib.suppress(Exception):
+            p.kill()
+        with contextlib.suppress(Exception):
+            p.wait()
 
 
 def run(args):
@@ -3760,25 +3825,54 @@ def main(args=None):
         # (logging cleanup already happened in run()'s finally block)
         global _GRPC_SERVER_PROCESSES
         if _GRPC_SERVER_PROCESSES:
-            grpc_graceful_shutdown_timeout = getattr(
-                args, 'ft_log_server_graceful_shutdown_timeout', 60.0
+            grpc_graceful_shutdown_timeout = float(
+                getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
             )
-            wait_timeout = grpc_graceful_shutdown_timeout + 5.0
+            n_log_agg = int(getattr(args, 'ft_log_aggregator_count', 2))
+            single_wait = _grpc_child_wait_timeout_after_terminate(grpc_graceful_shutdown_timeout)
+            if n_log_agg > 1:
+                root_grace = grpc_graceful_shutdown_timeout * 2.0
+                leaf_wait = _grpc_child_wait_timeout_after_terminate(grpc_graceful_shutdown_timeout)
+                root_wait = _grpc_child_wait_timeout_after_terminate(root_grace)
+                wait_msg = (
+                    f"leaf child wait up to {leaf_wait:.0f}s, root child up to {root_wait:.0f}s "
+                    f"(ft_log_server_graceful_shutdown_timeout={grpc_graceful_shutdown_timeout}s, root uses 2×)"
+                )
+            else:
+                leaf_wait = root_wait = single_wait
+                wait_msg = (
+                    f"per-process shutdown wait up to {single_wait:.0f}s "
+                    f"(ft_log_server_graceful_shutdown_timeout={grpc_graceful_shutdown_timeout}s)"
+                )
+            logger.info(
+                "Sending SIGTERM to gRPC log funnel process(es) (root last in wait order). "
+                f"{wait_msg}. "
+                "Check *_grpc_root.log and *_grpc_leaf_*.log for Shutdown snapshot lines: "
+                "in_memory_pending_bytes, chunk_queue_depth, still_connected_streams, etc."
+            )
             # Terminate leaves first so they drain to root before root exits
             for p in reversed(_GRPC_SERVER_PROCESSES):
                 with contextlib.suppress(Exception):
                     p.terminate()
-            for p in reversed(_GRPC_SERVER_PROCESSES):
-                try:
-                    p.wait(timeout=wait_timeout)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        f"gRPC server PID={p.pid} did not shut down within {wait_timeout}s, killing..."
+            # All processes got SIGTERM together; wait in parallel so wall time ≈ one timeout,
+            # not (N+1) × wait_timeout.
+            procs_to_wait = list(reversed(_GRPC_SERVER_PROCESSES))
+            root_proc = _GRPC_SERVER_PROCESSES[0]
+            with ThreadPoolExecutor(max_workers=max(1, len(procs_to_wait))) as pool:
+                pending_futures = [
+                    pool.submit(
+                        _wait_grpc_subprocess_after_terminate,
+                        p,
+                        root_wait if p is root_proc else leaf_wait,
                     )
+                    for p in procs_to_wait
+                ]
+                for fut in as_completed(pending_futures):
                     with contextlib.suppress(Exception):
-                        p.kill()
-                    with contextlib.suppress(Exception):
-                        p.wait()
+                        fut.result()
+            for p in _GRPC_SERVER_PROCESSES:
+                rc = getattr(p, "returncode", None)
+                logger.info(f"gRPC log subprocess PID={p.pid} finished with returncode={rc}")
             _GRPC_SERVER_PROCESSES.clear()
 
     sys.exit(exit_code)

@@ -529,3 +529,24 @@ class TestMaybeExitStandbyOnSuccess(unittest.TestCase):
         agent = self._make_agent_standby(min_nodes=2, group_rank=1, store_check_returns=True)
         agent._maybe_exit_standby_on_success("trainer")  # no raise
         agent._store.check.assert_not_called()
+
+
+def test_ft_log_aggregator_count_rejects_non_positive():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import _validate_args, get_args_parser
+
+    parser = get_args_parser()
+    for bad in ('0', '-1'):
+        args = parser.parse_args(['--ft-log-aggregator-count', bad, 'train.py'])
+        with pytest.raises(ValueError, match='--ft-log-aggregator-count'):
+            _validate_args(args)
+
+
+def test_log_funnel_ports_from_launcher_args_rejects_non_positive_aggregator_count():
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance.launcher import LogFunnelPorts
+
+    with pytest.raises(ValueError, match='>= 1'):
+        LogFunnelPorts.from_launcher_args(
+            SimpleNamespace(ft_log_server_port=50051, ft_log_aggregator_count=0)
+        )
