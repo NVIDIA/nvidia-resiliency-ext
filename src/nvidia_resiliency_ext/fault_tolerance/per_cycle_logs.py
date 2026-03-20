@@ -71,6 +71,21 @@ _FLUSH_INTERVAL_SECONDS = 1.0  # Flush at least every 1 second
 _GRPC_MAX_CHUNK_SIZE = 256 * 1024  # 256 KB chunks for gRPC transmission
 _GRPC_RECONNECT_INTERVAL = 5.0  # Retry connection every 5 seconds
 
+# Reader shutdown joins GrpcWriterThread for at most this long (see MultiplexingReaderThread.run
+# finally). PipeBasedLogsSpecs.cleanup() must wait longer than writer join plus reader-finally
+# work (poll interval, shutdown sleep in shutdown(), stable-empty drain, _cleanup_resources) so
+# the launcher does not return while the daemon reader is still draining tail logs to gRPC.
+_GRPC_WRITER_THREAD_JOIN_TIMEOUT_SEC = 30.0
+_READER_THREAD_SHUTDOWN_JOIN_TIMEOUT_SEC = _GRPC_WRITER_THREAD_JOIN_TIMEOUT_SEC + 10.0
+
+# Write-queue poll in GrpcWriterThread.log_generator and MultiplexingReaderThread file writer:
+# short timeout so shutdown stays responsive. GrpcWriter drain ends after shutdown_requested once
+# the queue stays empty for _GRPC_STABLE_EMPTY_POLLS_NEEDED consecutive Empty timeouts (quiet
+# window ≈ _GRPC_STABLE_EMPTY_POLLS_NEEDED × this). Keep _GRPC_WRITER_THREAD_JOIN_TIMEOUT_SEC
+# and _READER_THREAD_SHUTDOWN_JOIN_TIMEOUT_SEC comfortably above that window plus queued work.
+_WRITE_QUEUE_GET_TIMEOUT_SEC = 0.1
+_GRPC_STABLE_EMPTY_POLLS_NEEDED = 5
+
 # Module-level flag to track if we've patched get_subprocess_handler
 _SUBPROCESS_HANDLER_PATCHED = False
 
@@ -443,9 +458,8 @@ class GrpcWriterThread(threading.Thread):
                     channel.close()
                     channel = None
 
-        # When shutdown is requested, the generator exits immediately without draining.
-        # Any remaining items in the queue are not sent - during shutdown, the server
-        # may already be closing, so delivery cannot be guaranteed anyway.
+        # If shutdown happened mid-stream, log_generator drains until the queue is stably empty
+        # before the RPC completes (see log_generator).
 
         self.logger.debug(f"gRPC writer thread exiting (node_id={self.node_id})")
 
@@ -453,11 +467,8 @@ class GrpcWriterThread(threading.Thread):
         """
         Stream logs to server using provided gRPC channel.
 
-        The generator consumes the queue until shutdown is requested, then exits immediately.
-        No drain phase is performed because:
-        1. During shutdown, the server may already be closing/closed
-        2. Draining adds delay that can exceed the reader's shutdown timeout
-        3. Any logs still in queue at shutdown are not guaranteed to be delivered anyway
+        The generator consumes the queue until shutdown is requested, then drains until the
+        queue is stably empty so tail logs are handed to gRPC before the RPC ends.
 
         Args:
             channel: Existing gRPC channel (caller manages lifecycle)
@@ -465,10 +476,13 @@ class GrpcWriterThread(threading.Thread):
         stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
 
         def log_generator():
-            """Generator that yields LogChunk messages from queue until shutdown."""
-            while not self.shutdown_requested:
+            """Yield LogChunk messages from queue; drain remaining items when shutdown is requested."""
+            _empty_poll_count = 0
+
+            while True:
                 try:
-                    log_file_path, data = self.write_queue.get(timeout=0.1)
+                    log_file_path, data = self.write_queue.get(timeout=_WRITE_QUEUE_GET_TIMEOUT_SEC)
+                    _empty_poll_count = 0
 
                     # Encode string to bytes (done once here, not in reader thread)
                     data_bytes = data.encode('utf-8')
@@ -485,7 +499,13 @@ class GrpcWriterThread(threading.Thread):
                     yield chunk
 
                 except queue.Empty:
-                    # Timeout - normal, just check shutdown flag
+                    if self.shutdown_requested:
+                        _empty_poll_count += 1
+                        if (
+                            _empty_poll_count >= _GRPC_STABLE_EMPTY_POLLS_NEEDED
+                            and self.write_queue.empty()
+                        ):
+                            return
                     continue
                 except UnicodeEncodeError as e:
                     # Log data encoding issue (rare - indicates non-UTF8 data)
@@ -504,8 +524,9 @@ class GrpcWriterThread(threading.Thread):
 
         try:
             # Stream logs to server until shutdown is requested
-            # No timeout on the RPC - let it run as long as needed during normal operation
-            # The reader thread's join(timeout=30s) provides protection during shutdown
+            # No timeout on the RPC - let it run as long as needed during normal operation.
+            # On launcher exit the reader thread's finally calls join(timeout=...) on this
+            # GrpcWriterThread after shutdown_requested, bounding post-shutdown drain time.
             response = stub.StreamLogs(log_generator())
             self.logger.debug(
                 f"Stream completed: {response.status}, "
@@ -606,8 +627,9 @@ class MultiplexingReaderThread(threading.Thread):
         self._clear_pipes_event = threading.Event()
         self._pipes_cleared_event = threading.Event()
 
-        # Write queue for decoupling pipe reading from writer I/O
-        # Queue items: (log_file_path, data_to_write)
+        # Unbounded queue: (log_file_path, data_to_write). Decouples pipe reads from writer I/O.
+        # Backpressure from a slow gRPC leaf/root is absorbed here (RAM) rather than blocking
+        # _stop_workers; the launcher only allows a short kernel-pipe grace before closing FDs.
         self._write_queue = queue.Queue()
         self._writer_shutdown = False
         self._grpc_config = grpc_config
@@ -688,7 +710,9 @@ class MultiplexingReaderThread(threading.Thread):
             while not self._writer_shutdown:
                 try:
                     # Get next write request with short timeout for responsive shutdown
-                    log_file_path, data = self._write_queue.get(timeout=0.1)
+                    log_file_path, data = self._write_queue.get(
+                        timeout=_WRITE_QUEUE_GET_TIMEOUT_SEC
+                    )
 
                     add_to_batch(log_file_path, data)
 
@@ -1136,11 +1160,14 @@ class MultiplexingReaderThread(threading.Thread):
                 self._writer_shutdown = True
 
             if self._writer_thread and self._writer_thread.is_alive():
-                self._writer_thread.join(timeout=30.0)  # Wait for writer to complete disconnect
+                self._writer_thread.join(
+                    timeout=_GRPC_WRITER_THREAD_JOIN_TIMEOUT_SEC
+                )  # Wait for writer to complete disconnect
                 if self._writer_thread.is_alive():
                     self.logger.warning(
-                        "Writer thread did not exit within 30s timeout during reader shutdown. "
-                        "Connection may be aborted."
+                        "Writer thread did not exit within "
+                        f"{_GRPC_WRITER_THREAD_JOIN_TIMEOUT_SEC:.0f}s timeout during reader "
+                        "shutdown. Connection may be aborted."
                     )
 
     def update_pipes(
@@ -1233,13 +1260,19 @@ class MultiplexingReaderThread(threading.Thread):
         - Write queue is drained (all pending writes complete)
         - Log files are properly closed
 
-        After calling shutdown(), use join(timeout=5.0) to wait for thread to exit.
+        After calling shutdown(), join the thread with a timeout that allows the
+        finally block to run (including join on GrpcWriterThread, bounded by
+        _GRPC_WRITER_THREAD_JOIN_TIMEOUT_SEC).
+
+        PipeBasedLogsSpecs.cleanup() uses _READER_THREAD_SHUTDOWN_JOIN_TIMEOUT_SEC so the
+        launcher waits through reader-finally work and the writer join.
+
         Daemon=True is only a safety fallback if shutdown is not called.
 
         Usage:
             if self._reader_thread:
                 self._reader_thread.shutdown()
-                self._reader_thread.join(timeout=5.0)
+                self._reader_thread.join(timeout=_READER_THREAD_SHUTDOWN_JOIN_TIMEOUT_SEC)
         """
         # First, give reader thread a moment to process any final pipe events
         # (especially POLLHUP after pipes are closed)
@@ -1561,15 +1594,15 @@ class PipeBasedLogsSpecs(LogsSpecs):
         This must be called explicitly - daemon thread alone won't flush buffers!
         """
         self._reader_thread.shutdown()
-        # Give reader thread enough time to:
-        # 1. Complete current poll cycle (0.15s sleep in shutdown())
-        # 2. Clean up resources and flush buffers
-        # 3. Shut down writer thread (which may take up to 5s to drain queue)
-        # Total: 0.15s + 5s writer timeout + 2s gRPC drain + buffer = 8s
-        self._reader_thread.join(timeout=8.0)
+        # Reader shutdown() sleeps 0.15s, then the thread exits its main loop and runs
+        # finally: cleanup_resources, launcher pipe cleanup, GrpcWriterThread.shutdown(),
+        # then join on the gRPC writer (_GRPC_WRITER_THREAD_JOIN_TIMEOUT_SEC). The join
+        # below must cover that full path (see _READER_THREAD_SHUTDOWN_JOIN_TIMEOUT_SEC).
+        self._reader_thread.join(timeout=_READER_THREAD_SHUTDOWN_JOIN_TIMEOUT_SEC)
         if self._reader_thread.is_alive():
             self.logger.warning(
-                "Reader thread did not exit within 8s timeout. Logs may be incomplete."
+                "Reader thread did not exit within "
+                f"{_READER_THREAD_SHUTDOWN_JOIN_TIMEOUT_SEC:.0f}s timeout. Logs may be incomplete."
             )
         else:
             self.logger.debug("Reader thread shutdown completed successfully.")
