@@ -206,7 +206,8 @@ class TestAsyncSave:
         state_dict = model.state_dict()
         planner = DefaultSavePlanner()
 
-        if rank == 1:
+        # Inject failure on the last rank so the test works for both world_size=1 and >1.
+        if rank == torch.distributed.get_world_size() - 1:
             open_file = mock_open
         else:
             open_file = open
