@@ -38,7 +38,7 @@ import torch.nn as nn
 from packaging import version
 
 import nvidia_resiliency_ext.inprocess as inprocess
-import nvidia_resiliency_ext.inprocess.tools as tools
+from nvidia_resiliency_ext.shared_utils import inject_fault
 
 os.environ['MASTER_ADDR'] = 'localhost'
 os.environ['MASTER_PORT'] = '29500'
@@ -111,7 +111,7 @@ def parse_args(namespace=None, allow_extras=True):
     train.add_argument('--ext-max-delay', default=2, type=float)
     train.add_argument(
         '--ext-fault',
-        type=lambda s: tools.inject_fault.Fault[s.upper()],
+        type=lambda s: inject_fault.Fault[s.upper()],
         default=None,
         nargs='+',
     )
@@ -375,7 +375,7 @@ def train(
         maybe_trigger_fault(rank, world_size, args)
 
     if args.ext_fault is not None:
-        tools.inject_fault.inject_fault(
+        inject_fault.inject_fault(
             faults=args.ext_fault,
             num_faults=(args.min_faults, args.max_faults),
             keep_alive=args.keep_alive,

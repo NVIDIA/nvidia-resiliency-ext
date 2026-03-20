@@ -21,7 +21,7 @@ import sys
 from datetime import timedelta
 
 import nvidia_resiliency_ext.inprocess as inprocess
-import nvidia_resiliency_ext.inprocess.tools as tools
+from nvidia_resiliency_ext.shared_utils import inject_fault
 
 from . import app, common
 
@@ -156,8 +156,8 @@ class TestExternal(common.MultiProcessTestCase):
     @common.parametrize(
         'ext_fault',
         [
-            (tools.inject_fault.Fault.SIGKILL,),
-            (tools.inject_fault.Fault.SIGTERM,),
+            (inject_fault.Fault.SIGKILL,),
+            (inject_fault.Fault.SIGTERM,),
         ],
     )
     def test_wo_exitcode(self, ext_fault):
