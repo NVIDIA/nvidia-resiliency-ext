@@ -124,6 +124,7 @@ class Detector:
         profiling_interval: int = 1,
         report_time_interval: float = 60,
         node_name: Optional[str] = None,
+        process_group: Optional["torch.distributed.ProcessGroup"] = None,
     ):
         """
         Args:
@@ -133,6 +134,9 @@ class Detector:
             profiling_interval (int, optional): Profile each `profiling_interval`-th section entry. Defaults to 1.
             report_time_interval (float, optional): Interval in seconds for generate_report_if_interval_elapsed. Defaults to 60.
             node_name: (str, optional): User-friendly name of the current node to be used in reports. If `None` `socket.gethostname` will be used.
+            process_group: (torch.distributed.ProcessGroup, optional): Process group for distributed collectives.
+                If `None`, the default process group (WORLD) is used. Custom process groups are useful
+                when using DTensor or other frameworks that create sub-groups.
         """
         assert not cls.initialized
 
@@ -149,11 +153,13 @@ class Detector:
         cls.reporter = ReportGenerator(
             scores_to_compute=cls.scores_to_compute,
             gather_on_rank0=gather_on_rank0,
+            pg=process_group,
             node_name=(node_name if node_name else socket.gethostname()),
         )
         cls.report_interval_tracker = ReportIntervalTracker(
             time_interval=report_time_interval,
             profiling_interval=profiling_interval,
+            group=process_group,
         )
 
         cls.initialized = True
