@@ -22,6 +22,7 @@ Constants overview:
 
 from enum import Enum
 
+# --- Library constants ---
 # TTL constants (see spec Section 3.2)
 TTL_PENDING_SECONDS = 7 * 24 * 60 * 60  # 1 week - pending job expiry
 TTL_TERMINATED_SECONDS = 60 * 60  # 1 hour - terminated job expiry (after GET)
