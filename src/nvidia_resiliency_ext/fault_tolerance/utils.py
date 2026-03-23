@@ -16,6 +16,7 @@
 import asyncio
 import contextlib
 import ctypes
+import hashlib
 import logging
 import multiprocessing
 import os
@@ -231,6 +232,37 @@ def is_slurm_job_array() -> bool:
         bool: True if running in a SLURM job array (SLURM_ARRAY_TASK_ID is set), False otherwise
     """
     return os.getenv('SLURM_ARRAY_TASK_ID') is not None
+
+
+def get_log_aggregator_shard_index(num_aggregators: int) -> int:
+    """Shard index in ``[0, num_aggregators)`` for first-level log aggregator selection.
+
+    Static topology from minimal infra signals only (same spirit as common SLURM layouts):
+
+    - If SLURM job array: ``array_task_id * nnodes + SLURM_PROCID`` (mod N).
+    - Else if ``SLURM_PROCID`` is set: ``SLURM_PROCID`` (mod N).
+    - Else: stable spread from ``MD5(hostname)`` (mod N) for load balance without SLURM.
+
+    Args:
+        num_aggregators: Number of first-level aggregators (N).
+
+    Returns:
+        Index in ``0 .. num_aggregators-1``. If ``num_aggregators <= 1``, returns 0.
+    """
+    if num_aggregators <= 1:
+        return 0
+    if os.getenv('SLURM_ARRAY_TASK_ID') is not None and os.getenv('SLURM_PROCID') is not None:
+        nnodes_s = os.getenv('SLURM_NNODES') or os.getenv('SLURM_JOB_NUM_NODES')
+        if nnodes_s is not None:
+            r = int(os.environ['SLURM_ARRAY_TASK_ID']) * int(nnodes_s) + int(
+                os.environ['SLURM_PROCID']
+            )
+            return r % num_aggregators
+    proc = os.getenv('SLURM_PROCID')
+    if proc is not None:
+        return int(proc) % num_aggregators
+    h = int(hashlib.md5(socket.gethostname().encode()).hexdigest(), 16)
+    return h % num_aggregators
 
 
 def is_process_alive(pid):
