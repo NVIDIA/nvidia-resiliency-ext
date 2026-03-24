@@ -3,12 +3,16 @@
 
 """Unit tests for nvidia_resiliency_ext.fault_tolerance.utils module."""
 
+import hashlib
 import os
 from unittest.mock import patch
 
 import pytest
 
-from nvidia_resiliency_ext.fault_tolerance.utils import get_infrastructure_rank
+from nvidia_resiliency_ext.fault_tolerance.utils import (
+    get_infrastructure_rank,
+    get_log_aggregator_shard_index,
+)
 
 
 class TestGetInfrastructureRank:
@@ -348,3 +352,63 @@ class TestGetInfrastructureRank:
         assert rank == -1
         mock_logger.debug.assert_called_once()
         assert "deterministically" in mock_logger.debug.call_args[0][0]
+
+
+class TestGetLogAggregatorShardIndex:
+    """Tests for get_log_aggregator_shard_index."""
+
+    @pytest.fixture(autouse=True)
+    def clear_env(self):
+        env_vars = [
+            'SLURM_TOPOLOGY_ADDR',
+            'SLURM_TOPOLOGY_ADDR_PATTERN',
+            'NVRX_INFRA_RANK_FROM_NODENAME',
+            'SLURMD_NODENAME',
+            'CROSS_SLURM_PROCID',
+            'SLURM_PROCID',
+            'SLURM_ARRAY_TASK_ID',
+            'SLURM_NNODES',
+            'SLURM_JOB_NUM_NODES',
+            'SLURM_JOB_ID',
+            'GROUP_RANK',
+        ]
+        original = {v: os.environ.pop(v, None) for v in env_vars}
+        yield
+        for var, value in original.items():
+            if value is not None:
+                os.environ[var] = value
+            else:
+                os.environ.pop(var, None)
+
+    def test_single_aggregator_always_zero(self):
+        assert get_log_aggregator_shard_index(1) == 0
+        assert get_log_aggregator_shard_index(0) == 0
+
+    def test_job_array_shard(self):
+        os.environ['SLURM_ARRAY_TASK_ID'] = '2'
+        os.environ['SLURM_PROCID'] = '1'
+        os.environ['SLURM_NNODES'] = '8'
+        # 2*8+1 = 17, 17 % 3 = 2
+        assert get_log_aggregator_shard_index(3) == 2
+
+    def test_slurm_procid_shard(self):
+        os.environ['SLURM_PROCID'] = '10'
+        assert get_log_aggregator_shard_index(3) == 1
+
+    def test_group_rank_ignored_uses_hostname(self):
+        """Log funnel sharding does not use GROUP_RANK; falls through to hostname."""
+        os.environ['GROUP_RANK'] = '7'
+        host = 'shard-test-host.example'
+        want = int(hashlib.md5(host.encode()).hexdigest(), 16) % 11
+        with patch(
+            'nvidia_resiliency_ext.fault_tolerance.utils.socket.gethostname', return_value=host
+        ):
+            assert get_log_aggregator_shard_index(11) == want
+
+    def test_hostname_fallback_shard(self):
+        host = 'my-funnel-node'
+        want = int(hashlib.md5(host.encode()).hexdigest(), 16) % 5
+        with patch(
+            'nvidia_resiliency_ext.fault_tolerance.utils.socket.gethostname', return_value=host
+        ):
+            assert get_log_aggregator_shard_index(5) == want

@@ -97,7 +97,7 @@ class AbortTorchDistributed(Abort):
         process_groups = list(torch.distributed.distributed_c10d._world.pg_names)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(process_groups)) as executor:
-            futures = [
+            pending_futures = [
                 executor.submit(
                     AbortTorchDistributed.shutdown_process_group_backend,
                     group,
@@ -106,7 +106,7 @@ class AbortTorchDistributed(Abort):
                 for group in process_groups
             ]
             done, not_done = concurrent.futures.wait(
-                futures,
+                pending_futures,
                 return_when=concurrent.futures.ALL_COMPLETED,
             )
 

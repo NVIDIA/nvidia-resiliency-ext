@@ -304,15 +304,15 @@ def test_launcher_starts_grpc_server_on_correct_port(tmp_dir):
     assert f"port={custom_port}" in output, f"Server should be started on port {custom_port}"
 
 
-def test_launcher_creates_grpc_server_log(tmp_dir):
-    """Test that launcher creates a log file for the gRPC server."""
+def test_launcher_creates_grpc_root_log(tmp_dir):
+    """Test that launcher creates a log file for the gRPC root log server."""
     ft_cfg = fault_tolerance.FaultToleranceConfig()
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
 
     base_log_file = os.path.join(tmp_dir, "test.log")
-    expected_server_log = os.path.join(tmp_dir, "test_grpc_server.log")
+    expected_server_log = os.path.join(tmp_dir, "test_grpc_root.log")
 
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
 
@@ -362,7 +362,7 @@ def test_launcher_without_grpc_flag_does_not_start_server(tmp_dir):
 
 
 def test_launcher_custom_server_log_path(tmp_dir):
-    """Test that custom gRPC server log path is respected."""
+    """Test that --ft-log-server-log is used for the root in two-level mode (aggregator count 2)."""
     ft_cfg = fault_tolerance.FaultToleranceConfig()
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
@@ -370,6 +370,7 @@ def test_launcher_custom_server_log_path(tmp_dir):
 
     base_log_file = os.path.join(tmp_dir, "test.log")
     custom_server_log = os.path.join(tmp_dir, "custom_grpc_server.log")
+    default_root_log = os.path.join(tmp_dir, "test_grpc_root.log")
 
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
 
@@ -379,12 +380,28 @@ def test_launcher_custom_server_log_path(tmp_dir):
         " --ft-enable-log-server=true"
         f" --ft-per-cycle-applog-prefix={base_log_file}"
         f" --ft-log-server-log={custom_server_log}"
+        " --ft-log-aggregator-count=2"
         f" --nproc-per-node={WORLD_SIZE}"
         f" {cmd_to_run}"
     )
 
     ret_code, output = _run_launcher(launcher_cmd, timeout=15)
 
-    # Verify custom server log path is mentioned or used
-    # The test passes if launcher completes without hanging on log path issues
-    assert ret_code in [0, 1], "Launcher should complete (gracefully or with expected error)"
+    assert ret_code in [0, 1], f"Launcher should complete; output:\n{output}"
+    assert (
+        "gRPC root log server:" in output
+    ), f"Expected two-level root startup log line; output:\n{output}"
+    assert "gRPC log server started" not in output, (
+        "Single-level gRPC startup should not appear when --ft-log-aggregator-count=2 "
+        f"(would mask a silent fallback to one root on base port). Output:\n{output}"
+    )
+    assert os.path.isfile(
+        custom_server_log
+    ), f"Root log should be written to custom path {custom_server_log}. Output:\n{output}"
+    with open(custom_server_log, 'r') as f:
+        custom_content = f.read()
+    assert len(custom_content) > 0, "Custom root gRPC log file should not be empty"
+    assert not os.path.isfile(default_root_log), (
+        f"Default root log {default_root_log} should not be created when "
+        f"--ft-log-server-log is set (two-level mode regression check)"
+    )

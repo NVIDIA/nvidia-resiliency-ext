@@ -44,6 +44,14 @@ all nodes in a distributed training job and writing them to a single centralized
 - Use `log_aggregator.py` for node-local aggregation (multiple processes → one node file)
 - Use `grpc_log_server.py` for cluster-wide centralization (multiple nodes → one global file)
 
+**Two-level aggregation (ft_launcher, ``--ft-log-aggregator-count`` > 1):**
+- **Root** (this module): listens on ``P+N``; only the root writes to Lustre; use
+  ``max_workers >= N + 10`` (N = number of leaves, each holds one long-lived upstream stream).
+- **Leaves**: ``grpc_log_leaf_server.py`` on ports ``P .. P+N-1``; forward to root.
+  Raise ``ulimit -n`` on the store host (many TCP clients + N root streams). Leaves use a
+  bounded queue (``--ft-log-leaf-max-queue-chunks``, auto-scaled by default when N>1)
+  so slow Lustre applies backpressure to clients; handlers block (lossless) until a slot exists.
+
 **Example Usage:**
 
 Manually for testing:
@@ -62,8 +70,9 @@ import signal
 import sys
 import threading
 import time
+import urllib.parse
 from concurrent import futures
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 import grpc
 
@@ -83,6 +92,13 @@ except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_utils', 'proto'))
     import log_aggregation_pb2
     import log_aggregation_pb2_grpc
+
+
+def _format_grpc_peer(raw: Optional[str]) -> str:
+    """Decode URL-encoded characters in ``context.peer()`` for readable log lines."""
+    if not raw:
+        return "unknown_peer"
+    return urllib.parse.unquote(raw)
 
 
 class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
@@ -173,39 +189,83 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
 
             return self.files[file_path]
 
+    def _pending_buffer_totals(self) -> Tuple[int, int, List[Tuple[str, int, int]]]:
+        """Sum in-memory bytes not yet flushed to disk; per-file (path, chunks, bytes)."""
+        total_bytes = 0
+        nonempty: List[Tuple[str, int, int]] = []
+        with self.files_lock:
+            snapshot = list(self.files.items())
+        for fp, fs in snapshot:
+            with fs['buffer_lock']:
+                sz = fs['buffer_size']
+                nchunks = len(fs['buffer'])
+            total_bytes += sz
+            if nchunks or sz:
+                nonempty.append((fp, nchunks, sz))
+        return total_bytes, len(nonempty), nonempty
+
+    def _log_shutdown_snapshot(self, phase: str, *, extra: str = "") -> None:
+        """Log queues / buffers that may still hold data not yet on Lustre."""
+        with self.clients_lock:
+            clients = self.connected_clients
+        pending_bytes, n_files, details = self._pending_buffer_totals()
+        line = (
+            f"Shutdown snapshot [{phase}]: connected_streams={clients}, "
+            f"in_memory_pending_bytes={pending_bytes}, files_with_pending_buffers={n_files}, "
+            f"lifetime_chunks_received={self.total_chunks_received}, "
+            f"lifetime_bytes_received={self.total_bytes_received}"
+        )
+        if extra:
+            line += f", {extra}"
+        self.logger.info(line)
+        max_detail = 15
+        for fp, nc, sz in details[:max_detail]:
+            self.logger.info(f"  buffered path={fp!r} chunks={nc} bytes={sz}")
+        if len(details) > max_detail:
+            self.logger.info(f"  ... and {len(details) - max_detail} more paths with buffered data")
+
     def StreamLogs(self, request_iterator, context):
         """
-        Handle streaming logs from a client node.
+        Handle streaming logs from one upstream ``StreamLogs`` RPC.
+
+        Each RPC is one direct training node (single-level) or one leaf aggregator
+        (two-level). Logging uses neutral ``peer`` + ``source_node_id`` (``node_id`` on
+        the first chunk, from ft_launcher clients always set) so the same messages
+        apply to both topologies.
 
         Args:
-            request_iterator: Iterator of LogChunk messages from client
-            context: gRPC context
+            request_iterator: Iterator of ``LogChunk`` messages from the upstream client.
+            context: gRPC ServicerContext for this RPC.
 
         Returns:
-            StreamResponse with status and bytes received
+            ``StreamResponse`` with status and cumulative bytes received on this stream.
         """
         with self.clients_lock:
             self.connected_clients += 1
 
+        peer = _format_grpc_peer(context.peer())
         client_bytes = 0
         client_chunks = 0
-        client_node_id = None
+        source_node_id: Optional[str] = None
 
         try:
             for chunk in request_iterator:
                 if self.shutdown_event.is_set():
                     break
-                # Track which node this client is from (from first chunk)
-                if client_node_id is None:
-                    client_node_id = chunk.node_id
-                    self.logger.info(f"Client connected: node_id={client_node_id}")
+                if source_node_id is None:
+                    source_node_id = chunk.node_id
+                    self.logger.info(
+                        f"StreamLogs stream opened peer={peer} source_node_id={source_node_id}"
+                    )
 
                 # Get data and target file
                 data = chunk.data
                 file_path = chunk.file_path
 
                 if not file_path:
-                    raise ValueError(f"Client {client_node_id} sent chunk without file_path")
+                    raise ValueError(
+                        f"peer={peer} node_id={chunk.node_id!r} sent chunk without file_path"
+                    )
 
                 # Get file state for this path
                 file_state = self._get_or_create_file_state(file_path)
@@ -222,9 +282,13 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                     client_bytes += len(data)
                     client_chunks += 1
 
+            if source_node_id is not None:
+                end_src = f"source_node_id={source_node_id}"
+            else:
+                end_src = "source_node_id=n/a"
             self.logger.info(
-                f"Client disconnected: node_id={client_node_id}, "
-                f"received {client_chunks} chunks, {client_bytes / 1024:.1f} KB"
+                f"StreamLogs stream ended peer={peer} {end_src} "
+                f"chunks={client_chunks} received_KiB={client_bytes / 1024:.1f}"
             )
 
             # No flush-on-disconnect: periodic flush thread handles flushing (every 1s)
@@ -235,37 +299,43 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             return log_aggregation_pb2.StreamResponse(status="OK", bytes_received=client_bytes)
 
         except (OSError, IOError) as e:
-            # File I/O errors (disk full, permission denied, network filesystem issues)
-            node_info = (
-                f"node_id={client_node_id}" if client_node_id is not None else "unknown client"
+            src = (
+                f"source_node_id={source_node_id}"
+                if source_node_id is not None
+                else "source_node_id=n/a"
             )
-            self.logger.error(f"I/O error in StreamLogs ({node_info}): {e}", exc_info=True)
+            stream_info = f"peer={peer} {src}"
+            self.logger.error(f"I/O error in StreamLogs ({stream_info}): {e}", exc_info=True)
             raise
         except ValueError as e:
-            # Client protocol violation (e.g., missing file_path)
-            node_info = (
-                f"node_id={client_node_id}" if client_node_id is not None else "unknown client"
+            src = (
+                f"source_node_id={source_node_id}"
+                if source_node_id is not None
+                else "source_node_id=n/a"
             )
-            self.logger.error(f"Protocol error from client ({node_info}): {e}")
-            # Set gRPC error status with descriptive message
+            stream_info = f"peer={peer} {src}"
+            self.logger.error(f"Protocol error in StreamLogs ({stream_info}): {e}")
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
         except grpc.RpcError as e:
-            # Client disconnect/abort - expected operational event
-            node_info = (
-                f"node_id={client_node_id}" if client_node_id is not None else "unknown client"
+            src = (
+                f"source_node_id={source_node_id}"
+                if source_node_id is not None
+                else "source_node_id=n/a"
             )
+            stream_info = f"peer={peer} {src}"
             if self.shutdown_event.is_set():
-                self.logger.debug(f"Client disconnected during shutdown ({node_info})")
+                self.logger.debug(f"StreamLogs aborted during shutdown ({stream_info}): {e}")
             else:
-                self.logger.info(f"Client aborted connection ({node_info}): {e}")
-            # Re-raise to let gRPC handle the abort properly
+                self.logger.info(f"StreamLogs aborted ({stream_info}): {e}")
             raise
         except Exception as e:
-            # Unexpected errors (catch-all for unknown issues)
-            node_info = (
-                f"node_id={client_node_id}" if client_node_id is not None else "unknown client"
+            src = (
+                f"source_node_id={source_node_id}"
+                if source_node_id is not None
+                else "source_node_id=n/a"
             )
-            self.logger.error(f"Unexpected error in StreamLogs ({node_info}): {e}", exc_info=True)
+            stream_info = f"peer={peer} {src}"
+            self.logger.error(f"Unexpected error in StreamLogs ({stream_info}): {e}", exc_info=True)
             raise
         finally:
             with self.clients_lock:
@@ -375,6 +445,10 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             f"Graceful shutdown initiated. Will wait up to {self.graceful_shutdown_timeout}s "
             f"for clients to finish..."
         )
+        self._log_shutdown_snapshot(
+            "graceful_start",
+            extra="(in-memory buffers may still flush via periodic flush until final shutdown)",
+        )
 
         # Mark graceful shutdown as initiated (but don't stop accepting connections yet)
         self.graceful_shutdown_initiated.set()
@@ -394,6 +468,9 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 self.logger.info(
                     f"All clients disconnected after {elapsed:.1f}s. Proceeding with shutdown."
                 )
+                self._log_shutdown_snapshot(
+                    "graceful_all_streams_closed", extra=f"waited_s={elapsed:.1f}"
+                )
                 break
 
             # Exit if timeout reached
@@ -402,14 +479,23 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                     f"Graceful shutdown timeout ({self.graceful_shutdown_timeout}s) reached "
                     f"with {active_clients} client(s) still connected. Proceeding with shutdown."
                 )
+                self._log_shutdown_snapshot(
+                    "graceful_timeout",
+                    extra=(
+                        f"still_connected_streams={active_clients} — "
+                        "remaining streams may be cut off by server.stop(); data may be lost"
+                    ),
+                )
                 break
 
             # Log periodic status
             remaining = self.graceful_shutdown_timeout - elapsed
             if int(elapsed / 5) != int((elapsed - check_interval) / 5):  # Log every 5s
+                pend_b, pend_nf, _ = self._pending_buffer_totals()
                 self.logger.info(
                     f"Waiting for {active_clients} client(s) to finish... "
-                    f"({remaining:.1f}s remaining)"
+                    f"({remaining:.1f}s remaining) "
+                    f"in_memory_pending_bytes={pend_b} files_with_pending_buffers={pend_nf}"
                 )
 
             time.sleep(check_interval)
@@ -420,6 +506,10 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
     def shutdown(self):
         """Perform final shutdown: flush buffers, close files, stop threads."""
         self.logger.info("Shutting down log aggregation server...")
+        self._log_shutdown_snapshot(
+            "final_before_stop_flush_thread",
+            extra="stopping periodic flush; remaining buffers will be written in final flush pass",
+        )
 
         # Stop flush thread
         self.shutdown_event.set()
@@ -451,6 +541,15 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             with file_state['buffer_lock']:
                 file_state['buffer'].clear()
                 file_state['buffer_size'] = 0
+
+        leftover_b, leftover_nf, leftover_detail = self._pending_buffer_totals()
+        if leftover_b or leftover_nf:
+            self.logger.error(
+                f"After final flush, unexpected non-empty buffers: bytes={leftover_b}, "
+                f"files={leftover_nf}, detail={leftover_detail[:5]!r}"
+            )
+        else:
+            self.logger.info("Final flush: all per-file in-memory buffers are empty.")
 
         self.logger.info(
             f"Server shutdown complete. "
@@ -515,13 +614,23 @@ def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeou
     logger.info(f"Max workers: {max_workers}")
     logger.info(f"Graceful shutdown timeout: {graceful_shutdown_timeout}s")
 
+    stop_grace_seconds = 5.0
+    termination_wait_timeout_seconds = stop_grace_seconds + 60.0
+
     # Set up signal handlers for graceful shutdown
     def signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         # Use graceful shutdown to keep server running for remaining clients
         servicer.graceful_shutdown()
-        # Now stop the gRPC server
-        server.stop(grace=5.0)
+        server.stop(grace=stop_grace_seconds)
+        # stop() returns before internal server thread exits; wait so the executor is not
+        # torn down while still scheduling RPCs (avoids RuntimeError on shutdown).
+        # wait_for_termination returns True iff the wait timed out (per grpc API).
+        if server.wait_for_termination(timeout=termination_wait_timeout_seconds):
+            logger.warning(
+                "Timed out waiting for gRPC log server to finish termination after stop() "
+                f"(>{termination_wait_timeout_seconds}s)"
+            )
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -533,7 +642,12 @@ def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeou
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received, initiating graceful shutdown...")
         servicer.graceful_shutdown()
-        server.stop(grace=5.0)
+        server.stop(grace=stop_grace_seconds)
+        if server.wait_for_termination(timeout=termination_wait_timeout_seconds):
+            logger.warning(
+                "Timed out waiting for gRPC log server after keyboard interrupt "
+                f"(>{termination_wait_timeout_seconds}s)"
+            )
 
 
 def main():

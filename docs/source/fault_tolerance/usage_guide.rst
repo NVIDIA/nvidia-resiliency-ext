@@ -160,6 +160,22 @@ the tolerance threshold or the timeout is reached. Memory statistics for each GP
 and logged after the reclaim process completes. If the timeout is reached, an error is logged but the
 restart proceeds as a best effort.
 
+Per-cycle logging and gRPC log aggregation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When using consolidated per-cycle application logs (for example via ``--ft-per-cycle-applog-prefix``)
+with optional gRPC log funneling (``--ft-enable-log-server``), worker and launcher output can be
+merged through pipes and streamed to one or more aggregators on the rendezvous host before a single
+writer appends to shared storage (for example Lustre).
+
+.. important::
+
+   **Best-effort semantics.** Per-cycle gRPC log aggregation is best-effort. Logs around failure
+   and restart may be incomplete; crash stack traces are not guaranteed to appear there. For
+   critical diagnostics, use rank monitor logs (launcher log) for failure/timeout correlation and
+   OS-level core dumps for reliable crash post-mortem. Do not assume aggregated logs are complete
+   or reliable.
+
 Rank assignment
 ^^^^^^^^^^^^^^^
 

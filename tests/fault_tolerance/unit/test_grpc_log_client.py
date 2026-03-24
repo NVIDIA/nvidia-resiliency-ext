@@ -439,13 +439,11 @@ class TestGrpcWriterThread:
                     for call in mock_logger.warning.call_args_list
                 )
 
-    def test_shutdown_exits_without_draining_queue(self, write_queue, mock_logger):
-        """Test that shutdown exits immediately without draining remaining queue items.
+    def test_shutdown_drains_write_queue_before_stream_end(self, write_queue, mock_logger):
+        """After shutdown_requested, log_generator drains the queue until stably empty.
 
-        The gRPC writer does not drain on shutdown because:
-        1. During shutdown, the server may already be closing/closed
-        2. Draining adds delay that can exceed the reader's shutdown timeout
-        3. Any logs still in queue at shutdown are not guaranteed to be delivered anyway
+        This yields any chunks already queued so tail logs can reach the leaf before
+        the StreamLogs RPC ends (several consecutive empty get() timeouts + empty queue).
         """
 
         # Add items that will be in queue during shutdown
@@ -463,11 +461,9 @@ class TestGrpcWriterThread:
             chunks_received = []
 
             def capture_chunks(chunk_iterator):
-                """Capture chunks - should exit immediately when shutdown is set."""
-                # Immediately request shutdown
+                """Request shutdown before consuming; generator still drains queued items."""
                 writer.shutdown_requested = True
 
-                # Try to consume - generator should exit immediately
                 for chunk in chunk_iterator:
                     chunks_received.append(chunk)
 
@@ -495,9 +491,7 @@ class TestGrpcWriterThread:
                 with patch('time.sleep'):
                     writer.run()
 
-                # Generator should exit immediately on shutdown, not drain queue
-                # Queue items remain unprocessed
                 assert (
-                    len(chunks_received) == 0
-                ), f"Expected 0 chunks (no drain), got {len(chunks_received)}"
-                assert write_queue.qsize() == 3, "Queue items should remain"
+                    len(chunks_received) == 3
+                ), f"Expected all 3 queued lines drained after shutdown, got {len(chunks_received)}"
+                assert write_queue.qsize() == 0, "Queue should be empty after drain"
