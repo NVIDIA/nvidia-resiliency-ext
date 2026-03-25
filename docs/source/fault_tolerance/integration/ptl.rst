@@ -1,6 +1,10 @@
 PyTorch Lightning Integration
 *****************************
 
+.. deprecated::
+   The :mod:`nvidia_resiliency_ext.ptl_resiliency` package (PyTorch Lightning integration with
+   ``ft_launcher`` / InJob fault tolerance) is deprecated and will be removed in a future release.
+
 This section describes Fault Tolerance integration with a PTL-based workload (i.e., NeMo) using ``FaultToleranceCallback``.
 
 1. Use ``ft_launcher`` to start the workload

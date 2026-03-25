@@ -122,6 +122,8 @@ if not hasattr(_torch_elastic_agent_api, "_TERMINAL_STATE_SYNC_ID"):
 
 _EXIT_BARRIER_LAST_MEMBER_KEY = f"{_torch_elastic_agent_api._TERMINAL_STATE_SYNC_ID}/last_member"
 
+_legacy_ft_rdzv_deprecation_warned: bool = False
+
 # Logger instance (configured later in run() via setup_logger())
 # Note: Must call run() before using logger to ensure proper configuration
 logger = logging.getLogger(LogConfig.name)
@@ -146,9 +148,11 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
 
     Args:
         impl_type: FT rendezvous implementation to use.
-                  "barrier" - New atomic barrier-based algorithm
-                  "legacy" - Original compare-and-set algorithm
+            ``"barrier"`` — atomic barrier-based algorithm (recommended default).
+            ``"legacy"`` — original compare-and-set implementation in ``_ft_rendezvous``;
+            deprecated and scheduled for removal; use ``"barrier"``.
     """
+    global _legacy_ft_rdzv_deprecation_warned
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
@@ -160,6 +164,15 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
             return create_barrier_handler(store, backend, params)
 
     elif impl_type == "legacy":
+        if not _legacy_ft_rdzv_deprecation_warned:
+            warnings.warn(
+                "FT rendezvous implementation 'legacy' (_ft_rendezvous compare-and-set) is "
+                "deprecated and will be removed in a future release. Use the default "
+                "'barrier' implementation (--ft-rdzv-impl barrier / ft_rendezvous_barrier).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _legacy_ft_rdzv_deprecation_warned = True
         from ._ft_rendezvous import create_handler as create_legacy_handler
         from .c10d_monkey_patch import apply_c10d_patch
 
@@ -2723,9 +2736,10 @@ def get_args_parser() -> ArgumentParser:
         default="barrier",
         dest="ft_rdzv_impl",
         help="FT rendezvous implementation to use. "
-        "'barrier' uses the new atomic barrier-based algorithm (ft_rendezvous_barrier.py), "
-        "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
-        "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
+        "'barrier' uses the atomic barrier-based algorithm (ft_rendezvous_barrier.py; default, recommended). "
+        "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py); deprecated and "
+        "will be removed in a future release—migrate to 'barrier'. "
+        "Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
     )
 

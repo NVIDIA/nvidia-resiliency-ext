@@ -29,6 +29,7 @@ from ._utils import (
     is_module_available,
     parse_simulated_fault_params,
     setup_simulated_fault,
+    warn_ptl_injob_lightning_deprecated,
 )
 
 if is_module_available("lightning"):
@@ -41,10 +42,16 @@ else:
 
 import nvidia_resiliency_ext.fault_tolerance as ft
 
+warn_ptl_injob_lightning_deprecated()
+
 
 class FaultToleranceSectionsCallback(Callback):
     """
     FaultToleranceSectionsCallback is a Torch Lightning callback for integration with the Fault Tolerance package.
+
+    .. deprecated::
+        InJob (``ft_launcher``) PyTorch Lightning integration is deprecated and will be removed
+        in a future release.
 
     ``FaultToleranceSectionsCallback`` uses the new section-based FT API.
     In this implementation, there are 3 sections:

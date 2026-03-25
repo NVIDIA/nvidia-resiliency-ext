@@ -26,6 +26,7 @@ from ._utils import (
     is_module_available,
     parse_simulated_fault_params,
     setup_simulated_fault,
+    warn_ptl_injob_lightning_deprecated,
 )
 
 if is_module_available("lightning"):
@@ -37,6 +38,8 @@ else:
 
 
 import nvidia_resiliency_ext.fault_tolerance as ft
+
+warn_ptl_injob_lightning_deprecated()
 
 
 class _TrainingStateMachine:
@@ -166,6 +169,10 @@ class _TrainingStateMachine:
 class FaultToleranceCallback(Callback):
     """
     FaultToleranceCallback is a Torch Lightning callback for integration with the Fault Tolerance package.
+
+    .. deprecated::
+        InJob (``ft_launcher``) PyTorch Lightning integration is deprecated and will be removed
+        in a future release.
 
     FT is only active during a 'fit' stage.
     Training should be run with 'ft_launcher' for the callback to work.
