@@ -20,7 +20,7 @@ from functools import partial
 from typing import Any, Callable, Dict, NewType, Optional
 
 from ..checkpointing.async_ckpt.core import AsyncRequest
-from ._utils import is_module_available
+from ._utils import is_module_available, warn_ptl_injob_lightning_deprecated
 
 if is_module_available("lightning"):
     import lightning.pytorch as pl
@@ -41,6 +41,8 @@ from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.base_manager import
     BaseCheckpointManager,
 )
 
+warn_ptl_injob_lightning_deprecated()
+
 logger = logging.getLogger(__name__)
 
 StateDict = NewType('StateDict', Any)
@@ -50,6 +52,9 @@ LOCAL_CKPT_OPTS_KEY = 'local_checkpoint_options'
 
 class LocalCheckpointCallback(pl.callbacks.ModelCheckpoint):
     """ModelCheckpoint with basic functionality. Only train_batch_end simple save.
+
+    .. deprecated::
+        InJob PyTorch Lightning integration is deprecated and will be removed in a future release.
 
     Simple callback for initiating local checkpoint save in `on_train_batch_end` method.
     Since local checkpoints are ephemeral, they shouldn't be used for "major" checkpoint
@@ -100,6 +105,9 @@ class LocalCheckpointCallback(pl.callbacks.ModelCheckpoint):
 
 class HierarchicalCheckpointIO(_WrappingCheckpointIO):
     """Wrapper for a global CheckpointIO enabling local checkpointing.
+
+    .. deprecated::
+        InJob PyTorch Lightning integration is deprecated and will be removed in a future release.
 
     Based on the presence of local checkpointing options in saving `storage_options`,
     routes the save to the original global CheckpointIO or the local checkpoint manager.

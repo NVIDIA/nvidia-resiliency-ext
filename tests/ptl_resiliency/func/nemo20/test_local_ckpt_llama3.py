@@ -17,6 +17,9 @@
 This module exemplifies NeMo 2.0 integration with NVRx local checkpointing.
 The key parts is the implementation of MCore specific HierarchicalCheckpointIO
 (MCoreHierarchicalCheckpointIO) which can be plugged into PTL strategy.
+
+Deprecated: uses ``ptl_resiliency`` (InJob PyTorch Lightning). Remove or rewrite when that
+package is removed.
 """
 
 import argparse

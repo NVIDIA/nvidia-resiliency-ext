@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""NeMo 2.0 functional script using deprecated ``ptl_resiliency`` (InJob + Lightning).
+
+Remove or rewrite when ``nvidia_resiliency_ext.ptl_resiliency`` is removed.
+"""
+
 import argparse
 from dataclasses import dataclass
 

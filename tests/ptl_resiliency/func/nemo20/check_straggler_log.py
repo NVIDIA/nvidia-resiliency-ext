@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Log checker helper for deprecated ``ptl_resiliency`` NeMo straggler runs (not pytest tests)."""
+
 import argparse
 import re
 

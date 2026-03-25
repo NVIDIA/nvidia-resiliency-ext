@@ -20,10 +20,27 @@ import signal
 import sys
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
 import torch
+
+_PTL_INJOB_LIGHTNING_DEPRECATION_EMITTED = False
+
+
+def warn_ptl_injob_lightning_deprecated() -> None:
+    """Emit a single process-wide deprecation for the InJob + PyTorch Lightning integration."""
+    global _PTL_INJOB_LIGHTNING_DEPRECATION_EMITTED
+    if _PTL_INJOB_LIGHTNING_DEPRECATION_EMITTED:
+        return
+    warnings.warn(
+        "nvidia_resiliency_ext.ptl_resiliency (PyTorch Lightning callbacks for "
+        "ft_launcher / InJob fault tolerance) is deprecated and will be removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    _PTL_INJOB_LIGHTNING_DEPRECATION_EMITTED = True
 
 
 def is_module_available(module: str) -> bool:
@@ -36,6 +53,10 @@ def is_module_available(module: str) -> bool:
 class SimulatedFaultParams:
     """
     Description of a simulated rank fault, used for FT testing and debugging.
+
+    .. deprecated::
+        Part of the deprecated InJob PyTorch Lightning integration
+        (:mod:`nvidia_resiliency_ext.ptl_resiliency`); will be removed together with that package.
 
     Simulated fault types are:
     - 'rank_killed' a rank is killed with SIGKILL

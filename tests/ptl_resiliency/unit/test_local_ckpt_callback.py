@@ -13,6 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Unit tests for deprecated InJob PyTorch Lightning local checkpoint helpers (`ptl_resiliency`).
+
+Skipped by default (module-level ``pytest.mark.skip``). Remove the skip and this module when
+``nvidia_resiliency_ext.ptl_resiliency`` is removed.
+"""
+
 import logging
 from datetime import timedelta
 from typing import Any, Dict, Iterable
@@ -26,6 +32,7 @@ elif is_module_available("pytorch_lightning"):
 else:
     raise ImportError("Could not find 'lightning' or 'pytorch_lightning' module")
 
+import pytest
 import torch
 
 from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
@@ -40,6 +47,10 @@ from nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback import (
 )
 
 from .test_ft_callback_hb import SimpleModel
+
+pytestmark = pytest.mark.skip(
+    reason="Deprecated InJob PyTorch Lightning (ptl_resiliency); remove this skip when deleting the package.",
+)
 
 
 def _run_trainining(

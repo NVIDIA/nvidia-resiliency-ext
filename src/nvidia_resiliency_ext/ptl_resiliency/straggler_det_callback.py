@@ -20,7 +20,7 @@ from typing import Optional
 
 import torch
 
-from ._utils import is_module_available
+from ._utils import is_module_available, warn_ptl_injob_lightning_deprecated
 
 if is_module_available("lightning"):
     from lightning.pytorch.callbacks import Callback
@@ -31,8 +31,16 @@ else:
 
 import nvidia_resiliency_ext.attribution.straggler as straggler
 
+warn_ptl_injob_lightning_deprecated()
+
 
 class StragglerDetectionCallback(Callback):
+    """
+    PyTorch Lightning callback for straggler detection when using ``ft_launcher`` (InJob).
+
+    .. deprecated::
+        InJob PyTorch Lightning integration is deprecated and will be removed in a future release.
+    """
 
     def __init__(
         self,

@@ -4,6 +4,12 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""Unit tests for the deprecated legacy FT rendezvous (`fault_tolerance._ft_rendezvous`).
+
+The suite is skipped by default (module-level ``pytest.mark.skip``). Remove the skip and this
+module when ``--ft-rdzv-impl legacy`` and `_ft_rendezvous` are removed.
+"""
+
 import copy
 import os
 import pickle
@@ -15,6 +21,7 @@ from typing import Callable, Optional, Tuple, cast
 from unittest import TestCase
 from unittest.mock import MagicMock, Mock, call, patch
 
+import pytest
 import torch
 from torch.distributed import Store
 from torch.distributed.elastic.agent.server.api import WorkerState
@@ -38,6 +45,10 @@ from nvidia_resiliency_ext.fault_tolerance._ft_rendezvous import (
     _RendezvousState,
     _RendezvousStateHolder,
     create_handler,
+)
+
+pytestmark = pytest.mark.skip(
+    reason="Deprecated legacy FT rendezvous (_ft_rendezvous); remove this skip when deleting the implementation.",
 )
 
 
