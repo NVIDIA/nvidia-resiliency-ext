@@ -155,16 +155,8 @@ Accepts Unix domain socket (UDS): <code class="docutils literal notranslate"><sp
 <li><p>Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.</p></li>
 </ul>
 <p>If <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, the launcher restarts failed workers.
-The restart behavior depends on the <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> parameter, which supports two modes:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">any-failed</span></code> (default)
-All workers are restarted if any worker fails.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">min-healthy</span></code>
-Workers are restarted when the number of healthy nodes (nodes where all worker processes are running)
-falls below the minimum specified in <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code>. This allows for some worker failures to be handled
-without restarting remaining workers, e.g., with the <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a>.
-For details on how <code class="docutils literal notranslate"><span class="pre">min-healthy</span></code> policy interacts with <a class="reference internal" href="../inprocess/index.html"><span class="doc">Inprocess Restart</span></a> see <a class="reference internal" href="integration/inprocess.html"><span class="doc">FT Launcher &amp; Inprocess integration</span></a>.</p></li>
-</ul>
+The <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> parameter is deprecated; only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> is supported: all workers
+are restarted if any worker fails (torchrun-style behavior). This option may be removed in a future release.</p>
 <section id="node-health-check-service">
 <h4>Node health check service<a class="headerlink" href="#node-health-check-service" title="Link to this heading"></a></h4>
 <p>The launcher accepts an optional argument to point to the node health check service endpoint.

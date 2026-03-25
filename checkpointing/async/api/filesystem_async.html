@@ -117,7 +117,7 @@ the entire data structure (which includes IPC handles) across process boundaries
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync">
 <em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.</span></span><span class="sig-name descname"><span class="pre">FileSystemWriterAsync</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">path</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">separation_hint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_msc</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_multiproc_io</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_cached_data_structure</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.FileSystemWriter" title="(in PyTorch v2.10)"><code class="xref py py-class docutils literal notranslate"><span class="pre">FileSystemWriter</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.FileSystemWriter" title="(in PyTorch v2.11)"><code class="xref py py-class docutils literal notranslate"><span class="pre">FileSystemWriter</span></code></a></p>
 <p>Async-enabled implementation of FileSystemWriter using file I/O.</p>
 <p>This class does not spawn the async process itself but relies on an external async mechanism.</p>
 <p><strong>Flow:</strong></p>
@@ -249,7 +249,7 @@ worker process can be retrieved and reused without re-pickling.</p>
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.10)"><em>SavePlan</em></a></p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.11)"><em>SavePlan</em></a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -260,10 +260,10 @@ worker process can be retrieved and reused without re-pickling.</p>
 <dd><p>Prepare the local plan for the checkpointing process.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.10)"><em>SavePlan</em></a>)</p>
+<dd class="field-odd"><p><strong>plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.11)"><em>SavePlan</em></a>)</p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.10)"><em>SavePlan</em></a></p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.11)"><em>SavePlan</em></a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -328,12 +328,12 @@ an exception was raised during the writing process.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.10)"><em>SavePlan</em></a>)</p></li>
-<li><p><strong>planner</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner" title="(in PyTorch v2.10)"><em>SavePlanner</em></a>)</p></li>
+<li><p><strong>plan</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlan" title="(in PyTorch v2.11)"><em>SavePlan</em></a>)</p></li>
+<li><p><strong>planner</strong> (<a class="reference external" href="https://docs.pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.SavePlanner" title="(in PyTorch v2.11)"><em>SavePlanner</em></a>)</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/futures.html#torch.futures.Future" title="(in PyTorch v2.10)"><em>Future</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<em>WriteResult</em>]]</p>
+<dd class="field-even"><p><a class="reference external" href="https://docs.pytorch.org/docs/stable/futures.html#torch.futures.Future" title="(in PyTorch v2.11)"><em>Future</em></a>[<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><em>List</em></a>[<em>WriteResult</em>]]</p>
 </dd>
 </dl>
 </dd></dl>

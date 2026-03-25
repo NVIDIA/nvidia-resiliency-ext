@@ -55,8 +55,7 @@
 <li class="toctree-l3"><a class="reference internal" href="ptl.html">PyTorch Lightning Integration</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">FT Launcher &amp; Inprocess integration</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#heartbeat-mechanism">1. Heartbeat Mechanism</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#worker-monitoring-restart-policy">2. Worker Monitoring &amp; Restart Policy</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#supported-unsupported-configurations">Supported &amp; Unsupported Configurations</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#restart-policy">2. Restart Policy</a></li>
 </ul>
 </li>
 </ul>
@@ -108,69 +107,10 @@
 <li><p>Users must configure timeouts manually, ensuring they exceed <strong>inprocess operational timeouts</strong> to prevent conflicts.</p></li>
 </ul>
 </section>
-<section id="worker-monitoring-restart-policy">
-<h2>2. Worker Monitoring &amp; Restart Policy<a class="headerlink" href="#worker-monitoring-restart-policy" title="Link to this heading"></a></h2>
-<p>A new <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> argument in <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> modifies the default worker monitor logic for better compatibility with <a class="reference internal" href="../../inprocess/index.html"><span class="doc">Inprocess Restart</span></a>.</p>
-<p><strong>Policy Options</strong></p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">min-healthy</span></code>: Restarts workers only when the number of healthy worker groups falls below minimum specified in <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code>, as set in <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
-</ul>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>For proper behavior, minimum specified in <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code> should match the <code class="docutils literal notranslate"><span class="pre">inprocess</span></code> restarter setting by either:</p>
-<ul class="simple">
-<li><p>Ensuring <code class="docutils literal notranslate"><span class="pre">inprocess</span></code> operates at the node level like <code class="docutils literal notranslate"><span class="pre">injob</span></code> by adding a <code class="docutils literal notranslate"><span class="pre">rank_assignment</span></code> filter to the wrapper, or</p></li>
-<li><p>Making <code class="docutils literal notranslate"><span class="pre">injob</span></code> operate at the rank level like <code class="docutils literal notranslate"><span class="pre">inprocess</span></code> by specifying one rank per agent.</p></li>
-</ul>
-<p>See the <a class="reference external" href="../../inprocess/usage_guide.html#rank-assignment">rank assignment guide</a> for more details.</p>
-<p><strong>Example of rank_assignment:</strong></p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">rank_assignment</span> <span class="o">=</span> <span class="p">(</span>
-    <span class="n">inprocess</span><span class="o">.</span><span class="n">Compose</span><span class="p">(</span>
-        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">ShiftRanks</span><span class="p">(),</span>
-        <span class="n">inprocess</span><span class="o">.</span><span class="n">rank_assignment</span><span class="o">.</span><span class="n">FilterGroupedByKey</span><span class="p">(</span>
-            <span class="n">key_or_fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span><span class="p">(),</span>
-            <span class="n">condition</span><span class="o">=</span><span class="k">lambda</span> <span class="n">count</span><span class="p">:</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">8</span><span class="p">,</span>
-        <span class="p">),</span>
-    <span class="p">),</span>
-<span class="p">)</span>
-</pre></div>
-</div>
-</div>
-<p><strong>Behavior in min-healthy mode:</strong></p>
-<ul class="simple">
-<li><p>If enough nodes remain healthy, the worker monitor stays inactive while collaborating with <a class="reference internal" href="../../inprocess/index.html"><span class="doc">Inprocess Restart</span></a>..</p></li>
-<li><p>If the threshold is breached, <code class="docutils literal notranslate"><span class="pre">FT</span> <span class="pre">launcher</span></code> takes over and restarts the training process.</p></li>
-</ul>
-</section>
-<section id="supported-unsupported-configurations">
-<h2>Supported &amp; Unsupported Configurations<a class="headerlink" href="#supported-unsupported-configurations" title="Link to this heading"></a></h2>
-<p>To ensure correct behavior with inprocess:</p>
-<p>✅ Supported:</p>
-<ul>
-<li><p><code class="docutils literal notranslate"><span class="pre">restart-policy=min-healthy</span></code> <strong>(Required)</strong>:</p>
-<blockquote>
-<div><ul class="simple">
-<li><p>Prevents unintended upscaling.</p></li>
-<li><p>Disables any-failed worker monitoring.</p></li>
-</ul>
-</div></blockquote>
-</li>
-</ul>
-<p>❌ Unsupported:</p>
-<ul>
-<li><p><code class="docutils literal notranslate"><span class="pre">any-failed</span></code> with inprocess <strong>(Not allowed)</strong>:</p>
-<blockquote>
-<div><ul class="simple">
-<li><p>Incompatible with inprocess restarts.</p></li>
-<li><p>Causes FT launcher to misinterpret terminated processes as failures, triggering unnecessary restarts.</p></li>
-<li><p>Enables upscaling, allowing FT launcher to restart training when a new node becomes available.</p></li>
-<li><p>Can lead to undefined behavior when combined with inprocess restarts.</p></li>
-</ul>
-</div></blockquote>
-</li>
-</ul>
-<p>In short, <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> must not be used with inprocess, as it disrupts the intended fault recovery process.</p>
-<p>Please refer to the <a class="reference internal" href="../examples/in_job_and_in_process_example.html"><span class="doc">FT Launcher &amp; Inprocess integration example</span></a> for an implementation example.</p>
+<section id="restart-policy">
+<h2>2. Restart Policy<a class="headerlink" href="#restart-policy" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> argument is <strong>deprecated</strong>. Only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> is supported: the launcher restarts all workers when any worker group fails. Use of <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> may be removed in a future release.</p>
+<p>Support for combining injob (FT launcher) and inprocess recovery in a single workload is being re-evaluated; a revised integration model may be documented in a future release.</p>
 </section>
 </section>
 
