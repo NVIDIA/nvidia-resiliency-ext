@@ -1,10 +1,5 @@
-#  Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
-#
-#  NVIDIA CORPORATION and its licensors retain all intellectual property
-#  and proprietary rights in and to this software, related documentation
-#  and any modifications thereto.  Any use, reproduction, disclosure or
-#  distribution of this software and related documentation without an express
-#  license agreement from NVIDIA CORPORATION is strictly prohibited.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 """Service-layer configuration for nvrx_attrsvc HTTP service.
 
@@ -18,7 +13,7 @@ import logging
 import os
 import re
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Re-export ErrorCode from library layer so service consumers can use:
@@ -36,23 +31,35 @@ PRINT_PREVIEW_MAX_BYTES = 4096  # Max bytes to return for /print endpoint
 class Settings(BaseSettings):
     """Typed configuration loaded from environment/.env (pydantic-settings v2).
 
-    LLM settings (LLM_MODEL, LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_TOKENS) default to None,
-    meaning the library defaults in AnalyzerConfig are used. Set via environment to override.
+    LLM fields (``NVRX_ATTRSVC_LLM_*``) are passed into
+    :class:`~nvidia_resiliency_ext.attribution.log_analyzer.config.LogSageExecutionConfig` when set,
+    then into the library :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` via
+    :class:`~nvrx_attrsvc.service.AttributionService`; unset fields keep library defaults.
+
+    ``LOG_LEVEL`` sets the root log level, FastAPI ``debug`` (when ``LOG_LEVEL`` is ``DEBUG``), MCP
+    subprocess ``--log-level``, and verbosity for in-process MCP client loggers. Allowed values:
+    ``DEBUG``, ``INFO``, ``WARNING`` (default ``INFO``). Legacy env: ``NVRX_ATTRSVC_LOG_LEVEL_NAME``.
     """
 
     FAST_API_ROOT_PATH: str = Field(default="", description="FastAPI root path")
-    DEBUG: bool = Field(default=False, description="Enable debug mode")
     ALLOWED_ROOT: str = Field(
         ..., description="Absolute base directory allowed for input paths (required)"
     )
     HOST: str = Field(default=DEFAULT_HOST)
     PORT: int = Field(default=DEFAULT_PORT)
-    LOG_LEVEL_NAME: str = Field(default="INFO")
+    LOG_LEVEL: str = Field(
+        default="INFO",
+        description=(
+            "Service log level: DEBUG, INFO, or WARNING. Drives logging.basicConfig, MCP "
+            "``nvrx-mcp-analysis --log-level``, and FastAPI debug when set to DEBUG."
+        ),
+        validation_alias=AliasChoices("log_level", "log_level_name"),
+    )
     COMPUTE_TIMEOUT: float | None = Field(
         default=None, description="Timeout for compute_fn in seconds (None = library default)"
     )
 
-    # LLM settings - None means use library defaults from AnalyzerConfig
+    # LLM settings → LogSageExecutionConfig when set (see AttributionService)
     LLM_MODEL: str | None = Field(default=None, description="LLM model identifier")
     LLM_TEMPERATURE: float | None = Field(
         default=None, description="LLM temperature (0.0 = deterministic)"
@@ -60,10 +67,14 @@ class Settings(BaseSettings):
     LLM_TOP_P: float | None = Field(default=None, description="LLM top-p for nucleus sampling")
     LLM_MAX_TOKENS: int | None = Field(default=None, description="Max tokens for LLM response")
 
-    # Log analysis backend: "lib" = in-process (reusable cache, lower latency), "mcp" = subprocess
-    LOG_ANALYSIS_BACKEND: str = Field(
-        default="lib",
-        description="How to run log analysis: 'lib' (in-process, default) or 'mcp' (subprocess).",
+    # Log + FR analysis backend: "lib" = in-process, "mcp" = subprocess MCP (same stdio client)
+    ANALYSIS_BACKEND: str = Field(
+        default="mcp",
+        description=(
+            "How to run LogSage and flight-recorder analysis: "
+            "'mcp' (subprocess MCP, default) or 'lib' (in-process)."
+        ),
+        validation_alias=AliasChoices("analysis_backend", "log_analysis_backend"),
     )
 
     CLUSTER_NAME: str = Field(default="", description="Cluster name for dataflow")
@@ -71,10 +82,11 @@ class Settings(BaseSettings):
         default="", description="Dataflow/elasticsearch index for posting results"
     )
 
-    # Slack integration (optional - set SLACK_BOT_TOKEN to enable; env vars have no NVRX_ATTRSVC_ prefix)
+    # Slack integration (optional; env vars have no NVRX_ATTRSVC_ prefix)
     SLACK_BOT_TOKEN: str = Field(
         default="",
-        description="Slack bot token (empty = disabled)",
+        description="Slack bot token; if empty, setup() falls back to load_slack_bot_token() "
+        "(SLACK_BOT_TOKEN_FILE, ~/.slack_bot_token, ~/.slack_token, ~/.config/nvrx/slack_bot_token)",
         validation_alias="SLACK_BOT_TOKEN",
     )
     SLACK_CHANNEL: str = Field(
@@ -110,16 +122,22 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
         env_prefix="NVRX_ATTRSVC_",
+        populate_by_name=True,
     )
 
-    @field_validator("LOG_ANALYSIS_BACKEND")
+    @field_validator("ANALYSIS_BACKEND")
     @classmethod
-    def validate_log_analysis_backend(cls, v: str) -> str:
+    def validate_analysis_backend(cls, v: str) -> str:
         allowed = ("lib", "mcp")
         v_lower = v.strip().lower()
         if v_lower not in allowed:
-            raise ValueError(f"LOG_ANALYSIS_BACKEND must be one of {allowed}, got '{v}'")
+            raise ValueError(f"ANALYSIS_BACKEND must be one of {allowed}, got '{v}'")
         return v_lower
+
+    @property
+    def DEBUG(self) -> bool:
+        """True when ``LOG_LEVEL`` is DEBUG (FastAPI debug mode)."""
+        return self.LOG_LEVEL == "DEBUG"
 
     @field_validator("PORT")
     @classmethod
@@ -128,13 +146,13 @@ class Settings(BaseSettings):
             raise ValueError(f"PORT must be between 1 and 65535, got {v}")
         return v
 
-    @field_validator("LOG_LEVEL_NAME")
+    @field_validator("LOG_LEVEL")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
-        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-        v_upper = v.upper()
-        if v_upper not in valid_levels:
-            raise ValueError(f"LOG_LEVEL_NAME must be one of {valid_levels}, got '{v}'")
+        allowed = ("DEBUG", "INFO", "WARNING")
+        v_upper = v.strip().upper()
+        if v_upper not in allowed:
+            raise ValueError(f"LOG_LEVEL must be one of {allowed}, got '{v}'")
         return v_upper
 
     @field_validator("COMPUTE_TIMEOUT")
@@ -190,6 +208,24 @@ class Settings(BaseSettings):
             )
         return v
 
+    @field_validator("CACHE_FILE")
+    @classmethod
+    def validate_cache_file(cls, v: str) -> str:
+        """When set, require parent directory to exist and be writable (fail fast at startup)."""
+        if not (v or "").strip():
+            return ""
+        path = os.path.abspath(os.path.expanduser(v.strip()))
+        parent = os.path.dirname(path)
+        if not parent:
+            parent = os.getcwd()
+        if not os.path.isdir(parent):
+            raise ValueError(
+                f"CACHE_FILE parent directory does not exist or is not a directory: {parent}"
+            )
+        if not os.access(parent, os.W_OK):
+            raise ValueError(f"CACHE_FILE directory is not writable: {parent}")
+        return path
+
 
 def setup() -> Settings:
     """
@@ -197,8 +233,8 @@ def setup() -> Settings:
     Returns a configured Settings instance.
     Also wires postprocessing config (poster, dataflow, Slack) from cfg.
 
-    Field validators handle validation of PORT, LOG_LEVEL_NAME, COMPUTE_TIMEOUT,
-    ALLOWED_ROOT, and rate limits. See Settings class for details.
+    Field validators handle validation of PORT, LOG_LEVEL, COMPUTE_TIMEOUT,
+    ALLOWED_ROOT, CACHE_FILE (when set), and rate limits. See Settings class for details.
     """
     try:
         cfg = Settings()  # type: ignore[call-arg]
@@ -206,30 +242,43 @@ def setup() -> Settings:
         # Fail fast if required settings are missing or invalid
         raise SystemExit(f"nvrx_attrsvc configuration error: {e}") from e
 
+    _root_lvl = getattr(logging, cfg.LOG_LEVEL, logging.INFO)
     logging.basicConfig(
-        level=getattr(logging, cfg.LOG_LEVEL_NAME, logging.INFO),
+        level=_root_lvl,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     # Suppress verbose logs from dependencies
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("mcp").setLevel(logging.WARNING)
-    logging.getLogger("nvidia_resiliency_ext.attribution.mcp_integration").setLevel(logging.WARNING)
+    logging.getLogger("mcp").setLevel(_root_lvl)
+    logging.getLogger("nvidia_resiliency_ext.attribution.mcp_integration").setLevel(_root_lvl)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+    from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key, load_slack_bot_token
+
+    nvidia_key = load_nvidia_api_key()
+    if not nvidia_key:
+        logger.error(
+            "NVIDIA API key not found or empty. Attribution requires a key. Set NVIDIA_API_KEY "
+            "or NVIDIA_API_KEY_FILE, or place a key in ~/.nvidia_api_key or "
+            "~/.config/nvrx/nvidia_api_key. Slack notifications remain optional (SLACK_BOT_TOKEN)."
+        )
+        raise SystemExit(1)
 
     # Wire postprocessing config (lib singleton)
     from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster, configure
+    from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
 
-    from . import dataflow
+    slack_token = (cfg.SLACK_BOT_TOKEN or "").strip() or load_slack_bot_token()
 
     configure(
-        default_poster=ResultPoster(post_fn=dataflow.post),
+        default_poster=ResultPoster(post_fn=post),
         cluster_name=cfg.CLUSTER_NAME or "",
         dataflow_index=cfg.DATAFLOW_INDEX or "",
-        slack_bot_token=cfg.SLACK_BOT_TOKEN or "",
+        slack_bot_token=slack_token,
         slack_channel=cfg.SLACK_CHANNEL or "",
     )
-    if cfg.SLACK_BOT_TOKEN:
+    if slack_token:
         logger.info(f"Slack notifications enabled for channel: {cfg.SLACK_CHANNEL}")
 
     return cfg

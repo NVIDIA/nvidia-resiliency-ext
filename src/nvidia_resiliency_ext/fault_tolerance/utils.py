@@ -535,9 +535,7 @@ def install_exception_handler():
             f"{rank_str}: Process will exit with code 1\n"
         )
 
-        # Get logger from application context (not module-level logger)
-        # Use root logger to ensure we capture in application's logging context
-        app_logger = logging.getLogger()
+        app_logger = logging.getLogger(__name__)
         app_logger.error(error_msg)
 
         # Also print to stderr to ensure visibility

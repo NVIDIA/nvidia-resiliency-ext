@@ -88,7 +88,7 @@ async def main(args: argparse.Namespace):
         )
         logger.info(f"Result preview: {str(fr_result)[:200]}...")
 
-        # 5. Run combined_log_fr with cached results
+        # 5. Run log_fr_analyzer with cached results
         logger.info("\n5. Running Combined Analysis with Cached Results:")
         logger.info("-" * 80)
 
@@ -98,9 +98,9 @@ async def main(args: argparse.Namespace):
         )
         fr_analysis_result = fr_result.get("result") if isinstance(fr_result, dict) else fr_result
 
-        # Run combined_log_fr with the cached results
+        # Run log_fr_analyzer with the cached results
         combined_result = await client.run_module(
-            module_name="combined_log_fr",
+            module_name="log_fr_analyzer",
             input_data=[
                 (log_analysis_result, log_result["state"]),
                 (fr_analysis_result, fr_result["state"]),

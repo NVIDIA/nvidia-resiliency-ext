@@ -1,10 +1,5 @@
-#  Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
-#
-#  NVIDIA CORPORATION and its licensors retain all intellectual property
-#  and proprietary rights in and to this software, related documentation
-#  and any modifications thereto.  Any use, reproduction, disclosure or
-#  distribution of this software and related documentation without an express
-#  license agreement from NVIDIA CORPORATION is strictly prohibited.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 """Core configuration and constants for log analysis.
 
@@ -15,11 +10,14 @@ pydantic Settings class) should remain in the service layer.
 Constants overview:
 - TTL_* : Time-to-live values for job cleanup
 - POLL_INTERVAL_SECONDS: How often splitlog tracker polls for changes
-- DEFAULT_COMPUTE_TIMEOUT_SECONDS: Timeout for LLM analysis
 - MAX_JOBS: Maximum number of tracked jobs
 - MIN_FILE_SIZE_KB: Minimum file size for analysis
+
+Compute timeout defaults live on :class:`~nvidia_resiliency_ext.attribution.coalescing.RequestCoalescer`
+(see ``DEFAULT_COMPUTE_TIMEOUT_SECONDS`` in ``attribution.coalescing``); :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` accepts ``compute_timeout`` / ``grace_period_seconds`` for the coalescer.
 """
 
+from dataclasses import dataclass
 from enum import Enum
 
 # TTL constants (see spec Section 3.2)
@@ -29,13 +27,33 @@ TTL_MAX_JOB_AGE_SECONDS = 6 * 30 * 24 * 60 * 60  # 6 months - non-terminated saf
 
 # Poll/tracking constants
 POLL_INTERVAL_SECONDS = 5 * 60  # 5 minutes - background poll interval
-DEFAULT_COMPUTE_TIMEOUT_SECONDS = 300.0  # 5 minutes - compute function timeout
 
 # Limits (see spec Section 3.2)
 MAX_JOBS = 100_000  # Maximum tracked jobs
 MIN_FILE_SIZE_KB = 4  # Minimum file size (KB) for classification
 
-# Result/response keys (serialized shape of AnalysisResult, SplitlogAnalysisResult, SubmitResult)
+
+@dataclass
+class LogSageExecutionConfig:
+    """Lib/MCP runtime knobs for :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer`.
+
+    ``use_lib_log_analysis`` selects **both** LogSage and flight-recorder analysis: in-process vs the
+    same MCP subprocess used for ``log_analyzer`` / ``fr_analyzer`` tools.
+
+    Subset of orchestration :class:`~nvidia_resiliency_ext.attribution.log_analyzer.types.LogAnalyzerConfig`
+    (no ``allowed_root`` — path policy stays in the attribution :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer`).
+    """
+
+    use_lib_log_analysis: bool = False
+    #: Subprocess MCP server (:func:`~nvidia_resiliency_ext.attribution.mcp_integration.mcp_client.get_server_command`).
+    mcp_server_log_level: str = "INFO"
+    llm_model: str = "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"
+    llm_temperature: float = 0.0
+    llm_top_p: float = 1.0
+    llm_max_tokens: int = 8192
+
+
+# Result/response keys (serialized shape of orchestration results; see log_analyzer.types)
 # Used by library and HTTP layer for consistent parsing. Job mode values are JobMode enum.
 RESP_MODE = "mode"
 RESP_RESULT = "result"
@@ -87,6 +105,7 @@ class ErrorCode(str, Enum):
 
     # Not found (404 in HTTP)
     NOT_FOUND = "not_found"  # File doesn't exist
+    FR_DUMP_NOT_FOUND = "fr_dump_not_found"  # FR dump path not discoverable for trace-only analysis
 
     # Server errors (5xx in HTTP)
     JOB_LIMIT_REACHED = "job_limit_reached"  # MAX_JOBS exceeded (503)

@@ -1,28 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import argparse
 import logging
-from typing import Any
+from typing import Any, Mapping, Union
 
-from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
+from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
+from nvidia_resiliency_ext.attribution.base import (
+    AttributionState,
+    NVRxAttribution,
+    merged_attribution_config,
+    normalize_attribution_args,
+)
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
+
+from .llm_merge import merge_log_fr_llm, unpack_run_result
 
 logger = logging.getLogger(__name__)
 
 
 class CombinedLogFR(NVRxAttribution):
-    def __init__(self, args: argparse.Namespace):
+    def __init__(
+        self, args: Union[argparse.Namespace, Mapping[str, Any], list[Any], tuple[Any, ...]]
+    ):
+        ad = normalize_attribution_args(args)
+        self.threshold = int(ad.get("threshold", 0))
         super().__init__(
             preprocess_input=self.preprocess_input,
             attribution=self.collective_analysis,
             output_handler=self.print_output,
         )
-        self.llm = None
-        self.threshold = args.threshold
-        self.args = args
+        self._init_config = ad
+        # Resolve once per CombinedLogFR instance so merge_log_fr_llm does not re-read env/files each call.
+        self._nvidia_api_key = load_nvidia_api_key()
 
     async def preprocess_input(self) -> dict:
-        input_data = self.args.input_data
-        logger.info(f"input_data: {self.args.input_data}")
+        cfg = merged_attribution_config(self._init_config)
+        input_data = cfg["input_data"]
+        logger.info("input_data: %s", cfg["input_data"])
         log_result = input_data[0]
         fr_result = input_data[1]
         output: dict[str, Any] = {}
@@ -35,44 +51,16 @@ class CombinedLogFR(NVRxAttribution):
         fr_result = output['Collective Operations Analysis']
 
         logger.info(f"fr_result: {fr_result}")
-        template = """
-        You are a helpful assistant that analyzes the application logs and collective operations analysis.
-        You are given the application logs and collective operations analysis.
-        {log_result} includes attribution results based on application logs.
-        Its attribution can be highly false positive. Use it to decide whether to restart the application.
-        Even if the log results has some suggestion on ranks to be excluded, you should not use it.
-
-        {fr_result} includes health check results per rank and collective analysis, which is more reliable.
-        Use the hanging ranks it provides to isolate the ranks that are hanging.
-        Even if the fr result has many ranks to be excluded, you can use them as they are to propose a solution.
-
-        You need to analyze the application logs and collective operations analysis and return the proposed solution.
-        Summary of the log result: <application log summary> 
-        Summary of the fr result: <collective operations analysis summary> 
-
-        The proposed solution should be in the following format: (one line only, if you have extra information, you can add it in the proposed solution with ranks)
-        - List of ranks to be excluded: <identified ranks to be excluded, you can use comma to separate multiple ranks without space>
-        - Proposed Solution with Ranks: <proposed solution with ranks>
-        """
-        from langchain_core.output_parsers import StrOutputParser
-        from langchain_core.prompts import PromptTemplate
-        from langchain_nvidia_ai_endpoints import ChatNVIDIA
-
-        if self.llm is None:
-            from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
-
-            self.llm = ChatNVIDIA(
-                model=self.args.model,
-                api_key=load_nvidia_api_key(),
-                temperature=0.2,
-                top_p=0.7,
-                max_tokens=16384,
-            )
-        prompt = PromptTemplate(template=template, input_variables=["log_result", "fr_result"])
-        default_values = {"log_result": log_result, "fr_result": fr_result}
-        chain = prompt | self.llm | StrOutputParser()
-        result = chain.invoke(input=default_values)
-        return result
+        cfg = merged_attribution_config(self._init_config)
+        return await merge_log_fr_llm(
+            log_result,
+            fr_result,
+            nvidia_api_key=self._nvidia_api_key,
+            model=cfg.get("model", "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"),
+            temperature=float(cfg.get("temperature", 0.2)),
+            top_p=float(cfg.get("top_p", 0.7)),
+            max_tokens=int(cfg.get("max_tokens", 8192)),
+        )
 
     async def print_output(self, attribution_result: str) -> tuple[str, AttributionState]:
         rank_list = []
@@ -90,14 +78,14 @@ def main():
     parser = argparse.ArgumentParser(
         description='Analyze collective operations across JSON dump files.'
     )
-    parser.add_argument('--log-path', type=str, help='Path to log files')
+    parser.add_argument('--log-path', type=str, required=True, help='Path to application log file')
 
     parser.add_argument(
         '--fr-path',
         type=str,
         nargs='+',
         required=True,
-        help='Path to collective operations (FR) log files',
+        help='Path to FR dump directory or files (first path is used for analysis)',
     )
     parser.add_argument(
         '-m',
@@ -130,12 +118,20 @@ def main():
     )
 
     args = parser.parse_args()
-    log_analyzer = NVRxLogAnalyzer(args)
-    # Now run() is properly synchronized and returns the actual result
-    log_result = log_analyzer.run(args.log_path)
-    args.llm_analyze = False
-    fr_result = CollectiveAnalyzer(args).run(args.fr_path)
-    combined_result = CombinedLogFR(args).run_sync([log_result, fr_result])
+    args_dict = dict(vars(args))
+    # argparse nargs='+' yields a list; CollectiveAnalyzer expects a single fr_path string.
+    fr_paths = args_dict.get("fr_path")
+    if isinstance(fr_paths, list) and fr_paths:
+        args_dict["fr_path"] = fr_paths[0]
+
+    log_analyzer = NVRxLogAnalyzer(args_dict)
+    log_result = log_analyzer.run_sync(args_dict)
+    fr_kw = {**args_dict, "llm_analyze": False}
+    fr_result = CollectiveAnalyzer(fr_kw).run_sync(fr_kw)
+    log_actual, _ = unpack_run_result(log_result)
+    fr_actual, _ = unpack_run_result(fr_result)
+    merge_args = {**args_dict, "input_data": [log_actual, fr_actual]}
+    CombinedLogFR(merge_args).run_sync(merge_args)
 
 
 if __name__ == "__main__":

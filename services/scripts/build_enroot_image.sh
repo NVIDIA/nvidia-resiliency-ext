@@ -122,7 +122,7 @@ enroot start --rw --root "${CONTAINER_NAME}" bash -c '
 # Attribution Service defaults
 NVRX_ATTRSVC_HOST=0.0.0.0
 NVRX_ATTRSVC_PORT=8000
-NVRX_ATTRSVC_LOG_LEVEL_NAME=INFO
+NVRX_ATTRSVC_LOG_LEVEL=INFO
 NVRX_ATTRSVC_ALLOWED_ROOT=/data
 
 # SLURM Monitor defaults

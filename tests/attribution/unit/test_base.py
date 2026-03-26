@@ -26,20 +26,48 @@ class TestNVRxAttribution(unittest.TestCase):
     """Test cases for NVRxAttribution class."""
 
     def setUp(self):
-        """Set up test fixtures."""
-        # Simple test functions for single values
-        self.sync_preprocess = lambda x: x * 2
+        """Set up test fixtures.
+
+        Preprocessors take the run-args dict (see :func:`normalize_attribution_args`).
+        """
+        self.sync_preprocess = lambda a: a["n"] * 2
         self.sync_attribution = lambda x: x + 10
         self.sync_output_handler = lambda x: x * 3
 
-        # Test functions for lists
-        self.list_preprocess = lambda x: [item * 2 for item in x] if isinstance(x, list) else x * 2
+        self.list_preprocess = lambda a: [item * 2 for item in a["items"]]
         self.list_attribution = lambda x: (
             [item + 10 for item in x] if isinstance(x, list) else x + 10
         )
         self.list_output_handler = lambda x: (
             [item * 3 for item in x] if isinstance(x, list) else x * 3
         )
+
+    def test_inconsistent_pipeline_raises_on_init(self):
+        """Type-inconsistent annotations must fail registration, not be stored."""
+
+        def preprocess() -> int:
+            return 1
+
+        def attribution(unused: str) -> int:
+            return 2
+
+        def output_handler(x: int) -> int:
+            return x
+
+        with self.assertRaises(ValueError):
+            attr.NVRxAttribution(
+                preprocess_input=preprocess,
+                attribution=attribution,
+                output_handler=output_handler,
+            )
+
+    def test_non_callable_pipeline_step_raises(self):
+        with self.assertRaises(TypeError):
+            attr.NVRxAttribution(
+                preprocess_input=lambda: 0,
+                attribution="not_callable",
+                output_handler=self.sync_output_handler,
+            )
 
     def test_init_with_custom_kwargs(self):
         """Test initialization with custom attribution kwargs."""
@@ -67,8 +95,7 @@ class TestNVRxAttribution(unittest.TestCase):
 
     def test_get_shared_loop(self):
         """Test getting the shared event loop."""
-        # Reset the shared loop
-        attr.NVRxAttribution._shared_loop = None
+        attr.NVRxAttribution.reset_thread_event_loop()
 
         loop1 = attr.NVRxAttribution.get_shared_loop()
         loop2 = attr.NVRxAttribution.get_shared_loop()
@@ -84,7 +111,7 @@ class TestNVRxAttribution(unittest.TestCase):
             output_handler=self.sync_output_handler,
         )
 
-        result = attribution.run_sync(5)
+        result = attribution.run_sync({"n": 5})
         # Expected: (5 * 2 + 10) * 3 = 60
         self.assertEqual(result, 60)
 
@@ -96,24 +123,21 @@ class TestNVRxAttribution(unittest.TestCase):
             output_handler=self.list_output_handler,
         )
 
-        result = attribution.run_sync([1, 2, 3])
+        result = attribution.run_sync({"items": [1, 2, 3]})
         # Expected: ([2, 4, 6] + 10) * 3 = [36, 42, 48]
         self.assertEqual(result, [36, 42, 48])
 
     def test_attribution_with_kwargs(self):
-        """Test attribution function with custom kwargs."""
-
-        def attribution_with_kwargs(x, multiplier=1, adder=0):
-            return x * multiplier + adder
+        """Attribution kwargs are stored on the instance; pipeline uses the attribution callable as registered."""
 
         attribution = attr.NVRxAttribution(
             preprocess_input=self.sync_preprocess,
-            attribution=attribution_with_kwargs,
+            attribution=lambda x: x * 3 + 5,
             output_handler=self.sync_output_handler,
-            attribution_kwargs={"multiplier": 3, "adder": 5},
+            attribution_kwargs={"note": "unused by base pipeline"},
         )
 
-        result = attribution.run_sync(5)
+        result = attribution.run_sync({"n": 5})
         # Expected: ((5 * 2) * 3 + 5) * 3 = 105
         self.assertEqual(result, 105)
 
@@ -135,7 +159,7 @@ class TestNVRxAttribution(unittest.TestCase):
     def test_error_handling_in_preprocess(self):
         """Test error handling in preprocessing step."""
 
-        def failing_preprocess(x):
+        def failing_preprocess(a):
             raise ValueError("Preprocessing failed")
 
         attribution = attr.NVRxAttribution(
@@ -145,7 +169,7 @@ class TestNVRxAttribution(unittest.TestCase):
         )
 
         with self.assertRaises(ValueError):
-            attribution.run_sync(5)
+            attribution.run_sync({"n": 0})
 
     def test_error_handling_in_attribution(self):
         """Test error handling in attribution step."""
@@ -160,7 +184,7 @@ class TestNVRxAttribution(unittest.TestCase):
         )
 
         with self.assertRaises(RuntimeError):
-            attribution.run_sync(5)
+            attribution.run_sync({"n": 5})
 
     def test_error_handling_in_output_handler(self):
         """Test error handling in output handler step."""
@@ -175,15 +199,15 @@ class TestNVRxAttribution(unittest.TestCase):
         )
 
         with self.assertRaises(TypeError):
-            attribution.run_sync(5)
+            attribution.run_sync({"n": 5})
 
     def test_preprocess_input_with_complex_data(self):
         """Test preprocessing function with complex data structures."""
 
-        def complex_preprocess(data):
-            if isinstance(data, list):
-                return [x * 2 for x in data]
-            return data * 2
+        def complex_preprocess(a):
+            if isinstance(a.get("items"), list):
+                return [x * 2 for x in a["items"]]
+            return a["n"] * 2
 
         attribution = attr.NVRxAttribution(
             preprocess_input=complex_preprocess,
@@ -191,18 +215,18 @@ class TestNVRxAttribution(unittest.TestCase):
             output_handler=self.list_output_handler,
         )
 
-        result = attribution.run_sync([1, 2, 3])
+        result = attribution.run_sync({"items": [1, 2, 3]})
         # Expected: ([2, 4, 6] + 10) * 3 = [36, 42, 48]
         self.assertEqual(result, [36, 42, 48])
 
     def test_async_preprocess_with_complex_logic(self):
         """Test async preprocessing with complex logic."""
 
-        async def async_complex_preprocess(data):
+        async def async_complex_preprocess(a):
             await asyncio.sleep(0.001)  # Simulate async work
-            if isinstance(data, list):
-                return [x * 3 for x in data]
-            return data * 3
+            if isinstance(a.get("items"), list):
+                return [x * 3 for x in a["items"]]
+            return a["n"] * 3
 
         def list_attribution_for_async(x):
             if isinstance(x, list):
@@ -221,7 +245,7 @@ class TestNVRxAttribution(unittest.TestCase):
         )
 
         async def test_run():
-            return await attribution.run([1, 2, 3])
+            return await attribution.run({"items": [1, 2, 3]})
 
         result = asyncio.run(test_run())
         # Expected: ([3, 6, 9] + 10) * 3 = [39, 48, 57]
@@ -230,8 +254,8 @@ class TestNVRxAttribution(unittest.TestCase):
     def test_pipeline_with_mixed_sync_async_functions(self):
         """Test pipeline with mixed sync and async functions."""
 
-        def sync_preprocess(x):
-            return x * 2
+        def sync_preprocess(a):
+            return a["n"] * 2
 
         async def async_attribution(x):
             await asyncio.sleep(0.001)  # Simulate async work
@@ -247,7 +271,7 @@ class TestNVRxAttribution(unittest.TestCase):
         )
 
         async def test_run():
-            return await attribution.run(5)
+            return await attribution.run({"n": 5})
 
         result = asyncio.run(test_run())
         # Expected: (5 * 2 + 10) * 3 = 60

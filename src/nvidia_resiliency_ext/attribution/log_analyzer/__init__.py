@@ -1,51 +1,23 @@
-#  Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
-#
-#  NVIDIA CORPORATION and its licensors retain all intellectual property
-#  and proprietary rights in and to this software, related documentation
-#  and any modifications thereto.  Any use, reproduction, disclosure or
-#  distribution of this software and related documentation without an express
-#  license agreement from NVIDIA CORPORATION is strictly prohibited.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
-"""Log analyzer module for LLM-based log analysis.
+"""Log-side infrastructure: LogSage, SLURM parsing, splitlog, job model, wire keys.
 
-This module provides:
-- LogAnalyzer: Main API for analyzing logs (usable without HTTP)
-- Core configuration and error codes
-- Request coalescing for deduplication and caching
-- Job/FileInfo data model for tracking analysis state
-- SplitlogTracker for multi-file job tracking
-- Scheduler parsers (SLURM, etc.)
-- LLM response parsing utilities
+Orchestration API types (:class:`~nvidia_resiliency_ext.attribution.log_analyzer.types.LogAnalyzerConfig`,
+result dataclasses) live in :mod:`nvidia_resiliency_ext.attribution.log_analyzer.types`;
+:class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` composes this package with request coalescing.
 
-Example usage:
-    from nvidia_resiliency_ext.attribution import LogAnalyzer, AnalyzerConfig
-    
-    config = AnalyzerConfig(allowed_root="/logs")
-    analyzer = LogAnalyzer(config)
+Also re-exports coalescing types from ``attribution.coalescing`` and postprocessing symbols.
+
+Example:
+    from nvidia_resiliency_ext.attribution.analyzer import Analyzer
+
+    analyzer = Analyzer(allowed_root="/logs", use_lib_log_analysis=False)
     result = await analyzer.analyze("/logs/slurm-12345.out")
 """
 
-from nvidia_resiliency_ext.attribution.postprocessing import (
-    DataflowStats,
-    PostFunction,
-    ResultPoster,
-    config,
-    get_dataflow_stats,
-    get_default_poster,
-    post_results,
-)
-
-from .analyzer import (
-    AnalysisResult,
-    AnalyzerConfig,
-    AnalyzerError,
-    AnalyzerResult,
-    FilePreviewResult,
-    LogAnalyzer,
-    SplitlogAnalysisResult,
-    SubmitResult,
-)
-from .coalescer import (
+from nvidia_resiliency_ext.attribution.coalescing import (
+    DEFAULT_COMPUTE_TIMEOUT_SECONDS,
     CacheResult,
     CoalescerStats,
     ComputeStats,
@@ -54,8 +26,25 @@ from .coalescer import (
     StatsResult,
     SubmittedResult,
 )
+from nvidia_resiliency_ext.attribution.postprocessing import (
+    PostFunction,
+    PostingStats,
+    ResultPoster,
+    build_dataflow_record,
+    config,
+    get_default_poster,
+    get_posting_stats,
+    post_results,
+)
+
+from ..coalescing import LogAnalysisCoalesced
+from .analysis_pipeline import (
+    AnalysisPipelineMode,
+    CombinedAnalysisResult,
+    FrDumpPathNotFoundError,
+    run_attribution_pipeline,
+)
 from .config import (
-    DEFAULT_COMPUTE_TIMEOUT_SECONDS,
     MAX_JOBS,
     MIN_FILE_SIZE_KB,
     POLL_INTERVAL_SECONDS,
@@ -77,9 +66,26 @@ from .config import (
     TTL_PENDING_SECONDS,
     TTL_TERMINATED_SECONDS,
     ErrorCode,
+    LogSageExecutionConfig,
 )
 from .job import FileInfo, Job, JobMode
+from .llm_output import (
+    ParsedLLMResponse,
+    attribution_no_restart,
+    log_fields_for_dataflow_record,
+    parse_llm_response,
+)
+from .log_analyzer import LogAnalyzer, LogSageRunner
+from .log_path_metadata import (
+    CYCLE_LOG_PATTERN,
+    CYCLE_NUM_PATTERN,
+    DATE_TIME_PATTERN,
+    JOB_ID_PATTERNS,
+    JobMetadata,
+    extract_job_metadata,
+)
 from .parser_base import BaseParser, ParseResult
+from .runner import ensure_analyzer_ready, run_log_analysis_sync
 from .slurm_parser import (
     SlurmOutputInfo,
     SlurmParser,
@@ -92,28 +98,33 @@ from .splitlog import (
     DEFAULT_TERMINATED_JOB_TTL_SECONDS,
     SplitlogTracker,
 )
-from .utils import (
-    CYCLE_LOG_PATTERN,
-    CYCLE_NUM_PATTERN,
-    DATE_TIME_PATTERN,
-    JOB_ID_PATTERNS,
-    JobMetadata,
-    ParsedLLMResponse,
-    build_dataflow_record,
-    extract_job_metadata,
-    parse_llm_response,
+from .tracked_jobs import TrackedJobs
+from .types import (
+    LogAnalysisCycleResult,
+    LogAnalysisSplitlogResult,
+    LogAnalyzerConfig,
+    LogAnalyzerError,
+    LogAnalyzerFilePreview,
+    LogAnalyzerOutcome,
+    LogAnalyzerSubmitResult,
 )
 
 __all__ = [
-    # Main API
     "LogAnalyzer",
-    "AnalyzerConfig",
-    "AnalyzerError",
-    "AnalyzerResult",
-    "AnalysisResult",
-    "SubmitResult",
-    "SplitlogAnalysisResult",
-    "FilePreviewResult",
+    "LogSageRunner",
+    "LogAnalyzerConfig",
+    "LogAnalyzerError",
+    "LogAnalyzerOutcome",
+    "LogAnalysisCycleResult",
+    "LogAnalysisSplitlogResult",
+    "LogAnalyzerSubmitResult",
+    "LogAnalyzerFilePreview",
+    "LogSageExecutionConfig",
+    "LogAnalysisCoalesced",
+    "AnalysisPipelineMode",
+    "CombinedAnalysisResult",
+    "FrDumpPathNotFoundError",
+    "run_attribution_pipeline",
     # Configuration and error codes
     "ErrorCode",
     "TTL_PENDING_SECONDS",
@@ -159,27 +170,33 @@ __all__ = [
     "read_and_parse_slurm_output",
     # Splitlog tracking
     "SplitlogTracker",
+    "TrackedJobs",
     "DEFAULT_POLL_INTERVAL_SECONDS",
     "DEFAULT_TERMINATED_JOB_TTL_SECONDS",
     "DEFAULT_MAX_JOB_AGE_SECONDS",
-    # Regex patterns (utils)
+    # Log path regexes + JobMetadata (log_path_metadata)
     "CYCLE_LOG_PATTERN",
     "CYCLE_NUM_PATTERN",
     "DATE_TIME_PATTERN",
     "JOB_ID_PATTERNS",
-    # LLM response parsing
-    "ParsedLLMResponse",
-    "parse_llm_response",
-    # Log path metadata
     "JobMetadata",
     "extract_job_metadata",
-    # Dataflow record building
+    # LLM response parsing (llm_output)
+    "ParsedLLMResponse",
+    "parse_llm_response",
+    # Dataflow: LogSage keys (full record via postprocessing.pipeline.build_dataflow_record)
+    "log_fields_for_dataflow_record",
     "build_dataflow_record",
+    # Sync lib/MCP runner (e.g. FT path)
+    "ensure_analyzer_ready",
+    "run_log_analysis_sync",
+    # Attribution decision helper
+    "attribution_no_restart",
     # Postprocessing
     "ResultPoster",
-    "DataflowStats",
+    "PostingStats",
     "PostFunction",
-    "get_dataflow_stats",
+    "get_posting_stats",
     "get_default_poster",
     "config",
     "post_results",

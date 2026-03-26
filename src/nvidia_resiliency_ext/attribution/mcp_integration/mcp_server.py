@@ -5,7 +5,6 @@ This server exposes multiple attribution modules as MCP tools,
 allowing them to be called individually or composed into pipelines.
 """
 
-import argparse
 import asyncio
 import json
 import logging
@@ -115,7 +114,11 @@ class NVRxMCPServer:
                 return await self._handle_module_execution(name, arguments)
 
             except Exception as e:
-                logger.error(f"Error executing tool '{name}': {e}", exc_info=True)
+                # ValueError: common validation / empty FR dir — message is enough at INFO default
+                if isinstance(e, ValueError):
+                    logger.warning("Error executing tool '%s': %s", name, e)
+                else:
+                    logger.error("Error executing tool '%s': %s", name, e, exc_info=True)
                 return [
                     TextContent(
                         type="text",
@@ -127,7 +130,7 @@ class NVRxMCPServer:
         async def list_resources() -> List[Resource]:
             """List available resources (cached results)."""
             resources = []
-            for key in self.registry._results_cache.keys():
+            for key in self.registry.list_results_cache_keys():
                 module_name, result_id = key.split(":", 1)
                 resources.append(
                     Resource(
@@ -173,7 +176,7 @@ class NVRxMCPServer:
             "modules": modules,
             "module_count": len(modules),
             "dependency_graph": dependency_graph,
-            "cached_results": len(self.registry._results_cache),
+            "cached_results": self.registry.count_results_cache_entries(),
             "active_instances": list(self.module_instances.keys()),
         }
 
@@ -184,7 +187,7 @@ class NVRxMCPServer:
         result_id = arguments["result_id"]
 
         # Search for result in cache
-        for key, value in self.registry._results_cache.items():
+        for key, value in self.registry.iter_results_cache_items():
             if result_id in key:
                 return [TextContent(type="text", text=serialize_result(value))]
 
@@ -201,9 +204,7 @@ class NVRxMCPServer:
 
         # Get or create module instance
         if module_name not in self.module_instances:
-            # Convert arguments to argparse.Namespace
-            args = argparse.Namespace(**arguments_with_defaults)
-            instance = self.registry.create_instance(module_name, args)
+            instance = self.registry.create_instance(module_name, arguments_with_defaults)
             self.module_instances[module_name] = instance
         else:
             instance = self.module_instances[module_name]

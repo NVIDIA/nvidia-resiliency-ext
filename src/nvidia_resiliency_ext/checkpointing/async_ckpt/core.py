@@ -684,8 +684,8 @@ class PersistentAsyncCaller(AsyncCaller):
                                         priority — NOT recommended for checkpoint workers).
 
         """
-        # Set root logger level to affect all modules in this process
-        logging.getLogger().setLevel(log_level)
+        # Align library loggers in this process without mutating the root logger
+        logging.getLogger("nvidia_resiliency_ext").setLevel(log_level)
         logger = logging.getLogger(__name__)
         logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has started")
 

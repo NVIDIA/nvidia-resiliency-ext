@@ -1,209 +1,32 @@
-#  Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
-#
-#  NVIDIA CORPORATION and its licensors retain all intellectual property
-#  and proprietary rights in and to this software, related documentation
-#  and any modifications thereto.  Any use, reproduction, disclosure or
-#  distribution of this software and related documentation without an express
-#  license agreement from NVIDIA CORPORATION is strictly prohibited.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
-"""Request coalescing and processed files ledger.
+"""Single-flight request coalescing and on-disk cache behavior.
 
-This module provides two key functions:
-
-1. **Single-flight pattern**: Ensures only one LLM call runs for a given file at a time.
-   Concurrent requests for the same file share the result, avoiding duplicate API calls.
-
-2. **Processed files ledger**: Tracks which files have been analyzed, preventing
-   duplicate processing after service restarts. Results are posted to Elasticsearch,
-   but the ledger allows the service to know "I've already processed this file"
-   without querying ES.
-
-Cache/Ledger behavior:
-- Stores (path, mtime, size, result) for each processed file
-- Grace period (default 10 min): Serve cached result without file validation
-- After grace period: stat() file to check (mtime, size); invalidate if changed
-- Timeout results: Stored with file_mtime only (file_size=None). Within grace period
-  served as hit to avoid retry storm; after grace period invalidated so next request
-  triggers a retry. Evicted by same file-age rule (14 days).
-- Eviction: Remove entries where file.mtime > 14 days (safeguard against growth)
-- Persistence: Save to disk on shutdown, restore on startup
-
-The grace period absorbs straggling writes at end of files, preventing unnecessary
-re-analysis while still detecting genuine file changes.
-
-Future optimization: If stat() overhead becomes significant for immutable files
-(older files that won't change), add mutable/immutable distinction to skip
-validation for files where a newer file exists for the same job.
+Design notes and cache/ledger semantics: :mod:`nvidia_resiliency_ext.attribution.coalescing`.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, TypedDict
+from typing import Any, Awaitable, Callable, Dict, List
+
+from .coalesced_cache import LogAnalysisCoalesced
+from .types import (
+    CacheEntry,
+    CacheResult,
+    CoalescerStats,
+    ComputeStats,
+    InFlightEntry,
+    InflightResult,
+    StatsResult,
+    SubmittedResult,
+)
 
 logger = logging.getLogger(__name__)
-
-# Default configuration
-DEFAULT_COMPUTE_TIMEOUT_SECONDS = 300.0  # 5 minutes
-
-
-# TypedDict definitions for structured return types
-class _CacheStats(TypedDict):
-    hits: int
-    misses: int
-    size: int
-
-
-class _SubmissionsStats(TypedDict):
-    total: int
-    pending: int
-
-
-class _InflightStats(TypedDict):
-    total: int
-    current: int
-
-
-class _RequestStats(TypedDict):
-    total: int
-    coalesced: int
-
-
-class _ComputeStats(TypedDict):
-    total: int
-    errors: int
-    timeouts: int
-
-
-@dataclass(frozen=True)
-class ComputeStats:
-    """Compute/LLM stats for health checks. Use this instead of raw dict keys."""
-
-    total: int
-    errors: int
-    timeouts: int
-
-
-class _CleanupStats(TypedDict):
-    cache_expired: int
-    submitted_expired: int
-    in_flight_cleaned: int
-
-
-class StatsResult(TypedDict):
-    """Return type for get_stats() from coalescer."""
-
-    cache: _CacheStats
-    submissions: _SubmissionsStats
-    in_flight: _InflightStats
-    requests: _RequestStats
-    compute: _ComputeStats
-    cleanup: _CleanupStats
-
-
-class CacheEntryInfo(TypedDict):
-    """Info about a single cache entry."""
-
-    path: str
-    age_seconds: float
-    module: str
-    result_id: str
-    state: str
-
-
-class CacheResult(TypedDict):
-    """Return type for get_cache()."""
-
-    count: int
-    entries: List[CacheEntryInfo]
-
-
-class InflightResult(TypedDict):
-    """Return type for get_inflight()."""
-
-    count: int
-    paths: List[str]
-
-
-class SubmittedEntryInfo(TypedDict):
-    """Info about a single submitted entry."""
-
-    path: str
-    age_seconds: float
-    status: str
-
-
-class SubmittedResult(TypedDict):
-    """Return type for get_submitted()."""
-
-    count: int
-    entries: List[SubmittedEntryInfo]
-
-
-@dataclass
-class CoalescerStats:
-    """Statistics counters for RequestCoalescer.
-
-    Cache validation strategy:
-    - Grace period: First N seconds after caching, serve without validation
-    - After grace period: stat() file on each hit to validate (mtime, size)
-    - If file changed: invalidate entry, treat as cache miss
-    - Timeout entries (file_size=None): served as hit during grace; after grace
-      invalidated so next request retries; evicted by same file-age rule
-    - Eviction: file.mtime > max_file_age_days (default 14 days)
-    """
-
-    cache_hits: int = 0
-    cache_misses: int = 0
-    cache_invalidated: int = 0  # Cache entries invalidated (file changed)
-    coalesced_requests: int = 0  # Requests that waited for in-flight
-    total_computes: int = 0  # Total compute_fn invocations
-    compute_errors: int = 0  # Compute failures
-    compute_timeouts: int = 0  # Compute timeouts
-    total_submitted: int = 0  # Total paths submitted via POST
-    total_in_flight: int = 0  # Total paths that entered in_flight state
-    cache_expired_cleaned: int = 0  # Cache entries removed by cleanup (file too old)
-    submitted_expired_cleaned: int = 0  # Stale submitted entries removed
-    in_flight_expired_cleaned: int = 0  # Stuck in-flight entries removed
-    cache_imported: int = 0  # Entries restored from disk
-    cache_import_skipped_changed: int = 0  # Skipped on import (file changed)
-    cache_import_skipped_old_file: int = 0  # Skipped on import (file.mtime too old)
-
-
-@dataclass
-class CacheEntry:
-    """Entry in the processed files ledger.
-
-    Each entry represents a file that has been analyzed and posted to Elasticsearch.
-    Storing (mtime, size) allows us to detect if the file has changed since processing.
-
-    Validation behavior:
-    - Grace period: First N seconds, serve without stat() check (absorbs straggling writes)
-    - After grace period: stat() on each hit to detect file changes
-    - If file changed: entry is invalidated, file will be re-analyzed
-    - Eviction: file.mtime > max_file_age_days (default 14 days)
-
-    Timeout entries store file_mtime only (file_size=None). They are served as hit
-    during grace period; after grace they are invalidated so the next request retries.
-    They are evicted by the same file-age rule (file_mtime used for cleanup).
-    """
-
-    result: Any  # Analysis result (also stored in ES, kept here for convenience)
-    cached_at: float  # time.monotonic() when cached
-    file_mtime: float | None = None  # File mtime at cache time (validation + eviction)
-    file_size: int | None = (
-        None  # File size at cache time (validation; None = timeout → retry after grace)
-    )
-
-
-@dataclass
-class InFlightEntry:
-    """Entry tracking an in-flight request using asyncio.Future."""
-
-    future: "asyncio.Future[Any]"
-    started_at: float  # time.monotonic() when started
 
 
 class RequestCoalescer:
@@ -224,6 +47,7 @@ class RequestCoalescer:
     """
 
     # Default configuration values
+    DEFAULT_COMPUTE_TIMEOUT_SECONDS = 300.0  # 5 minutes — LLM/analysis single compute cap
     DEFAULT_CLEANUP_CADENCE_MINUTES = 10.0  # Run cleanup every 10 minutes
     DEFAULT_GRACE_PERIOD_SECONDS = 600.0  # 10 min grace before stat() validation
     DEFAULT_SUBMITTED_TTL_HOURS = 168.0  # 1 week - keep submitted tracking longer
@@ -275,14 +99,33 @@ class RequestCoalescer:
         # Statistics counters
         self._stats = CoalescerStats()
 
+    @property
+    def compute_timeout(self) -> float:
+        """Timeout passed to :func:`asyncio.wait_for` for each compute (seconds)."""
+        return self._compute_timeout
+
     def _collect_expired_keys(
         self,
     ) -> tuple[list[str], list[str], list[str], list[str]]:
-        """
-        Scan for expired keys WITHOUT holding lock.
+        """Scan dicts for keys to evict. **Does not take** :attr:`_lock`.
 
-        Safe because asyncio is single-threaded - no preemption during sync iteration.
-        Returns lists of keys to delete; actual deletion happens under lock.
+        **Why no lock here**
+
+        Holding :attr:`_lock` during an O(n) scan would block every other
+        :meth:`get_or_compute` / cache path for the whole scan. We only need key lists;
+        :meth:`_delete_expired_keys` removes entries under the lock using ``.pop(key,
+        None)``, which tolerates keys disappearing between scan and delete.
+
+        **Why the scan is still safe without the lock**
+
+        This method is synchronous and contains **no** ``await``. On asyncio's default
+        event loop, other coroutines cannot run until it returns, so no interleaved
+        mutations of :attr:`_cache` / :attr:`_in_flight` / :attr:`_submitted` occur
+        *during* this function. (This is not a general "asyncio is single-threaded"
+        hand-wave; it depends on **no await points** here.)
+
+        **Do not** wrap this scan in ``async with self._lock`` without measuring impact,
+        and **do not** add ``await`` inside this method without re-auditing concurrency.
 
         Returns:
             Tuple of (expired_cache, expired_submitted, leaked_in_flight, stuck_in_flight)
@@ -487,7 +330,23 @@ class RequestCoalescer:
                 age_seconds = now - cache_entry.cached_at
                 # Extract summary from result (avoid dumping full result)
                 result = cache_entry.result
-                if isinstance(result, dict):
+                if isinstance(result, LogAnalysisCoalesced):
+                    summary_src = result.log_result
+                    if summary_src is None:
+                        module = (
+                            "fr_only" if (result.fr_dump_path or result.fr_analysis) else "unknown"
+                        )
+                        result_id = ""
+                        state = ""
+                    elif isinstance(summary_src, dict):
+                        module = str(summary_src.get("module", "unknown"))
+                        result_id = str(summary_src.get("result_id", ""))[:16]
+                        state = str(summary_src.get("state", ""))
+                    else:
+                        module = "unknown"
+                        result_id = ""
+                        state = ""
+                elif isinstance(result, dict):
                     module = str(result.get("module", "unknown"))
                     result_id = str(result.get("result_id", ""))[:16]
                     state = str(result.get("state", ""))
@@ -509,31 +368,33 @@ class RequestCoalescer:
                 "entries": entries,
             }
 
-    def export_cache(self) -> List[Dict[str, Any]]:
+    async def export_cache(self) -> List[Dict[str, Any]]:
         """
         Export cache entries for persistence.
 
         Returns a list of dicts with key, result, and file metadata for validation.
         All entries include file_mtime and file_size for validation on import.
 
-        Note: This is synchronous for use in shutdown handlers.
+        Uses :attr:`_lock` so iteration cannot race with :meth:`get_or_compute` (avoids
+        ``dict changed size during iteration`` and inconsistent snapshots). Call from
+        async shutdown (e.g. ``await coalescer.export_cache()``).
         """
-        entries = []
-        for key, cache_entry in self._cache.items():
-            entry_data: Dict[str, Any] = {
-                "key": key,
-                "result": cache_entry.result,
-            }
-            # Include file metadata for validation
-            if cache_entry.file_mtime is not None:
-                entry_data["file_mtime"] = cache_entry.file_mtime
-            if cache_entry.file_size is not None:
-                entry_data["file_size"] = cache_entry.file_size
-            entries.append(entry_data)
+        async with self._lock:
+            entries = []
+            for key, cache_entry in self._cache.items():
+                entry_data: Dict[str, Any] = {
+                    "key": key,
+                    "result": cache_entry.result,
+                }
+                if cache_entry.file_mtime is not None:
+                    entry_data["file_mtime"] = cache_entry.file_mtime
+                if cache_entry.file_size is not None:
+                    entry_data["file_size"] = cache_entry.file_size
+                entries.append(entry_data)
         logger.debug(f"Exported {len(entries)} cache entries")
         return entries
 
-    def import_cache(self, entries: List[Dict[str, Any]]) -> int:
+    async def import_cache(self, entries: List[Dict[str, Any]]) -> int:
         """
         Import cache entries from persistence.
 
@@ -548,8 +409,9 @@ class RequestCoalescer:
         Returns:
             Number of entries imported
 
-        Note: This is synchronous, should be called during startup before
-        async processing begins.
+        Holds :attr:`_lock` while updating :attr:`_cache` so imports do not race with
+        :meth:`get_or_compute`. File ``stat`` calls run inside the locked section (may
+        block other cache operations briefly); prefer calling during startup before load.
         """
         now = time.monotonic()
         now_timestamp = time.time()  # For file mtime comparison
@@ -557,60 +419,54 @@ class RequestCoalescer:
         skipped_changed = 0
         skipped_old_file = 0
 
-        for entry in entries:
-            key = entry.get("key")
-            result = entry.get("result")
-            file_mtime = entry.get("file_mtime")
-            file_size = entry.get("file_size")
+        async with self._lock:
+            for entry in entries:
+                key = entry.get("key")
+                result = entry.get("result")
+                file_mtime = entry.get("file_mtime")
+                file_size = entry.get("file_size")
 
-            if not key or result is None:
-                continue
+                if not key or result is None:
+                    continue
 
-            # Skip entries without file metadata (e.g., old cache format)
-            if file_mtime is None or file_size is None:
-                logger.debug(f"Skipping cache entry (no file metadata): {key}")
-                skipped_changed += 1
-                continue
+                if file_mtime is None or file_size is None:
+                    logger.debug(f"Skipping cache entry (no file metadata): {key}")
+                    skipped_changed += 1
+                    continue
 
-            # Check if file.mtime is too old (> max_file_age_days)
-            file_age = now_timestamp - file_mtime
-            if file_age >= self._max_file_age:
-                logger.debug(
-                    f"Skipping cache entry (file too old): {key} "
-                    f"(file.mtime age={file_age / self.SECONDS_PER_DAY:.1f} days)"
+                file_age = now_timestamp - file_mtime
+                if file_age >= self._max_file_age:
+                    logger.debug(
+                        f"Skipping cache entry (file too old): {key} "
+                        f"(file.mtime age={file_age / self.SECONDS_PER_DAY:.1f} days)"
+                    )
+                    skipped_old_file += 1
+                    continue
+
+                current_mtime, current_size = self._get_file_metadata(key)
+                if current_mtime is None or current_size is None:
+                    logger.debug(f"Skipping cache entry (file gone): {key}")
+                    skipped_changed += 1
+                    continue
+                if current_mtime != file_mtime or current_size != file_size:
+                    logger.debug(
+                        f"Skipping cache entry (file changed): {key} "
+                        f"(mtime: {file_mtime}->{current_mtime}, size: {file_size}->{current_size})"
+                    )
+                    skipped_changed += 1
+                    continue
+
+                self._cache[key] = CacheEntry(
+                    result=result,
+                    cached_at=now,
+                    file_mtime=file_mtime,
+                    file_size=file_size,
                 )
-                skipped_old_file += 1
-                continue
+                imported += 1
 
-            # Validate by file metadata
-            current_mtime, current_size = self._get_file_metadata(key)
-            if current_mtime is None or current_size is None:
-                # File no longer exists
-                logger.debug(f"Skipping cache entry (file gone): {key}")
-                skipped_changed += 1
-                continue
-            if current_mtime != file_mtime or current_size != file_size:
-                # File has changed
-                logger.debug(
-                    f"Skipping cache entry (file changed): {key} "
-                    f"(mtime: {file_mtime}->{current_mtime}, size: {file_size}->{current_size})"
-                )
-                skipped_changed += 1
-                continue
-
-            # File unchanged - restore entry
-            self._cache[key] = CacheEntry(
-                result=result,
-                cached_at=now,  # Treat as freshly cached for grace period
-                file_mtime=file_mtime,
-                file_size=file_size,
-            )
-            imported += 1
-
-        # Update stats
-        self._stats.cache_imported += imported
-        self._stats.cache_import_skipped_changed += skipped_changed
-        self._stats.cache_import_skipped_old_file += skipped_old_file
+            self._stats.cache_imported += imported
+            self._stats.cache_import_skipped_changed += skipped_changed
+            self._stats.cache_import_skipped_old_file += skipped_old_file
 
         logger.info(
             f"Imported {imported} cache entries "
@@ -671,7 +527,13 @@ class RequestCoalescer:
 
     def _is_cached_timeout(self, result: Any) -> bool:
         """Check if a cached result is a timeout marker."""
-        return isinstance(result, dict) and result.get("state") == "timeout"
+        if isinstance(result, LogAnalysisCoalesced):
+            if result.log_result is None:
+                return False
+            d = result.log_result
+        else:
+            d = result
+        return isinstance(d, dict) and d.get("state") == "timeout"
 
     async def get_or_compute(self, key: str, compute_fn: Callable[[], Awaitable[Any]]) -> Any:
         """
@@ -710,10 +572,11 @@ class RequestCoalescer:
                 needs_cleanup = True
                 self._last_cleanup = now  # Mark as done to prevent concurrent cleanups
 
-        # Run cleanup outside main lock to avoid blocking other operations
+        # Run cleanup outside main lock: O(n) scan in _collect_expired_keys (sync, no await);
+        # deletion in _delete_expired_keys. See _collect_expired_keys docstring — do not lock the scan.
         if needs_cleanup:
-            expired = self._collect_expired_keys()  # Scan without lock
-            await self._delete_expired_keys(*expired)  # Delete with lock
+            expired = self._collect_expired_keys()
+            await self._delete_expired_keys(*expired)
 
         async with self._lock:
             now = time.monotonic()
@@ -880,7 +743,8 @@ class RequestCoalescer:
             async with self._lock:
                 self._stats.compute_errors += 1
                 self._in_flight.pop(key, None)
-            logger.error(f"Failed to compute result for {key}: {e}", exc_info=True)
+            logger.error("Failed to compute result for %s: %s", key, e)
+            logger.debug("Compute failure traceback for %s", key, exc_info=True)
             if not future.done():
                 future.set_exception(e)
             raise
@@ -916,3 +780,8 @@ class RequestCoalescer:
             if future.done() and not future.cancelled():
                 return future.result()
             raise
+
+
+# Re-export for ``from nvidia_resiliency_ext.attribution.coalescing import DEFAULT_COMPUTE_TIMEOUT_SECONDS``
+# (same value as :attr:`RequestCoalescer.DEFAULT_COMPUTE_TIMEOUT_SECONDS`).
+DEFAULT_COMPUTE_TIMEOUT_SECONDS = RequestCoalescer.DEFAULT_COMPUTE_TIMEOUT_SECONDS

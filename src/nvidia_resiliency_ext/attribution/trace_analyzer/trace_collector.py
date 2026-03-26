@@ -11,9 +11,10 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from nvidia_resiliency_ext.attribution.utils import capture_logs
 from nvidia_resiliency_ext.shared_utils.health_check import GPUHealthCheck, NicHealthCheck
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+from .capture import capture_logs
 
 logger = logging.getLogger(LogConfig.name)
 
@@ -66,7 +67,6 @@ class TorchFRTraceCollector(TraceCollector):
         self.stack_trace = None
         self.dump_fn = torch._C._distributed_c10d._dump_nccl_trace
         self.json = json
-        logger = logging.getLogger(LogConfig.name)
         logger.info(f"{self.rank} created TorchFRTraceCollector")
 
     def collect(self):

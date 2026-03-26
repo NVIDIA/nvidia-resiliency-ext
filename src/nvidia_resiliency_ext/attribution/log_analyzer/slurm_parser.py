@@ -1,16 +1,12 @@
-#  Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
-#
-#  NVIDIA CORPORATION and its licensors retain all intellectual property
-#  and proprietary rights in and to this software, related documentation
-#  and any modifications thereto.  Any use, reproduction, disclosure or
-#  distribution of this software and related documentation without an express
-#  license agreement from NVIDIA CORPORATION is strictly prohibited.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 """Parse SLURM output files to extract LOGS_DIR and detect scheduler restarts.
 
 This module parses SLURM output files looking for:
 - << START PATHS >> / << END PATHS >> markers (scheduler restarts)
 - LOGS_DIR= declarations (splitlog mode log directory)
+- ``Writing logs to <abs-path>`` lines (fallback when markers / LOGS_DIR= are absent)
 - Requeue indicators (job restart capability)
 
 See spec Section 13 for marker parsing details.
@@ -29,6 +25,8 @@ logger = logging.getLogger(__name__)
 START_PATHS_MARKER = "<< START PATHS >>"
 END_PATHS_MARKER = "<< END PATHS >>"
 LOGS_DIR_PATTERN = re.compile(r"^LOGS_DIR=(.+)$", re.MULTILINE)
+# e.g. "Writing logs to /path/to/run/logs" (common launcher convention without << START PATHS >>)
+_WRITING_LOGS_TO_PATTERN = re.compile(r"^Writing logs to\s+(\S+)", re.MULTILINE)
 
 
 @dataclass
@@ -110,7 +108,9 @@ def parse_slurm_output(content: str) -> SlurmOutputInfo:
 
     # Extract LOGS_DIR from the LAST << START PATHS >> block
     # (spec Section 13.4: use latest LOGS_DIR if it changes between restarts)
-    logs_dir = _extract_logs_dir(content)
+    logs_dir = _extract_logs_dir_from_path_blocks(content)
+    if logs_dir is None:
+        logs_dir = _extract_writing_logs_dir(content)
 
     # Check for Requeue=1 indicator (can restart)
     has_requeue = _check_requeue(content)
@@ -143,7 +143,19 @@ def _count_marker_lines(content: str, marker: str) -> int:
     return count
 
 
-def _extract_logs_dir(content: str) -> Optional[str]:
+def _extract_writing_logs_dir(content: str) -> Optional[str]:
+    """Last ``Writing logs to <path>`` line with an absolute path (splitlog fallback)."""
+    last: Optional[str] = None
+    for m in _WRITING_LOGS_TO_PATTERN.finditer(content):
+        p = m.group(1).strip().rstrip("/")
+        if p.startswith("/"):
+            last = p
+    if last:
+        logger.debug("_extract_writing_logs_dir: final path=%s", last)
+    return last
+
+
+def _extract_logs_dir_from_path_blocks(content: str) -> Optional[str]:
     """
     Extract LOGS_DIR from the SLURM output content.
 
@@ -170,12 +182,18 @@ def _extract_logs_dir(content: str) -> Optional[str]:
         if stripped == START_PATHS_MARKER:
             in_block = True
             block_count += 1
-            logger.debug(f"_extract_logs_dir: entered START PATHS block #{block_count}")
+            logger.debug(
+                "_extract_logs_dir_from_path_blocks: entered START PATHS block #%s",
+                block_count,
+            )
             continue
 
         if stripped == END_PATHS_MARKER:
             in_block = False
-            logger.debug(f"_extract_logs_dir: exited END PATHS block #{block_count}")
+            logger.debug(
+                "_extract_logs_dir_from_path_blocks: exited END PATHS block #%s",
+                block_count,
+            )
             continue
 
         # Look for LOGS_DIR= within a block
@@ -184,13 +202,22 @@ def _extract_logs_dir(content: str) -> Optional[str]:
             if match:
                 logs_dir = match.group(1).strip().rstrip("/")
                 logger.debug(
-                    f"_extract_logs_dir: found LOGS_DIR={logs_dir} in block #{block_count}"
+                    "_extract_logs_dir_from_path_blocks: found LOGS_DIR=%s in block #%s",
+                    logs_dir,
+                    block_count,
                 )
 
     if logs_dir:
-        logger.debug(f"_extract_logs_dir: final LOGS_DIR={logs_dir} (from {block_count} blocks)")
+        logger.debug(
+            "_extract_logs_dir_from_path_blocks: final LOGS_DIR=%s (from %s blocks)",
+            logs_dir,
+            block_count,
+        )
     elif block_count > 0:
-        logger.debug(f"_extract_logs_dir: no LOGS_DIR found in {block_count} START PATHS blocks")
+        logger.debug(
+            "_extract_logs_dir_from_path_blocks: no LOGS_DIR in %s START PATHS blocks",
+            block_count,
+        )
 
     return logs_dir
 

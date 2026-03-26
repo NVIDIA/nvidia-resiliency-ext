@@ -4,8 +4,9 @@ Module definitions for NVRX Attribution modules.
 This file registers all available attribution modules with the registry.
 """
 
-import argparse
-
+from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp import (
+    CombinedLogFRMCPOrchestrator,
+)
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
@@ -133,65 +134,75 @@ def register_all_modules():
         dependencies=[],
     )
 
-    # Register Combined Log + FR Analyzer
-    try:
-        from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr import CombinedLogFR
-
-        global_registry.register(
-            name="combined_log_fr",
-            module_class=CombinedLogFR,
-            description="Combined analysis of application logs and FR traces with LLM synthesis",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "input_data": {
-                        "type": "array",
-                        "items": {
-                            "type": "array",
-                            "description": "Input data for the module",
-                        },
-                        "description": "Input data for the module",
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "LLM model for synthesis",
-                        "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
-                    },
-                    "threshold": {
-                        "type": "integer",
-                        "description": "Threshold for stopping pipeline",
-                        "default": 0,
-                    },
+    # Log + FR + merge LLM in one MCP round-trip (path mode), or legacy input_data-only merge
+    global_registry.register(
+        name="log_fr_analyzer",
+        module_class=CombinedLogFRMCPOrchestrator,
+        description=(
+            "Path mode: run LogSage and FR in parallel, then merge via LLM in this process. "
+            "Legacy: pass input_data (cached log + FR outputs) for merge-only."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "log_path": {
+                    "type": "string",
+                    "description": "Application log path (path mode; use with fr_path)",
                 },
-                "required": ["input_data"],
-            },
-            output_schema={
-                "type": "object",
-                "properties": {
-                    "result": {
-                        "type": "string",
-                        "description": "Combined attribution with actionable recommendations",
-                    },
-                    "state": {"type": "string", "enum": ["CONTINUE", "STOP"]},
+                "fr_path": {
+                    "type": "string",
+                    "description": (
+                        "FR dump directory, a single dump file, or path prefix (TORCH_FR_DUMP_TEMP_FILE "
+                        "style, e.g. /shared/_dump_ when _dump_0 exists); path mode with log_path"
+                    ),
                 },
+                "input_data": {
+                    "type": "array",
+                    "items": {"type": "array"},
+                    "description": "Legacy: [log_result, fr_result] from prior tool runs",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "LLM model",
+                    "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+                },
+                "temperature": {"type": "number", "default": 0.2},
+                "top_p": {"type": "number", "default": 0.7},
+                "max_tokens": {"type": "integer", "default": 8192},
+                "threshold": {"type": "integer", "default": 0},
+                "exclude_nvrx_logs": {"type": "boolean", "default": False},
+                "is_per_cycle": {"type": "boolean", "default": False},
+                "pattern": {"type": "string", "default": "_dump_*"},
+                "verbose": {"type": "boolean", "default": False},
+                "health_check": {"type": "boolean", "default": False},
+                "llm_analyze": {"type": "boolean", "default": False},
             },
-            requires_llm=True,
-            dependencies=["log_analyzer", "fr_analyzer"],
-        )
-    except ImportError:
-        pass
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "object",
+                    "description": "Path mode: log, fr, llm_merged_summary; legacy: merged string",
+                },
+                "state": {"type": "string", "enum": ["CONTINUE", "STOP"]},
+            },
+        },
+        requires_llm=True,
+        dependencies=[],
+    )
 
 
-def create_args_from_dict(module_name: str, config: dict) -> argparse.Namespace:
+def create_args_from_dict(module_name: str, config: dict) -> dict:
     """
-    Create an argparse.Namespace from a configuration dictionary.
+    Build a module argument dict from schema defaults and ``config`` overrides.
 
     Args:
         module_name: Name of the module
         config: Configuration dictionary
 
     Returns:
-        argparse.Namespace with module configuration
+        Plain dict suitable for module constructors and :meth:`~nvidia_resiliency_ext.attribution.base.NVRxAttribution.run`.
     """
     metadata = global_registry.get_module_metadata(module_name)
     if not metadata:
@@ -211,4 +222,4 @@ def create_args_from_dict(module_name: str, config: dict) -> argparse.Namespace:
     # Override with provided config
     args_dict.update(config)
 
-    return argparse.Namespace(**args_dict)
+    return args_dict

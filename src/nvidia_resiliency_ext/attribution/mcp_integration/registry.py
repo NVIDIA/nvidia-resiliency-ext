@@ -6,12 +6,18 @@ This allows multiple attribution modules to be registered and invoked via MCP.
 import hashlib
 import json
 import logging
-from dataclasses import asdict, dataclass, is_dataclass
-from typing import Any, Dict, List, Optional, Type
-
-from nvidia_resiliency_ext.attribution.base import NVRxAttribution
+import os
+import time
+from dataclasses import asdict, dataclass, field, is_dataclass
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+class MCPModule(Protocol):
+    """Registered tool implementation: constructible with call-time args, ``async run(arguments)``."""
+
+    async def run(self, arguments: Dict[str, Any]) -> Any: ...
 
 
 @dataclass
@@ -20,15 +26,11 @@ class ModuleMetadata:
 
     name: str
     description: str
-    module_class: Type[NVRxAttribution]
+    module_class: type[MCPModule]
     input_schema: Dict[str, Any]
     output_schema: Dict[str, Any]
     requires_llm: bool = False
-    dependencies: List[str] = None  # Other modules this depends on
-
-    def __post_init__(self):
-        if self.dependencies is None:
-            self.dependencies = []
+    dependencies: List[str] = field(default_factory=list)  # Other modules this depends on
 
     def to_mcp_tool_schema(self) -> Dict[str, Any]:
         """Convert module metadata to MCP tool schema."""
@@ -37,6 +39,17 @@ class ModuleMetadata:
             "description": self.description,
             "inputSchema": self.input_schema,
         }
+
+
+def _mcp_results_cache_max_entries() -> int:
+    raw = os.environ.get("NVRX_MCP_RESULTS_CACHE_MAX_ENTRIES", "").strip()
+    if not raw:
+        return 256
+    try:
+        v = int(raw, 10)
+        return v if v > 0 else 256
+    except ValueError:
+        return 256
 
 
 class AttributionModuleRegistry:
@@ -50,15 +63,22 @@ class AttributionModuleRegistry:
     4. Inter-module communication
     """
 
-    def __init__(self):
+    def __init__(self, cache_max_entries: Optional[int] = None):
         self._modules: Dict[str, ModuleMetadata] = {}
-        self._instances: Dict[str, NVRxAttribution] = {}
-        self._results_cache: Dict[str, Any] = {}
+        self._instances: Dict[str, MCPModule] = {}
+        max_e = (
+            int(cache_max_entries)
+            if cache_max_entries is not None
+            else _mcp_results_cache_max_entries()
+        )
+        self._results_cache_max_entries: int = max_e if max_e > 0 else 256
+        # value is (created_at monotonic, payload); when full, drop oldest half by created_at
+        self._results_cache: Dict[str, Tuple[float, Any]] = {}
 
     def register(
         self,
         name: str,
-        module_class: Type[NVRxAttribution],
+        module_class: type[MCPModule],
         description: str,
         input_schema: Dict[str, Any],
         output_schema: Dict[str, Any],
@@ -96,7 +116,7 @@ class AttributionModuleRegistry:
         """Get metadata for all registered modules."""
         return list(self._modules.values())
 
-    def create_instance(self, name: str, args: Any) -> NVRxAttribution:
+    def create_instance(self, name: str, args: Any) -> MCPModule:
         """Create an instance of a registered module."""
         metadata = self._modules.get(name)
         if not metadata:
@@ -107,7 +127,7 @@ class AttributionModuleRegistry:
         self._instances[name] = instance
         return instance
 
-    def get_instance(self, name: str) -> Optional[NVRxAttribution]:
+    def get_instance(self, name: str) -> Optional[MCPModule]:
         """Get an existing instance of a module."""
         return self._instances.get(name)
 
@@ -132,18 +152,54 @@ class AttributionModuleRegistry:
 
         return result
 
+    def _evict_oldest_half(self) -> None:
+        n = len(self._results_cache)
+        if n == 0:
+            return
+        n_drop = max(1, n // 2)
+        oldest_first = sorted(self._results_cache.items(), key=lambda kv: kv[1][0])
+        for k, _ in oldest_first[:n_drop]:
+            del self._results_cache[k]
+
+    def _results_cache_get(self, key: str) -> Optional[Any]:
+        item = self._results_cache.get(key)
+        if item is None:
+            return None
+        _, value = item
+        return value
+
+    def _results_cache_put(self, key: str, value: Any) -> None:
+        if key in self._results_cache:
+            del self._results_cache[key]
+        if len(self._results_cache) >= self._results_cache_max_entries:
+            self._evict_oldest_half()
+        self._results_cache[key] = (time.monotonic(), value)
+
+    def list_results_cache_keys(self) -> List[str]:
+        """Keys for cached results (MCP resources)."""
+        return list(self._results_cache.keys())
+
+    def count_results_cache_entries(self) -> int:
+        """Number of cached results."""
+        return len(self._results_cache)
+
+    def iter_results_cache_items(self) -> Iterator[Tuple[str, Any]]:
+        """Yield (cache_key, result) for each cache entry."""
+        for key, (_, payload) in self._results_cache.items():
+            yield key, payload
+
     def cache_result(self, module_name: str, arguments: Dict[str, Any], result: Any):
         """Cache a module execution result."""
         hash_value = hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
         key = f"{module_name}:{hash_value}"
-        self._results_cache[key] = result
+        self._results_cache_put(key, result)
         logger.info(f"Caching result: {key}")
         return hash_value
 
     def get_cached_result_by_uri(self, module_name: str, result_id: str) -> Optional[Any]:
         """Retrieve a cached result by URI."""
         key = f"{module_name}:{result_id}"
-        return self._results_cache.get(key)
+        return self._results_cache_get(key)
 
     def get_cached_result_by_args(
         self, module_name: str, arguments: Dict[str, Any]
@@ -152,7 +208,7 @@ class AttributionModuleRegistry:
         hash_value = hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
         key = f"{module_name}:{hash_value}"
         logger.info(f"Looking up cached result: {key}")
-        return self._results_cache.get(key)
+        return self._results_cache_get(key)
 
     def clear_cache(self):
         """Clear all cached results."""

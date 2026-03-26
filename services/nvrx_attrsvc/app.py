@@ -1,10 +1,5 @@
-#  Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
-#
-#  NVIDIA CORPORATION and its licensors retain all intellectual property
-#  and proprietary rights in and to this software, related documentation
-#  and any modifications thereto.  Any use, reproduction, disclosure or
-#  distribution of this software and related documentation without an express
-#  license agreement from NVIDIA CORPORATION is strictly prohibited.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 """FastAPI HTTP wrapper for AttributionService."""
 
@@ -27,11 +22,11 @@ from slowapi.util import get_remote_address
 from .config import ErrorCode, Settings, setup
 from .routes import PARAM_LOG_PATH, ROUTE_LOGS
 from .service import (
-    AnalysisResult,
-    AnalyzerError,
     AttributionService,
-    SplitlogAnalysisResult,
-    SubmitResult,
+    LogAnalysisCycleResult,
+    LogAnalysisSplitlogResult,
+    LogAnalyzerError,
+    LogAnalyzerSubmitResult,
 )
 
 # Rate limiter instance (uses client IP as key)
@@ -76,6 +71,7 @@ _ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.LOGS_DIR_NOT_READABLE: 403,
     # 404 Not Found
     ErrorCode.NOT_FOUND: 404,
+    ErrorCode.FR_DUMP_NOT_FOUND: 404,
     # 5xx Server Errors
     ErrorCode.JOB_LIMIT_REACHED: 503,
     ErrorCode.INTERNAL_ERROR: 500,
@@ -102,8 +98,8 @@ class SubmitRequest(BaseModel):
     job_id: str | None = None  # Optional: SLURM job ID, required for split logging mode
 
 
-def _raise_error(error: AnalyzerError) -> None:
-    """Convert AnalyzerError to HTTPException."""
+def _raise_error(error: LogAnalyzerError) -> None:
+    """Convert LogAnalyzerError to HTTPException."""
     status_code = _ERROR_CODE_TO_HTTP_STATUS.get(error.error_code, _DEFAULT_HTTP_STATUS)
     raise HTTPException(
         status_code=status_code,
@@ -125,13 +121,13 @@ def create_app(cfg: Settings) -> FastAPI:
         app.state.service.set_event_loop(asyncio.get_running_loop())
         await app.state.service.connect_mcp()
         if app.state.cache_file:
-            loaded = app.state.service.load_cache(app.state.cache_file)
+            loaded = await app.state.service.load_cache(app.state.cache_file)
             if loaded > 0:
                 logger.info(f"Restored {loaded} cached results from {app.state.cache_file}")
         yield
         # Shutdown
         if app.state.cache_file:
-            app.state.service.save_cache(app.state.cache_file)
+            await app.state.service.save_cache(app.state.cache_file)
         await app.state.service.shutdown_async()
 
     app = FastAPI(
@@ -247,11 +243,11 @@ def create_app(cfg: Settings) -> FastAPI:
 
     @app.post(
         ROUTE_LOGS,
-        response_model=SubmitResult,
+        response_model=LogAnalyzerSubmitResult,
         responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     )
     @limiter.limit(cfg.RATE_LIMIT_SUBMIT)
-    async def submit_analysis(request: Request, req: SubmitRequest) -> SubmitResult:
+    async def submit_analysis(request: Request, req: SubmitRequest) -> LogAnalyzerSubmitResult:
         """
         Submit a log file for analysis tracking.
 
@@ -261,7 +257,7 @@ def create_app(cfg: Settings) -> FastAPI:
         """
         service: AttributionService = request.app.state.service
         result = await service.submit_log(req.log_path, req.user, req.job_id)
-        if isinstance(result, AnalyzerError):
+        if isinstance(result, LogAnalyzerError):
             _raise_error(result)
         return result
 
@@ -283,14 +279,14 @@ def create_app(cfg: Settings) -> FastAPI:
         """Return the first 4KB of a file for preview."""
         service: AttributionService = request.app.state.service
         result = service.read_file_preview(log_path)
-        if isinstance(result, AnalyzerError):
+        if isinstance(result, LogAnalyzerError):
             _raise_error(result)
         return result.content
 
     @app.get(
         ROUTE_LOGS,
         responses={
-            200: {"model": AnalysisResult, "description": "Single-file mode result"},
+            200: {"model": LogAnalysisCycleResult, "description": "Single-file mode result"},
             400: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
             500: {"model": ErrorResponse},
@@ -314,7 +310,7 @@ def create_app(cfg: Settings) -> FastAPI:
             ge=0,
             description="Workload restart index within file (0-indexed). See spec Section 17.",
         ),
-    ) -> AnalysisResult | SplitlogAnalysisResult:
+    ) -> LogAnalysisCycleResult | LogAnalysisSplitlogResult:
         """
         Analyze a log file and return attribution results.
 
@@ -331,7 +327,7 @@ def create_app(cfg: Settings) -> FastAPI:
         """
         service: AttributionService = request.app.state.service
         result = await service.analyze_log(log_path, file, wl_restart)
-        if isinstance(result, AnalyzerError):
+        if isinstance(result, LogAnalyzerError):
             _raise_error(result)
         return result
 
