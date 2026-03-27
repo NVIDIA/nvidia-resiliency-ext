@@ -434,9 +434,11 @@ class PersistentAsyncCaller(AsyncCaller):
         is_daemon: bool = True,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
+        sigterm_timeout: float = 30.0,
     ):
         self.process: mp.Process = None
         self.start_time: Optional[float] = None
+        self.sigterm_timeout = sigterm_timeout
         ctx = mp.get_context('spawn')
         # main queue to deliver `AsyncRequest` from host to the ckpt worker
         self.queue: mp.JoinableQueue = ctx.JoinableQueue()
@@ -595,11 +597,11 @@ class PersistentAsyncCaller(AsyncCaller):
                 # cleanup_worker_data_cache() via the try/finally block, releasing
                 # CUDA IPC handles before the process exits.
                 self.process.terminate()
-                self.process.join(timeout=30)
+                self.process.join(timeout=self.sigterm_timeout)
                 if self.process.is_alive():
                     logger.warning(
-                        f"Persistent worker (rank {self.rank}) did not exit within 30s "
-                        "after SIGTERM; sending SIGKILL"
+                        f"Persistent worker (rank {self.rank}) did not exit within "
+                        f"{self.sigterm_timeout}s after SIGTERM; sending SIGKILL"
                     )
                     # Before SIGKILL, close the queues from the parent side to
                     # release any buffered CUDA IPC handles. Without this, SIGKILL
@@ -607,8 +609,8 @@ class PersistentAsyncCaller(AsyncCaller):
                     # during CUDA cleanup at exit.
                     for q in (self.queue, self.preload_q):
                         try:
+                            q.cancel_join_thread()
                             q.close()
-                            q.join_thread()
                         except Exception:
                             pass
                     gc.collect()
@@ -702,7 +704,7 @@ class PersistentAsyncCaller(AsyncCaller):
         # Without this, SIGTERM (sent by close(abort=True)) bypasses Python cleanup,
         # leaving dangling CUDA IPC handles that cause a SIGSEGV in the parent at exit.
         def _handle_sigterm(signum, frame):
-            raise SystemExit(0)
+            raise SystemExit(128 + signum)
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
@@ -805,6 +807,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         is_daemon: bool = True,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
+        sigterm_timeout: float = 30.0,
     ):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
@@ -812,6 +815,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         self.is_daemon: bool = is_daemon
         self.cpu_priority = cpu_priority
         self.io_priority = io_priority
+        self.sigterm_timeout = sigterm_timeout
         self.persistent_caller: AsyncCaller = None
 
     def _get_async_caller(self):
@@ -840,6 +844,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                     is_daemon=self.is_daemon,
                     cpu_priority=self.cpu_priority,
                     io_priority=self.io_priority,
+                    sigterm_timeout=self.sigterm_timeout,
                 )
         return self.persistent_caller
 
@@ -850,6 +855,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         is_daemon: bool = True,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
+        sigterm_timeout: float = 30.0,
     ):
         """Pre-start the persistent async worker to avoid startup latency on the first checkpoint.
 
@@ -860,10 +866,14 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             io_priority (int, Optional): ionice scheduling class (0-3). Use 3 (idle) to
                 deprioritize checkpoint I/O. NOTE: class 1 = realtime (highest priority —
                 NOT recommended for checkpoint workers).
+            sigterm_timeout (float): seconds to wait after SIGTERM before escalating to SIGKILL.
         """
         if cls._warmup_persistent_caller is None:
             caller = PersistentAsyncCaller(
-                is_daemon=is_daemon, cpu_priority=cpu_priority, io_priority=io_priority
+                is_daemon=is_daemon,
+                cpu_priority=cpu_priority,
+                io_priority=io_priority,
+                sigterm_timeout=sigterm_timeout,
             )
             caller._start_worker(rank)
             caller.rank = rank
