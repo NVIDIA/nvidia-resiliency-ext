@@ -20,6 +20,7 @@ a checkpoint save process in the background.
 import gc
 import logging
 import os
+import signal
 import subprocess
 import weakref
 from abc import ABC, abstractmethod
@@ -590,7 +591,29 @@ class PersistentAsyncCaller(AsyncCaller):
         if self.process:
             if abort:
                 logger.error(f"Persistent worker aborted in rank {self.rank}")
-                self.process.kill()
+                # Use SIGTERM first so the worker's signal handler can run
+                # cleanup_worker_data_cache() via the try/finally block, releasing
+                # CUDA IPC handles before the process exits.
+                self.process.terminate()
+                self.process.join(timeout=30)
+                if self.process.is_alive():
+                    logger.warning(
+                        f"Persistent worker (rank {self.rank}) did not exit within 30s "
+                        "after SIGTERM; sending SIGKILL"
+                    )
+                    # Before SIGKILL, close the queues from the parent side to
+                    # release any buffered CUDA IPC handles. Without this, SIGKILL
+                    # leaves dangling IPC state that causes SIGSEGV in the parent
+                    # during CUDA cleanup at exit.
+                    for q in (self.queue, self.preload_q):
+                        try:
+                            q.close()
+                            q.join_thread()
+                        except Exception:
+                            pass
+                    gc.collect()
+                    self.process.kill()
+                    self.process.join()
             else:
                 self.queue.put('DONE')
                 self.queue.join()
@@ -673,6 +696,15 @@ class PersistentAsyncCaller(AsyncCaller):
         # Set QoS to deprioritize checkpoint writing vs training.
         # This prevents checkpoint I/O from interfering with data loader.
         _set_process_qos(cpu_priority=cpu_priority, io_priority=io_priority)
+
+        # Register a SIGTERM handler that raises SystemExit so the finally block
+        # below runs cleanup_worker_data_cache() and releases CUDA IPC handles.
+        # Without this, SIGTERM (sent by close(abort=True)) bypasses Python cleanup,
+        # leaving dangling CUDA IPC handles that cause a SIGSEGV in the parent at exit.
+        def _handle_sigterm(signum, frame):
+            raise SystemExit(0)
+
+        signal.signal(signal.SIGTERM, _handle_sigterm)
 
         # Start busy loop waiting for and executing checkpoint saves.
         try:
