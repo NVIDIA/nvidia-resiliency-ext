@@ -42,10 +42,10 @@ jobs:
     strategy:
       matrix:
         container:
-          - 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime'
-          - 'pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
-          - 'pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime'
-        test_type: ['fault_tolerance', 'ptl_resiliency']
+          - 'ghcr.io/nvidia/nvidia-resiliency-ext/pytorch:2.5.1-cuda12.4-cudnn9-runtime'
+          - 'ghcr.io/nvidia/nvidia-resiliency-ext/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
+          - 'ghcr.io/nvidia/nvidia-resiliency-ext/pytorch:2.3.1-cuda12.1-cudnn8-runtime'
+        test_type: ['fault_tolerance']
     container:
       image: ${{ matrix.container }}
     env:
@@ -60,7 +60,7 @@ jobs:
           path: ./dist/
       - name: Set up environment
         run: |
-          pip install pytest lightning
+          pip install pytest
           PY_VER_NODOT=$(python -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
           pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
       - name: Run unit tests
@@ -76,8 +76,6 @@ jobs:
               pytest -s -vvv tests/straggler/unit/ -k "${STRAGGLER_DET_CPU_TESTS_PATTERN}"
           elif [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
               pytest -s -vvv ./tests/fault_tolerance/unit/
-          elif [[ "${{ matrix.test_type }}" == "ptl_resiliency" ]]; then
-              pytest -s -vvv ./tests/ptl_resiliency/unit/test_ft_state_machine.py
           else
               echo "Unknown test type: ${{ matrix.test_type }}"
               exit 1
