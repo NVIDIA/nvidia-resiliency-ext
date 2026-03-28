@@ -298,7 +298,7 @@ def test_launcher_starts_grpc_server_on_correct_port(tmp_dir):
         f" {cmd_to_run}"
     )
 
-    ret_code, output = _run_launcher(launcher_cmd, timeout=15)
+    ret_code, output = _run_launcher(launcher_cmd)
 
     # Verify server was started with custom port
     assert f"port={custom_port}" in output, f"Server should be started on port {custom_port}"
@@ -325,7 +325,7 @@ def test_launcher_creates_grpc_root_log(tmp_dir):
         f" {cmd_to_run}"
     )
 
-    ret_code, output = _run_launcher(launcher_cmd, timeout=15)
+    ret_code, output = _run_launcher(launcher_cmd)
 
     # Verify server log file was created
     # Note: We don't strictly require it to exist as the launcher may clean up
@@ -355,7 +355,7 @@ def test_launcher_without_grpc_flag_does_not_start_server(tmp_dir):
         f" {cmd_to_run}"
     )
 
-    ret_code, output = _run_launcher(launcher_cmd, timeout=15)
+    ret_code, output = _run_launcher(launcher_cmd)
 
     # Verify gRPC server was NOT started
     assert "gRPC log server started" not in output, "gRPC server should not be started"
@@ -385,7 +385,7 @@ def test_launcher_custom_server_log_path(tmp_dir):
         f" {cmd_to_run}"
     )
 
-    ret_code, output = _run_launcher(launcher_cmd, timeout=15)
+    ret_code, output = _run_launcher(launcher_cmd)
 
     assert ret_code in [0, 1], f"Launcher should complete; output:\n{output}"
     assert (
