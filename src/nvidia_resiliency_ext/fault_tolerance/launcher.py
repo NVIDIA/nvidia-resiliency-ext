@@ -15,7 +15,6 @@
 import asyncio
 
 # fmt: off
-import collections
 import contextlib
 import importlib.metadata as metadata
 import json
@@ -32,6 +31,7 @@ import time
 import uuid
 import warnings
 from argparse import REMAINDER, ArgumentParser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from string import Template
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
@@ -79,6 +79,7 @@ from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSp
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
+    get_log_aggregator_shard_index,
     get_processes_by_pgids,
     hostnames_to_slurm_nodelist,
     is_slurm_job_array,
@@ -121,12 +122,16 @@ if not hasattr(_torch_elastic_agent_api, "_TERMINAL_STATE_SYNC_ID"):
 
 _EXIT_BARRIER_LAST_MEMBER_KEY = f"{_torch_elastic_agent_api._TERMINAL_STATE_SYNC_ID}/last_member"
 
+_legacy_ft_rdzv_deprecation_warned: bool = False
+
 # Logger instance (configured later in run() via setup_logger())
 # Note: Must call run() before using logger to ensure proper configuration
 logger = logging.getLogger(LogConfig.name)
 
 _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
-_GRPC_SERVER_PROCESS: Optional[subprocess.Popen] = None
+# Populated on TCP store host when gRPC log aggregation is enabled: root-only [Popen] or
+# [root, leaf0, ..., leaf_{N-1}] when ft_log_aggregator_count > 1.
+_GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
 
 def init_node_health_check(endpoint: Optional[str]) -> None:
     global _NODE_HEALTH_CHECK_INSTANCE
@@ -143,9 +148,11 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
 
     Args:
         impl_type: FT rendezvous implementation to use.
-                  "barrier" - New atomic barrier-based algorithm
-                  "legacy" - Original compare-and-set algorithm
+            ``"barrier"`` — atomic barrier-based algorithm (recommended default).
+            ``"legacy"`` — original compare-and-set implementation in ``_ft_rendezvous``;
+            deprecated and scheduled for removal; use ``"barrier"``.
     """
+    global _legacy_ft_rdzv_deprecation_warned
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
@@ -157,6 +164,15 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
             return create_barrier_handler(store, backend, params)
 
     elif impl_type == "legacy":
+        if not _legacy_ft_rdzv_deprecation_warned:
+            warnings.warn(
+                "FT rendezvous implementation 'legacy' (_ft_rendezvous compare-and-set) is "
+                "deprecated and will be removed in a future release. Use the default "
+                "'barrier' implementation (--ft-rdzv-impl barrier / ft_rendezvous_barrier).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _legacy_ft_rdzv_deprecation_warned = True
         from ._ft_rendezvous import create_handler as create_legacy_handler
         from .c10d_monkey_patch import apply_c10d_patch
 
@@ -622,15 +638,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             return False
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
-        if self._restart_policy == 'any-failed':
-            return self._invoke_run_with_any_failed_policy(role)
-        elif self._restart_policy == 'min-healthy':
-            return self._invoke_run_with_min_healthy_policy(role)
-        else:
-            raise AssertionError(
-                f"Unexpected restart-policy: {self._restart_policy}."
-                " check CLI help for --restart-policy allowed options"
-            )
+        return self._invoke_run_with_any_failed_policy(role)
 
     def _invoke_run_with_any_failed_policy(self, role: str = DEFAULT_ROLE) -> RunResult:
         # NOTE: currently only works for a single role
@@ -725,110 +733,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                         return RunResult(state=WorkerState.FAILED)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
-
-    def _invoke_run_with_min_healthy_policy(self, role: str = DEFAULT_ROLE) -> RunResult:
-        # NOTE: currently only works for a single role
-
-        spec = self._worker_group.spec
-        role = spec.role
-
-        logger.info(
-            f"[{role}] starting workers for entrypoint: {spec.get_entrypoint_name()} with min-healthy policy"
-        )
-
-        self._initialize_workers(self._worker_group)
-        monitor_interval = spec.monitor_interval
-        rdzv_handler = spec.rdzv_handler
-        min_nodes = rdzv_handler._settings.min_nodes
-        group_rank = self._worker_group.group_rank
-
-        while True:
-            assert self._worker_group.state != WorkerState.INIT
-            time.sleep(monitor_interval)
-            run_result = self._monitor_workers(self._worker_group)
-            state = run_result.state
-            self._worker_group.state = state
-
-            put_metric(f"workers.{role}.remaining_restarts", self._remaining_restarts)
-            put_metric(f"workers.{role}.{state.name.lower()}", 1)
-
-            if state in {
-                WorkerState.SUCCEEDED,
-                WorkerState.FAILED,
-                WorkerState.UNHEALTHY,
-                WorkerState.HEALTHY,
-            }:
-                state_in_rdzv = rdzv_handler.try_set_worker_state(state)
-                if state_in_rdzv != state:
-                    assert (
-                        state_in_rdzv == WorkerState.UNKNOWN
-                    ), f"Could not set worker group state {state=} {state_in_rdzv=}"
-                    # state in the rdzv is UNKNOWN if this node was marked as dead by other participants
-            else:
-                raise RuntimeError(f"[{role}] Worker group in unexpected state: {state.name}")
-
-            # count the number of worker groups in each state
-            all_worker_states = rdzv_handler.get_worker_states()
-            worker_state_cnt = collections.Counter(all_worker_states.values())
-            num_succ = worker_state_cnt[WorkerState.SUCCEEDED]
-            num_healthy = worker_state_cnt[WorkerState.HEALTHY]
-
-            logger.debug(
-                "[%s] group_rank=%s worker_state_cnt=%s", role, group_rank, worker_state_cnt
-            )
-
-            # check if the current run (rendezvous) ended successfully:
-            # at least "min_nodes" worker groups should succeed to consider a run successful.
-            # NOTE: if the run was successful all agents exit with WorkerState.SUCCEEDED despite
-            # their actual run result
-            if num_healthy == 0:
-                if num_succ >= min_nodes:
-                    logger.info(
-                        f"[{role}] {group_rank=} {state.name=} detected that the run ended successfuly: {worker_state_cnt=}"
-                    )
-                    # ensure this node workers are terminated
-                    self._stop_workers(self._worker_group)
-                    # WAR: return values are not meaningful in this case,
-                    # but some dummy values are required for the event logging
-                    dummy_ret_vals = {w.global_rank: None for w in self._worker_group.workers}
-                    return RunResult(state=WorkerState.SUCCEEDED, return_values=dummy_ret_vals)
-
-            # check if the current run can end successfully
-            max_possible_succ = num_succ + num_healthy
-            can_continue = max_possible_succ >= min_nodes
-
-            if can_continue:
-                # upscaling should be disabled in min-healthy mode
-                num_nodes_waiting = rdzv_handler.num_nodes_waiting()
-                if num_nodes_waiting > 0:
-                    raise RuntimeError(
-                        f"Detected {num_nodes_waiting} nodes in the waiting list. This should not happen with min-healthy mode."
-                    )
-            else:
-                # we can't have min_nodes successful worker groups.
-                # NOTE: this worker group still might be successful/healthy.
-                # all we can do is to restart if possible or shutdown otherwise
-                # NOTE: we use the global restart count so restarts are tracked globally
-                # across job array deployments. Both any-failed and min-healthy modes use this.
-                logger.warning(
-                    f"[{role}] {group_rank=} {state.name=} detected that the current run failed: {worker_state_cnt=}"
-                )
-                restarts_initiated = self._get_global_restart_count()
-                self._remaining_restarts = spec.max_restarts - restarts_initiated
-                if self._remaining_restarts > 0:
-                    logger.info(
-                        f"{self._remaining_restarts}/{spec.max_restarts} restart attempts left; restarting worker group...",
-                    )
-                    self._remaining_restarts -= 1
-                    # Open rendezvous before restarting (for barrier-based rendezvous)
-                    self._open_rendezvous_for_restart()
-                    self._restart_workers(self._worker_group)
-                else:
-                    # try to stop the workers and return the updated run result
-                    logger.info(f"0/{spec.max_restarts} restart attempts left. Exiting...")
-                    self._stop_workers(self._worker_group)
-                    run_result = self._monitor_workers(self._worker_group)
-                    return run_result
 
     def get_rank_mon_socket_path(self, local_rank):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
@@ -1536,8 +1440,8 @@ class LaunchConfig:
         role: User defined role of the worker (defaults to "trainer").
         max_restarts: The maximum amount of restarts that elastic agent will conduct
                     on workers before failure.
-        restart_policy: Determines when worker groups are restarted e.g. if any worker group failed,
-                    or if number of healthy worker groups falls below min-nodes etc. see also the CLI arg
+        restart_policy: (Deprecated.) Only ``any-failed`` is supported: restart when any worker
+                    group fails. See also the CLI arg ``--ft-restart-policy``.
         monitor_interval: The interval in seconds that is used by the elastic_agent
                         as a period of monitoring workers.
         start_method: The method is used by the elastic agent to start the
@@ -1695,9 +1599,7 @@ def launch_agent(
 
     entrypoint_name = _get_entrypoint_name(entrypoint, args)
 
-    # with min-healthy restarting policy, if the rendezvous is completed (workers are running),
-    # we dont want to replace missing/dead nodes with spares nor to upscale the rendezvous with new arrivals
-    config.rdzv_configs['upscaling_enabled'] = config.restart_policy != "min-healthy"
+    config.rdzv_configs['upscaling_enabled'] = True
 
     logger.info(
         "Starting elastic_operator with launch configs:\n"
@@ -2454,12 +2356,13 @@ def get_args_parser() -> ArgumentParser:
         dest="ft_enable_log_server",
         help="Enable gRPC-based log funneling to a single Lustre file. "
         "When enabled with --ft-per-cycle-applog-prefix, the launcher automatically: "
-        "(1) Starts gRPC log server on TCP store host (rank 0 node), "
-        "(2) Configures all nodes as gRPC clients to stream logs to server, "
-        "(3) Server writes to single Lustre file (eliminates O_APPEND contention). "
-        "Benefits: No Lustre lock contention, no log corruption, scales to 1500+ nodes. "
-        "Requires: pip install grpcio grpcio-tools (protobufs auto-compiled during install). "
-        "Default: False (direct file writing). Set to 'true' to enable.",
+        "(1) Starts gRPC log server(s) on TCP store host, "
+        "(2) Configures all nodes as gRPC clients to a first-level aggregator port, "
+        "(3) Root server writes to Lustre (single writer). "
+        "With --ft-log-aggregator-count=N>1, N leaf processes plus one root use ports P..P+N (see --ft-log-server-port). "
+        "Use --ft-log-aggregator-count=1 for a single server on P only. "
+        "Benefits: No Lustre lock contention, scales to 1500+ nodes. "
+        "Requires: grpcio. Default: False.",
     )
 
     parser.add_argument(
@@ -2474,15 +2377,42 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-log-aggregator-count",
+        "--ft_log_aggregator_count",
+        action=env,
+        type=int,
+        default=2,
+        dest="ft_log_aggregator_count",
+        help="Number of first-level gRPC log aggregators (default 2). "
+        "When 1: single root server listens on --ft-log-server-port (legacy). "
+        "When N>1: N leaf servers on ports [P, P+1, ..., P+N-1] and one root on P+N "
+        "(P = --ft-log-server-port). Clients pick leaf via infra_rank %% N. "
+        "Open TCP ports P through P+N on the TCP store host. "
+        "Each node picks a leaf from SLURM array/procid when set, else from hostname.",
+    )
+
+    parser.add_argument(
+        "--ft-log-leaf-max-queue-chunks",
+        "--ft_log_leaf_max_queue_chunks",
+        action=env,
+        type=int,
+        default=-1,
+        dest="ft_log_leaf_max_queue_chunks",
+        help="Max queued log chunks per leaf (only when N>1). "
+        "Default -1: auto scale with fan-in, max(16384, min(1000000, per_leaf*256)).",
+    )
+
+    parser.add_argument(
         "--ft-log-server-log",
         "--ft_log_server_log",
         action=env,
         type=str,
         default=None,
         dest="ft_log_server_log",
-        help="Path to gRPC server's own log file (only used if --ft-enable-log-server is enabled). "
-        "If not specified, derives from --ft-per-cycle-applog-prefix by appending '_log_server.log'. "
-        "Example: If --ft-per-cycle-applog-prefix=/path/to/app.log, server log defaults to /path/to/app_log_server.log",
+        help="Path to gRPC root log server's own log file (only used if --ft-enable-log-server is enabled). "
+        "If not specified, derives from --ft-per-cycle-applog-prefix by replacing the trailing '.log' with "
+        "'_grpc_root.log' (same default basename as the two-level root writer). "
+        "Example: If --ft-per-cycle-applog-prefix=/path/to/app.log, defaults to /path/to/app_grpc_root.log",
     )
 
     parser.add_argument(
@@ -2495,6 +2425,8 @@ def get_args_parser() -> ArgumentParser:
         help="Maximum seconds to wait for clients during gRPC server graceful shutdown (only used if --ft-enable-log-server is enabled). "
         "When store host exits, server will continue accepting logs from other ranks for up to this timeout "
         "or until all clients disconnect, whichever comes first. This ensures other nodes can flush their final logs. "
+        "When --ft-log-aggregator-count>1, each leaf uses this timeout; the root log server uses 2× so leaves can finish "
+        "waiting for downstream clients and drain to root first. "
         "Default: 60.0",
     )
 
@@ -2702,12 +2634,11 @@ def get_args_parser() -> ArgumentParser:
         "--ft-restart-policy",
         "--ft-restart_policy",
         type=str,
-        choices=['any-failed', 'min-healthy'],
+        choices=['any-failed'],
         default='any-failed',
         dest="ft_restart_policy",
-        help="Worker groups restarting policy. Options: "
-        "'any-failed' restart if any worker group fails (torchrun's default); "
-        "'min-healthy' restart if number of healthy worker groups falls below <minimum_nodes>",
+        help="(Deprecated.) Worker groups restarting policy. Only 'any-failed' is supported: "
+        "restart if any worker group fails. This option may be removed in a future release.",
     )
 
     parser.add_argument(
@@ -2805,9 +2736,10 @@ def get_args_parser() -> ArgumentParser:
         default="barrier",
         dest="ft_rdzv_impl",
         help="FT rendezvous implementation to use. "
-        "'barrier' uses the new atomic barrier-based algorithm (ft_rendezvous_barrier.py), "
-        "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py). "
-        "Default: barrier. Note: This is independent of --rdzv-backend (which specifies "
+        "'barrier' uses the atomic barrier-based algorithm (ft_rendezvous_barrier.py; default, recommended). "
+        "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py); deprecated and "
+        "will be removed in a future release—migrate to 'barrier'. "
+        "Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
     )
 
@@ -3143,6 +3075,11 @@ def _validate_slurm_single_launcher_per_node() -> None:
 
 def _validate_args(args: Any) -> None:
     """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
+    n_log_agg = int(getattr(args, "ft_log_aggregator_count", 2))
+    if n_log_agg < 1:
+        raise ValueError(
+            f"--ft-log-aggregator-count must be >= 1, got {n_log_agg}"
+        )
     _validate_slurm_single_launcher_per_node()
     if getattr(args, "ft_cycle_info_dir", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
         raise ValueError(
@@ -3319,9 +3256,9 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         node_id = None
 
         if getattr(args, 'ft_enable_log_server', False):
-            # Build gRPC server address
             rdzv_endpoint_host = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=-1)[0]
-            grpc_port = getattr(args, 'ft_log_server_port', 50051)
+            log_funnel_ports = LogFunnelPorts.from_launcher_args(args)
+            grpc_port = log_funnel_ports.client_connect_port()
 
             # Node ID: hostname + PID for uniqueness in simulated multi-launcher environments
             hostname = socket.gethostname()
@@ -3335,28 +3272,19 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
             is_tcp_store_host = _matches_machine_hostname(host)
 
             if is_tcp_store_host:
-                # When writer is on the same host as the gRPC server, use localhost
-                # to ensure loopback connection. This avoids DNS/hostname resolution
-                # issues that could prevent the local writer from connecting to the
-                # local server.
                 grpc_server_address = f"localhost:{grpc_port}"
 
-                # Store gRPC server process globally for cleanup in main()
-                global _GRPC_SERVER_PROCESS
-                _GRPC_SERVER_PROCESS = _start_grpc_log_server(args, base_log_file)
+                global _GRPC_SERVER_PROCESSES
+                _GRPC_SERVER_PROCESSES = _start_grpc_log_servers(args, base_log_file, log_funnel_ports)
 
-                if _GRPC_SERVER_PROCESS is None:
-                    # CRITICAL: Server failed to start on TCP store host
-                    # Disable gRPC for this node to prevent log loss
+                if not _GRPC_SERVER_PROCESSES:
                     logger.error(
-                        "Failed to start gRPC server on TCP store host. "
+                        "Failed to start gRPC log server(s) on TCP store host. "
                         "Disabling gRPC log aggregation for all nodes (falling back to direct file writing)."
                     )
                     grpc_server_address = None
                     node_id = None
             else:
-                # Writer is on a different host than the gRPC server
-                # Use the rendezvous endpoint to connect to the remote server
                 grpc_server_address = f"{rdzv_endpoint_host}:{grpc_port}"
 
         # CRITICAL: Create rank monitors BEFORE PipeBasedLogsSpecs (which starts gRPC client thread)
@@ -3455,82 +3383,242 @@ def run_script_path(training_script: str, *training_script_args: str):
     runpy.run_path(sys.argv[0], run_name="__main__")
 
 
-def _start_grpc_log_server(args, base_log_file: str) -> Optional[subprocess.Popen]:
+def _grpc_log_path(base_log_file: str, suffix: str) -> str:
+    if base_log_file.endswith('.log'):
+        return base_log_file[:-4] + suffix
+    return base_log_file + suffix
+
+
+@dataclass(frozen=True)
+class LogFunnelPorts:
+    """Port assignments for the gRPC log funnel (single root vs N leaves + root).
+
+    Single-level (``first_level_count == 1``): one root listens on ``base_port`` and
+    clients connect there.
+
+    Two-level (``first_level_count > 1``): ``first_level_count`` leaves listen on
+    ``base_port .. base_port + N - 1``; the root (sole Lustre writer) listens on
+    ``base_port + N``. Each launcher picks a leaf using ``get_log_aggregator_shard_index(N)``
+    (SLURM array / ``SLURM_PROCID`` when present, else stable hostname hashing).
     """
-    Start gRPC log aggregation server as subprocess.
 
-    This should only be called on the TCP store host (rank 0 node).
-    The server accepts log chunks from clients, with each chunk specifying its target file_path.
+    base_port: int
+    first_level_count: int
 
-    Args:
-        args: Parsed command-line arguments (Namespace)
-        base_log_file: Base log file path (used to derive server log file name if not specified)
+    def __post_init__(self) -> None:
+        if not 1 <= self.base_port <= 65535:
+            raise ValueError(f"base_port must be a valid TCP port, got {self.base_port}")
+        if self.first_level_count < 1:
+            raise ValueError("first_level_count must be >= 1")
+        if self.first_level_count > 1:
+            root_port = self.base_port + self.first_level_count
+            if root_port > 65535:
+                raise ValueError(
+                    f"root_listen_port (base_port + first_level_count) = {root_port} exceeds "
+                    f"65535; reduce --ft-log-server-port (base {self.base_port}) or "
+                    f"--ft-log-aggregator-count ({self.first_level_count})"
+                )
+
+    @classmethod
+    def from_launcher_args(cls, args: Any) -> "LogFunnelPorts":
+        base = int(getattr(args, "ft_log_server_port", 50051))
+        n = int(getattr(args, "ft_log_aggregator_count", 2))
+        if n < 1:
+            raise ValueError(f"ft_log_aggregator_count must be >= 1, got {n}")
+        return cls(base_port=base, first_level_count=n)
+
+    @property
+    def uses_two_level(self) -> bool:
+        return self.first_level_count > 1
+
+    @property
+    def root_listen_port(self) -> int:
+        """Port bound by the process that writes to Lustre."""
+        if self.uses_two_level:
+            return self.base_port + self.first_level_count
+        return self.base_port
+
+    def leaf_listen_port(self, leaf_index: int) -> int:
+        """Port for leaf ``leaf_index`` in ``[0, first_level_count)`` (two-level only)."""
+        if not self.uses_two_level:
+            raise ValueError("leaf_listen_port is only defined when first_level_count > 1")
+        if not 0 <= leaf_index < self.first_level_count:
+            raise ValueError(
+                f"leaf_index must be in [0, {self.first_level_count}), got {leaf_index}"
+            )
+        return self.base_port + leaf_index
+
+    def client_connect_port(self) -> int:
+        """Aggregator port this launcher should use (leaf shard or single root)."""
+        if not self.uses_two_level:
+            return self.base_port
+        shard = get_log_aggregator_shard_index(self.first_level_count)
+        return self.leaf_listen_port(shard)
+
+
+def _start_grpc_log_servers(
+    args: Any, base_log_file: str, funnel_ports: LogFunnelPorts
+) -> List[subprocess.Popen]:
+    """
+    On TCP store host: start root log server (Lustre writer), and optionally N leaf
+    aggregators that forward to the root. In two-level mode the root is given
+    ``2 * graceful_shutdown_timeout`` so it outlasts leaf drain after SIGTERM.
 
     Returns:
-        subprocess.Popen object for the server process, or None if failed
-
-    Notes:
-        max_workers is dynamically sized: min(4096, max(100, num_nodes + 10))
-        - Each node runs one GrpcWriterThread (long-lived streaming connection)
-        - Floor of 100: Handles small clusters and parsing failures gracefully
-        - Cap at 4096: Safety limit for extremely large clusters
-        - Threads are I/O-bound (blocked on queue), so 2048 threads ≈ 20MB memory
-        - Insufficient workers cause clients beyond Nth to queue indefinitely!
+        Non-empty list of Popen [root] or [root, leaf0, ...] on success, [] on failure.
     """
-    # Determine server log file path
-    grpc_server_log = getattr(args, 'ft_log_server_log', None)
-    if grpc_server_log is None:
-        # Derive from base_log_file: replace .log with _grpc_server.log
-        if base_log_file.endswith('.log'):
-            grpc_server_log = base_log_file[:-4] + '_grpc_server.log'
-        else:
-            grpc_server_log = base_log_file + '_grpc_server.log'
-
-    # Parse nnodes to get max expected nodes for worker pool sizing
-    # Each node maintains one long-lived streaming connection
+    graceful_shutdown_timeout = getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
     _, max_nodes = parse_min_max_nnodes(args.nnodes)
 
-    # Get gRPC port
-    grpc_port = getattr(args, 'ft_log_server_port', 50051)
+    def _open_log(path: str):
+        return open(path, 'w')
 
-    # Get graceful shutdown timeout
-    graceful_shutdown_timeout = getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
-
-    # Calculate max_workers based on expected number of nodes
-    max_workers = min(4096, max(100, max_nodes + 10))
-
+    procs: List[subprocess.Popen] = []
     try:
-        # Open server log file for writing
-        # Note: Launcher manages this file handle, not the server itself
-        server_log_fd = open(grpc_server_log, 'w')
+        if not funnel_ports.uses_two_level:
+            grpc_server_log = getattr(args, 'ft_log_server_log', None)
+            if grpc_server_log is None:
+                grpc_server_log = _grpc_log_path(base_log_file, '_grpc_root.log')
+            max_workers = min(4096, max(100, max_nodes + 10))
+            fd = _open_log(grpc_server_log)
+            try:
+                p = subprocess.Popen(
+                    [
+                        sys.executable,
+                        '-m',
+                        'nvidia_resiliency_ext.shared_utils.grpc_log_server',
+                        '--host',
+                        '0.0.0.0',
+                        '--port',
+                        str(funnel_ports.base_port),
+                        '--max-workers',
+                        str(max_workers),
+                        '--graceful-shutdown-timeout',
+                        str(graceful_shutdown_timeout),
+                    ],
+                    stdout=fd,
+                    stderr=subprocess.STDOUT,
+                )
+            finally:
+                fd.close()
+            logger.info(
+                f"gRPC log server started: PID={p.pid}, port={funnel_ports.base_port}, "
+                f"max_workers={max_workers} (for {max_nodes} nodes)"
+            )
+            return [p]
 
-        # Start gRPC server as subprocess with stdout/stderr redirected
-        # Note: No --output-file argument - clients specify file_path in each chunk
-        server_process = subprocess.Popen(
-            [
-                sys.executable, '-m',
-                'nvidia_resiliency_ext.shared_utils.grpc_log_server',
-                '--host', '0.0.0.0',
-                '--port', str(grpc_port),
-                '--max-workers', str(max_workers),
-                '--graceful-shutdown-timeout', str(graceful_shutdown_timeout),
-            ],
-            stdout=server_log_fd,
-            stderr=subprocess.STDOUT,  # Redirect stderr to stdout (both go to same file)
+        root_port = funnel_ports.root_listen_port
+        n = funnel_ports.first_level_count
+        root_workers = max(n + 10, 32)
+        per_leaf = max(100, (max_nodes + n - 1) // n + 10)
+        raw_leaf_chunks = int(getattr(args, 'ft_log_leaf_max_queue_chunks', -1))
+        if raw_leaf_chunks < 0:
+            max_queue = min(1_000_000, max(16_384, per_leaf * 256))
+        else:
+            max_queue = max(64, raw_leaf_chunks)
+        root_log = getattr(args, 'ft_log_server_log', None) or _grpc_log_path(
+            base_log_file, '_grpc_root.log'
         )
 
+        # Root must outlive leaves: leaves may wait the full leaf grace window for downstream
+        # clients before draining their queues to root; root's own grace must still be open then.
+        root_graceful_shutdown_timeout = graceful_shutdown_timeout * 2.0
+
+        root_fd = _open_log(root_log)
+        try:
+            root_p = subprocess.Popen(
+                [
+                    sys.executable,
+                    '-m',
+                    'nvidia_resiliency_ext.shared_utils.grpc_log_server',
+                    '--host',
+                    '0.0.0.0',
+                    '--port',
+                    str(root_port),
+                    '--max-workers',
+                    str(root_workers),
+                    '--graceful-shutdown-timeout',
+                    str(root_graceful_shutdown_timeout),
+                ],
+                stdout=root_fd,
+                stderr=subprocess.STDOUT,
+            )
+        finally:
+            root_fd.close()
+        procs.append(root_p)
         logger.info(
-            f"gRPC log server started: PID={server_process.pid}, port={grpc_port}, "
-            f"max_workers={max_workers} (for {max_nodes} nodes)"
+            f"gRPC root log server: PID={root_p.pid}, port={root_port}, max_workers={root_workers}, "
+            f"graceful_shutdown_timeout_s={root_graceful_shutdown_timeout} (2× leaf {graceful_shutdown_timeout}s)"
         )
 
-        # Note: server_log_fd will be closed when server_process terminates
-        # Clients will wait for server readiness using their own health check retry logic
-        return server_process
+        upstream = f'localhost:{root_port}'
+        for i in range(n):
+            leaf_port = funnel_ports.leaf_listen_port(i)
+            leaf_log = _grpc_log_path(base_log_file, f'_grpc_leaf_{i}.log')
+            lf = _open_log(leaf_log)
+            try:
+                leaf_cmd = [
+                    sys.executable,
+                    '-m',
+                    'nvidia_resiliency_ext.shared_utils.grpc_log_leaf_server',
+                    '--host',
+                    '0.0.0.0',
+                    '--port',
+                    str(leaf_port),
+                    '--upstream',
+                    upstream,
+                    '--max-workers',
+                    str(per_leaf),
+                    '--max-queue-chunks',
+                    str(max_queue),
+                    '--graceful-shutdown-timeout',
+                    str(graceful_shutdown_timeout),
+                ]
+                lp = subprocess.Popen(
+                    leaf_cmd,
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                )
+            finally:
+                lf.close()
+            procs.append(lp)
+            logger.info(
+                f"gRPC leaf log server {i}: PID={lp.pid}, port={leaf_port}, "
+                f"max_workers={per_leaf}, max_queue_chunks={max_queue}, upstream={upstream}"
+            )
 
+        return procs
     except Exception as e:
-        logger.error(f"Failed to start gRPC log server: {e}", exc_info=True)
-        return None
+        logger.error(f"Failed to start gRPC log server(s): {e}", exc_info=True)
+        for p in procs:
+            with contextlib.suppress(Exception):
+                p.kill()
+            with contextlib.suppress(Exception):
+                p.wait()
+        return []
+
+
+def _grpc_child_wait_timeout_after_terminate(graceful_shutdown_timeout: float) -> float:
+    """Seconds to wait after SIGTERM before SIGKILL for a gRPC funnel child.
+
+    Matches each server's graceful client-wait, ``server.stop(grace=5)``, and
+    ``wait_for_termination`` budget (see ``grpc_log_server`` / ``grpc_log_leaf_server``).
+    """
+    return float(graceful_shutdown_timeout) + 5.0 + 65.0
+
+
+def _wait_grpc_subprocess_after_terminate(p: subprocess.Popen, wait_timeout: float) -> None:
+    """Wait for one gRPC funnel child after SIGTERM; force-kill if still alive past timeout."""
+    try:
+        p.wait(timeout=wait_timeout)
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            f"gRPC server PID={p.pid} did not shut down within {wait_timeout}s, killing..."
+        )
+        with contextlib.suppress(Exception):
+            p.kill()
+        with contextlib.suppress(Exception):
+            p.wait()
 
 
 def run(args):
@@ -3633,24 +3721,57 @@ def main(args=None):
     finally:
         # Clean up gRPC server AFTER all logging is done
         # (logging cleanup already happened in run()'s finally block)
-        global _GRPC_SERVER_PROCESS
-        if _GRPC_SERVER_PROCESS:
-            _GRPC_SERVER_PROCESS.terminate()
-            try:
-                # CRITICAL: Server has graceful_shutdown_timeout to wait for clients
-                # We must wait at least that long + margin before force-killing
-                # The server will exit earlier if all clients disconnect
-                # Read timeout directly from args (already parsed and available here)
-                grpc_graceful_shutdown_timeout = getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
-                wait_timeout = grpc_graceful_shutdown_timeout + 5.0
-                _GRPC_SERVER_PROCESS.wait(timeout=wait_timeout)
-            except subprocess.TimeoutExpired:
-                # Server didn't shut down within graceful period, force kill
-                logger.warning(
-                    f"gRPC server did not shut down within {wait_timeout}s, killing..."
+        global _GRPC_SERVER_PROCESSES
+        if _GRPC_SERVER_PROCESSES:
+            grpc_graceful_shutdown_timeout = float(
+                getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
+            )
+            n_log_agg = int(getattr(args, 'ft_log_aggregator_count', 2))
+            single_wait = _grpc_child_wait_timeout_after_terminate(grpc_graceful_shutdown_timeout)
+            if n_log_agg > 1:
+                root_grace = grpc_graceful_shutdown_timeout * 2.0
+                leaf_wait = _grpc_child_wait_timeout_after_terminate(grpc_graceful_shutdown_timeout)
+                root_wait = _grpc_child_wait_timeout_after_terminate(root_grace)
+                wait_msg = (
+                    f"leaf child wait up to {leaf_wait:.0f}s, root child up to {root_wait:.0f}s "
+                    f"(ft_log_server_graceful_shutdown_timeout={grpc_graceful_shutdown_timeout}s, root uses 2×)"
                 )
-                _GRPC_SERVER_PROCESS.kill()
-                _GRPC_SERVER_PROCESS.wait()
+            else:
+                leaf_wait = root_wait = single_wait
+                wait_msg = (
+                    f"per-process shutdown wait up to {single_wait:.0f}s "
+                    f"(ft_log_server_graceful_shutdown_timeout={grpc_graceful_shutdown_timeout}s)"
+                )
+            logger.info(
+                "Sending SIGTERM to gRPC log funnel process(es) (root last in wait order). "
+                f"{wait_msg}. "
+                "Check *_grpc_root.log and *_grpc_leaf_*.log for Shutdown snapshot lines: "
+                "in_memory_pending_bytes, chunk_queue_depth, still_connected_streams, etc."
+            )
+            # Terminate leaves first so they drain to root before root exits
+            for p in reversed(_GRPC_SERVER_PROCESSES):
+                with contextlib.suppress(Exception):
+                    p.terminate()
+            # All processes got SIGTERM together; wait in parallel so wall time ≈ one timeout,
+            # not (N+1) × wait_timeout.
+            procs_to_wait = list(reversed(_GRPC_SERVER_PROCESSES))
+            root_proc = _GRPC_SERVER_PROCESSES[0]
+            with ThreadPoolExecutor(max_workers=max(1, len(procs_to_wait))) as pool:
+                pending_futures = [
+                    pool.submit(
+                        _wait_grpc_subprocess_after_terminate,
+                        p,
+                        root_wait if p is root_proc else leaf_wait,
+                    )
+                    for p in procs_to_wait
+                ]
+                for fut in as_completed(pending_futures):
+                    with contextlib.suppress(Exception):
+                        fut.result()
+            for p in _GRPC_SERVER_PROCESSES:
+                rc = getattr(p, "returncode", None)
+                logger.info(f"gRPC log subprocess PID={p.pid} finished with returncode={rc}")
+            _GRPC_SERVER_PROCESSES.clear()
 
     sys.exit(exit_code)
 

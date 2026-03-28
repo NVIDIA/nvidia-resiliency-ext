@@ -13,8 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Unit tests for deprecated InJob PyTorch Lightning FT state machine internals (`ptl_resiliency`).
+
+Skipped by default (module-level ``pytest.mark.skip``). Remove the skip and this module when
+``nvidia_resiliency_ext.ptl_resiliency`` is removed.
+"""
+
+import pytest
 
 from nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback import _TrainingStateMachine
+
+pytestmark = pytest.mark.skip(
+    reason="Deprecated InJob PyTorch Lightning (ptl_resiliency); remove this skip when deleting the package.",
+)
 
 
 class TestFaultTolerance:

@@ -12,6 +12,9 @@
 
 # This file is based on torch.distributed.elastic.rendezvous.dynamic_rendezvous
 # It includes NVRx related modifications for the node health checking, KSO and others.
+#
+# Deprecated: This legacy compare-and-set fault-tolerant rendezvous remains for backward
+# compatibility only. Prefer ft_rendezvous_barrier (CLI: --ft-rdzv-impl barrier, the default).
 
 
 import inspect
@@ -1754,6 +1757,10 @@ def create_handler(
     store: Store, backend: RendezvousBackend, params: RendezvousParameters
 ) -> FtRendezvousHandler:
     """Create a new :py:class:`FtRendezvousHandler` from the specified parameters.
+
+    .. deprecated::
+        Prefer :mod:`ft_rendezvous_barrier` via ``--ft-rdzv-impl barrier``; this legacy
+        implementation is deprecated and will be removed in a future release.
 
     Args:
         store:

@@ -13,6 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""PyTorch Lightning helpers for fault tolerance with ``ft_launcher`` (InJob).
+
+.. deprecated::
+    This package is deprecated and will be removed in a future release.
+    Importing public symbols from this package may emit :exc:`DeprecationWarning`.
+"""
+
 from ._utils import SimulatedFaultParams  # noqa: F401
 from .fault_tolerance_callback import FaultToleranceCallback  # noqa: F401
 from .fault_tolerance_sections_callback import FaultToleranceSectionsCallback  # noqa: F401

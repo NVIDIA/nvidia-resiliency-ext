@@ -60,16 +60,8 @@ Details:
 * Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
 
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
-The restart behavior depends on the ``--ft-restart-policy`` parameter, which supports two modes:
-
-* ``any-failed`` (default)
-  All workers are restarted if any worker fails.
-
-* ``min-healthy``
-  Workers are restarted when the number of healthy nodes (nodes where all worker processes are running)
-  falls below the minimum specified in ``--nnodes``. This allows for some worker failures to be handled
-  without restarting remaining workers, e.g., with the :doc:`../inprocess/index`.
-  For details on how ``min-healthy`` policy interacts with :doc:`../inprocess/index` see :doc:`integration/inprocess`.
+The ``--ft-restart-policy`` parameter is deprecated; only ``any-failed`` is supported: all workers
+are restarted if any worker fails (torchrun-style behavior). This option may be removed in a future release.
 
 Node health check service
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -167,6 +159,22 @@ On restarts, the launcher periodically checks GPU memory usage and waits until i
 the tolerance threshold or the timeout is reached. Memory statistics for each GPU are collected
 and logged after the reclaim process completes. If the timeout is reached, an error is logged but the
 restart proceeds as a best effort.
+
+Per-cycle logging and gRPC log aggregation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When using consolidated per-cycle application logs (for example via ``--ft-per-cycle-applog-prefix``)
+with optional gRPC log funneling (``--ft-enable-log-server``), worker and launcher output can be
+merged through pipes and streamed to one or more aggregators on the rendezvous host before a single
+writer appends to shared storage (for example Lustre).
+
+.. important::
+
+   **Best-effort semantics.** Per-cycle gRPC log aggregation is best-effort. Logs around failure
+   and restart may be incomplete; crash stack traces are not guaranteed to appear there. For
+   critical diagnostics, use rank monitor logs (launcher log) for failure/timeout correlation and
+   OS-level core dumps for reliable crash post-mortem. Do not assume aggregated logs are complete
+   or reliable.
 
 Rank assignment
 ^^^^^^^^^^^^^^^
