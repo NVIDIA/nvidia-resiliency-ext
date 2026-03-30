@@ -276,7 +276,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             try:
                 from langchain_core.output_parsers import StrOutputParser
                 from langchain_core.prompts import PromptTemplate
-                from langchain_nvidia_ai_endpoints import ChatNVIDIA
+                from langchain_openai import ChatOpenAI
 
                 # Define a template for analyzing collective operation issues
                 basic_template = """
@@ -314,9 +314,10 @@ class CollectiveAnalyzer(NVRxAttribution):
                     "analysis_output": analysis_output,
                 }
                 if self.llm is None:
-                    self.llm = ChatNVIDIA(
-                        model=model,
-                        api_key=api_key,
+                    self.llm = ChatOpenAI(
+                        model="nvidia/qwen/qwen-235b",
+                        api_key="sk-4o7xhW0y91WtZCFjiu1B1A",
+                        base_url="https://inference-api.nvidia.com/v1",
                         temperature=0.2,
                         top_p=0.7,
                         max_tokens=32768,

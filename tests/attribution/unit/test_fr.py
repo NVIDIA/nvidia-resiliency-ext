@@ -110,7 +110,7 @@ class TestFRAttribution(unittest.TestCase):
                 self.health_check = False
                 self.llm_analyze = False
                 self.scheduling_order_file = None
-                self.model = "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"
+                self.model = "nvidia/qwen/qwen-235b"
                 self.debug = False
 
         return MockArgs()

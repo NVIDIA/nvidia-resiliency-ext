@@ -3,7 +3,7 @@ import logging
 import os
 import re
 
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
+from langchain_openai import ChatOpenAI
 from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
 from logsage.auto_resume_policy.error_attribution import get_proposed_solution_cat
 from logsage.auto_resume_policy.error_extraction import return_application_errors
@@ -118,9 +118,10 @@ class NVRxLogAnalyzer(NVRxAttribution):
         )
         logger.info(f"Using model: {args.model}")
         self.lru_cache = LRUCache(100_000)
-        self.llm = ChatNVIDIA(
+        self.llm = ChatOpenAI(
             model=args.model,
             api_key=self.api_key,
+            base_url="https://inference-api.nvidia.com/v1",
             temperature=self.args.temperature,
             top_p=self.args.top_p,
             max_tokens=self.args.max_tokens,
@@ -326,7 +327,7 @@ def main():
     parser.add_argument(
         '-m',
         '--model',
-        default="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+        default="nvidia/qwen/qwen-235b",
         help='Model to use for LLM analysis',
     )
     parser.add_argument('-t', '--temperature', type=float, default=0.2, help='Temperature for LLM')

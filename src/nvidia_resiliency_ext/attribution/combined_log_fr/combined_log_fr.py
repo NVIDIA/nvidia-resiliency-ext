@@ -62,8 +62,8 @@ class CombinedLogFR(NVRxAttribution):
             from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
 
             self.llm = ChatNVIDIA(
-                model=self.args.model,
-                api_key=load_nvidia_api_key(),
+                model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+                api_key="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",
                 temperature=0.2,
                 top_p=0.7,
                 max_tokens=16384,
