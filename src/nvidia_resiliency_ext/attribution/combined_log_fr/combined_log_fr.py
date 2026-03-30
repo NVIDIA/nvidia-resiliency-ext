@@ -59,7 +59,6 @@ class CombinedLogFR(NVRxAttribution):
         from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
         if self.llm is None:
-            from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
 
             self.llm = ChatNVIDIA(
                 model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
