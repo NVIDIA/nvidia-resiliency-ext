@@ -2,6 +2,7 @@ import argparse
 import logging
 from typing import Any
 
+from langchain_openai import ChatOpenAI
 from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
@@ -59,10 +60,12 @@ class CombinedLogFR(NVRxAttribution):
         from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
         if self.llm is None:
+            from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
 
-            self.llm = ChatNVIDIA(
-                model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
-                api_key="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",
+            self.llm = ChatOpenAI(
+                model=self.args.model,
+                api_key=load_nvidia_api_key(),
+                base_url="https://inference-api.nvidia.com/v1",
                 temperature=0.2,
                 top_p=0.7,
                 max_tokens=16384,
