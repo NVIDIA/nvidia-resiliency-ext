@@ -315,8 +315,8 @@ class CollectiveAnalyzer(NVRxAttribution):
                 }
                 if self.llm is None:
                     self.llm = ChatOpenAI(
-                        model="nvidia/qwen/qwen-235b",
-                        api_key="sk-4o7xhW0y91WtZCFjiu1B1A",
+                        model=model,
+                        api_key=api_key,
                         base_url="https://inference-api.nvidia.com/v1",
                         temperature=0.2,
                         top_p=0.7,
