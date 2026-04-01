@@ -1,10 +1,5 @@
-#  Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
-#
-#  NVIDIA CORPORATION and its licensors retain all intellectual property
-#  and proprietary rights in and to this software, related documentation
-#  and any modifications thereto.  Any use, reproduction, disclosure or
-#  distribution of this software and related documentation without an express
-#  license agreement from NVIDIA CORPORATION is strictly prohibited.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 """Split logging mode tracking for jobs with separate log directories.
 
@@ -14,7 +9,7 @@ a single slurm output file). It handles:
 
 - Background polling of tracked jobs to detect new log files
 - Scheduler restart detection via << START PATHS >> markers in slurm output
-- Log file discovery in LOGS_DIR using configurable glob patterns
+- Log file discovery in LOGS_DIR (and ``LOGS_DIR/slurm``) using configurable glob patterns
 - Triggering analysis when files are complete (non-blocking fire-and-forget)
 - Job lifecycle management with TTL-based cleanup
 
@@ -24,7 +19,7 @@ Terminology:
 
 Architecture notes:
 - SplitlogTracker does NOT own job storage; it uses callbacks to access Job
-  objects stored in LogAnalyzer._jobs
+  objects stored in :class:`~nvidia_resiliency_ext.attribution.log_analyzer.tracked_jobs.TrackedJobs`
 - Analysis is triggered via fire-and-forget callback to avoid blocking the
   async event loop from the background polling thread
 - Results are stored in RequestCoalescer cache and retrieved via GET /logs
@@ -54,8 +49,8 @@ from .config import (
     STATS_TERMINATED,
 )
 from .job import FileInfo, Job
+from .log_path_metadata import CYCLE_NUM_PATTERN, DATE_TIME_PATTERN
 from .slurm_parser import read_and_parse_slurm_output
-from .utils import CYCLE_NUM_PATTERN, DATE_TIME_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +81,7 @@ class SplitlogTracker:
 
     This class manages jobs that write separate log files to a LOGS_DIR for each
     scheduler restart. It does NOT own job storage - it uses callbacks to access
-    Job objects stored in LogAnalyzer._jobs.
+    Job objects stored in :class:`~nvidia_resiliency_ext.attribution.log_analyzer.tracked_jobs.TrackedJobs`.
 
     Key responsibilities:
     - Background polling thread that runs every poll_interval seconds
@@ -99,7 +94,7 @@ class SplitlogTracker:
     - All job state access is protected by self._lock
     - Analysis is triggered via ThreadPoolExecutor to avoid blocking async event loop
 
-    Callbacks (set by LogAnalyzer during initialization):
+    Callbacks (set by :class:`~nvidia_resiliency_ext.attribution.log_analyzer.tracked_jobs.TrackedJobs`):
     - set_analyze_callback: Called to trigger analysis (fire-and-forget)
     - set_pending_check_callback: Called each poll cycle to check pending jobs
     - set_get_splitlog_jobs_callback: Returns list of splitlog mode jobs
@@ -118,7 +113,10 @@ class SplitlogTracker:
 
         Args:
             poll_interval: How often to poll tracked jobs (seconds)
-            log_pattern: Glob pattern for finding log files. {job_id} is replaced.
+            log_pattern: Glob pattern for finding log files under ``LOGS_DIR`` and
+                ``LOGS_DIR/slurm`` (if that directory exists). ``{job_id}`` is replaced.
+                If nothing matches, a fallback ``{job_id}*.log`` is tried (Slurm step logs
+                like ``12345.0.1.main_workload.log``).
             terminated_job_ttl: How long to keep terminated jobs before cleanup (seconds)
             max_job_age: Maximum age for non-terminated jobs before cleanup (seconds)
         """
@@ -325,6 +323,21 @@ class SplitlogTracker:
         for job in jobs:
             self._poll_job(job)
 
+    def refresh_job_from_disk(self, job: Job) -> None:
+        """Rescan SLURM output and LOGS_DIR for this job (same work as one poll step).
+
+        Used on GET /logs so the handler sees the latest files without relying only on
+        the background poller (which skips terminated jobs).
+        """
+        self._update_job_state(job)
+
+    def flush_pending_splitlog_files(self, job: Job) -> None:
+        """Analyze complete-but-pending log files (e.g. last file after termination).
+
+        Call after :meth:`Job.mark_terminated` when handling GET /logs without ``file=``.
+        """
+        self._analyze_pending_files(job)
+
     def _poll_loop(self) -> None:
         """Background polling loop."""
         while not self._stop_event.is_set():
@@ -396,7 +409,8 @@ class SplitlogTracker:
                     logger.info(f"Job {job.job_id}: new log files: {new_files}")
                     # New file means previous file is complete
                     self._analyze_pending_files(job)
-                elif job.sched_restarts == prev_restarts:
+
+                if not new_files and job.sched_restarts == prev_restarts:
                     logger.debug(f"Job {job.job_id}: no changes detected")
 
         except Exception as e:
@@ -458,21 +472,50 @@ class SplitlogTracker:
             logger.debug(f"_find_log_files: logs_dir not a directory: {logs_dir}")
             return []
 
-        # Build pattern with job_id (escape so metacharacters don't inject)
-        pattern = self._log_pattern.replace("{job_id}", _escape_glob(job_id))
-        full_pattern = os.path.join(logs_dir, pattern)
-        logger.debug(f"_find_log_files: searching pattern={full_pattern}")
+        escaped_id = _escape_glob(job_id)
+        pattern = self._log_pattern.replace("{job_id}", escaped_id)
 
-        # Find matching files, exclude .env.log
-        matches = [
-            f for f in glob.glob(full_pattern) if not f.endswith(".env.log") and os.path.isfile(f)
-        ]
+        scan_roots = [logs_dir]
+        slurm_sub = os.path.join(logs_dir, "slurm")
+        if os.path.isdir(slurm_sub):
+            scan_roots.append(slurm_sub)
+
+        seen_real: set[str] = set()
+        matches: List[str] = []
+
+        def _collect(full_pattern: str) -> None:
+            for f in glob.glob(full_pattern):
+                if f.endswith(".env.log") or not os.path.isfile(f):
+                    continue
+                rp = os.path.realpath(f)
+                if rp in seen_real:
+                    continue
+                seen_real.add(rp)
+                matches.append(f)
+
+        for root in scan_roots:
+            _collect(os.path.join(root, pattern))
 
         if not matches:
-            logger.debug(f"_find_log_files: no matches for pattern {full_pattern}")
+            # e.g. 2058365.0.1.main_workload.log (job id + dots, not _jobid_)
+            for root in scan_roots:
+                _collect(os.path.join(root, f"{escaped_id}*.log"))
+
+        if not matches:
+            logger.debug(
+                "_find_log_files: no matches under %s (pattern=%s, roots=%s)",
+                logs_dir,
+                pattern,
+                scan_roots,
+            )
             return []
 
-        logger.debug(f"_find_log_files: found {len(matches)} files matching pattern")
+        logger.debug(
+            "_find_log_files: found %s files (pattern=%s, roots=%s)",
+            len(matches),
+            pattern,
+            scan_roots,
+        )
 
         # Try to extract cycle info using priority-based approach
         sorted_files = self._sort_log_files_by_cycle(matches)
@@ -486,7 +529,7 @@ class SplitlogTracker:
         Priority:
         1. Explicit cycle number: *_cycle<N>.log
         2. Date/time in filename: *_date_YY-MM-DD_time_HH-MM-SS.log
-        3. Fallback to modification time
+        3. Modification time (setup typically finishes before main workload)
 
         Args:
             files: List of file paths to sort
@@ -508,10 +551,9 @@ class SplitlogTracker:
             logger.debug(f"Sorting {len(files)} files by filename date/time")
             return [f for _, f in sorted(date_sorted)]
 
-        # Strategy 3: Fall back to modification time
+        # Strategy 3: modification time (new list — do not mutate caller's list)
         logger.debug(f"Sorting {len(files)} files by modification time")
-        files.sort(key=lambda f: os.path.getmtime(f))
-        return files
+        return sorted(files, key=lambda f: os.path.getmtime(f))
 
     def _extract_cycle_numbers(self, files: List[str]) -> List[Tuple[int, str]]:
         """

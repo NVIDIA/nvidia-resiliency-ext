@@ -2,16 +2,21 @@ import argparse
 import logging
 import os
 import re
+from typing import Any, Dict, Mapping, Union
 
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
 from logsage.auto_resume_policy.error_attribution import get_proposed_solution_cat
 from logsage.auto_resume_policy.error_extraction import return_application_errors
 
-from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
+from nvidia_resiliency_ext.attribution.base import (
+    AttributionState,
+    NVRxAttribution,
+    effective_run_or_init_config,
+    normalize_attribution_args,
+)
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
 FINISHED_STATUS_SLURM_CANCELLED = "SLURM_CANCELLED"
@@ -103,35 +108,40 @@ def chunk_logs_strict(lines):
 
 
 class NVRxLogAnalyzer(NVRxAttribution):
-    def __init__(self, args: argparse.Namespace):
-        from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
+    def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
+        from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
 
-        self.args = args
+        self._init_config = normalize_attribution_args(args)
         self.api_key = load_nvidia_api_key()
         if not self.api_key:
             raise ValueError(
                 "NVIDIA_API_KEY not found. Set NVIDIA_API_KEY env var, "
                 "NVIDIA_API_KEY_FILE env var, or create ~/.nvidia_api_key"
             )
-        logger.info(
-            f"Using API key: {self.api_key[:10]}..." if self.api_key else "No API key found"
+        logger.debug("API key loaded (length=%d)", len(self.api_key))
+        logger.debug(
+            "Using model: %s",
+            self._init_config.get("model", "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"),
         )
-        logger.info(f"Using model: {args.model}")
         self.lru_cache = LRUCache(100_000)
         self.llm = ChatNVIDIA(
-            model=args.model,
+            model=self._init_config.get("model", "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"),
             api_key=self.api_key,
-            temperature=self.args.temperature,
-            top_p=self.args.top_p,
-            max_tokens=self.args.max_tokens,
+            temperature=float(self._init_config.get("temperature", 0.2)),
+            top_p=float(self._init_config.get("top_p", 0.7)),
+            max_tokens=int(self._init_config.get("max_tokens", 8192)),
         )
-        self.exclude_nvrx_logs = getattr(args, 'exclude_nvrx_logs', False)
-        self.is_per_cycle = getattr(args, 'is_per_cycle', False)
+        self.exclude_nvrx_logs = bool(self._init_config.get("exclude_nvrx_logs", False))
+        self.is_per_cycle = bool(self._init_config.get("is_per_cycle", False))
         super().__init__(
             preprocess_input=self.analyze_logs,
             attribution=self.llm_analyze,
             output_handler=self.print_output,
         )
+
+    @property
+    def init_config(self) -> Dict[str, Any]:
+        return dict(self._init_config)
 
     async def analyze_logs(self) -> list[ApplicationData]:
         """
@@ -151,7 +161,10 @@ class NVRxLogAnalyzer(NVRxAttribution):
             error_type_with_rank_and_rank_and_rank: The error type with rank and rank and rank.
 
         """
-        path = self.args.log_path
+        cfg = effective_run_or_init_config(self._init_config)
+        path = cfg["log_path"]
+        is_per_cycle = bool(cfg.get("is_per_cycle", self.is_per_cycle))
+        exclude_nvrx = bool(cfg.get("exclude_nvrx_logs", self.exclude_nvrx_logs))
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 input_data = f.readlines()
@@ -162,11 +175,11 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 input_data = f.readlines()
 
         # If is_per_cycle is set, skip filtering and chunking (data is already single-cycle)
-        if self.is_per_cycle:
+        if is_per_cycle:
             logger.info("is_per_cycle=True: skipping nvrx log filtering and cycle chunking")
             chunks = {0: input_data}
         else:
-            if self.exclude_nvrx_logs:
+            if exclude_nvrx:
                 input_data = [line for line in input_data if "nvidia_resiliency_ext" not in line]
                 input_data = [
                     line for line in input_data if "[workload:" not in line or 'Cycle:' in line
@@ -303,17 +316,14 @@ class NVRxLogAnalyzer(NVRxAttribution):
         output_list = []
         for attribution_result in attribution_results:
             if attribution_result:
-                # Concatenate all strings in attribution_result if it's a list/tuple
                 logger.info(f"attribution_result: {attribution_result}")
-                attr_state = (
-                    AttributionState.STOP
-                    if 'STOP' in attribution_result[0]
-                    else AttributionState.CONTINUE
-                )
                 if isinstance(attribution_result, (list, tuple)):
                     concatenated_result = '\n'.join(str(item) for item in attribution_result)
+                    head = str(attribution_result[0])
                 else:
                     concatenated_result = str(attribution_result)
+                    head = concatenated_result
+                attr_state = AttributionState.STOP if 'STOP' in head else AttributionState.CONTINUE
                 output_list.append((concatenated_result, attr_state))
         return output_list
 
@@ -348,4 +358,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if not logging.root.handlers:
+        logging.basicConfig(level=logging.INFO)
+    else:
+        logging.getLogger("nvidia_resiliency_ext").setLevel(logging.INFO)
     main()

@@ -14,16 +14,18 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
-from nvidia_resiliency_ext.attribution.base import AttributionState, NVRxAttribution
-from nvidia_resiliency_ext.attribution.utils import capture_logs
-
-log_level = (
-    logging.DEBUG if os.getenv('FR_DEBUG', '').lower() in ('1', 'true', 'yes') else logging.INFO
+from nvidia_resiliency_ext.attribution.base import (
+    AttributionState,
+    NVRxAttribution,
+    effective_run_or_init_config,
+    normalize_attribution_args,
 )
-logging.basicConfig(level=log_level)
-logger = logging.getLogger()
+
+from .capture import capture_logs
+
+logger = logging.getLogger(__name__)
 
 
 # Helper to print to stderr instead of stdout (for MCP compatibility)
@@ -76,12 +78,12 @@ class CollectiveAnalyzer(NVRxAttribution):
     on the ranks in the list.
     """
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
         """
         Initialize the CollectiveAnalyzer class.
 
         Args:
-            args: argparse.Namespace object containing the command line arguments
+            args: Run parameters as a dict (preferred) or :class:`argparse.Namespace` (CLI).
 
         """
         # the data structures to store the collective operations
@@ -94,8 +96,8 @@ class CollectiveAnalyzer(NVRxAttribution):
         self.pg_configs: Dict[str, Dict[int, int]] = {}
         # the data structure to store the node health status per rank
         self.node_health_status: Dict[int, Dict[str, Dict[str, str]]] = {}
-        self.args = args
-        eprint(f"args: {args}")
+        self._init_config = normalize_attribution_args(args)
+        eprint(f"args: {self._init_config}")
         self.llm = None
         # initialize the NVRxAttribution class to run the attribution pipeline
         super().__init__(
@@ -103,33 +105,45 @@ class CollectiveAnalyzer(NVRxAttribution):
             attribution=self.collective_analysis,
             output_handler=self.print_output,
             attribution_kwargs={
-                "model": args.model,
-                "verbose": args.verbose,
+                "model": self._init_config.get("model"),
+                "verbose": bool(self._init_config.get("verbose", False)),
             },
         )
+
+    @property
+    def init_config(self) -> Dict[str, Any]:
+        """Constructor-normalized parameters (immutable snapshot for introspection/tests)."""
+        return dict(self._init_config)
 
     """
     Routines registered for the attribution pipeline
     """
 
     # output handler to print the attribution results
-    async def print_output(self, attribution_result: str):
+    async def print_output(self, attribution_result: Optional[str]):
+        text = attribution_result or ""
         hanging_ranks_list = []
-        if self.llm and self.args.llm_analyze:
-            logger.info(attribution_result)
-            hanging_ranks = re.search(r'.*hanging ranks: \{([^}]*)\}', attribution_result)
+        cfg = effective_run_or_init_config(self._init_config)
+        if self.llm and cfg.get("llm_analyze"):
+            logger.info(text)
+            hanging_ranks = re.search(r'.*hanging ranks: \{([^}]*)\}', text)
             if hanging_ranks is not None:
                 # Parse the hanging ranks from the analysis output
                 hanging_ranks_str = hanging_ranks.group(1).strip()
                 hanging_ranks_list = list(map(int, hanging_ranks_str.split(',')))
         else:
-            for idx, line in enumerate(attribution_result.split('\n')):
+            for idx, line in enumerate(text.split('\n')):
                 line_list = line.split('|')
                 if len(line_list) >= 5:
                     logger.info(line)
                     if idx >= 1:
                         hanging_ranks_list.append(line_list[5])
-        return f"hanging ranks: {hanging_ranks_list}", AttributionState.CONTINUE
+        hanging_ranks = f"hanging ranks: {hanging_ranks_list}"
+        # Dict form preserves collective table text for MCP clients and FRAnalysisResult parity.
+        return (
+            {"analysis_text": text, "hanging_ranks": hanging_ranks},
+            AttributionState.CONTINUE,
+        )
 
     # preprocess input to analyze the collective operations
     async def preprocess_FR_dumps(self) -> str:
@@ -142,24 +156,37 @@ class CollectiveAnalyzer(NVRxAttribution):
         - Analyzes the collective operations
         - Prints the analysis output
         - Uses LLM to analyze the output if requested
+
+        ``fr_path`` may be a directory (scan with ``pattern``), a single existing dump file, or a
+        **path prefix** as in ``TORCH_FR_DUMP_TEMP_FILE=/tmp/checkpoints/_dump_`` (rank files are
+        ``_dump_0``, ``_dump_1``, …). Prefix mode uses ``glob.glob(prefix + "*")``, matching
+        :func:`~nvidia_resiliency_ext.attribution.trace_analyzer.fr_support._fr_traces_exist_for_prefix`.
         """
-        logger.info(f"FR args: {self.args}")
-        file_paths = [self.args.fr_path]
-        logger.info(f"file_paths: {file_paths}, pattern: {self.args.pattern}")
+        cfg = effective_run_or_init_config(self._init_config)
+        logger.info(f"FR args: {cfg}")
+        file_paths = [cfg["fr_path"]]
+        pattern = cfg.get("pattern", "_dump_*")
+        logger.info(
+            "file_paths: %s, pattern: %s",
+            file_paths,
+            pattern,
+        )
         processed_files = 0
         # Process all input paths
         # read files from file_paths and prepare data structure for collective analysis
         for path in file_paths:
             logger.info(f"path: {path}")
-            json_files = (
-                glob.glob(os.path.join(path, self.args.pattern))
-                if os.path.isdir(path)
-                else glob.glob(path)
-            )
+            if os.path.isdir(path):
+                json_files = glob.glob(os.path.join(path, pattern))
+            elif os.path.isfile(path):
+                json_files = glob.glob(path)
+            else:
+                # Path prefix (not a directory / not an existing file): match _dump_<rank> siblings.
+                json_files = glob.glob(path + "*")
             logger.info(f"json_files: {json_files}")
             json_files.sort()
             for filepath in json_files:
-                if self.args.verbose:
+                if cfg.get("verbose"):
                     logger.info(f"Processing {filepath}...")
                 if self.process_file(filepath):
                     processed_files += 1
@@ -179,22 +206,22 @@ class CollectiveAnalyzer(NVRxAttribution):
             self.collectives_to_order = build_collectives_to_order()
             logger.info(f"collective_groups: {self.collective_groups.keys()}")
             logger.info(f"collectives_to_order: {self.collectives_to_order}")
-            if self.args.verbose:
-                self.print_pg_configs(verbose=self.args.verbose)
+            if cfg.get("verbose"):
+                self.print_pg_configs(verbose=bool(cfg.get("verbose")))
 
         if processed_files == 0:
             raise ValueError(f"No files at {file_paths} were processed successfully.")
 
         logger.info(f"\nSuccessfully processed {processed_files} files.")
         # analyze collectives to find process groups with missing and completed ranks
-        completed_pg, missing_pg = self.analyze_matches(verbose=self.args.verbose)
+        completed_pg, missing_pg = self.analyze_matches(verbose=bool(cfg.get("verbose")))
         grouped_missing_pgs = {}
         grouped_completed_pgs = {}
 
         # if the dump file contains health check results, parse the health check results
         # and print them in a format
-        if self.args.health_check:
-            self.print_node_health_status(verbose=self.args.verbose)
+        if cfg.get("health_check"):
+            self.print_node_health_status(verbose=bool(cfg.get("verbose")))
 
         # group the process groups with missing and completed ranks
         # by finding longest paths in the graph
@@ -269,10 +296,11 @@ class CollectiveAnalyzer(NVRxAttribution):
             Requires the NVIDIA_API_KEY environment variable to be set
         """
         result = analysis_output
-        if self.args.llm_analyze:
+        cfg = effective_run_or_init_config(self._init_config)
+        if cfg.get("llm_analyze"):
             logger.info(f"Using LLM to analyze the output: {analysis_output}")
-            model = self.args.model
-            verbose = self.args.verbose
+            model = cfg.get("model")
+            verbose = bool(cfg.get("verbose"))
             try:
                 from langchain_core.output_parsers import StrOutputParser
                 from langchain_core.prompts import PromptTemplate
@@ -303,7 +331,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                 prompt = PromptTemplate(template=template, input_variables=["analysis_output"])
 
                 # Check for API key
-                from nvidia_resiliency_ext.attribution.utils import load_nvidia_api_key
+                from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
 
                 api_key = load_nvidia_api_key()
                 if not api_key:
@@ -959,7 +987,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                         data = pickle.load(f)  # nosec
                         # Convert pickle data to JSON-compatible format
                         converted_data = json.loads(json.dumps(data))
-                    if getattr(self.args, 'debug', False):
+                    if effective_run_or_init_config(self._init_config).get("debug"):
                         with open(filename + '.json', 'w') as f:
                             f.write(json.dumps(converted_data, indent=2))
                             f.write('\n')
@@ -1114,4 +1142,11 @@ def main():
 
 
 if __name__ == "__main__":
+    _fr_cli_level = (
+        logging.DEBUG if os.getenv('FR_DEBUG', '').lower() in ('1', 'true', 'yes') else logging.INFO
+    )
+    if not logging.root.handlers:
+        logging.basicConfig(level=_fr_cli_level)
+    else:
+        logging.getLogger("nvidia_resiliency_ext").setLevel(_fr_cli_level)
     main()

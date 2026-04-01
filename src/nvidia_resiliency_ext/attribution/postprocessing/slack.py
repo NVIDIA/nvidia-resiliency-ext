@@ -16,6 +16,10 @@ Requires slack-sdk (optional). When not installed, HAS_SLACK is False and send n
 import logging
 from dataclasses import dataclass
 
+from nvidia_resiliency_ext.attribution.log_analyzer.posting_markdown import (
+    format_posting_markdown_body,
+)
+
 from .config import config
 
 logger = logging.getLogger(__name__)
@@ -119,14 +123,7 @@ def send_slack_notification(
     if not slack_user_id and data.get("s_user"):
         logger.warning(f"User {data.get('s_user')} not found in Slack")
 
-    text = (
-        f"*Job ID:* `{data.get('s_job_id', 'unknown')}`\n"
-        "*Failed due to:*\n"
-        f"```{data.get('s_attribution', 'No attribution available')}```\n"
-        "*Terminal issue:*\n"
-        f"```{data.get('s_auto_resume_explanation', 'No explanation available')}```"
-        f"{mention}"
-    )
+    text = f"{format_posting_markdown_body(data)}{mention}"
 
     _slack_stats.total_attempts += 1
     try:

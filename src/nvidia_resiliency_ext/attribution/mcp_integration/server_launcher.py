@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-Launcher script for NVRX Attribution MCP Server.
+Launcher for the NVRX Attribution MCP server (tool-agnostic: clients call ``log_analyzer``,
+``fr_analyzer``, etc. by MCP tool name).
+
+Installed as ``nvrx-mcp-analysis`` for a short ``ps`` name; process title matches via
+``setproctitle`` when available.
 
 Usage:
     # Launch server with all modules
+    nvrx-mcp-analysis
     python server_launcher.py
-    
-    # Launch server with specific modules only
-    python server_launcher.py --modules log_analyzer fr_analyzer
-    
+
+    # Launch with specific modules only
+    nvrx-mcp-analysis --modules log_analyzer fr_analyzer
+
     # Launch with custom server name
-    python server_launcher.py --server-name my-attribution-server
+    nvrx-mcp-analysis --server-name my-attribution-server
 """
 
 import argparse
@@ -23,14 +28,26 @@ from nvidia_resiliency_ext.attribution.mcp_integration.module_definitions import
 )
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
 
-logging.basicConfig(
-    level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+_PROC_TITLE = "nvrx-mcp-analysis"
+
+
+def _set_process_title(title: str) -> None:
+    """Set argv-style process name for ps/top (Linux/macOS; no-op if setproctitle unavailable)."""
+    try:
+        import setproctitle  # type: ignore[import-untyped]
+
+        setproctitle.setproctitle(title)
+    except Exception:
+        pass
+
+
 logger = logging.getLogger(__name__)
 
 
 def main():
     """Main entry point for the MCP server."""
+    _set_process_title(_PROC_TITLE)
+
     parser = argparse.ArgumentParser(description='Launch NVRX Attribution MCP Server')
     parser.add_argument(
         '--server-name', default='nvidia-resiliency-attribution', help='Name of the MCP server'
@@ -39,14 +56,20 @@ def main():
     parser.add_argument(
         '--log-level',
         default='INFO',
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
         help='Logging level',
     )
 
     args = parser.parse_args()
 
-    # Set log level
-    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    _level = getattr(logging, args.log_level)
+    if not logging.root.handlers:
+        logging.basicConfig(
+            level=_level,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        )
+    else:
+        logging.getLogger("nvidia_resiliency_ext").setLevel(_level)
 
     # Register all modules
     logger.info("Registering attribution modules...")

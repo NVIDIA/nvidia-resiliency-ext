@@ -19,6 +19,7 @@
 #
 # Optional environment variables:
 #   NVRX_LOGS_DIR             - Output directory for logs (default: ~/nvrx_logs)
+#   NVRX_ATTRSVC_ANALYSIS_BACKEND - Log + FR: mcp (default) or lib
 #   NVRX_SMONSVC_PARTITIONS   - SLURM partitions to monitor (default: "batch batch_long")
 #   NVRX_ATTRSVC_PORT         - Attribution service port (default: 8000)
 #   NVRX_SMONSVC_PORT         - Monitor service port (default: 8100)

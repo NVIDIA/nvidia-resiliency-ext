@@ -76,8 +76,8 @@ global_registry.register(
 )
 
 # Get execution order
-order = global_registry.get_execution_order(["log_analyzer", "fr_analyzer", "combined"])
-# Returns: ["log_analyzer", "fr_analyzer", "combined"] (respecting dependencies)
+order = global_registry.get_execution_order(["log_analyzer", "fr_analyzer", "log_fr_analyzer"])
+# Returns: ["log_analyzer", "fr_analyzer", "log_fr_analyzer"] (respecting dependencies)
 ```
 
 ### 2. MCP Server (`mcp_server.py`)

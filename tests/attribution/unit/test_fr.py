@@ -63,21 +63,20 @@ class TestFRAttribution(unittest.TestCase):
         # Test the CollectiveAnalyzer initialization
         analyzer = CollectiveAnalyzer(mock_args)
         self.assertIsNotNone(analyzer)
-        self.assertEqual(analyzer.args.pattern, "_dump*")
+        self.assertEqual(analyzer.init_config["pattern"], "_dump*")
 
         # Test the preprocessing step
+        loop = None
         try:
             # Run the preprocessing step
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            result = loop.run_until_complete(analyzer.preprocess_FR_dumps([str(trace_dir)]))
+            analysis_output = loop.run_until_complete(analyzer.preprocess_FR_dumps())
 
             # Verify that preprocessing completed successfully
-            self.assertIsNotNone(result)
-            analysis_output, attribution_kwargs = result
+            self.assertIsNotNone(analysis_output)
             self.assertIsInstance(analysis_output, str)
-            self.assertIsInstance(attribution_kwargs, dict)
 
             # Verify that some analysis output was generated
             self.assertGreater(
@@ -85,9 +84,7 @@ class TestFRAttribution(unittest.TestCase):
             )
 
             # Test the collective analysis step
-            analysis_result = loop.run_until_complete(
-                analyzer.collective_analysis(analysis_output, **attribution_kwargs)
-            )
+            analysis_result = loop.run_until_complete(analyzer.collective_analysis(analysis_output))
 
             # Verify that analysis completed
             self.assertIsNotNone(analysis_result)
@@ -98,22 +95,22 @@ class TestFRAttribution(unittest.TestCase):
         except Exception as e:
             self.fail(f"FR attribution test failed for {test_name}: {str(e)}")
         finally:
-            loop.close()
+            if loop is not None:
+                loop.close()
 
     def _create_mock_args(self, trace_dir: Path):
         """Create mock arguments for the CollectiveAnalyzer."""
-
-        class MockArgs:
-            def __init__(self):
-                self.pattern = "_dump*"
-                self.verbose = False
-                self.health_check = False
-                self.llm_analyze = False
-                self.scheduling_order_file = None
-                self.model = "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"
-                self.debug = False
-
-        return MockArgs()
+        return {
+            "fr_path": str(trace_dir),
+            "pattern": "_dump*",
+            "verbose": False,
+            "health_check": False,
+            "llm_analyze": False,
+            "scheduling_order_file": None,
+            "model": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+            "debug": False,
+            "threshold": None,
+        }
 
     def _compare_with_reference(self, actual_output: str, test_name: str):
         """
@@ -189,17 +186,15 @@ class TestFRAttribution(unittest.TestCase):
         mock_args = self._create_mock_args(Path("dummy"))
         analyzer = CollectiveAnalyzer(mock_args)
         self.assertIsNotNone(analyzer)
-        self.assertEqual(analyzer.args.pattern, "_dump*")
+        self.assertEqual(analyzer.init_config["pattern"], "_dump*")
 
         # Test with verbose configuration
-        mock_args.verbose = True
-        analyzer_verbose = CollectiveAnalyzer(mock_args)
-        self.assertTrue(analyzer_verbose.args.verbose)
+        analyzer_verbose = CollectiveAnalyzer({**mock_args, "verbose": True})
+        self.assertTrue(analyzer_verbose.init_config["verbose"])
 
         # Test with health check enabled
-        mock_args.health_check = True
-        analyzer_health = CollectiveAnalyzer(mock_args)
-        self.assertTrue(analyzer_health.args.health_check)
+        analyzer_health = CollectiveAnalyzer({**mock_args, "health_check": True})
+        self.assertTrue(analyzer_health.init_config["health_check"])
 
     def test_process_file_method(self):
         """Test the process_file method with a sample trace directory."""

@@ -1,32 +1,42 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Postprocessing for attribution results.
+"""Attribution postprocessing: configure poster, post results, optional Slack.
 
-- config: Singleton PostprocessingConfig; set config.default_poster, config.cluster_name, config.dataflow_index, config.slack_bot_token, config.slack_channel at startup.
-- base: ResultPoster, post_results, get_default_poster.
-- slack: API and maybe_send_slack_notification (used by post_results).
+- :data:`config` — cluster, index, Slack, default :class:`ResultPoster`.
+- :func:`post_results` — build record, log, post, maybe Slack.
+- :func:`post_analysis_items` — post each cycle item (LogSage + optional FR).
+- :func:`build_dataflow_record` — build the dataflow dict (LogSage + optional FR fields).
+- :mod:`nvidia_resiliency_ext.attribution.postprocessing.post_backend` — retrying post (custom override or nvdataflow).
 
 Example:
-    from nvidia_resiliency_ext.attribution.postprocessing import configure, ResultPoster, post_results
+
+    from nvidia_resiliency_ext.attribution.postprocessing import (
+        ResultPoster,
+        configure,
+        post_results,
+        post_backend,
+    )
+
     configure(
-        default_poster=ResultPoster(post_fn=my_dataflow_post),
+        default_poster=ResultPoster(post_fn=post_backend.post),
         cluster_name="my-cluster",
         dataflow_index="my-index",
-        slack_bot_token=token,
-        slack_channel=channel,
     )
 """
 
-from .base import (
-    DataflowStats,
+from . import post_backend
+from .config import PostprocessingConfig, config, configure, configure_from_env, load_slack_from_env
+from .pipeline import (
     PostFunction,
+    PostingStats,
     ResultPoster,
-    get_dataflow_stats,
+    build_dataflow_record,
     get_default_poster,
+    get_posting_stats,
+    post_analysis_items,
     post_results,
 )
-from .config import PostprocessingConfig, config, configure
 from .slack import (
     HAS_SLACK,
     SlackStats,
@@ -37,24 +47,33 @@ from .slack import (
     should_notify_slack,
 )
 
+HAS_NVDATAFLOW = post_backend.HAS_NVDATAFLOW
+get_retrying_post_fn = post_backend.get_retrying_post_fn
+set_post_override = post_backend.set_post_override
+
 __all__ = [
-    # Config (assign at startup or use configure())
     "PostprocessingConfig",
     "config",
     "configure",
-    # Base
-    "DataflowStats",
+    "configure_from_env",
+    "load_slack_from_env",
+    "post_backend",
+    "HAS_NVDATAFLOW",
+    "get_retrying_post_fn",
+    "set_post_override",
+    "PostingStats",
     "PostFunction",
     "ResultPoster",
-    "get_dataflow_stats",
+    "get_posting_stats",
     "get_default_poster",
     "post_results",
-    # Slack
-    "HAS_SLACK",
+    "post_analysis_items",
+    "build_dataflow_record",
     "SlackStats",
     "get_slack_stats",
     "get_slack_user_id",
     "maybe_send_slack_notification",
     "send_slack_notification",
     "should_notify_slack",
+    "HAS_SLACK",
 ]

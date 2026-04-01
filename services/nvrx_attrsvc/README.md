@@ -1,6 +1,19 @@
 # NVRX Attribution Service (nvrx-attrsvc)
 
-FastAPI server that analyzes log files using LLM-based failure attribution.
+FastAPI server that exposes log analysis over HTTP. It wraps the **`nvidia_resiliency_ext.attribution`** library (**`Analyzer`**, coalescing, postprocessing) with pydantic `Settings`, routes, and optional cache persistence.
+
+---
+
+## Library vs this service
+
+| | **Library** (`nvidia_resiliency_ext.attribution`) | **This package** (`nvrx_attrsvc`) |
+|---|--------------------------------------------------|-----------------------------------|
+| **Role** | **`Analyzer`** (→ `LogAnalyzer`, pipelines, MCP/lib LogSage, FR analysis, jobs/splitlog) | HTTP API, env-based `Settings`, rate limits, ledger file |
+| **Docs** | [`src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md`](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md), [`README.md`](../../src/nvidia_resiliency_ext/attribution/README.md) | This file, [`ATTRSVC_SPEC.md`](ATTRSVC_SPEC.md) |
+
+Do not duplicate library internals here—**ARCHITECTURE.md** is the source of truth for package layout, `LogAnalyzerConfig` / `AnalysisPipelineMode` (default `LOG_AND_TRACE` for this service), MCP vs in-process backends, and analysis flow.
+
+---
 
 ## Quick Start
 
@@ -25,22 +38,23 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 | `ALLOWED_ROOT` | (required) | Base directory for allowed log paths |
 | `HOST` | `0.0.0.0` | Listen address |
 | `PORT` | `8000` | Listen port |
-| `LOG_LEVEL_NAME` | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR) |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, or `WARNING` for root logging and MCP; FastAPI `debug` when set to `DEBUG`. Legacy env: `LOG_LEVEL_NAME`. |
 | `CLUSTER_NAME` | `""` | Cluster name for dataflow posting |
 | `DATAFLOW_INDEX` | `""` | Elasticsearch index for result posting |
 | `RATE_LIMIT_SUBMIT` | `1200/minute` | Rate limit for POST /logs |
 | `RATE_LIMIT_ANALYZE` | `60/minute` | Rate limit for GET /logs |
 | `RATE_LIMIT_PREVIEW` | `120/minute` | Rate limit for GET /print |
 
-**LLM Settings** (optional - library defaults used if not set):
+**LLM / analysis** (optional — unset vars keep library defaults). Use the prefixed names below in the environment or ``.env``; ``AttributionService`` passes them into ``LogSageExecutionConfig`` and the library ``Analyzer`` (LogSage / MCP / merge paths). See **ARCHITECTURE.md §7**.
 
-| Variable | Description |
+| Variable (with prefix) | Description |
 |----------|-------------|
-| `LLM_MODEL` | LLM model identifier |
-| `LLM_TEMPERATURE` | Temperature (0.0 = deterministic) |
-| `LLM_TOP_P` | Top-p for nucleus sampling |
-| `LLM_MAX_TOKENS` | Max tokens for response |
-| `COMPUTE_TIMEOUT` | Timeout for analysis in seconds |
+| `NVRX_ATTRSVC_LLM_MODEL` | LLM model identifier |
+| `NVRX_ATTRSVC_LLM_TEMPERATURE` | Temperature (0.0 = deterministic) |
+| `NVRX_ATTRSVC_LLM_TOP_P` | Top-p for nucleus sampling |
+| `NVRX_ATTRSVC_LLM_MAX_TOKENS` | Max tokens for response |
+| `NVRX_ATTRSVC_COMPUTE_TIMEOUT` | Timeout for analysis in seconds |
+| `NVRX_ATTRSVC_ANALYSIS_BACKEND` | `mcp` (subprocess MCP, default) or `lib` (in-process LogSage and flight-recorder analysis). Same setting for both; library behavior: **ARCHITECTURE.md §7**. Legacy env: `NVRX_ATTRSVC_LOG_ANALYSIS_BACKEND`. |
 
 **NVIDIA API Key** (required, checked in order):
 1. `NVIDIA_API_KEY` environment variable
@@ -52,8 +66,9 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SLACK_BOT_TOKEN` | `""` | Slack bot OAuth token (empty = disabled) |
-| `SLACK_CHANNEL` | `""` | Slack channel for terminal failure alerts |
+| `SLACK_BOT_TOKEN` | `""` | Bot token (empty = try file fallbacks below via `setup()`) |
+| `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token (checked before `~/.slack_bot_token` / `~/.slack_token`) |
+| `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env`, quote values that start with `#`: `SLACK_CHANNEL="#trng-alerts"` |
 
 When configured, sends alerts to Slack for jobs with `auto_resume = "STOP - DONT RESTART IMMEDIATE"`.
 
@@ -214,41 +229,11 @@ All deployment and run scripts live under `deploy/`:
 
 For combined deployment with monitor, see `../scripts/nvrx_services.sbatch`
 
-## Architecture
-
-Two-layer design:
-
-1. **Library Layer** (`nvidia_resiliency_ext.attribution`): Pure Python, no HTTP dependencies
-   - `LogAnalyzer`: Main API for analyzing logs
-   - Request coalescing, job tracking, splitlog management
-   - Scheduler parsers (SLURM), LLM integration via MCP
-
-2. **Service Layer** (`nvrx_attrsvc`): HTTP wrapper
-   - `AttributionService`: Thin wrapper around `LogAnalyzer`
-   - FastAPI routes, pydantic Settings
-   - Proprietary dataflow posting
-
 ## Python API
 
-### Library API (No HTTP Required)
+**Embedding the library** (no HTTP): use **`Analyzer`** (or `LogAnalyzer` / `LogAnalyzerConfig` for lower-level control) from `nvidia_resiliency_ext.attribution`. Overview and examples: **[attribution README](../../src/nvidia_resiliency_ext/attribution/README.md)** · **[ARCHITECTURE.md](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md)**.
 
-```python
-import asyncio
-from nvidia_resiliency_ext.attribution import LogAnalyzer, AnalyzerConfig
-
-async def main():
-    config = AnalyzerConfig(allowed_root="/path/to/logs")
-    analyzer = LogAnalyzer(config)
-    
-    result = await analyzer.submit("/path/to/slurm-12345.out", user="alice", job_id="12345")
-    analysis = await analyzer.analyze("/path/to/slurm-12345.out")
-    
-    analyzer.shutdown()
-
-asyncio.run(main())
-```
-
-### HTTP Service Wrapper
+**In-process service wrapper** (same repo, after `pip install`):
 
 ```python
 import asyncio
@@ -269,9 +254,8 @@ asyncio.run(main())
 | File | Description |
 |------|-------------|
 | `app.py` | FastAPI routes and middleware |
-| `service.py` | `AttributionService` - wraps LogAnalyzer |
-| `config.py` | `Settings` (pydantic), `setup()` wires postprocessing (poster + Slack) from cfg |
-| `dataflow.py` | NVIDIA-proprietary Elasticsearch posting |
+| `service.py` | `AttributionService` — wraps **`Analyzer`** |
+| `config.py` | `Settings` (pydantic), `setup()` wires postprocessing (poster via `post_backend.post`, Slack) from cfg |
 | `deploy/run_attrsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_attrsvc.sh` | Periodic endpoint snapshot for debugging |
 | `deploy/Dockerfile` | Docker build instructions |
@@ -280,11 +264,13 @@ asyncio.run(main())
 
 ## Documentation
 
-See [NVRX_ATTRSVC_SPEC.md](NVRX_ATTRSVC_SPEC.md) for detailed technical specification.
+| Document | Audience |
+|----------|----------|
+| [ATTRSVC_SPEC.md](ATTRSVC_SPEC.md) | HTTP contract, service-level behavior; library internals in **ARCHITECTURE.md** |
+| [../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md) | Library architecture, pipelines, MCP, coalescing |
 
 ## Configuration and postprocessing (summary)
 
 - **Service config** is in `config.py` (`Settings` from env with prefix `NVRX_ATTRSVC_`).
 - **`setup()`** in `config.py` loads settings, configures logging, and wires the library postprocessing singleton via `configure(default_poster=..., cluster_name=..., dataflow_index=..., slack_bot_token=..., slack_channel=...)`.
 - The analyzer calls `post_results()` from the library when it has results; posting and Slack use the values set in `configure()`.
-

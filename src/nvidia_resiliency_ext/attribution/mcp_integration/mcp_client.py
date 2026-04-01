@@ -10,6 +10,7 @@ This client allows:
 import asyncio
 import json
 import logging
+import shutil
 from contextlib import AsyncExitStack
 from importlib.resources import files as pkg_files
 from typing import Any, Dict, List
@@ -18,17 +19,44 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import deserialize_result
+from nvidia_resiliency_ext.attribution.mcp_integration.transport_errors import (
+    is_mcp_connection_error,
+)
 
 logger = logging.getLogger(__name__)
 
+# Must stay in sync with :mod:`server_launcher` ``--log-level`` choices.
+_MCP_SERVER_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
-def get_server_command() -> List[str]:
+
+def normalize_mcp_server_log_level(level: str) -> str:
+    """Return a ``server_launcher --log-level`` value (uppercase, known set)."""
+    name = (level or "INFO").strip().upper()
+    if name not in _MCP_SERVER_LOG_LEVELS:
+        logger.warning("Unknown MCP server log level %r, using INFO", level)
+        return "INFO"
+    return name
+
+
+def get_server_command(*, log_level: str = "INFO") -> List[str]:
     """
     Resolve and return the server launcher command for the MCP client.
+
+    Prefers the ``nvrx-mcp-analysis`` console script when on PATH (clearer in ``ps``);
+    falls back to ``python path/to/server_launcher.py`` for editable installs.
+
+    Args:
+        log_level: Subprocess logging level (same names as ``server_launcher --log-level``).
+            Typically matches host app config (e.g. ``NVRX_ATTRSVC_LOG_LEVEL``).
 
     Returns:
         Command list to launch the MCP server subprocess.
     """
+    lvl = normalize_mcp_server_log_level(log_level)
+    script = shutil.which("nvrx-mcp-analysis")
+    if script:
+        return [script, "--log-level", lvl]
+
     pkg = "nvidia_resiliency_ext.attribution.mcp_integration"
     try:
         resource = pkg_files(pkg).joinpath("server_launcher.py")
@@ -36,18 +64,21 @@ def get_server_command() -> List[str]:
         raise FileNotFoundError(f"failed to locate server_launcher.py in package {pkg}: {e}")
     if not resource.exists():
         raise FileNotFoundError(f"server launcher not found in package: {pkg}/server_launcher.py")
-    # Use WARNING to reduce subprocess log verbosity
-    return ["python", str(resource), "--log-level", "WARNING"]
+    return ["python", str(resource), "--log-level", lvl]
 
 
-def create_mcp_client() -> "NVRxMCPClient":
+def create_mcp_client(*, mcp_server_log_level: str = "INFO") -> "NVRxMCPClient":
     """
     Create and return an NVRxMCPClient with the default server command.
+
+    Args:
+        mcp_server_log_level: Passed to ``server_launcher`` as ``--log-level`` (e.g. from
+            :class:`~nvidia_resiliency_ext.attribution.log_analyzer.config.LogSageExecutionConfig`).
 
     Returns:
         Configured NVRxMCPClient ready for use as async context manager.
     """
-    return NVRxMCPClient(get_server_command())
+    return NVRxMCPClient(get_server_command(log_level=mcp_server_log_level))
 
 
 class NVRxMCPClient:
@@ -167,6 +198,44 @@ class NVRxMCPClient:
 
         result_str = await self.call_tool(module_name, arguments)
         return deserialize_result(result_str)
+
+    async def reconnect(self) -> bool:
+        """Tear down stdio/session and re-run :meth:`__aenter__` to attach a fresh MCP session."""
+        try:
+            await self.exit_stack.aclose()
+        except Exception as e:
+            logger.debug("MCP cleanup during reconnect: %s", e)
+        self.exit_stack = AsyncExitStack()
+        self._context = None
+        self.session = None
+        try:
+            await self.__aenter__()
+            logger.info("MCP client reconnected")
+            return True
+        except Exception as e:
+            logger.error("MCP reconnect failed: %s", e)
+            return False
+
+    async def run_module_resilient(
+        self, module_name: str, *, max_attempts: int = 3, **kwargs: Any
+    ) -> Dict[str, Any]:
+        """Like :meth:`run_module`, but reconnect and retry on dead stdio transport errors."""
+        for attempt in range(max_attempts):
+            try:
+                return await self.run_module(module_name, **kwargs)
+            except BaseException as e:
+                if not is_mcp_connection_error(e):
+                    raise
+                if attempt + 1 >= max_attempts:
+                    raise
+                logger.warning(
+                    "MCP connection error (attempt %d/%d), reconnecting: %s",
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                )
+                if not await self.reconnect():
+                    raise RuntimeError("MCP reconnect failed after connection error") from e
 
     async def get_result(self, result_id: str) -> Dict[str, Any]:
         """
