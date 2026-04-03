@@ -693,7 +693,14 @@ class PersistentAsyncCaller(AsyncCaller):
         # in this new process are on the right device, and device 0 on the node does not
         # take on undue memory burden from other devices on node (default behavior without
         # this line).
-        torch.cuda.set_device(rank % torch.cuda.device_count())
+        device_id = rank % torch.cuda.device_count()
+        torch.cuda.set_device(device_id)
+        # Allocate a small dummy tensor to force CUDA context initialization before any
+        # IPC handle is received via the queue. This prevents a handle type mismatch
+        # between the producer and consumer that otherwise manifests as:
+        #   RuntimeError: pidfd_getfd: Bad file descriptor
+        # See https://github.com/pytorch/pytorch/issues/179220 for details.
+        torch.empty(1, device=f'cuda:{device_id}')
 
         # Set QoS to deprioritize checkpoint writing vs training.
         # This prevents checkpoint I/O from interfering with data loader.
@@ -732,6 +739,15 @@ class PersistentAsyncCaller(AsyncCaller):
                     del async_fn_args
                 del item
                 gc.collect()
+        except RuntimeError as e:
+            if "pidfd_getfd" in str(e) and "Operation not permitted" in str(e):
+                raise RuntimeError(
+                    "Failed to receive CUDA IPC handle from the training process "
+                    "(pidfd_getfd: Operation not permitted). This is a kernel security "
+                    "restriction. To allow cross-process file-descriptor passing, run: "
+                    "  sudo sysctl kernel.yama.ptrace_scope=0"
+                ) from e
+            raise
         finally:
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
