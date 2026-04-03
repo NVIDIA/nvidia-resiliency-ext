@@ -107,7 +107,8 @@ class TestFRAttribution(unittest.TestCase):
             "health_check": False,
             "llm_analyze": False,
             "scheduling_order_file": None,
-            "model": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+            "model": "nvidia/qwen/qwen-235b",
+            "base_url": "https://inference-api.nvidia.com/v1",
             "debug": False,
             "threshold": None,
         }

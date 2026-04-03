@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fuse LogSage output with NCCL flight-recorder analysis via an LLM (LangChain + ChatNVIDIA).
+"""Fuse LogSage output with NCCL flight-recorder analysis via an LLM (LangChain + ChatOpenAI).
 
 Used by :class:`~nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr.CombinedLogFR` and
 by :func:`~nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline.run_attribution_pipeline` (``LOG_AND_TRACE_WITH_LLM``).
@@ -93,6 +93,7 @@ async def merge_log_fr_llm(
     *,
     nvidia_api_key: str,
     model: str,
+    base_url: str,
     temperature: float = 0.2,
     top_p: float = 0.7,
     max_tokens: int = 16384,
@@ -104,7 +105,7 @@ async def merge_log_fr_llm(
     """
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import PromptTemplate
-    from langchain_nvidia_ai_endpoints import ChatNVIDIA
+    from langchain_openai import ChatOpenAI
 
     if not (nvidia_api_key and nvidia_api_key.strip()):
         raise ValueError(
@@ -119,9 +120,10 @@ async def merge_log_fr_llm(
     log_str = log_payload if isinstance(log_payload, str) else str(log_payload)
     fr_str = _fr_side_to_prompt_text(fr_payload)
 
-    llm = ChatNVIDIA(
+    llm = ChatOpenAI(
         model=model,
         api_key=api_key,
+        base_url = base_url,
         temperature=temperature,
         top_p=top_p,
         max_tokens=max_tokens,

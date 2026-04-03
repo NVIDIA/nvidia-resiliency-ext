@@ -36,7 +36,8 @@ class LogAnalyzerConfig:
     """
 
     allowed_root: str
-    llm_model: str = "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"
+    llm_model: str = "nvidia/qwen/qwen-235b"
+    llm_base_url: str = "https://inference-api.nvidia.com/v1"
     llm_temperature: float = 0.0
     llm_top_p: float = 1.0
     llm_max_tokens: int = 8192
