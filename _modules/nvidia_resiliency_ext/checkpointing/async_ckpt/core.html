@@ -836,7 +836,14 @@
         <span class="c1"># in this new process are on the right device, and device 0 on the node does not</span>
         <span class="c1"># take on undue memory burden from other devices on node (default behavior without</span>
         <span class="c1"># this line).</span>
-        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">rank</span> <span class="o">%</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">())</span>
+        <span class="n">device_id</span> <span class="o">=</span> <span class="n">rank</span> <span class="o">%</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">device_count</span><span class="p">()</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">set_device</span><span class="p">(</span><span class="n">device_id</span><span class="p">)</span>
+        <span class="c1"># Allocate a small dummy tensor to force CUDA context initialization before any</span>
+        <span class="c1"># IPC handle is received via the queue. This prevents a handle type mismatch</span>
+        <span class="c1"># between the producer and consumer that otherwise manifests as:</span>
+        <span class="c1">#   RuntimeError: pidfd_getfd: Bad file descriptor</span>
+        <span class="c1"># See https://github.com/pytorch/pytorch/issues/179220 for details.</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="sa">f</span><span class="s1">&#39;cuda:</span><span class="si">{</span><span class="n">device_id</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
 
         <span class="c1"># Set QoS to deprioritize checkpoint writing vs training.</span>
         <span class="c1"># This prevents checkpoint I/O from interfering with data loader.</span>
@@ -875,6 +882,15 @@
                     <span class="k">del</span> <span class="n">async_fn_args</span>
                 <span class="k">del</span> <span class="n">item</span>
                 <span class="n">gc</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">RuntimeError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">if</span> <span class="s2">&quot;pidfd_getfd&quot;</span> <span class="ow">in</span> <span class="nb">str</span><span class="p">(</span><span class="n">e</span><span class="p">)</span> <span class="ow">and</span> <span class="s2">&quot;Operation not permitted&quot;</span> <span class="ow">in</span> <span class="nb">str</span><span class="p">(</span><span class="n">e</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                    <span class="s2">&quot;Failed to receive CUDA IPC handle from the training process &quot;</span>
+                    <span class="s2">&quot;(pidfd_getfd: Operation not permitted). This is a kernel security &quot;</span>
+                    <span class="s2">&quot;restriction. To allow cross-process file-descriptor passing, run: &quot;</span>
+                    <span class="s2">&quot;  sudo sysctl kernel.yama.ptrace_scope=0&quot;</span>
+                <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
+            <span class="k">raise</span>
         <span class="k">finally</span><span class="p">:</span>
             <span class="c1"># Cleanup worker data cache before exiting, regardless of how the loop exits</span>
             <span class="c1"># (normal termination via &#39;DONE&#39; sentinel or unhandled exception).</span>
