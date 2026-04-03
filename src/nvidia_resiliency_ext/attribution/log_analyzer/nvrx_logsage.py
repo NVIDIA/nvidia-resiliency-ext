@@ -350,12 +350,6 @@ def main():
     parser.add_argument('-p', '--top_p', type=float, default=0.7, help='Top P for LLM')
     parser.add_argument('--max_tokens', type=int, default=8192, help='Max tokens for LLM')
     parser.add_argument(
-        '--base_url',
-        type=str,
-        default="https://inference-api.nvidia.com/v1",
-        help='Base URL for the OpenAI-compatible API endpoint',
-    )
-    parser.add_argument(
         '--exclude_nvrx_logs', action='store_true', help='Exclude nvrx logs from the input data'
     )
     parser.add_argument(
