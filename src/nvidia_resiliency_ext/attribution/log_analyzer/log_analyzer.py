@@ -433,6 +433,7 @@ class LogAnalyzer:
                 else None
             ),
             llm_model=cfg.llm_model,
+            base_url=cfg.base_url,
             llm_temperature=cfg.llm_temperature,
             llm_top_p=cfg.llm_top_p,
             llm_max_tokens=cfg.llm_max_tokens,

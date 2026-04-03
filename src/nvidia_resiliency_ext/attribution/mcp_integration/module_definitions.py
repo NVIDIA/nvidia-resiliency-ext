@@ -27,7 +27,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model to use for analysis",
-                    "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+                    "default": "nvidia/qwen/qwen-235b",
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "LLM base url",
+                    "default": "https://inference-api.nvidia.com/v1",
                 },
                 "temperature": {
                     "type": "number",
@@ -90,7 +95,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model for analysis (optional)",
-                    "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+                    "default": "nvidia/qwen/qwen-235b",
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "LLM base url",
+                    "default": "https://inference-api.nvidia.com/v1",
                 },
                 "scheduling_order_file": {
                     "type": "string",
@@ -164,7 +174,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model",
-                    "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+                    "default": "nvidia/qwen/qwen-235b",
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "LLM base url",
+                    "default": "https://inference-api.nvidia.com/v1",
                 },
                 "temperature": {"type": "number", "default": 0.2},
                 "top_p": {"type": "number", "default": 0.7},
