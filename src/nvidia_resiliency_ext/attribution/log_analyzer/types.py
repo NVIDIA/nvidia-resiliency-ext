@@ -59,6 +59,7 @@ class LogAnalyzerConfig:
         return LogSageExecutionConfig(
             use_lib_log_analysis=self.use_lib_log_analysis,
             llm_model=self.llm_model,
+            llm_base_url=self.llm_base_url,
             llm_temperature=self.llm_temperature,
             llm_top_p=self.llm_top_p,
             llm_max_tokens=self.llm_max_tokens,
