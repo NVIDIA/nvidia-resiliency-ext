@@ -123,7 +123,7 @@ async def merge_log_fr_llm(
     llm = ChatOpenAI(
         model=model,
         api_key=api_key,
-        base_url = base_url,
+        base_url=base_url,
         temperature=temperature,
         top_p=top_p,
         max_tokens=max_tokens,
