@@ -125,6 +125,8 @@ def send_slack_notification(
         f"```{data.get('s_attribution', 'No attribution available')}```\n"
         "*Terminal issue:*\n"
         f"```{data.get('s_auto_resume_explanation', 'No explanation available')}```"
+        "*Log path:*\n"
+        f"```{data.get('s_log_path', 'Log path not found')}```"
         f"{mention}"
     )
 
