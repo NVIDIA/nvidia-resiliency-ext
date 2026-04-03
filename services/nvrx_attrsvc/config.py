@@ -61,6 +61,7 @@ class Settings(BaseSettings):
 
     # LLM settings → LogSageExecutionConfig when set (see AttributionService)
     LLM_MODEL: str | None = Field(default=None, description="LLM model identifier")
+    LLM_BASE_URL: str | None = Field(default=None, description="LLM base url")
     LLM_TEMPERATURE: float | None = Field(
         default=None, description="LLM temperature (0.0 = deterministic)"
     )

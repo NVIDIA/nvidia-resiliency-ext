@@ -62,7 +62,8 @@ async def main(args: argparse.Namespace):
         log_result = await client.run_module(
             module_name="log_analyzer",
             log_path=args.log_path,
-            model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+            model="nvidia/qwen/qwen-235b",
+            base_url="https://inference-api.nvidia.com/v1",
             temperature=0.2,
             exclude_nvrx_logs=True,
             top_p=0.7,
@@ -76,7 +77,8 @@ async def main(args: argparse.Namespace):
         fr_result = await client.run_module(
             module_name="fr_analyzer",
             fr_path=args.fr_path,
-            model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+            model="nvidia/qwen/qwen-235b",
+            base_url="https://inference-api.nvidia.com/v1",
             temperature=0.2,
             top_p=0.7,
             max_tokens=8192,
@@ -105,7 +107,8 @@ async def main(args: argparse.Namespace):
                 (log_analysis_result, log_result["state"]),
                 (fr_analysis_result, fr_result["state"]),
             ],
-            model="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+            model="nvidia/qwen/qwen-235b",
+            base_url="https://inference-api.nvidia.com/v1",
             threshold=5,
         )
         logger.info(f"Combined Result: {combined_result}")
