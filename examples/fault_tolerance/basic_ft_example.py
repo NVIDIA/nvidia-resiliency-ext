@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 # FT: import NVRx
 import nvidia_resiliency_ext.fault_tolerance as ft
 
-# Simple example of using the FT library with PyTorch DDP.
+# Simple example of using the FT library with PyTorch DDP..
 # This script trains a dummy model on dummy data. CPU is used for training.
 # After each epoch, FT timeouts are calculated and saved to the file "./ft_state.json".
 #
