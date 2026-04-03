@@ -160,6 +160,7 @@ class LogSageRunner:
         run_kwargs = {
             "log_path": path,
             "model": self.config.llm_model,
+            "base_url": self.config.llm_base_url,
             "temperature": self.config.llm_temperature,
             "exclude_nvrx_logs": False,
             "is_per_cycle": is_per_cycle,
@@ -179,6 +180,7 @@ class LogSageRunner:
         run_kwargs = dict(
             log_path=path,
             model=self.config.llm_model,
+            base_url=self.config.llm_base_url,
             temperature=self.config.llm_temperature,
             exclude_nvrx_logs=False,
             is_per_cycle=is_per_cycle,
@@ -207,6 +209,7 @@ class LogSageRunner:
                 fr_path=dump_path,
                 pattern="_dump_*",
                 model=self.config.llm_model,
+                base_url=self.config.llm_base_url,
                 verbose=False,
                 health_check=False,
                 llm_analyze=False,
@@ -229,6 +232,7 @@ class LogSageRunner:
             log_path=log_path,
             fr_path=fr_dump_path,
             model=self.config.llm_model,
+            base_url=self.config.llm_base_url,
             temperature=self.config.llm_temperature,
             top_p=self.config.llm_top_p,
             max_tokens=self.config.llm_max_tokens,
@@ -433,7 +437,7 @@ class LogAnalyzer:
                 else None
             ),
             llm_model=cfg.llm_model,
-            base_url=cfg.base_url,
+            llm_base_url=cfg.llm_base_url,
             llm_temperature=cfg.llm_temperature,
             llm_top_p=cfg.llm_top_p,
             llm_max_tokens=cfg.llm_max_tokens,

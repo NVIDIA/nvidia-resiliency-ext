@@ -47,13 +47,14 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 
 **LLM / analysis** (optional — unset vars keep library defaults). Use the prefixed names below in the environment or ``.env``; ``AttributionService`` passes them into ``LogSageExecutionConfig`` and the library ``Analyzer`` (LogSage / MCP / merge paths). See **ARCHITECTURE.md §7**.
 
-| Variable (with prefix) | Description |
-|----------|-------------|
-| `NVRX_ATTRSVC_LLM_MODEL` | LLM model identifier |
-| `NVRX_ATTRSVC_LLM_TEMPERATURE` | Temperature (0.0 = deterministic) |
-| `NVRX_ATTRSVC_LLM_TOP_P` | Top-p for nucleus sampling |
-| `NVRX_ATTRSVC_LLM_MAX_TOKENS` | Max tokens for response |
-| `NVRX_ATTRSVC_COMPUTE_TIMEOUT` | Timeout for analysis in seconds |
+| Variable (with prefix)          | Description                                                                                                                                                                                                   |
+|---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `NVRX_ATTRSVC_LLM_MODEL`        | LLM model identifier                                                                                                                                                                                          |
+| `NVRX_ATTRSVC_LLM_BASE_URL`     | LLM base url                                                                                                                                                                                                  |
+| `NVRX_ATTRSVC_LLM_TEMPERATURE`  | Temperature (0.0 = deterministic)                                                                                                                                                                             |
+| `NVRX_ATTRSVC_LLM_TOP_P`        | Top-p for nucleus sampling                                                                                                                                                                                    |
+| `NVRX_ATTRSVC_LLM_MAX_TOKENS`   | Max tokens for response                                                                                                                                                                                       |
+| `NVRX_ATTRSVC_COMPUTE_TIMEOUT`  | Timeout for analysis in seconds                                                                                                                                                                               |
 | `NVRX_ATTRSVC_ANALYSIS_BACKEND` | `mcp` (subprocess MCP, default) or `lib` (in-process LogSage and flight-recorder analysis). Same setting for both; library behavior: **ARCHITECTURE.md §7**. Legacy env: `NVRX_ATTRSVC_LOG_ANALYSIS_BACKEND`. |
 
 **NVIDIA API Key** (required, checked in order):
