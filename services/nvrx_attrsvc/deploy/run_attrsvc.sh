@@ -6,7 +6,7 @@
 #
 # Required environment variables:
 #   NVRX_ATTRSVC_ALLOWED_ROOT - Root path for log files to analyze
-#   NVIDIA_API_KEY            - API key for LLM (or NVIDIA_API_KEY_FILE)
+#   LLM_API_KEY               - API key for LLM (or LLM_API_KEY_FILE)
 #
 # Optional environment variables:
 #   NVRX_ATTRSVC_PORT         - Listen port (default: 8000)
@@ -17,7 +17,7 @@
 #
 # Example:
 #   export NVRX_ATTRSVC_ALLOWED_ROOT=/lustre/logs
-#   export NVIDIA_API_KEY=nvapi-...
+#   export LLM_API_KEY=your-llm-api-key-here
 #   ./run_attrsvc.sh ~/nvrx_logs
 
 set -e
@@ -38,7 +38,7 @@ PID_FILE="${OUTPUT_DIR}/${PREFIX}_attrsvc.pid"
 validate_attrsvc_allowed_root || exit 1
 
 # Setup API key
-setup_nvidia_api_key || exit 1
+setup_llm_api_key || exit 1
 
 # Create output directory
 ensure_directory "${OUTPUT_DIR}" "logs directory" || exit 1

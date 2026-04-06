@@ -3,8 +3,8 @@
 
 """Load API tokens from environment and well-known file paths.
 
-**NVIDIA API key** — Required for LogSage and LLM merge paths; callers that embed attribution
-should fail startup or analysis if :func:`load_nvidia_api_key` returns empty.
+**LLM API key** — Required for LogSage and LLM merge paths; callers that embed attribution
+should fail startup or analysis if :func:`load_llm_api_key` returns empty.
 
 **Slack bot token** — Optional; empty means notifications are disabled (postprocessing no-ops).
 """
@@ -23,31 +23,33 @@ def _read_key_file(path: str) -> str:
         return ""
 
 
-def load_nvidia_api_key() -> str:
-    """Load NVIDIA API key from environment or file.
+def load_llm_api_key() -> str:
+    """Load LLM API key from environment or file.
 
     Required for LLM-based attribution. Checks in order:
 
-    1. ``NVIDIA_API_KEY`` environment variable
-    2. ``NVIDIA_API_KEY_FILE`` environment variable (path to key file)
-    3. ``~/.nvidia_api_key``
-    4. ``~/.config/nvrx/nvidia_api_key``
+    1. ``LLM_API_KEY`` environment variable
+    2. ``LLM_API_KEY_FILE`` environment variable (path to key file)
+    3. ``~/.llm_api_key``
+    4. ``~/.config/nvrx/llm_api_key``
 
     Returns:
         API key string, or empty string if not found or unreadable.
     """
-    api_key = os.getenv("NVIDIA_API_KEY")
+    api_key = os.getenv("LLM_API_KEY")
     if api_key:
         return api_key.strip()
 
-    key_file = os.getenv("NVIDIA_API_KEY_FILE")
+    key_file = os.getenv("LLM_API_KEY_FILE")
     if key_file and os.path.isfile(key_file):
-        return _read_key_file(key_file)
+        v = _read_key_file(key_file)
+        if v:
+            return v
 
     home = os.path.expanduser("~")
     for path in (
-        os.path.join(home, ".nvidia_api_key"),
-        os.path.join(home, ".config", "nvrx", "nvidia_api_key"),
+        os.path.join(home, ".llm_api_key"),
+        os.path.join(home, ".config", "nvrx", "llm_api_key"),
     ):
         if os.path.isfile(path):
             v = _read_key_file(path)

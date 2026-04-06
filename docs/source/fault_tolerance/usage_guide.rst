@@ -109,33 +109,91 @@ Validation behavior:
   - Other existing types (e.g., devices/symlinks): performs ``stat`` access
 
 
-Attribution service integration
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Attribution integration
+^^^^^^^^^^^^^^^^^^^^^^
 
-Enable artifact analysis (e.g., logs) during rendezvous health checks by pointing to a running attribution service.
-The feature is enabled by specifying both host and port.
+Enable artifact analysis (e.g., logs) during rendezvous to make RESTART/STOP decisions.
+You can configure **one or more backends** (e.g. ``mcp`` for LogSage + FR via MCP, plus an HTTP URL for a third-party service). The run stops the workload (no restart) if **any** backend reports do not restart.
+
+Use ``--ft-attribution-backend`` (repeatable) and/or YAML ``attribution_backends``.
+
+* ``mcp``: Log analysis via MCP subprocess (``nvrx-mcp-analysis``).
+* **HTTP URL** (no separate keyword): pass the URL as the flag value, e.g.
+  ``--ft-attribution-backend http://127.0.0.1:8000`` or ``--ft-attribution-backend host:port``
+  (``http://`` is added when you use ``host:port`` form).
 
 * CLI:
 
-  - ``--ft-attrsvc-host <HOST>`` (alias: ``--ft_attrsvc_host``)
-  - ``--ft-attrsvc-port <PORT>`` (alias: ``--ft_attrsvc_port``)
+  - ``--ft-attribution-backend`` (alias: ``--ft_attribution_backend``): Add one backend; repeat for multiple.
+    Each value is ``mcp`` or an HTTP URL. Combined with YAML ``attribution_backends``.
+  - ``--ft-attribution-timeout`` (alias: ``--ft_attribution_timeout``): Wait/timeout in seconds;
+    skip result if exceeded (default: 60).
+  - ``--ft-attribution-dry-run`` (alias: ``--ft_attribution_dry_run``): Dry run. Run the full
+    attribution chain (log analysis, Slack, dataflow) but do not apply the restart/stop decision.
+    Log what would happen instead. Useful for validating the pipeline without affecting behavior.
+  - ``--ft-slack-token-file`` (alias: ``--ft_slack_token_file``): Path to file containing Slack bot token.
+    When not set, uses ``SLACK_BOT_TOKEN`` or ``SLACK_BOT_TOKEN_FILE`` env vars.
+  - ``--ft-slack-channel`` (alias: ``--ft_slack_channel``): Slack channel for alerts.
+    When not set, uses ``SLACK_CHANNEL`` env var.
+  - ``--ft-dataflow-index`` (alias: ``--ft_dataflow_index``): Elasticsearch/dataflow index for posting
+    attribution results (mcp/URL). Requires ``nvdataflow`` (install via ``pip install nvidia-resiliency-ext[dataflow]``).
+    When not set, dataflow posting is disabled.
+  - ``--ft-llm-api-key-file`` (alias: ``--ft_llm_api_key_file``): Path to a file containing the LLM API key.
+    Sets ``LLM_API_KEY_FILE`` in the process before MCP attribution starts. Overrides YAML ``llm_api_key_file`` when both are set.
 
-  Example:
+  Examples:
 
   .. code-block:: bash
 
-     ft_launcher \
-       --ft-attrsvc-host 127.0.0.1 \
-       --ft-attrsvc-port 8000 \
-       train.py
+     # MCP: log analysis via nvrx-mcp-analysis
+     ft_launcher --ft-attribution-backend mcp train.py
 
-* YAML: under the ``fault_tolerance`` section
+     # URL mode (HTTP attribution service)
+     ft_launcher --ft-attribution-backend http://127.0.0.1:8000 train.py
+
+     # Service with custom timeout
+     ft_launcher --ft-attribution-backend http://127.0.0.1:8000 --ft-attribution-timeout 90 train.py
+
+     # MCP with Slack and dataflow (token from file; channel from env)
+     ft_launcher --ft-attribution-backend mcp --ft-slack-token-file /etc/secrets/slack-token train.py
+
+     # MCP with explicit Slack channel and dataflow index
+     ft_launcher --ft-attribution-backend mcp \
+       --ft-slack-token-file /etc/secrets/slack-token --ft-slack-channel "#alerts" \
+       --ft-dataflow-index my-attribution-index train.py
+
+     # Dry run: exercise full attribution chain without applying restart/stop decision
+     ft_launcher --ft-attribution-backend mcp --ft-attribution-dry-run train.py
+
+     # Multiple backends: MCP plus third-party HTTP service
+     ft_launcher --ft-attribution-backend mcp --ft-attribution-backend http://127.0.0.1:8000 train.py
+
+* YAML: under the ``fault_tolerance`` section use ``attribution_backends`` (list of ``mcp`` and/or URLs),
+  ``attribution_timeout_seconds``, ``slack``, ``dataflow_index``, and optional ``llm_api_key_file``:
 
   .. code-block:: yaml
 
      fault_tolerance:
-       attrsvc_host: "127.0.0.1"
-       attrsvc_port: 8000
+       # Prefer explicit list for multiple backends:
+       attribution_backends:
+         - "mcp"
+         - "http://127.0.0.1:8000"
+       attribution_timeout_seconds: 60
+       attribution_dry_run: false           # true = run chain but don't apply action; log only
+       slack:
+         bot_token_file: "/etc/secrets/slack-token"  # or bot_token for inline (less secure)
+         channel: "#alerts"
+       dataflow_index: "my-attribution-index"       # optional; requires nvdataflow
+       llm_api_key_file: "/etc/secrets/llm-api-key"  # optional; sets LLM_API_KEY_FILE for MCP
+
+* Environment (fallback when CLI/YAML not set):
+
+  - ``SLACK_BOT_TOKEN`` or ``SLACK_BOT_TOKEN_FILE``: Slack bot token for mcp/URL alerts.
+  - ``SLACK_CHANNEL``: Slack channel for alerts.
+  - **LLM / LogSage API key** (MCP backend): ``LLM_API_KEY`` or ``LLM_API_KEY_FILE``, or default files
+    ``~/.llm_api_key`` / ``~/.config/nvrx/llm_api_key`` (see ``load_llm_api_key`` in
+    ``nvidia_resiliency_ext.attribution.api_keys``). For ``ft_launcher``, use YAML ``llm_api_key_file`` or
+    ``--ft-llm-api-key-file``.
 
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^

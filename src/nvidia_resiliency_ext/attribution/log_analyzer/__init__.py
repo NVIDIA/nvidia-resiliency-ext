@@ -85,7 +85,7 @@ from .log_path_metadata import (
     extract_job_metadata,
 )
 from .parser_base import BaseParser, ParseResult
-from .runner import ensure_analyzer_ready, run_log_analysis_sync
+from .runner import ensure_analyzer_ready, notify_log_path_sync, run_log_analysis_sync
 from .slurm_parser import (
     SlurmOutputInfo,
     SlurmParser,
@@ -189,6 +189,7 @@ __all__ = [
     "build_dataflow_record",
     # Sync lib/MCP runner (e.g. FT path)
     "ensure_analyzer_ready",
+    "notify_log_path_sync",
     "run_log_analysis_sync",
     # Attribution decision helper
     "attribution_no_restart",

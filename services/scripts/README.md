@@ -20,8 +20,8 @@ Shared shell scripts for deployment and monitoring.
 ```bash
 # Set required environment
 export NVRX_ATTRSVC_ALLOWED_ROOT=/lustre/logs
-# API key: set env var OR create ~/.nvidia_api_key file
-export NVIDIA_API_KEY=nvapi-...
+# API key: set env var OR create ~/.llm_api_key file
+export LLM_API_KEY=your-llm-api-key-here
 
 # Install, start, and manage
 ./scripts/run_services.sh install   # Install packages
@@ -50,10 +50,10 @@ sudo ./scripts/setup_systemd.sh start
 ### API Key
 
 The API key can be provided in multiple ways (checked in order):
-1. `NVIDIA_API_KEY` environment variable
-2. `NVIDIA_API_KEY_FILE` environment variable (path to key file)
-3. `~/.nvidia_api_key` file
-4. `~/.config/nvrx/nvidia_api_key` file
+1. `LLM_API_KEY` environment variable
+2. `LLM_API_KEY_FILE` environment variable (path to key file)
+3. `~/.llm_api_key` file
+4. `~/.config/nvrx/llm_api_key` file
 
 **Output files** (in `~/nvrx_logs/` by default):
 - `<timestamp>_attrsvc.log` - Attribution service stdout/stderr
@@ -129,7 +129,7 @@ Shared functions sourced by other scripts:
 
 | Function | Description |
 |----------|-------------|
-| `setup_nvidia_api_key` | Load API key from env, file, or default location |
+| `setup_llm_api_key` | Load LLM API key from env, file, or default location |
 | `install_nvrx_packages` | Install NVRX packages from local repo |
 | `validate_commands` | Check required commands exist |
 

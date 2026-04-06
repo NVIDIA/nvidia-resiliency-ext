@@ -262,14 +262,14 @@ def setup() -> Settings:
     logging.getLogger("nvidia_resiliency_ext.attribution.mcp_integration").setLevel(_root_lvl)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
-    from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key, load_slack_bot_token
+    from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key, load_slack_bot_token
 
-    nvidia_key = load_nvidia_api_key()
-    if not nvidia_key:
+    llm_key = load_llm_api_key()
+    if not llm_key:
         logger.error(
-            "NVIDIA API key not found or empty. Attribution requires a key. Set NVIDIA_API_KEY "
-            "or NVIDIA_API_KEY_FILE, or place a key in ~/.nvidia_api_key or "
-            "~/.config/nvrx/nvidia_api_key. Slack notifications remain optional (SLACK_BOT_TOKEN)."
+            "LLM API key not found or empty. Attribution requires a key. Set LLM_API_KEY or "
+            "LLM_API_KEY_FILE, or default key files (~/.llm_api_key, ~/.config/nvrx/llm_api_key). "
+            "Slack notifications remain optional (SLACK_BOT_TOKEN)."
         )
         raise SystemExit(1)
 
