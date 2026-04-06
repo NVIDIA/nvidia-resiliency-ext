@@ -132,7 +132,7 @@ def test_cycle_info_writer_update_cycle_end(tmp_dir):
         data = json.load(f)
     assert data["cycle_end_time"] == end_time
     assert data["cycle_start_time"] == "2024-01-01T00:00:00Z"
-    assert int(data.get("generation", 0)) == 1
+    assert int(data["generation"]) == 1
 
 
 def test_cycle_info_writer_update_cycle_end_missing_file_no_crash(tmp_dir):
