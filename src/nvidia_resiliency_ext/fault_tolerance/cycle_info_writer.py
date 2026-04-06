@@ -196,7 +196,14 @@ class CycleInfoWriter:
         path = os.path.join(self._nvrx_dir, filename)
         try:
             with open(path, "w") as f:
-                f.write(json_format.MessageToJson(msg, indent=2, preserving_proto_field_name=True))
+                f.write(
+                    json_format.MessageToJson(
+                        msg,
+                        indent=2,
+                        preserving_proto_field_name=True,
+                        always_print_fields_with_no_presence=True,
+                    )
+                )
                 f.flush()
         except OSError as e:
             logger.warning("Failed to write cycle info file %s: %s", path, e)
@@ -241,7 +248,14 @@ class CycleInfoWriter:
                     setattr(msg, key, value)
             msg.generation = msg.generation + 1
             with open(tmp_path, "w") as f:
-                f.write(json_format.MessageToJson(msg, indent=2, preserving_proto_field_name=True))
+                f.write(
+                    json_format.MessageToJson(
+                        msg,
+                        indent=2,
+                        preserving_proto_field_name=True,
+                        always_print_fields_with_no_presence=True,
+                    )
+                )
                 f.flush()
             os.replace(tmp_path, path)
         except (OSError, json_format.ParseError) as e:
