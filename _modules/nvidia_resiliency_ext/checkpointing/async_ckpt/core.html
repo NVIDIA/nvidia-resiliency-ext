@@ -830,8 +830,10 @@
         <span class="c1"># Align library loggers in this process without mutating the root logger</span>
         <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">&quot;nvidia_resiliency_ext&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span><span class="n">log_level</span><span class="p">)</span>
         <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has started&quot;</span><span class="p">)</span>
-
+        <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has started&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has started&quot;</span><span class="p">)</span>
         <span class="c1"># Set CUDA device to appropriate local_rank to ensure allocations / CUDA contexts</span>
         <span class="c1"># in this new process are on the right device, and device 0 on the node does not</span>
         <span class="c1"># take on undue memory burden from other devices on node (default behavior without</span>
@@ -895,7 +897,10 @@
             <span class="c1"># Cleanup worker data cache before exiting, regardless of how the loop exits</span>
             <span class="c1"># (normal termination via &#39;DONE&#39; sentinel or unhandled exception).</span>
             <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">cleanup_worker_data_cache</span><span class="p">()</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">  has terminated&quot;</span><span class="p">)</span></div>
+        <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has terminated&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PersistentAsyncCaller: persistent ckpt worker for </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2"> has terminated&quot;</span><span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="PersistentAsyncCaller.async_loop">
