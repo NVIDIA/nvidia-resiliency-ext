@@ -118,7 +118,7 @@ class AttributionService:
             f"{llm_str}"
         )
         logger.info(
-            "Analyzer LLM wiring: model=%r temperature=%s top_p=%s max_tokens=%s (from LogSageExecutionConfig)",
+            "Analyzer LLM wiring: model=%r base_url=%s temperature=%s top_p=%s max_tokens=%s (from LogSageExecutionConfig)",
             log_sage.llm_model,
             log_sage.llm_base_url,
             log_sage.llm_temperature,
