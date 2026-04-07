@@ -121,13 +121,13 @@ class NVRxLogAnalyzer(NVRxAttribution):
         logger.debug("API key loaded (length=%d)", len(self.api_key))
         logger.debug(
             "Using model: %s",
-            self._init_config.get("model", "nvidia/qwen/qwen-235b"),
+            self._init_config.get("model", DEFAULT_LLM_MODEL),
         )
         self.lru_cache = LRUCache(100_000)
         self.llm = ChatOpenAI(
-            model=self._init_config.get("model", "nvidia/qwen/qwen-235b"),
+            model=self._init_config.get("model", DEFAULT_LLM_MODEL),
             api_key=self.api_key,
-            base_url=self._init_config.get("base_url", "https://inference-api.nvidia.com/v1"),
+            base_url=self._init_config.get("base_url", DEFAULT_LLM_BASE_URL),
             temperature=float(self._init_config.get("temperature", 0.2)),
             top_p=float(self._init_config.get("top_p", 0.7)),
             max_tokens=int(self._init_config.get("max_tokens", 8192)),
@@ -337,13 +337,13 @@ def main():
     parser.add_argument(
         '-m',
         '--model',
-        default="nvidia/qwen/qwen-235b",
+        default=DEFAULT_LLM_MODEL,
         help='Model to use for LLM analysis',
     )
     parser.add_argument(
         '-b',
         '--base_url',
-        default="https://inference-api.nvidia.com/v1",
+        default=DEFAULT_LLM_BASE_URL,
         help='Base URL for the OpenAI-compatible API endpoint',
     )
     parser.add_argument('-t', '--temperature', type=float, default=0.2, help='Temperature for LLM')

@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8000
 PRINT_PREVIEW_MAX_BYTES = 4096  # Max bytes to return for /print endpoint
+DEFAULT_LLM_MODEL = "nvidia/qwen/qwen-235b"
+DEFAULT_LLM_BASE_URL = "https://inference-api.nvidia.com/v1"
 
 
 class Settings(BaseSettings):
@@ -60,8 +62,8 @@ class Settings(BaseSettings):
     )
 
     # LLM settings → LogSageExecutionConfig when set (see AttributionService)
-    LLM_MODEL: str | None = Field(default=None, description="LLM model identifier")
-    LLM_BASE_URL: str | None = Field(default=None, description="LLM base url")
+    LLM_MODEL: str | None = Field(default=DEFAULT_LLM_MODEL, description="LLM model identifier")
+    LLM_BASE_URL: str | None = Field(default=DEFAULT_LLM_BASE_URL, description="LLM base url")
     LLM_TEMPERATURE: float | None = Field(
         default=None, description="LLM temperature (0.0 = deterministic)"
     )

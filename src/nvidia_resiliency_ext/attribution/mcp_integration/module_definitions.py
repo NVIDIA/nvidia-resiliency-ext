@@ -27,12 +27,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model to use for analysis",
-                    "default": "nvidia/qwen/qwen-235b",
+                    "default": DEFAULT_LLM_MODEL,
                 },
                 "base_url": {
                     "type": "string",
                     "description": "LLM base url",
-                    "default": "https://inference-api.nvidia.com/v1",
+                    "default": DEFAULT_LLM_BASE_URL,
                 },
                 "temperature": {
                     "type": "number",
@@ -95,12 +95,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model for analysis (optional)",
-                    "default": "nvidia/qwen/qwen-235b",
+                    "default": DEFAULT_LLM_MODEL,
                 },
                 "base_url": {
                     "type": "string",
                     "description": "LLM base url",
-                    "default": "https://inference-api.nvidia.com/v1",
+                    "default": DEFAULT_LLM_BASE_URL,
                 },
                 "scheduling_order_file": {
                     "type": "string",
@@ -174,12 +174,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model",
-                    "default": "nvidia/qwen/qwen-235b",
+                    "default": DEFAULT_LLM_MODEL,
                 },
                 "base_url": {
                     "type": "string",
                     "description": "LLM base url",
-                    "default": "https://inference-api.nvidia.com/v1",
+                    "default": DEFAULT_LLM_BASE_URL,
                 },
                 "temperature": {"type": "number", "default": 0.2},
                 "top_p": {"type": "number", "default": 0.7},

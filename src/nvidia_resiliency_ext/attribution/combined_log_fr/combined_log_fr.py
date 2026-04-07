@@ -56,8 +56,8 @@ class CombinedLogFR(NVRxAttribution):
             log_result,
             fr_result,
             nvidia_api_key=self._nvidia_api_key,
-            model=cfg.get("model", "nvidia/qwen/qwen-235b"),
-            base_url=cfg.get("base_url", "https://inference-api.nvidia.com/v1"),
+            model=cfg.get("model", DEFAULT_LLM_MODEL),
+            base_url=cfg.get("base_url", DEFAULT_LLM_BASE_URL),
             temperature=float(cfg.get("temperature", 0.2)),
             top_p=float(cfg.get("top_p", 0.7)),
             max_tokens=int(cfg.get("max_tokens", 8192)),
@@ -91,13 +91,13 @@ def main():
     parser.add_argument(
         '-m',
         '--model',
-        default="nvidia/qwen/qwen-235b",
+        default=DEFAULT_LLM_MODEL,
         help='Model to use for LLM analysis',
     )
     parser.add_argument(
         '-b',
         '--base_url',
-        default="https://inference-api.nvidia.com/v1",
+        default=DEFAULT_LLM_BASE_URL,
         help='Base URL for the OpenAI-compatible API endpoint',
     )
     parser.add_argument('-t', '--temperature', type=float, default=0.2, help='Temperature for LLM')

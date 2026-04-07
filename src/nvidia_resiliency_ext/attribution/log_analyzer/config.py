@@ -47,8 +47,8 @@ class LogSageExecutionConfig:
     use_lib_log_analysis: bool = False
     #: Subprocess MCP server (:func:`~nvidia_resiliency_ext.attribution.mcp_integration.mcp_client.get_server_command`).
     mcp_server_log_level: str = "INFO"
-    llm_model: str = "nvidia/qwen/qwen-235b"
-    llm_base_url: str = "https://inference-api.nvidia.com/v1"
+    llm_model: str = DEFAULT_LLM_MODEL
+    llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_temperature: float = 0.0
     llm_top_p: float = 1.0
     llm_max_tokens: int = 8192

@@ -1128,13 +1128,13 @@ def main():
     parser.add_argument(
         '-m',
         '--model',
-        default="nvidia/qwen/qwen-235b",
+        default=DEFAULT_LLM_MODEL,
         help='Model to use for LLM analysis',
     )
     parser.add_argument(
         '-b',
         '--base_url',
-        default="https://inference-api.nvidia.com/v1",
+        default=DEFAULT_LLM_BASE_URL,
         help='Base URL for the OpenAI-compatible API endpoint',
     )
     parser.add_argument(

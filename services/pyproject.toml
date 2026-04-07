@@ -54,7 +54,6 @@ dependencies = [
     "slowapi>=0.1.9",
 
     # LLM and MCP
-    "langchain-nvidia-ai-endpoints>=0.3.15",
     "langchain-openai>=0.3.0",
     "mcp>=1.15.0",
     "logsage>=0.1.5",
