@@ -16,7 +16,7 @@ Requires slack-sdk (optional). When not installed, HAS_SLACK is False and send n
 import logging
 from dataclasses import dataclass
 
-from nvidia_resiliency_ext.attribution.log_analyzer.posting_markdown import (
+from nvidia_resiliency_ext.attribution.svc.posting_markdown import (
     format_posting_markdown_body,
 )
 
