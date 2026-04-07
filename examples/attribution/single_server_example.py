@@ -18,6 +18,10 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
 
 logger = logging.getLogger(__name__)
