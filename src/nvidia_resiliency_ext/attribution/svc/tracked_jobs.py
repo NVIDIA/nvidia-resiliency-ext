@@ -30,10 +30,7 @@ from .config import (
 from .job import Job, JobMode
 from .slurm_parser import read_and_parse_slurm_output
 from .splitlog import SplitlogTracker
-from .types import (
-    LogAnalyzerError,
-    LogAnalyzerSubmitResult,
-)
+from .types import LogAnalyzerError, LogAnalyzerSubmitResult
 
 logger = logging.getLogger(__name__)
 
