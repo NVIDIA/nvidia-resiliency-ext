@@ -23,7 +23,9 @@ import os
 import re
 import signal
 import socket
-import subprocess
+
+# More Info: https://bandit.readthedocs.io/en/latest/blacklists/blacklist_imports.html#b404-import-subprocess
+import subprocess  # nosec B404
 import sys
 import tempfile
 import threading
@@ -3456,6 +3458,10 @@ class LogFunnelPorts:
         return self.leaf_listen_port(shard)
 
 
+# Listen on all interfaces so peer training nodes can reach the log funnel on the TCP store host.
+_GRPC_LOG_FUNNEL_BIND_HOST = "0.0.0.0"  # nosec B104
+
+
 def _start_grpc_log_servers(
     args: Any, base_log_file: str, funnel_ports: LogFunnelPorts
 ) -> List[subprocess.Popen]:
@@ -3482,13 +3488,14 @@ def _start_grpc_log_servers(
             max_workers = min(4096, max(100, max_nodes + 10))
             fd = _open_log(grpc_server_log)
             try:
-                p = subprocess.Popen(
+                # More Info: https://bandit.readthedocs.io/en/latest/plugins/b603_subprocess_without_shell_equals_true.html
+                p = subprocess.Popen(  # nosec B603
                     [
                         sys.executable,
                         '-m',
                         'nvidia_resiliency_ext.shared_utils.grpc_log_server',
                         '--host',
-                        '0.0.0.0',
+                        _GRPC_LOG_FUNNEL_BIND_HOST,
                         '--port',
                         str(funnel_ports.base_port),
                         '--max-workers',
@@ -3498,6 +3505,7 @@ def _start_grpc_log_servers(
                     ],
                     stdout=fd,
                     stderr=subprocess.STDOUT,
+                    shell=False,
                 )
             finally:
                 fd.close()
@@ -3526,13 +3534,13 @@ def _start_grpc_log_servers(
 
         root_fd = _open_log(root_log)
         try:
-            root_p = subprocess.Popen(
+            root_p = subprocess.Popen(  # nosec B603
                 [
                     sys.executable,
                     '-m',
                     'nvidia_resiliency_ext.shared_utils.grpc_log_server',
                     '--host',
-                    '0.0.0.0',
+                    _GRPC_LOG_FUNNEL_BIND_HOST,
                     '--port',
                     str(root_port),
                     '--max-workers',
@@ -3542,6 +3550,7 @@ def _start_grpc_log_servers(
                 ],
                 stdout=root_fd,
                 stderr=subprocess.STDOUT,
+                shell=False,
             )
         finally:
             root_fd.close()
@@ -3562,7 +3571,7 @@ def _start_grpc_log_servers(
                     '-m',
                     'nvidia_resiliency_ext.shared_utils.grpc_log_leaf_server',
                     '--host',
-                    '0.0.0.0',
+                    _GRPC_LOG_FUNNEL_BIND_HOST,
                     '--port',
                     str(leaf_port),
                     '--upstream',
@@ -3574,10 +3583,11 @@ def _start_grpc_log_servers(
                     '--graceful-shutdown-timeout',
                     str(graceful_shutdown_timeout),
                 ]
-                lp = subprocess.Popen(
+                lp = subprocess.Popen(  # nosec B603
                     leaf_cmd,
                     stdout=lf,
                     stderr=subprocess.STDOUT,
+                    shell=False,
                 )
             finally:
                 lf.close()

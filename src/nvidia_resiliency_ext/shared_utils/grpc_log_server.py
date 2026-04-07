@@ -93,6 +93,9 @@ except ImportError:
     import log_aggregation_pb2
     import log_aggregation_pb2_grpc
 
+# Default bind: all interfaces so remote training nodes can connect (cluster log funnel).
+_DEFAULT_GRPC_BIND_HOST = "0.0.0.0"  # nosec B104
+
 
 def _format_grpc_peer(raw: Optional[str]) -> str:
     """Decode URL-encoded characters in ``context.peer()`` for readable log lines."""
@@ -657,7 +660,10 @@ def main():
         "Clients specify target file paths in each log chunk."
     )
     parser.add_argument(
-        '--host', type=str, default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)'
+        '--host',
+        type=str,
+        default=_DEFAULT_GRPC_BIND_HOST,
+        help='Host to bind to (default: all interfaces)',
     )
     parser.add_argument(
         '--port', type=int, default=50051, help='Port to listen on (default: 50051)'
