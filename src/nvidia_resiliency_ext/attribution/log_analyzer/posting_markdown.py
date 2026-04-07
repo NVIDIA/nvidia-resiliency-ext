@@ -31,16 +31,16 @@ def format_attribution_markdown(
     jid = job_id if job_id else "unknown"
     attr = attribution_text if attribution_text else "No attribution available"
     expl = auto_resume_explanation if auto_resume_explanation else "No explanation available"
-    lp = log_path if log_path else "Log path not found"
-    return (
+    body = (
         f"*Job ID:* `{jid}`\n"
         "*Failed due to:*\n"
         f"```{attr}```\n"
         "*Terminal issue:*\n"
         f"```{expl}```"
-        "*Log path:*\n"
-        f"```{lp}```"
     )
+    if log_path:
+        body += f"*Log path:*\n```{log_path}```"
+    return body
 
 
 def format_attribution_markdown_from_record(data: Mapping[str, Any]) -> str:

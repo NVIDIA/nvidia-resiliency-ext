@@ -107,8 +107,8 @@ class TestFRAttribution(unittest.TestCase):
             "health_check": False,
             "llm_analyze": False,
             "scheduling_order_file": None,
-            "model": "nvidia/qwen/qwen-235b",
-            "base_url": "https://inference-api.nvidia.com/v1",
+            "model": DEFAULT_LLM_MODEL,
+            "base_url": DEFAULT_LLM_BASE_URL,
             "debug": False,
             "threshold": None,
         }

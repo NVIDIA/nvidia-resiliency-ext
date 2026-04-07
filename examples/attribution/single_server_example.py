@@ -62,8 +62,8 @@ async def main(args: argparse.Namespace):
         log_result = await client.run_module(
             module_name="log_analyzer",
             log_path=args.log_path,
-            model="nvidia/qwen/qwen-235b",
-            base_url="https://inference-api.nvidia.com/v1",
+            model=DEFAULT_LLM_MODEL,
+            base_url=DEFAULT_LLM_BASE_URL,
             temperature=0.2,
             exclude_nvrx_logs=True,
             top_p=0.7,
@@ -77,8 +77,8 @@ async def main(args: argparse.Namespace):
         fr_result = await client.run_module(
             module_name="fr_analyzer",
             fr_path=args.fr_path,
-            model="nvidia/qwen/qwen-235b",
-            base_url="https://inference-api.nvidia.com/v1",
+            model=DEFAULT_LLM_MODEL,
+            base_url=DEFAULT_LLM_BASE_URL,
             temperature=0.2,
             top_p=0.7,
             max_tokens=8192,
@@ -107,8 +107,8 @@ async def main(args: argparse.Namespace):
                 (log_analysis_result, log_result["state"]),
                 (fr_analysis_result, fr_result["state"]),
             ],
-            model="nvidia/qwen/qwen-235b",
-            base_url="https://inference-api.nvidia.com/v1",
+            model=DEFAULT_LLM_MODEL,
+            base_url=DEFAULT_LLM_BASE_URL,
             threshold=5,
         )
         logger.info(f"Combined Result: {combined_result}")
