@@ -19,7 +19,7 @@ Terminology:
 
 Architecture notes:
 - SplitlogTracker does NOT own job storage; it uses callbacks to access Job
-  objects stored in :class:`~nvidia_resiliency_ext.attribution.log_analyzer.tracked_jobs.TrackedJobs`
+  objects stored in :class:`~nvidia_resiliency_ext.attribution.svc.tracked_jobs.TrackedJobs`
 - Analysis is triggered via fire-and-forget callback to avoid blocking the
   async event loop from the background polling thread
 - Results are stored in RequestCoalescer cache and retrieved via GET /logs
@@ -49,7 +49,10 @@ from .config import (
     STATS_TERMINATED,
 )
 from .job import FileInfo, Job
-from .log_path_metadata import CYCLE_NUM_PATTERN, DATE_TIME_PATTERN
+from .log_path_metadata import (
+    CYCLE_NUM_PATTERN,
+    DATE_TIME_PATTERN,
+)
 from .slurm_parser import read_and_parse_slurm_output
 
 logger = logging.getLogger(__name__)
@@ -81,7 +84,7 @@ class SplitlogTracker:
 
     This class manages jobs that write separate log files to a LOGS_DIR for each
     scheduler restart. It does NOT own job storage - it uses callbacks to access
-    Job objects stored in :class:`~nvidia_resiliency_ext.attribution.log_analyzer.tracked_jobs.TrackedJobs`.
+    Job objects stored in :class:`~nvidia_resiliency_ext.attribution.svc.tracked_jobs.TrackedJobs`.
 
     Key responsibilities:
     - Background polling thread that runs every poll_interval seconds
@@ -94,7 +97,7 @@ class SplitlogTracker:
     - All job state access is protected by self._lock
     - Analysis is triggered via ThreadPoolExecutor to avoid blocking async event loop
 
-    Callbacks (set by :class:`~nvidia_resiliency_ext.attribution.log_analyzer.tracked_jobs.TrackedJobs`):
+    Callbacks (set by :class:`~nvidia_resiliency_ext.attribution.svc.tracked_jobs.TrackedJobs`):
     - set_analyze_callback: Called to trigger analysis (fire-and-forget)
     - set_pending_check_callback: Called each poll cycle to check pending jobs
     - set_get_splitlog_jobs_callback: Returns list of splitlog mode jobs

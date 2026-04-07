@@ -14,16 +14,16 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
-from nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline import AnalysisPipelineMode
-from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+from .analysis_pipeline import AnalysisPipelineMode
+from .config import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
     ErrorCode,
 )
 
 if TYPE_CHECKING:
-    from nvidia_resiliency_ext.attribution.log_analyzer.config import LogSageExecutionConfig
-from nvidia_resiliency_ext.attribution.log_analyzer.job import JobMode
+    from .config import LogSageExecutionConfig
+from .job import JobMode
 from nvidia_resiliency_ext.attribution.trace_analyzer import FRAnalysisResult
 
 
@@ -32,10 +32,10 @@ class LogAnalyzerConfig:
     """Bundled settings shape (e.g. docs, tests, or HTTP settings aggregation).
 
     :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` takes ``allowed_root``,
-    optional ``log_sage`` (:class:`~nvidia_resiliency_ext.attribution.log_analyzer.config.LogSageExecutionConfig`),
+    optional ``log_sage`` (:class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig`),
     coalescer timing, etc. — not this dataclass as a single ``config=`` argument. Use
     :meth:`log_sage_execution` to build ``log_sage`` from the LLM / lib-vs-MCP fields here; use a
-    custom :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer` if you
+    custom :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer` if you
     need ``analysis_pipeline_mode`` from this bundle.
     """
 
@@ -47,7 +47,7 @@ class LogAnalyzerConfig:
     llm_max_tokens: int = 8192
     use_lib_log_analysis: bool = False
     #: How LogSage and NCCL flight-recorder analysis are combined; see
-    #: :class:`~nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline.AnalysisPipelineMode`.
+    #: :class:`~nvidia_resiliency_ext.attribution.svc.analysis_pipeline.AnalysisPipelineMode`.
     analysis_pipeline_mode: AnalysisPipelineMode = AnalysisPipelineMode.LOG_AND_TRACE
 
     def __post_init__(self) -> None:
@@ -57,8 +57,8 @@ class LogAnalyzerConfig:
             raise ValueError("allowed_root must be an absolute path")
 
     def log_sage_execution(self) -> LogSageExecutionConfig:
-        """Settings for :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer` (lib/MCP)."""
-        from nvidia_resiliency_ext.attribution.log_analyzer.config import LogSageExecutionConfig
+        """Settings for :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer` (lib/MCP)."""
+        from .config import LogSageExecutionConfig
 
         return LogSageExecutionConfig(
             use_lib_log_analysis=self.use_lib_log_analysis,
