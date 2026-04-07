@@ -35,9 +35,7 @@ from nvidia_resiliency_ext.attribution.svc.log_path_metadata import (
     JobMetadata,
     extract_job_metadata,
 )
-from nvidia_resiliency_ext.attribution.svc.posting_markdown import (
-    format_posting_markdown_body,
-)
+from nvidia_resiliency_ext.attribution.svc.posting_markdown import format_posting_markdown_body
 from nvidia_resiliency_ext.attribution.trace_analyzer import FRAnalysisResult
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
     fr_fields_for_dataflow_record,

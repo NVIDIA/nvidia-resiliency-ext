@@ -49,10 +49,7 @@ from .config import (
     STATS_TERMINATED,
 )
 from .job import FileInfo, Job
-from .log_path_metadata import (
-    CYCLE_NUM_PATTERN,
-    DATE_TIME_PATTERN,
-)
+from .log_path_metadata import CYCLE_NUM_PATTERN, DATE_TIME_PATTERN
 from .slurm_parser import read_and_parse_slurm_output
 
 logger = logging.getLogger(__name__)
