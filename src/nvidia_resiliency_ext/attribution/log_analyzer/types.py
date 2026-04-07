@@ -36,8 +36,8 @@ class LogAnalyzerConfig:
     """
 
     allowed_root: str
-    llm_model: str = "nvidia/qwen/qwen-235b"
-    llm_base_url: str = "https://inference-api.nvidia.com/v1"
+    llm_model: str = DEFAULT_LLM_MODEL
+    llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_temperature: float = 0.0
     llm_top_p: float = 1.0
     llm_max_tokens: int = 8192

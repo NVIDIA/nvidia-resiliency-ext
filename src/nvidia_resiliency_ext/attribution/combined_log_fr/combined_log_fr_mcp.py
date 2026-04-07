@@ -80,8 +80,8 @@ class CombinedLogFRMCPOrchestrator:
 
         log_kw: dict[str, Any] = {
             "log_path": log_path,
-            "model": arguments.get("model", "nvidia/qwen/qwen-235b"),
-            "base_url": arguments.get("base_url", "https://inference-api.nvidia.com/v1"),
+            "model": arguments.get("model", DEFAULT_LLM_MODEL),
+            "base_url": arguments.get("base_url", DEFAULT_LLM_BASE_URL),
             "temperature": float(arguments.get("temperature", 0.2)),
             "top_p": float(arguments.get("top_p", 0.7)),
             "max_tokens": int(arguments.get("max_tokens", 8192)),
@@ -109,8 +109,8 @@ class CombinedLogFRMCPOrchestrator:
 
         merge_kw: dict[str, Any] = {
             "input_data": [log_actual, fr_actual],
-            "model": arguments.get("model", "nvidia/qwen/qwen-235b"),
-            "base_url": arguments.get("base_url", "https://inference-api.nvidia.com/v1"),
+            "model": arguments.get("model", DEFAULT_LLM_MODEL),
+            "base_url": arguments.get("base_url", DEFAULT_LLM_BASE_URL),
             "temperature": float(arguments.get("temperature", 0.2)),
             "top_p": float(arguments.get("top_p", 0.7)),
             "max_tokens": int(arguments.get("max_tokens", 8192)),
@@ -148,7 +148,7 @@ class CombinedLogFRMCPOrchestrator:
         # includes model / temperature / top_p / max_tokens / threshold.
         run_kwargs: dict[str, Any] = {
             "input_data": arguments["input_data"],
-            "model": arguments.get("model", "nvidia/qwen/qwen-235b"),
+            "model": arguments.get("model", DEFAULT_LLM_MODEL),
             "base_url": arguments.get("base_url", "https://inference-api.nvidia.com/v1"),
             "temperature": float(arguments.get("temperature", 0.2)),
             "top_p": float(arguments.get("top_p", 0.7)),
