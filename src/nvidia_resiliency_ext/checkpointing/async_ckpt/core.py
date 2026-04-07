@@ -687,8 +687,10 @@ class PersistentAsyncCaller(AsyncCaller):
         # Align library loggers in this process without mutating the root logger
         logging.getLogger("nvidia_resiliency_ext").setLevel(log_level)
         logger = logging.getLogger(__name__)
-        logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has started")
-
+        if rank == 0:
+            logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has started")
+        else:
+            logger.debug(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has started")
         # Set CUDA device to appropriate local_rank to ensure allocations / CUDA contexts
         # in this new process are on the right device, and device 0 on the node does not
         # take on undue memory burden from other devices on node (default behavior without
@@ -752,7 +754,10 @@ class PersistentAsyncCaller(AsyncCaller):
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
-        logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank}  has terminated")
+        if rank == 0:
+            logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")
+        else:
+            logger.debug(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")
 
     @staticmethod
     @_disable_gc()
