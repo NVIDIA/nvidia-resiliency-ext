@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 from nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline import AnalysisPipelineMode
-from nvidia_resiliency_ext.attribution.log_analyzer.config import ErrorCode
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+    ErrorCode,
+)
 
 if TYPE_CHECKING:
     from nvidia_resiliency_ext.attribution.log_analyzer.config import LogSageExecutionConfig
