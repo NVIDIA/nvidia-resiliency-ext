@@ -23,8 +23,10 @@ from .config import (
 
 if TYPE_CHECKING:
     from .config import LogSageExecutionConfig
-from .job import JobMode
+
 from nvidia_resiliency_ext.attribution.trace_analyzer import FRAnalysisResult
+
+from .job import JobMode
 
 
 @dataclass
