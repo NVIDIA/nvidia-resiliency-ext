@@ -14,8 +14,12 @@ import inspect
 import json
 import logging
 import os
+import shutil
 import signal
 import socket
+
+# More Info: https://bandit.readthedocs.io/en/latest/blacklists/blacklist_imports.html#b404-import-subprocess
+import subprocess  # nosec B404
 import threading
 import time
 from collections import defaultdict
@@ -330,16 +334,20 @@ def _parse_domain_id_from_nvidia_smi() -> str:
         >>> domain_id = _parse_domain_id_from_nvidia_smi()
         >>> # domain_id is "abc9829a-d4c8-491c-8da5-ad28fb34876b"
     """
-    import subprocess
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        raise RuntimeError("nvidia-smi command not found. Ensure NVIDIA drivers are installed.")
 
     try:
-        # Run nvidia-smi to query ClusterUUID
-        result = subprocess.run(
-            ['nvidia-smi', '-q'],
+        # Run nvidia-smi to query ClusterUUID (full path via shutil.which avoids PATH hijack).
+        # More Info: https://bandit.readthedocs.io/en/latest/plugins/b603_subprocess_without_shell_equals_true.html
+        result = subprocess.run(  # nosec B603
+            [nvidia_smi, "-q"],
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
+            shell=False,
         )
 
         if result.returncode != 0:

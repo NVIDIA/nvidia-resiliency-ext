@@ -42,7 +42,9 @@ import queue
 import random
 import re
 import select
-import subprocess
+
+# More Info: https://bandit.readthedocs.io/en/latest/blacklists/blacklist_imports.html#b404-import-subprocess
+import subprocess  # nosec B404
 import tempfile
 import threading
 import time

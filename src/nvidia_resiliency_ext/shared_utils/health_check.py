@@ -18,8 +18,9 @@ import asyncio
 import json
 import logging
 import os
-import shlex
-import subprocess
+
+# More Info: https://bandit.readthedocs.io/en/latest/blacklists/blacklist_imports.html#b404-import-subprocess
+import subprocess  # nosec B404
 import sys
 import threading
 import traceback
@@ -41,9 +42,17 @@ logger = logging.getLogger(LogConfig.name)
 # -----------------------------
 # Local utility helpers
 # -----------------------------
-def _run_shell(cmd: str, timeout: int = 55) -> tuple[int, str, str]:
+def _run_cmd(argv: list[str], timeout: int = 55) -> tuple[int, str, str]:
+    """Run a fixed argv with shell disabled (no string shell injection)."""
     try:
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        # argv: list-only, no shell; callers use fixed programs + paths from findmnt/os.
+        proc = subprocess.run(  # nosec B603
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except subprocess.TimeoutExpired as e:
         return -9, e.stdout or "", e.stderr or "timeout"
@@ -1225,8 +1234,9 @@ class DistributedStorageHealthCheck:
         fs_types = ["lustre", "nfs", "nfs4"]
         types_str = ",".join(fs_types)
         # Discover mount targets within the current namespace (container-aware)
-        rc, out, err = _run_shell(
-            f"findmnt --noheadings --type={types_str} --output=target", timeout=55
+        rc, out, err = _run_cmd(
+            ['findmnt', '--noheadings', f'--type={types_str}', '--output=target'],
+            timeout=55,
         )
         if rc != 0:
             logger.warning(f"error running findmnt for types {types_str}: {err}")
@@ -1242,20 +1252,26 @@ class DistributedStorageHealthCheck:
                 logger.debug(f"no {types_str} mount directories discovered")
 
         if mount_dirs:
-            # First, verify reachability of mount roots via timed shell ops
+            # Verify mount roots via subprocesses with timeouts. Do not use os.path.isdir /
+            # os.stat() here: on a hung NFS/Lustre mount those block the health-check
+            # process indefinitely, so the timed ls below would never run.
             unreachable = []
             for d in mount_dirs:
-                q = shlex.quote(d)
-                # Check directory type
-                rc_d, _, _ = _run_shell(f"test -d {q}", timeout=15)
-                if rc_d != 0:
-                    unreachable.append(f"{d} (not a directory)")
+                rc_test, _, err_test = _run_cmd(["test", "-d", d], timeout=15)
+                if rc_test != 0:
+                    if rc_test == -9:
+                        unreachable.append(f"{d} (timed out while checking directory)")
+                    else:
+                        hint = err_test.strip() or "not a directory or inaccessible"
+                        unreachable.append(f"{d} ({hint})")
                     continue
-                # Attempt to list directory to ensure it is reachable
-                rc_list, out_list, err_list = _run_shell(f"ls -1 -- {q}", timeout=15)
+                rc_list, out_list, err_list = _run_cmd(['ls', '-1', '--', d], timeout=15)
                 if rc_list != 0:
-                    msg = err_list or out_list or "list error"
-                    unreachable.append(f"{d} ({msg.strip()})")
+                    if rc_list == -9:
+                        unreachable.append(f"{d} (timed out while listing)")
+                    else:
+                        msg = err_list or out_list or "list error"
+                        unreachable.append(f"{d} ({msg.strip()})")
             if unreachable:
                 logger.warning("unreachable mount directories:\n" + "\n".join(unreachable))
                 ok = False
@@ -1300,7 +1316,13 @@ class StoragePathHealthCheck:
         timeout = 5 * max(1, len(self.paths))
 
         try:
-            proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(  # nosec B603
+                args,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                shell=False,
+            )
         except subprocess.TimeoutExpired:
             logger.warning("StoragePathHealthCheck probe timed out")
             return False

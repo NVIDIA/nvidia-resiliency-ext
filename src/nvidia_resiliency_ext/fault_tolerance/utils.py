@@ -261,7 +261,10 @@ def get_log_aggregator_shard_index(num_aggregators: int) -> int:
     proc = os.getenv('SLURM_PROCID')
     if proc is not None:
         return int(proc) % num_aggregators
-    h = int(hashlib.md5(socket.gethostname().encode()).hexdigest(), 16)
+    h = int(
+        hashlib.md5(socket.gethostname().encode(), usedforsecurity=False).hexdigest(),
+        16,
+    )
     return h % num_aggregators
 
 

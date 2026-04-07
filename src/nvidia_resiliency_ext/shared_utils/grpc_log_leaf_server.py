@@ -55,6 +55,9 @@ except ImportError:
 
 logger = logging.getLogger("LogLeafServer")
 
+# Default bind: all interfaces so remote training nodes can connect (cluster log funnel).
+_DEFAULT_GRPC_BIND_HOST = "0.0.0.0"  # nosec B104
+
 # Sentinel placed on queue after graceful drain to end upstream StreamLogs
 _STOP = object()
 
@@ -463,7 +466,7 @@ def serve(
 
 def main() -> None:
     p = argparse.ArgumentParser(description="First-level gRPC log aggregator (forwards to root).")
-    p.add_argument('--host', type=str, default='0.0.0.0')
+    p.add_argument('--host', type=str, default=_DEFAULT_GRPC_BIND_HOST)
     p.add_argument('--port', type=int, required=True)
     p.add_argument('--upstream', type=str, required=True, help='Root server host:port')
     p.add_argument('--max-workers', type=int, default=100)
