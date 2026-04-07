@@ -425,6 +425,7 @@
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">preloaded_holder</span> <span class="o">=</span> <span class="kc">None</span>
 
 <div class="viewcode-block" id="TemporalAsyncCaller.schedule_async_call">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller.schedule_async_call">[docs]</a>
@@ -449,6 +450,7 @@
             <span class="c1"># to do the defined action in `async_req.preload_fn` to</span>
             <span class="c1"># stage GPU tensors to its defined destination</span>
             <span class="n">async_fn_args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">async_req</span><span class="o">.</span><span class="n">preload_fn</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">preloaded_holder</span> <span class="o">=</span> <span class="n">async_fn_args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
 
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">rank</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
@@ -530,7 +532,8 @@
                 <span class="s2">&quot;TemporalAsyncCaller: Async process join finished &quot;</span>
                 <span class="sa">f</span><span class="s2">&quot;after </span><span class="si">{</span><span class="n">time</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="bp">self</span><span class="o">.</span><span class="n">start_time</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">s from forking&quot;</span>
             <span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="kc">None</span></div>
+            <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">preloaded_holder</span> <span class="o">=</span> <span class="kc">None</span></div>
 
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
