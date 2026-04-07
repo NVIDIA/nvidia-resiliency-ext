@@ -33,8 +33,10 @@ DEFAULT_HOST = "0.0.0.0"
 
 DEFAULT_PORT = 8000
 PRINT_PREVIEW_MAX_BYTES = 4096  # Max bytes to return for /print endpoint
-DEFAULT_LLM_MODEL = "nvidia/qwen/qwen-235b"
-DEFAULT_LLM_BASE_URL = "https://inference-api.nvidia.com/v1"
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL as DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL as DEFAULT_LLM_MODEL,
+)
 
 
 class Settings(BaseSettings):
