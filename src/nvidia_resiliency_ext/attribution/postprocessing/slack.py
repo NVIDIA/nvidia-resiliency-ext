@@ -75,22 +75,13 @@ def get_slack_user_id(user_id: str, token: str) -> str | None:
     _slack_stats.user_lookups += 1
     client = WebClient(token=token)
 
-    if data.get(
-            "s_auto_resume_explanation", ""
-    ):  # Filter SLURM CANCELLED TIME LIMIT and TRAINING DONE cases
-        try:
-            client.chat_postMessage(
-                channel=slack_channel,
-                text=text,
-            )
-            _slack_stats.total_successful += 1
-            logger.info(f"Slack notification sent for job {data.get('s_job_id')}")
-            return True
-        except SlackApiError as e:
-            _slack_stats.total_failed += 1
-            logger.error(f"Error posting Slack message: {e.response['error']}")
-            return False
-    return False
+    try:
+        result = client.users_lookupByEmail(email=f"{user_id}@nvidia.com")
+        return result.get("user", {}).get("id")
+    except SlackApiError as e:
+        _slack_stats.user_not_found += 1
+        logger.error(f"Error fetching Slack user for {user_id}: {e.response['error']}")
+        return None
 
 
 def send_slack_notification(
@@ -135,18 +126,20 @@ def send_slack_notification(
     text = f"{format_posting_markdown_body(data)}{mention}"
 
     _slack_stats.total_attempts += 1
-    try:
-        client.chat_postMessage(
-            channel=slack_channel,
-            text=text,
-        )
-        _slack_stats.total_successful += 1
-        logger.info(f"Slack notification sent for job {data.get('s_job_id')}")
-        return True
-    except SlackApiError as e:
-        _slack_stats.total_failed += 1
-        logger.error(f"Error posting Slack message: {e.response['error']}")
-        return False
+    if data.s_auto_resume_explanation: # Filter SLURM CANCELLED TIME LIMIT and TRAINING DONE cases
+        try:
+            client.chat_postMessage(
+                channel=slack_channel,
+                text=text,
+            )
+            _slack_stats.total_successful += 1
+            logger.info(f"Slack notification sent for job {data.get('s_job_id')}")
+            return True
+        except SlackApiError as e:
+            _slack_stats.total_failed += 1
+            logger.error(f"Error posting Slack message: {e.response['error']}")
+            return False
+    return False
 
 
 def should_notify_slack(auto_resume: str) -> bool:
