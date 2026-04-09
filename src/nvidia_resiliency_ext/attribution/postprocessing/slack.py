@@ -126,7 +126,7 @@ def send_slack_notification(
     text = f"{format_posting_markdown_body(data)}{mention}"
 
     _slack_stats.total_attempts += 1
-    if data.s_auto_resume_explanation: # Filter SLURM CANCELLED TIME LIMIT and TRAINING DONE cases
+    if data.s_auto_resume_explanation:  # Filter SLURM CANCELLED TIME LIMIT and TRAINING DONE cases
         try:
             client.chat_postMessage(
                 channel=slack_channel,
