@@ -45,8 +45,8 @@ from .coalescing import (
     coalesced_from_cache,
 )
 
-# Re-export from log_analyzer submodule (LogSage, jobs, splitlog, wire keys — not orchestration types)
-from .log_analyzer import (  # Infrastructure
+# Re-export from svc submodule (jobs, splitlog, wire keys, config — not orchestration types)
+from .svc.config import (  # Infrastructure
     MAX_JOBS,
     MIN_FILE_SIZE_KB,
     POLL_INTERVAL_SECONDS,
@@ -68,12 +68,10 @@ from .log_analyzer import (  # Infrastructure
     TTL_PENDING_SECONDS,
     TTL_TERMINATED_SECONDS,
     ErrorCode,
-    FileInfo,
-    Job,
-    JobMode,
-    SplitlogTracker,
 )
-from .log_analyzer.types import (
+from .svc.job import FileInfo, Job, JobMode
+from .svc.splitlog import SplitlogTracker
+from .svc.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerConfig,

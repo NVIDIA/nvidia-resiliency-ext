@@ -19,9 +19,9 @@ import stat
 from typing import Any, Dict, Union
 
 from nvidia_resiliency_ext.attribution.base import AttributionState
-from nvidia_resiliency_ext.attribution.log_analyzer.types import LogAnalyzerError
 
 from .config import ErrorCode
+from .types import LogAnalyzerError
 
 logger = logging.getLogger(__name__)
 

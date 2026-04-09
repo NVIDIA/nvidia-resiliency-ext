@@ -15,13 +15,13 @@ splitlog, wire/error codes, and orchestration-facing dataclasses.
 """
 
 from nvidia_resiliency_ext.attribution.analyzer.engine import Analyzer
-from nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline import (
+from nvidia_resiliency_ext.attribution.svc.analysis_pipeline import (
     AnalysisPipelineMode,
     CombinedAnalysisResult,
     FrDumpPathNotFoundError,
     run_attribution_pipeline,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.types import (
+from nvidia_resiliency_ext.attribution.svc.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerConfig,

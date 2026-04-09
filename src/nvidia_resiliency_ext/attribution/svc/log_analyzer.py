@@ -18,25 +18,7 @@ import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from nvidia_resiliency_ext.attribution.coalescing import LogAnalysisCoalesced
-from nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline import (
-    AnalysisPipelineMode,
-    run_attribution_pipeline,
-)
-from nvidia_resiliency_ext.attribution.log_analyzer.config import ErrorCode, LogSageExecutionConfig
-from nvidia_resiliency_ext.attribution.log_analyzer.job import Job
-from nvidia_resiliency_ext.attribution.log_analyzer.log_path_metadata import CYCLE_LOG_PATTERN
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
-from nvidia_resiliency_ext.attribution.log_analyzer.splitlog import SplitlogTracker
-from nvidia_resiliency_ext.attribution.log_analyzer.tracked_jobs import TrackedJobs
-from nvidia_resiliency_ext.attribution.log_analyzer.types import (
-    LogAnalyzerError,
-    LogAnalyzerFilePreview,
-    LogAnalyzerSubmitResult,
-)
-from nvidia_resiliency_ext.attribution.log_analyzer.utils import (
-    nvrx_run_result_to_log_dict,
-    validate_log_path,
-)
 from nvidia_resiliency_ext.attribution.mcp_integration import create_mcp_client
 from nvidia_resiliency_ext.attribution.path_utils import path_is_under_allowed_root
 from nvidia_resiliency_ext.attribution.postprocessing import post_analysis_items
@@ -46,6 +28,15 @@ from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
     fr_result_from_mcp_module_response,
 )
 from nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer import TraceAnalyzer
+
+from .analysis_pipeline import AnalysisPipelineMode, run_attribution_pipeline
+from .config import ErrorCode, LogSageExecutionConfig
+from .job import Job
+from .log_path_metadata import CYCLE_LOG_PATTERN
+from .splitlog import SplitlogTracker
+from .tracked_jobs import TrackedJobs
+from .types import LogAnalyzerError, LogAnalyzerFilePreview, LogAnalyzerSubmitResult
+from .utils import nvrx_run_result_to_log_dict, validate_log_path
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +151,7 @@ class LogSageRunner:
         run_kwargs = {
             "log_path": path,
             "model": self.config.llm_model,
+            "base_url": self.config.llm_base_url,
             "temperature": self.config.llm_temperature,
             "exclude_nvrx_logs": False,
             "is_per_cycle": is_per_cycle,
@@ -179,6 +171,7 @@ class LogSageRunner:
         run_kwargs = dict(
             log_path=path,
             model=self.config.llm_model,
+            base_url=self.config.llm_base_url,
             temperature=self.config.llm_temperature,
             exclude_nvrx_logs=False,
             is_per_cycle=is_per_cycle,
@@ -207,6 +200,7 @@ class LogSageRunner:
                 fr_path=dump_path,
                 pattern="_dump_*",
                 model=self.config.llm_model,
+                base_url=self.config.llm_base_url,
                 verbose=False,
                 health_check=False,
                 llm_analyze=False,
@@ -229,6 +223,7 @@ class LogSageRunner:
             log_path=log_path,
             fr_path=fr_dump_path,
             model=self.config.llm_model,
+            base_url=self.config.llm_base_url,
             temperature=self.config.llm_temperature,
             top_p=self.config.llm_top_p,
             max_tokens=self.config.llm_max_tokens,
@@ -433,6 +428,7 @@ class LogAnalyzer:
                 else None
             ),
             llm_model=cfg.llm_model,
+            llm_base_url=cfg.llm_base_url,
             llm_temperature=cfg.llm_temperature,
             llm_top_p=cfg.llm_top_p,
             llm_max_tokens=cfg.llm_max_tokens,

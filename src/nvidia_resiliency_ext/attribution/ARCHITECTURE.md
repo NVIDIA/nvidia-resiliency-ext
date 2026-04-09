@@ -205,7 +205,7 @@ A **documentation / aggregation** dataclass: `allowed_root`, LLM defaults, `use_
 
 ### 7.3 `LogSageExecutionConfig` (`log_analyzer/config.py`)
 
-The subset that **`LogSageRunner`** / **`LogAnalyzer`** actually consume for LogSage and MCP: **`use_lib_log_analysis`**, **`mcp_server_log_level`**, **`llm_model`**, **`llm_temperature`**, **`llm_top_p`**, **`llm_max_tokens`**.
+The subset that **`LogSageRunner`** / **`LogAnalyzer`** actually consume for LogSage and MCP: **`use_lib_log_analysis`**, **`mcp_server_log_level`**, **`llm_model`**, **`llm_base_url`**, **`llm_temperature`**, **`llm_top_p`**, **`llm_max_tokens`**.
 
 ### 7.4 LogSage backends
 

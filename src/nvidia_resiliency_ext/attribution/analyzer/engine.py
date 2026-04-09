@@ -42,14 +42,14 @@ from nvidia_resiliency_ext.attribution.coalescing import (
     RequestCoalescer,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline import (
+from nvidia_resiliency_ext.attribution.svc.analysis_pipeline import (
     AnalysisPipelineMode,
     FrDumpPathNotFoundError,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.config import ErrorCode, LogSageExecutionConfig
-from nvidia_resiliency_ext.attribution.log_analyzer.job import Job, JobMode
-from nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer import LogAnalyzer
-from nvidia_resiliency_ext.attribution.log_analyzer.types import (
+from nvidia_resiliency_ext.attribution.svc.config import ErrorCode, LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.svc.job import Job, JobMode
+from nvidia_resiliency_ext.attribution.svc.log_analyzer import LogAnalyzer
+from nvidia_resiliency_ext.attribution.svc.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,

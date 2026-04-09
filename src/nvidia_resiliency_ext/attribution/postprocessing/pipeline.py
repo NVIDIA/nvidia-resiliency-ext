@@ -26,18 +26,16 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from nvidia_resiliency_ext.attribution.log_analyzer.llm_output import (
+from nvidia_resiliency_ext.attribution.svc.llm_output import (
     ParsedLLMResponse,
     log_fields_for_dataflow_record,
     parse_llm_response,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.log_path_metadata import (
+from nvidia_resiliency_ext.attribution.svc.log_path_metadata import (
     JobMetadata,
     extract_job_metadata,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.posting_markdown import (
-    format_posting_markdown_body,
-)
+from nvidia_resiliency_ext.attribution.svc.posting_markdown import format_posting_markdown_body
 from nvidia_resiliency_ext.attribution.trace_analyzer import FRAnalysisResult
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
     fr_fields_for_dataflow_record,

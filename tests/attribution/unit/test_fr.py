@@ -8,6 +8,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
 from fr_attribution_test_utils import FRAttributionOutputParser
 
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
 
 
@@ -107,7 +111,8 @@ class TestFRAttribution(unittest.TestCase):
             "health_check": False,
             "llm_analyze": False,
             "scheduling_order_file": None,
-            "model": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+            "model": DEFAULT_LLM_MODEL,
+            "base_url": DEFAULT_LLM_BASE_URL,
             "debug": False,
             "threshold": None,
         }

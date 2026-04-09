@@ -26,8 +26,8 @@ from nvidia_resiliency_ext.attribution import (
     LogAnalyzerSubmitResult,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.config import LogSageExecutionConfig
 from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
+from nvidia_resiliency_ext.attribution.svc.config import LogSageExecutionConfig
 
 from .config import PRINT_PREVIEW_MAX_BYTES, Settings
 
@@ -81,6 +81,8 @@ class AttributionService:
         }
         if cfg.LLM_MODEL is not None:
             log_sage_kwargs["llm_model"] = cfg.LLM_MODEL
+        if cfg.LLM_BASE_URL is not None:
+            log_sage_kwargs["llm_base_url"] = cfg.LLM_BASE_URL
         if cfg.LLM_TEMPERATURE is not None:
             log_sage_kwargs["llm_temperature"] = cfg.LLM_TEMPERATURE
         if cfg.LLM_TOP_P is not None:
@@ -102,6 +104,7 @@ class AttributionService:
             k
             for k, v in (
                 ("llm_model", cfg.LLM_MODEL),
+                ("llm_base_url", cfg.LLM_BASE_URL),
                 ("llm_temperature", cfg.LLM_TEMPERATURE),
                 ("llm_top_p", cfg.LLM_TOP_P),
                 ("llm_max_tokens", cfg.LLM_MAX_TOKENS),
@@ -115,8 +118,9 @@ class AttributionService:
             f"{llm_str}"
         )
         logger.info(
-            "Analyzer LLM wiring: model=%r temperature=%s top_p=%s max_tokens=%s (from LogSageExecutionConfig)",
+            "Analyzer LLM wiring: model=%r base_url=%s temperature=%s top_p=%s max_tokens=%s (from LogSageExecutionConfig)",
             log_sage.llm_model,
+            log_sage.llm_base_url,
             log_sage.llm_temperature,
             log_sage.llm_top_p,
             log_sage.llm_max_tokens,

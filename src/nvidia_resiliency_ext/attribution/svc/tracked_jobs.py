@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+from .config import (
     RESP_FILES_ANALYZED,
     RESP_LOGS_DIR,
     RESP_MODE,
@@ -27,13 +27,10 @@ from nvidia_resiliency_ext.attribution.log_analyzer.config import (
     TTL_PENDING_SECONDS,
     ErrorCode,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.job import Job, JobMode
-from nvidia_resiliency_ext.attribution.log_analyzer.slurm_parser import read_and_parse_slurm_output
-from nvidia_resiliency_ext.attribution.log_analyzer.splitlog import SplitlogTracker
-from nvidia_resiliency_ext.attribution.log_analyzer.types import (
-    LogAnalyzerError,
-    LogAnalyzerSubmitResult,
-)
+from .job import Job, JobMode
+from .slurm_parser import read_and_parse_slurm_output
+from .splitlog import SplitlogTracker
+from .types import LogAnalyzerError, LogAnalyzerSubmitResult
 
 logger = logging.getLogger(__name__)
 

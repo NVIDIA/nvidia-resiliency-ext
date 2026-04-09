@@ -22,6 +22,10 @@ from nvidia_resiliency_ext.attribution.base import (
     effective_run_or_init_config,
     normalize_attribution_args,
 )
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 
 from .capture import capture_logs
 
@@ -106,6 +110,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             output_handler=self.print_output,
             attribution_kwargs={
                 "model": self._init_config.get("model"),
+                "base_url": self._init_config.get("base_url"),
                 "verbose": bool(self._init_config.get("verbose", False)),
             },
         )
@@ -300,11 +305,12 @@ class CollectiveAnalyzer(NVRxAttribution):
         if cfg.get("llm_analyze"):
             logger.info(f"Using LLM to analyze the output: {analysis_output}")
             model = cfg.get("model")
+            base_url = cfg.get("base_url")
             verbose = bool(cfg.get("verbose"))
             try:
                 from langchain_core.output_parsers import StrOutputParser
                 from langchain_core.prompts import PromptTemplate
-                from langchain_nvidia_ai_endpoints import ChatNVIDIA
+                from langchain_openai import ChatOpenAI
 
                 # Define a template for analyzing collective operation issues
                 basic_template = """
@@ -342,9 +348,10 @@ class CollectiveAnalyzer(NVRxAttribution):
                     "analysis_output": analysis_output,
                 }
                 if self.llm is None:
-                    self.llm = ChatNVIDIA(
+                    self.llm = ChatOpenAI(
                         model=model,
                         api_key=api_key,
+                        base_url=base_url,
                         temperature=0.2,
                         top_p=0.7,
                         max_tokens=32768,
@@ -1125,10 +1132,15 @@ def main():
     parser.add_argument(
         '-m',
         '--model',
-        default="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+        default=DEFAULT_LLM_MODEL,
         help='Model to use for LLM analysis',
     )
-
+    parser.add_argument(
+        '-b',
+        '--base_url',
+        default=DEFAULT_LLM_BASE_URL,
+        help='Base URL for the OpenAI-compatible API endpoint',
+    )
     parser.add_argument(
         '--debug',
         action='store_true',
