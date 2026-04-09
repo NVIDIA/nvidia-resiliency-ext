@@ -7,10 +7,6 @@ This file registers all available attribution modules with the registry.
 from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp import (
     CombinedLogFRMCPOrchestrator,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.config import (
-    DEFAULT_LLM_BASE_URL,
-    DEFAULT_LLM_MODEL,
-)
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 from nvidia_resiliency_ext.attribution.log_analyzer.config import (
     DEFAULT_LLM_BASE_URL,
