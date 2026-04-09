@@ -20,7 +20,6 @@ from nvidia_resiliency_ext.attribution.log_analyzer.config import (
     DEFAULT_LLM_MODEL,
 )
 
-
 logger = logging.getLogger(__name__)
 
 FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
