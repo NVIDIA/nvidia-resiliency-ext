@@ -16,15 +16,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
-from nvidia_resiliency_ext.attribution.log_analyzer.config import (
-    DEFAULT_LLM_BASE_URL,
-    DEFAULT_LLM_MODEL,
-)
 from nvidia_resiliency_ext.attribution.base import (
     AttributionState,
     NVRxAttribution,
     effective_run_or_init_config,
     normalize_attribution_args,
+)
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
 )
 
 from .capture import capture_logs
