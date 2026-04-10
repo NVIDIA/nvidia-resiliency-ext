@@ -21,6 +21,7 @@ def format_attribution_markdown(
     job_id: Optional[str] = None,
     attribution_text: Optional[str] = None,
     auto_resume_explanation: Optional[str] = None,
+    log_path: Optional[str] = None,
 ) -> str:
     """Build Markdown for core attribution fields (job id, failure text, terminal explanation).
 
@@ -30,13 +31,16 @@ def format_attribution_markdown(
     jid = job_id if job_id else "unknown"
     attr = attribution_text if attribution_text else "No attribution available"
     expl = auto_resume_explanation if auto_resume_explanation else "No explanation available"
-    return (
+    body = (
         f"*Job ID:* `{jid}`\n"
         "*Failed due to:*\n"
         f"```{attr}```\n"
         "*Terminal issue:*\n"
         f"```{expl}```"
     )
+    if log_path:
+        body += f"*Log path:*\n```{log_path}```"
+    return body
 
 
 def format_attribution_markdown_from_record(data: Mapping[str, Any]) -> str:
@@ -45,6 +49,7 @@ def format_attribution_markdown_from_record(data: Mapping[str, Any]) -> str:
         job_id=data.get("s_job_id"),
         attribution_text=data.get("s_attribution"),
         auto_resume_explanation=data.get("s_auto_resume_explanation"),
+        log_path=data.get("s_log_path"),
     )
 
 

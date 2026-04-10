@@ -4,7 +4,7 @@ import os
 import re
 from typing import Any, Dict, Mapping, Union
 
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
+from langchain_openai import ChatOpenAI
 from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
 from logsage.auto_resume_policy.error_attribution import get_proposed_solution_cat
 from logsage.auto_resume_policy.error_extraction import return_application_errors
@@ -14,6 +14,10 @@ from nvidia_resiliency_ext.attribution.base import (
     NVRxAttribution,
     effective_run_or_init_config,
     normalize_attribution_args,
+)
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,12 +125,13 @@ class NVRxLogAnalyzer(NVRxAttribution):
         logger.debug("API key loaded (length=%d)", len(self.api_key))
         logger.debug(
             "Using model: %s",
-            self._init_config.get("model", "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"),
+            self._init_config.get("model", DEFAULT_LLM_MODEL),
         )
         self.lru_cache = LRUCache(100_000)
-        self.llm = ChatNVIDIA(
-            model=self._init_config.get("model", "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"),
+        self.llm = ChatOpenAI(
+            model=self._init_config.get("model", DEFAULT_LLM_MODEL),
             api_key=self.api_key,
+            base_url=self._init_config.get("base_url", DEFAULT_LLM_BASE_URL),
             temperature=float(self._init_config.get("temperature", 0.2)),
             top_p=float(self._init_config.get("top_p", 0.7)),
             max_tokens=int(self._init_config.get("max_tokens", 8192)),
@@ -336,8 +341,14 @@ def main():
     parser.add_argument(
         '-m',
         '--model',
-        default="nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+        default=DEFAULT_LLM_MODEL,
         help='Model to use for LLM analysis',
+    )
+    parser.add_argument(
+        '-b',
+        '--base_url',
+        default=DEFAULT_LLM_BASE_URL,
+        help='Base URL for the OpenAI-compatible API endpoint',
     )
     parser.add_argument('-t', '--temperature', type=float, default=0.2, help='Temperature for LLM')
     parser.add_argument('-p', '--top_p', type=float, default=0.7, help='Top P for LLM')

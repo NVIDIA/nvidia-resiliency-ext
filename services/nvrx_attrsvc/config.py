@@ -19,11 +19,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Re-export ErrorCode from library layer so service consumers can use:
 #   from nvrx_attrsvc.config import ErrorCode
 from nvidia_resiliency_ext.attribution import ErrorCode as ErrorCode
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL as DEFAULT_LLM_BASE_URL,
+)
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_MODEL as DEFAULT_LLM_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 
 # Service-specific constants
 DEFAULT_HOST = "0.0.0.0"
+
 DEFAULT_PORT = 8000
 PRINT_PREVIEW_MAX_BYTES = 4096  # Max bytes to return for /print endpoint
 
@@ -60,7 +67,8 @@ class Settings(BaseSettings):
     )
 
     # LLM settings → LogSageExecutionConfig when set (see AttributionService)
-    LLM_MODEL: str | None = Field(default=None, description="LLM model identifier")
+    LLM_MODEL: str | None = Field(default=DEFAULT_LLM_MODEL, description="LLM model identifier")
+    LLM_BASE_URL: str | None = Field(default=DEFAULT_LLM_BASE_URL, description="LLM base url")
     LLM_TEMPERATURE: float | None = Field(
         default=None, description="LLM temperature (0.0 = deterministic)"
     )

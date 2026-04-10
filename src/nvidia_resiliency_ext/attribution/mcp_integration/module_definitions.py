@@ -7,6 +7,10 @@ This file registers all available attribution modules with the registry.
 from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp import (
     CombinedLogFRMCPOrchestrator,
 )
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
@@ -27,7 +31,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model to use for analysis",
-                    "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+                    "default": DEFAULT_LLM_MODEL,
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "LLM base url",
+                    "default": DEFAULT_LLM_BASE_URL,
                 },
                 "temperature": {
                     "type": "number",
@@ -90,7 +99,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model for analysis (optional)",
-                    "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+                    "default": DEFAULT_LLM_MODEL,
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "LLM base url",
+                    "default": DEFAULT_LLM_BASE_URL,
                 },
                 "scheduling_order_file": {
                     "type": "string",
@@ -164,7 +178,12 @@ def register_all_modules():
                 "model": {
                     "type": "string",
                     "description": "LLM model",
-                    "default": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+                    "default": DEFAULT_LLM_MODEL,
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "LLM base url",
+                    "default": DEFAULT_LLM_BASE_URL,
                 },
                 "temperature": {"type": "number", "default": 0.2},
                 "top_p": {"type": "number", "default": 0.7},

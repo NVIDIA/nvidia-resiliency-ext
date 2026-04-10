@@ -20,6 +20,10 @@ Compute timeout defaults live on :class:`~nvidia_resiliency_ext.attribution.coal
 from dataclasses import dataclass
 from enum import Enum
 
+# LLM defaults
+DEFAULT_LLM_MODEL = "nvidia/qwen/qwen-235b"
+DEFAULT_LLM_BASE_URL = "https://inference-api.nvidia.com/v1"
+
 # TTL constants (see spec Section 3.2)
 TTL_PENDING_SECONDS = 7 * 24 * 60 * 60  # 1 week - pending job expiry
 TTL_TERMINATED_SECONDS = 60 * 60  # 1 hour - terminated job expiry (after GET)
@@ -47,7 +51,8 @@ class LogSageExecutionConfig:
     use_lib_log_analysis: bool = False
     #: Subprocess MCP server (:func:`~nvidia_resiliency_ext.attribution.mcp_integration.mcp_client.get_server_command`).
     mcp_server_log_level: str = "INFO"
-    llm_model: str = "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"
+    llm_model: str = DEFAULT_LLM_MODEL
+    llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_temperature: float = 0.0
     llm_top_p: float = 1.0
     llm_max_tokens: int = 8192

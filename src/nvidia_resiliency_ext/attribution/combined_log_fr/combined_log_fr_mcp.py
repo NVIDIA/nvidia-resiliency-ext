@@ -13,6 +13,10 @@ from typing import Any
 from nvidia_resiliency_ext.attribution.base import AttributionState
 from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr import CombinedLogFR
 from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import unpack_run_result
+from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
@@ -80,7 +84,8 @@ class CombinedLogFRMCPOrchestrator:
 
         log_kw: dict[str, Any] = {
             "log_path": log_path,
-            "model": arguments.get("model", "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"),
+            "model": arguments.get("model", DEFAULT_LLM_MODEL),
+            "base_url": arguments.get("base_url", DEFAULT_LLM_BASE_URL),
             "temperature": float(arguments.get("temperature", 0.2)),
             "top_p": float(arguments.get("top_p", 0.7)),
             "max_tokens": int(arguments.get("max_tokens", 8192)),
@@ -108,7 +113,8 @@ class CombinedLogFRMCPOrchestrator:
 
         merge_kw: dict[str, Any] = {
             "input_data": [log_actual, fr_actual],
-            "model": arguments.get("model", "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"),
+            "model": arguments.get("model", DEFAULT_LLM_MODEL),
+            "base_url": arguments.get("base_url", DEFAULT_LLM_BASE_URL),
             "temperature": float(arguments.get("temperature", 0.2)),
             "top_p": float(arguments.get("top_p", 0.7)),
             "max_tokens": int(arguments.get("max_tokens", 8192)),
@@ -146,7 +152,8 @@ class CombinedLogFRMCPOrchestrator:
         # includes model / temperature / top_p / max_tokens / threshold.
         run_kwargs: dict[str, Any] = {
             "input_data": arguments["input_data"],
-            "model": arguments.get("model", "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1"),
+            "model": arguments.get("model", DEFAULT_LLM_MODEL),
+            "base_url": arguments.get("base_url", "https://inference-api.nvidia.com/v1"),
             "temperature": float(arguments.get("temperature", 0.2)),
             "top_p": float(arguments.get("top_p", 0.7)),
             "max_tokens": int(arguments.get("max_tokens", 8192)),

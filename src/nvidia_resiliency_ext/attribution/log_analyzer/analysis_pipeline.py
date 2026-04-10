@@ -90,6 +90,7 @@ async def run_attribution_pipeline(
     ] = None,
     fr_dump_path_override: Optional[str] = None,
     llm_model: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
     llm_temperature: float = 0.2,
     llm_top_p: float = 0.7,
     llm_max_tokens: int = 16384,
@@ -110,6 +111,7 @@ async def run_attribution_pipeline(
             in parallel and merge LLM inside the MCP process).
         fr_dump_path_override: Explicit dump path for **TRACE_ONLY** (skips discovery when set).
         llm_model: Model id for **LOG_AND_TRACE_WITH_LLM** (required when that mode runs the merge).
+        llm_base_url: Base url for **LOG_AND_TRACE_WITH_LLM** (required when that mode runs the merge).
         llm_temperature / llm_top_p / llm_max_tokens: Passed to the merge LLM when applicable.
         nvidia_api_key: NVIDIA API key for **LOG_AND_TRACE_WITH_LLM** host merge when MCP did not
             merge. If ``None``, resolved once per pipeline run via :func:`load_nvidia_api_key`.
@@ -170,6 +172,8 @@ async def run_attribution_pipeline(
     ):
         if not llm_model:
             raise ValueError("llm_model is required for LOG_AND_TRACE_WITH_LLM when merging")
+        if not llm_base_url:
+            raise ValueError("llm_base_url is required for LOG_AND_TRACE_WITH_LLM when merging")
         from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import merge_log_fr_llm
 
         merge_key = nvidia_api_key if nvidia_api_key is not None else load_nvidia_api_key()
@@ -178,6 +182,7 @@ async def run_attribution_pipeline(
             fr_analysis,
             nvidia_api_key=merge_key,
             model=llm_model,
+            base_url=llm_base_url,
             temperature=llm_temperature,
             top_p=llm_top_p,
             max_tokens=llm_max_tokens,

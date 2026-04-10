@@ -126,18 +126,22 @@ def send_slack_notification(
     text = f"{format_posting_markdown_body(data)}{mention}"
 
     _slack_stats.total_attempts += 1
-    try:
-        client.chat_postMessage(
-            channel=slack_channel,
-            text=text,
-        )
-        _slack_stats.total_successful += 1
-        logger.info(f"Slack notification sent for job {data.get('s_job_id')}")
-        return True
-    except SlackApiError as e:
-        _slack_stats.total_failed += 1
-        logger.error(f"Error posting Slack message: {e.response['error']}")
-        return False
+    if data.get(
+        "s_auto_resume_explanation", ""
+    ):  # Filter SLURM CANCELLED TIME LIMIT and TRAINING DONE cases
+        try:
+            client.chat_postMessage(
+                channel=slack_channel,
+                text=text,
+            )
+            _slack_stats.total_successful += 1
+            logger.info(f"Slack notification sent for job {data.get('s_job_id')}")
+            return True
+        except SlackApiError as e:
+            _slack_stats.total_failed += 1
+            logger.error(f"Error posting Slack message: {e.response['error']}")
+            return False
+    return False
 
 
 def should_notify_slack(auto_resume: str) -> bool:
