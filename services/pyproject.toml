@@ -56,7 +56,7 @@ dependencies = [
     # LLM and MCP
     "langchain-openai>=0.3.0",
     "mcp>=1.15.0",
-    "logsage>=0.1.5",
+    "logsage>=0.1.7",
     "slack-bolt>=1.23.0",
     "slack-sdk>=3.35.0",
 ]
