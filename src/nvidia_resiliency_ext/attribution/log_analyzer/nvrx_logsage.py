@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
 FINISHED_STATUS_SLURM_CANCELLED = "SLURM_CANCELLED"
 FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE = "SLURM_CANCELLED_JOB_REQUEUE"
-FINISHED_STATUS_TRAINING_DONE = "TRAINING_DONE"
+FINISHED_STATUS_APPLICATION_DONE = "APPLICATION_DONE"
 # pattern-based (not exact match)
 FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT = "SLURM_CANCELLED_TIME_LIMIT"
 FINISHED_STATUS_SLURM_CANCELLED_PREEMPTION_REGEX = re.compile(r"slurmstepd.*DUE TO PREEMPTION")
@@ -36,7 +36,7 @@ STOP_NO_RESTART = "STOP - DONT RESTART IMMEDIATE"
 ATTR_LLM_FAILURE = "LLM FAILURE"
 ATTR_SLURM_STEP_CANCELLED = "SLURM STEP CANCELLED"
 ATTR_SLURM_STEP_CANCELLED_JOB_REQUEUE = "SLURM STEP CANCELLED JOB REQUEUE"
-ATTR_TRAINING_DONE = "TRAINING DONE"
+ATTR_APPLICATION_DONE = "APPLICATION DONE"
 ATTR_ERRORS_NOT_FOUND = "ERRORS NOT FOUND"
 ATTR_NO_LOGS = "NO LOGS"
 ATTR_SLURM_CANCELLED_DUE_TO_PREEMPTION = "SLURM CANCELLED DUE TO PREEMPTION"
@@ -226,12 +226,12 @@ class NVRxLogAnalyzer(NVRxAttribution):
         result = []
         logger.info("output_list_size: %s", str(len(output_list)))
         for output in output_list:
-            if output.finished == FINISHED_STATUS_TRAINING_DONE:
+            if output.finished == FINISHED_STATUS_APPLICATION_DONE:
                 result.append(
                     (
                         STOP_NO_RESTART,
                         "",
-                        f"""Attribution: Primary issues: [{ATTR_TRAINING_DONE}], Secondary issues: []""",
+                        f"""Attribution: Primary issues: [{ATTR_APPLICATION_DONE}], Secondary issues: []""",
                         "",
                         str(output.checkpoint_saved),
                     )
