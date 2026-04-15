@@ -80,6 +80,7 @@ class TestAsyncSave:
         open_file=open,
         is_multiproc_io=False,
         use_cached_data_structure=False,
+        use_cpu_shm_for_gpu_tensors=False,
     ):
         """Performs an asynchronous model checkpoint save."""
         writer = FileSystemWriterAsync(
@@ -88,6 +89,7 @@ class TestAsyncSave:
             open_file=open_file,
             is_multiproc_io=is_multiproc_io,
             use_cached_data_structure=use_cached_data_structure,
+            use_cpu_shm_for_gpu_tensors=use_cpu_shm_for_gpu_tensors,
         )
         coordinator_rank = 0
 
@@ -325,6 +327,58 @@ class TestAsyncSave:
         ), 'Cached data structure produced a state_dict that differs from the original'
 
         ckpt_dir.cleanup()
+        async_queue.close()
+
+    def test_cpu_shm_for_gpu_tensors(self, tmp_path_dist_ckpt):
+        """CPU shm path: D2H done in training process, worker streams from shm.
+
+        Runs 3 iterations with explicitly mutated state-dict values to verify:
+          - shm tensors are allocated on the first checkpoint
+          - shm allocations are reused (not re-allocated) on subsequent checkpoints
+          - each checkpoint saves the *current* values, not stale cached ones
+        """
+        Utils.initialize_distributed()
+
+        # Clear class-level caches to avoid cross-test contamination
+        FileSystemWriterAsync._cached_identifiers.clear()
+        FileSystemWriterAsync._shm_tensor_cache.clear()
+        async_queue = AsyncCallsQueue(persistent=True, is_daemon=True)
+
+        model = FSDP(Model((1024, 1024), 8))
+        planner = DefaultSavePlanner()
+
+        last_ckpt_dir = None
+        for i in range(3):
+            # Overwrite all parameter values with a known scalar so we can verify freshness.
+            state_dict = model.state_dict()
+            for v in state_dict.values():
+                if isinstance(v, torch.Tensor):
+                    v.fill_(float(i))
+
+            ckpt_dir = TempNamedDir(tmp_path_dist_ckpt / f'shm_ckpt_{i}', sync=True)
+            self.async_save_checkpoint(
+                ckpt_dir,
+                state_dict,
+                planner,
+                async_queue,
+                use_cached_data_structure=True,
+                use_cpu_shm_for_gpu_tensors=True,
+            )
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            if last_ckpt_dir is not None:
+                last_ckpt_dir.cleanup()
+            last_ckpt_dir = ckpt_dir
+
+        # The last checkpoint was saved with all tensors == 2.0.
+        # Load and verify — stale-cache bug would produce 0.0 or 1.0 here.
+        loaded = self.load_checkpoint(last_ckpt_dir, deepcopy(state_dict))
+        for key, tensor in loaded.items():
+            assert torch.all(tensor.cpu() == 2.0), (
+                f"Key '{key}': expected 2.0 (fresh values from iteration 2), "
+                f"got unique values {tensor.cpu().unique().tolist()}"
+            )
+
+        last_ckpt_dir.cleanup()
         async_queue.close()
 
     @pytest.mark.parametrize(

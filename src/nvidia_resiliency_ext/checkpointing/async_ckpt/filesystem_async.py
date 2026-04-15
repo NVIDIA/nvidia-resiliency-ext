@@ -32,7 +32,7 @@ from heapq import heappop, heappush
 from itertools import chain
 from operator import itemgetter
 from time import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch import multiprocessing as mp
@@ -156,6 +156,11 @@ class FileSystemWriterAsync(FileSystemWriter):
     # Class-level cache to track identifiers that have been sent to worker across instances
     _cached_identifiers: set = set()
 
+    # Training-side shm tensor cache: keeps shm tensors alive (and reuses allocations) across
+    # checkpoints.  Key: same SHA-256 as ConsistentDataIdentifier.
+    # Value: (gpu_items, shm_tensors) where shm_tensors are CPU shared-memory tensors.
+    _shm_tensor_cache: ClassVar[Dict[str, Tuple[List, List]]] = {}
+
     def __init__(
         self,
         path: Union[str, os.PathLike],
@@ -164,6 +169,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         use_msc: bool = False,
         is_multiproc_io: bool = False,
         use_cached_data_structure: bool = False,
+        use_cpu_shm_for_gpu_tensors: bool = False,
         **kwargs,
     ):
         self.checkpoint_dir = path
@@ -182,7 +188,12 @@ class FileSystemWriterAsync(FileSystemWriter):
         self.has_data_to_write: bool = False
         self.results_queue: Optional[mp.Queue] = None
         self.separation_hint = separation_hint
-        self.use_cached_data_structure = use_cached_data_structure
+        # Enable cached data structure via constructor arg or env var.
+        # NVRX_CKPT_USE_CACHED_STRUCTURE=1 lets callers (e.g. Megatron) opt in without
+        # changing their FileSystemWriterAsync construction call.
+        self.use_cached_data_structure = use_cached_data_structure or (
+            os.environ.get("NVRX_CKPT_USE_CACHED_STRUCTURE", "0") == "1"
+        )
         self.consistent_data_identifier: Optional[ConsistentDataIdentifier] = None
         # When this flag is True, the FileWriter can create multiple child processes
         # to parallelize File IO in the background async checkpoint process.
@@ -190,6 +201,25 @@ class FileSystemWriterAsync(FileSystemWriter):
         # Note: multi-proc IO requires is_daemon=False on PersistentAsyncCaller (AsyncCallsQueue),
         # whereas the default multithreaded IO is compatible with is_daemon=True (the default).
         self.is_multi_proc_io = is_multiproc_io
+        # Use CPU shared-memory tensors instead of GPU IPC fabric handles.
+        # Avoids cuMemImportFromShareableHandle on MNNVL systems where NVLink fabric
+        # resources are exhausted by the training ranks.
+        # Also controllable via NVRX_CKPT_USE_CPU_SHM=1 (no Megatron changes needed).
+        self.use_cpu_shm_for_gpu_tensors = use_cpu_shm_for_gpu_tensors or (
+            os.environ.get("NVRX_CKPT_USE_CPU_SHM", "0") == "1"
+        )
+        # shm path requires the cached-data-structure code path — enable it automatically
+        # so callers that don't explicitly set use_cached_data_structure still benefit.
+        if self.use_cpu_shm_for_gpu_tensors and not self.use_cached_data_structure:
+            logger.info(
+                "NVRX_CKPT_USE_CPU_SHM is set: enabling use_cached_data_structure automatically"
+            )
+            self.use_cached_data_structure = True
+        if self.use_cached_data_structure or self.use_cpu_shm_for_gpu_tensors:
+            logger.info(
+                f"FileSystemWriterAsync: use_cached_data_structure={self.use_cached_data_structure}, "
+                f"use_cpu_shm_for_gpu_tensors={self.use_cpu_shm_for_gpu_tensors}"
+            )
 
     def prepare_write_data(self, plan: SavePlan, planner: SavePlanner) -> None:
         """
@@ -285,7 +315,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 
             return (gpu_items, gpu_data), (uncached_items, uncached_data)
 
-        # Handle GPU tensor caching (only GPU tensors can benefit from IPC)
+        # Handle GPU tensor caching (only GPU tensors can benefit from IPC or shm)
         # Uncached tensors (CPU or dequantized) are always resolved fresh
         if self.use_cached_data_structure and tensor_items:
             key = _compute_data_structure_key_from_plan(tensor_items)
@@ -297,8 +327,83 @@ class FileSystemWriterAsync(FileSystemWriter):
                 tensor_items, resolved_tensors, dequantized_flags
             )
 
-            if cache_exists:
-                # Reuse cached GPU tensors from worker
+            if gpu_items and self.use_cpu_shm_for_gpu_tensors:
+                # --- CPU shared-memory path ---
+                # D2H is done here (training side) into a SINGLE flat shared-memory buffer
+                # so the worker subprocess never needs CUDA IPC / fabric handles.
+                # Using one flat buffer instead of one share_memory_() per tensor avoids
+                # exhausting the kernel's POSIX shm segment limit.
+                if key in FileSystemWriterAsync._shm_tensor_cache:
+                    # Reuse existing flat buffer; overwrite views with fresh GPU values.
+                    _, existing_shm, _ = FileSystemWriterAsync._shm_tensor_cache[key]
+                    for shm_t, gpu_t in zip(existing_shm, gpu_data):
+                        shm_t.copy_(gpu_t, non_blocking=True)
+                    logger.debug(
+                        f"Overwrote {len(existing_shm)} shm tensors with fresh GPU values "
+                        f"(key={key})"
+                    )
+                else:
+                    # First checkpoint: build aligned layout, allocate one flat shm buffer,
+                    # and create per-tensor views into it.
+                    #
+                    # Each tensor's offset is aligned to max(element_size, 16) bytes so that
+                    # flat_buf[offset:offset+nbytes].view(dtype) is always valid.
+                    _ALIGN = 16
+
+                    def _aligned_up(off, elem_size):
+                        a = max(elem_size, _ALIGN)
+                        return (off + a - 1) & ~(a - 1)
+
+                    tensor_layout = []  # [(shape, dtype, offset, numel)]
+                    cur = 0
+                    for t in gpu_data:
+                        tc = t.contiguous()
+                        off = _aligned_up(cur, tc.element_size())
+                        nb = tc.numel() * tc.element_size()
+                        tensor_layout.append((tc.shape, tc.dtype, off, tc.numel()))
+                        cur = off + nb
+
+                    flat_buf = torch.empty(cur, dtype=torch.uint8).share_memory_()
+
+                    shm_tensors = []
+                    for t, (shape, dtype, off, numel) in zip(gpu_data, tensor_layout):
+                        nb = numel * t.element_size()
+                        view = flat_buf[off : off + nb].view(dtype).reshape(shape)
+                        view.copy_(t, non_blocking=True)
+                        shm_tensors.append(view)
+
+                    FileSystemWriterAsync._shm_tensor_cache[key] = (
+                        gpu_items,
+                        shm_tensors,
+                        flat_buf,   # keep flat_buf alive
+                    )
+                    logger.debug(
+                        f"Allocated 1 flat shm buffer ({cur} bytes) for "
+                        f"{len(shm_tensors)} tensors and D2H'd GPU values (key={key})"
+                    )
+
+                # Ensure D2H is complete before the worker process can read the shm tensors.
+                torch.cuda.synchronize()
+
+                _, shm_tensors, _ = FileSystemWriterAsync._shm_tensor_cache[key]
+                self.consistent_data_identifier = ConsistentDataIdentifier(key)
+                if cache_exists:
+                    # Worker already has shm tensor references cached; just update values.
+                    self.cached_tensor_data = None
+                    logger.debug(
+                        f"Reusing worker-cached shm tensors (key={key}), "
+                        f"{len(uncached_items)} uncached tensors passed fresh"
+                    )
+                else:
+                    # First checkpoint: send shm tensors to worker so it can cache them.
+                    self.cached_tensor_data = (gpu_items, shm_tensors)
+                    FileSystemWriterAsync._cached_identifiers.add(key)
+                    logger.debug(
+                        f"Sending {len(shm_tensors)} shm tensors to worker (key={key}), "
+                        f"{len(uncached_items)} uncached tensors passed fresh"
+                    )
+            elif cache_exists:
+                # --- original GPU IPC path, reuse ---
                 self.consistent_data_identifier = ConsistentDataIdentifier(key)
                 self.cached_tensor_data = None  # Signal to reuse cached data
                 logger.debug(
@@ -306,7 +411,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                     f"resolved {len(uncached_items)} uncached tensors fresh"
                 )
             elif gpu_items:
-                # First time caching - send GPU tensor data to worker
+                # --- original GPU IPC path, first time ---
                 self.consistent_data_identifier = ConsistentDataIdentifier(key)
                 self.cached_tensor_data = (gpu_items, gpu_data)
                 FileSystemWriterAsync._cached_identifiers.add(key)
@@ -322,6 +427,21 @@ class FileSystemWriterAsync(FileSystemWriter):
                     f"No GPU tensors to cache (key={key}), "
                     f"{len(uncached_items)} uncached tensors passed fresh"
                 )
+
+            # When using CPU shm path, also D2H-copy any dequantized GPU tensors in
+            # uncached_data so they don't require CUDA IPC / fabric handles in the worker.
+            if self.use_cpu_shm_for_gpu_tensors and uncached_items:
+                needs_sync = False
+                new_uncached_data = []
+                for t in uncached_data:
+                    if isinstance(t, torch.Tensor) and t.is_cuda:
+                        new_uncached_data.append(t.to("cpu", non_blocking=True))
+                        needs_sync = True
+                    else:
+                        new_uncached_data.append(t)
+                if needs_sync:
+                    torch.cuda.synchronize()
+                uncached_data = new_uncached_data
 
             # Uncached tensors are always passed fresh (never cached)
             self.uncached_tensor_data = (uncached_items, uncached_data) if uncached_items else None
@@ -353,6 +473,21 @@ class FileSystemWriterAsync(FileSystemWriter):
         self.results_queue = get_write_results_queue() if self.has_data_to_write else None
         end = time()
         logger.debug(f"prepare_write_data, time: {end - start}")
+
+    @classmethod
+    def cleanup_shm_tensor_cache(cls) -> None:
+        """Release training-side shm tensor references and invalidate the identifier cache.
+
+        Must be called whenever the worker process is restarted so the next checkpoint
+        re-sends actual shm tensor objects instead of ``None`` (which would cause a
+        worker-side cache miss on the freshly restarted worker).
+        """
+        if cls._shm_tensor_cache:
+            logger.info(
+                f"Clearing shm tensor cache ({len(cls._shm_tensor_cache)} entries)"
+            )
+            cls._shm_tensor_cache.clear()
+        cls._cached_identifiers.clear()
 
     def get_save_function_and_args(self) -> Tuple[Optional[Callable], Optional[Callable], List]:
         """
@@ -1137,6 +1272,14 @@ class FileSystemWriterAsync(FileSystemWriter):
             return FileSystemWriter.validate_checkpoint_id(checkpoint_id)
 
         return False
+
+
+# Register cleanup hook so that when PersistentAsyncCaller spawns a new worker process
+# (e.g., after an abort/restart), the training-side shm tensor cache is invalidated and
+# the next checkpoint re-sends actual shm tensors to the fresh worker.
+PersistentAsyncCaller.register_worker_restart_callback(
+    FileSystemWriterAsync.cleanup_shm_tensor_cache
+)
 
 
 def _split_by_size_and_type(bins: int, items: List[WriteItem]) -> List[List[WriteItem]]:

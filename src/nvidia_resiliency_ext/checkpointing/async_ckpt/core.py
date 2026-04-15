@@ -27,7 +27,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 from queue import Empty
 from time import sleep, time
-from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Callable, ClassVar, Dict, List, NamedTuple, Optional, Tuple
 
 import torch
 from torch import multiprocessing as mp
@@ -432,6 +432,16 @@ class PersistentAsyncCaller(AsyncCaller):
     # This cache contains IPC handles and must be cleaned up properly.
     _worker_data_cache: Dict = {}
 
+    # Callbacks invoked in the training process whenever a fresh worker is spawned.
+    # Used by FileSystemWriterAsync to invalidate training-side shm caches so the
+    # next checkpoint re-sends actual tensor data to the new worker.
+    _worker_restart_callbacks: ClassVar[List[Callable]] = []
+
+    @classmethod
+    def register_worker_restart_callback(cls, fn: Callable) -> None:
+        """Register a callable to be invoked when a new worker process is started."""
+        cls._worker_restart_callbacks.append(fn)
+
     def __init__(
         self,
         is_daemon: bool = True,
@@ -490,6 +500,8 @@ class PersistentAsyncCaller(AsyncCaller):
         )
         self.process.start()
         logger.debug(f"PersistentAsyncCaller: {rank}, Started Async Caller {self.process}")
+        for cb in PersistentAsyncCaller._worker_restart_callbacks:
+            cb()
 
     def schedule_async_call(self, async_req: AsyncRequest) -> None:
         """Put `AsyncRequest` to the Persistent Async Caller
