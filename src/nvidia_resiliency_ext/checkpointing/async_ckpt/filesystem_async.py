@@ -133,26 +133,6 @@ def get_write_results_queue(mp_mode: str = 'spawn') -> mp.Queue:
     return _results_queue
 
 
-class _FencedPreloadFn:
-    """Wraps a preload_fn and marks it as requiring shm write serialisation.
-
-    The ``write_fence = True`` attribute is detected by
-    ``AsyncCallsQueue.schedule_async_request``, which will call
-    ``maybe_finalize_async_calls(blocking=True)`` before dispatching the next
-    checkpoint.  This ensures any pending write completes before the training
-    process overwrites the shared-memory tensors with new values.
-    """
-
-    write_fence: bool = True
-    __slots__ = ('_fn',)
-
-    def __init__(self, fn: Callable) -> None:
-        self._fn = fn
-
-    def __call__(self, *args, **kwargs):
-        return self._fn(*args, **kwargs)
-
-
 class FileSystemWriterAsync(FileSystemWriter):
     """
     Async-enabled implementation of FileSystemWriter using file I/O.
@@ -181,6 +161,11 @@ class FileSystemWriterAsync(FileSystemWriter):
     # Value: (gpu_items, shm_tensors) where shm_tensors are individual CPU shared-memory
     # tensors (one per GPU tensor, each with its own independent storage).
     _shm_tensor_cache: ClassVar[Dict[str, Tuple[List, List]]] = {}
+
+    # Blocking drain registered by AsyncCallsQueue when cpu_shm_mode=True.
+    # Called in prepare_write_data before the first copy_() into a reused shm tensor,
+    # so any prior write that is still reading from those tensors completes first.
+    _shm_drain_callback: ClassVar[Optional[Callable[[], None]]] = None
 
     def __init__(
         self,
@@ -343,9 +328,15 @@ class FileSystemWriterAsync(FileSystemWriter):
                 # so the worker subprocess never needs CUDA IPC / fabric handles.
                 # Each tensor gets its own independent share_memory_() allocation.
                 if key in FileSystemWriterAsync._shm_tensor_cache:
-                    # Reuse existing shm tensors.  The caller (Megatron) must have called
-                    # wait_for_async_call() before this, which drains comp_q and guarantees
-                    # the previous write has finished reading from these buffers.
+                    # Drain any in-flight write BEFORE overwriting these shm tensors.
+                    # The worker for checkpoint N may still be iterating over the same
+                    # shared-memory buffers; without this drain the D2H copy below races
+                    # with that read and silently corrupts checkpoint N.
+                    # AsyncCallsQueue.register_shm_drain_callback sets this callback when
+                    # cpu_shm_mode=True; callers that bypass AsyncCallsQueue must drain
+                    # themselves before calling prepare_write_data.
+                    if FileSystemWriterAsync._shm_drain_callback is not None:
+                        FileSystemWriterAsync._shm_drain_callback()
                     _, existing_shm = FileSystemWriterAsync._shm_tensor_cache[key]
                     for i, (shm_t, gpu_t) in enumerate(zip(existing_shm, gpu_data)):
                         shm_t.copy_(gpu_t, non_blocking=True)
@@ -485,6 +476,15 @@ class FileSystemWriterAsync(FileSystemWriter):
             cls._shm_tensor_cache.clear()
         cls._cached_identifiers.clear()
 
+    @classmethod
+    def register_shm_drain_callback(cls, fn: Optional[Callable[[], None]]) -> None:
+        """Register (or clear with None) the blocking drain called before reusing shm tensors.
+
+        AsyncCallsQueue registers this when cpu_shm_mode=True so that
+        prepare_write_data drains any in-flight write before overwriting shm tensors.
+        """
+        cls._shm_drain_callback = fn
+
     def get_save_function_and_args(self) -> Tuple[Optional[Callable], Optional[Callable], List]:
         """
         Get function that saves the data to storage along with its arguments.
@@ -534,17 +534,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.write_preloaded_data_multithread, transform_list, self.use_msc, open_file
             )
 
-        inner_preload_fn = partial(
-            self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True
-        )
-
-        if self.use_cpu_shm_for_gpu_tensors:
-            # Shm path: wrap with write_fence marker so AsyncCallsQueue.schedule_async_request
-            # calls maybe_finalize_async_calls(blocking=True) before dispatching, ensuring any
-            # previous write completes before training overwrites the shm tensors with new values.
-            preload_fn = _FencedPreloadFn(inner_preload_fn)
-        else:
-            preload_fn = inner_preload_fn
+        preload_fn = partial(self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True)
 
         return (
             write_func,

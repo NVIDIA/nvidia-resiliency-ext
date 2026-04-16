@@ -863,6 +863,17 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         self.cpu_shm_mode = cpu_shm_mode
         self.persistent_caller: AsyncCaller = None
 
+        if cpu_shm_mode:
+            # Deferred import avoids circular dependency (filesystem_async imports core).
+            # Registers a blocking drain that fires from prepare_write_data before any
+            # shm tensor is overwritten, closing the race between the prior write's
+            # disk-read pass and the current checkpoint's D2H copy.
+            from .filesystem_async import FileSystemWriterAsync
+
+            FileSystemWriterAsync.register_shm_drain_callback(
+                lambda: self.maybe_finalize_async_calls(blocking=True, no_dist=True)
+            )
+
     def _get_async_caller(self):
         if not self.persistent:
             logger.warning("The TemporalAsyncCaller will be deprecated soon. ")
@@ -941,12 +952,6 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 This can help the user keep track of the async calls.
         """
         self.call_idx += 1
-        # For CPU shm path: shm tensors are shared between training and worker, so the
-        # previous write must complete before training overwrites them with new values.
-        # Drain any pending writes now, before dispatching the next checkpoint.
-        # (For the GPU IPC path this is a no-op since write_fence is not set.)
-        if getattr(async_request.preload_fn, 'write_fence', False) and self.async_calls:
-            self.maybe_finalize_async_calls(blocking=True, no_dist=True)
         async_caller = self._get_async_caller()
         # Backward compatibility for local checkpointing built with the old AsyncRequest
         if len(async_request._fields) != len(AsyncRequest._fields):
@@ -1002,6 +1007,11 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             abort (bool, optional): Default to False. Needs to be manually set to true when
                 the checkpoint async process needs to be aborted.
         """
+        if self.cpu_shm_mode:
+            from .filesystem_async import FileSystemWriterAsync
+
+            FileSystemWriterAsync.register_shm_drain_callback(None)
+
         # For a clean shut down scenario with valid async processes running,
         # finalize all pending async calls
         if not abort and (self.persistent is False or self.persistent_caller is not None):
