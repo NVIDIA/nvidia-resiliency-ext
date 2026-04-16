@@ -902,6 +902,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
+        cpu_shm_mode: bool = False,
     ):
         """Pre-start the persistent async worker to avoid startup latency on the first checkpoint.
 
@@ -913,6 +914,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 deprioritize checkpoint I/O. NOTE: class 1 = realtime (highest priority —
                 NOT recommended for checkpoint workers).
             sigterm_timeout (float): seconds to wait after SIGTERM before escalating to SIGKILL.
+            cpu_shm_mode (bool): if True, skip CUDA device init in the worker (no CUDA IPC needed).
         """
         if cls._warmup_persistent_caller is None:
             caller = PersistentAsyncCaller(
@@ -920,6 +922,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 cpu_priority=cpu_priority,
                 io_priority=io_priority,
                 sigterm_timeout=sigterm_timeout,
+                cpu_shm_mode=cpu_shm_mode,
             )
             caller._start_worker(rank)
             caller.rank = rank
