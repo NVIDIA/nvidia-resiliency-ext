@@ -133,6 +133,26 @@ def get_write_results_queue(mp_mode: str = 'spawn') -> mp.Queue:
     return _results_queue
 
 
+class _FencedPreloadFn:
+    """Wraps a preload_fn and marks it as requiring shm write serialisation.
+
+    The ``write_fence = True`` attribute is detected by
+    ``AsyncCallsQueue.schedule_async_request``, which will call
+    ``maybe_finalize_async_calls(blocking=True)`` before dispatching the next
+    checkpoint.  This ensures any pending write completes before the training
+    process overwrites the shared-memory tensors with new values.
+    """
+
+    write_fence: bool = True
+    __slots__ = ('_fn',)
+
+    def __init__(self, fn: Callable) -> None:
+        self._fn = fn
+
+    def __call__(self, *args, **kwargs):
+        return self._fn(*args, **kwargs)
+
+
 class FileSystemWriterAsync(FileSystemWriter):
     """
     Async-enabled implementation of FileSystemWriter using file I/O.
@@ -158,7 +178,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     # Training-side shm tensor cache: keeps shm tensors alive (and reuses allocations) across
     # checkpoints.  Key: same SHA-256 as ConsistentDataIdentifier.
-    # Value: (gpu_items, shm_tensors) where shm_tensors are CPU shared-memory tensors.
+    # Value: (gpu_items, shm_tensors) where shm_tensors are individual CPU shared-memory
+    # tensors (one per GPU tensor, each with its own independent storage).
     _shm_tensor_cache: ClassVar[Dict[str, Tuple[List, List]]] = {}
 
     def __init__(
@@ -290,23 +311,28 @@ class FileSystemWriterAsync(FileSystemWriter):
         byte_io_items = [item for item in plan.items if item.type == WriteItemType.BYTE_IO]
 
         # Helper to separate resolved tensors into cacheable (GPU) vs uncached buckets.
-        # Uncached tensors include: CPU tensors and dequantized GPU tensors.
         # Dequantized tensors are tracked explicitly via dequantized_flags because
         # some frameworks (e.g. TransformerEngine MXFP8) report bfloat16 as the dtype
         # for quantized tensors, making dtype-based detection unreliable.
-        def separate_cacheable(items, resolved_data, dequantized_flags):
-            """Separate tensor items into IPC-cacheable (GPU) and uncached categories.
+        def separate_cacheable(items, resolved_data, dequantized_flags, include_dequantized=False):
+            """Separate tensor items into cacheable (GPU) and uncached categories.
 
-            GPU tensors that were not dequantized are cacheable via IPC.
-            CPU tensors and dequantized GPU tensors are always passed fresh and never cached.
+            For the GPU IPC path (include_dequantized=False): dequantized tensors are
+            excluded because dequantize() produces a new temporary GPU allocation each
+            checkpoint, so a cached IPC handle from the previous step would be stale.
+
+            For the CPU shm path (include_dequantized=True): dequantized GPU tensors are
+            included — we copy values in from whatever GPU tensor the current step produces,
+            regardless of whether it was dequantized.
             """
             gpu_items, gpu_data = [], []
             uncached_items, uncached_data = [], []
 
             for item, data, was_dequantized in zip(items, resolved_data, dequantized_flags):
-                if (
-                    isinstance(data, torch.Tensor) and data.device.type == "cpu"
-                ) or was_dequantized:
+                if isinstance(data, torch.Tensor) and data.device.type == "cpu":
+                    uncached_items.append(item)
+                    uncached_data.append(data)
+                elif was_dequantized and not include_dequantized:
                     uncached_items.append(item)
                     uncached_data.append(data)
                 else:
@@ -316,7 +342,8 @@ class FileSystemWriterAsync(FileSystemWriter):
             return (gpu_items, gpu_data), (uncached_items, uncached_data)
 
         # Handle GPU tensor caching (only GPU tensors can benefit from IPC or shm)
-        # Uncached tensors (CPU or dequantized) are always resolved fresh
+        # Uncached tensors: CPU tensors always; dequantized GPU tensors only on GPU IPC path
+        # (on the CPU shm path, dequantized GPU tensors ARE included)
         if self.use_cached_data_structure and tensor_items:
             key = _compute_data_structure_key_from_plan(tensor_items)
             cache_exists = key in FileSystemWriterAsync._cached_identifiers
@@ -324,78 +351,69 @@ class FileSystemWriterAsync(FileSystemWriter):
             # Always resolve tensors to separate uncached tensors (which can't be cached)
             resolved_tensors, dequantized_flags = resolve_data(tensor_items)
             (gpu_items, gpu_data), (uncached_items, uncached_data) = separate_cacheable(
-                tensor_items, resolved_tensors, dequantized_flags
+                tensor_items,
+                resolved_tensors,
+                dequantized_flags,
+                include_dequantized=self.use_cpu_shm_for_gpu_tensors,
             )
 
             if gpu_items and self.use_cpu_shm_for_gpu_tensors:
                 # --- CPU shared-memory path ---
-                # D2H is done here (training side) into a SINGLE flat shared-memory buffer
+                # D2H is done here (training side) into per-tensor CPU shared-memory tensors
                 # so the worker subprocess never needs CUDA IPC / fabric handles.
-                # Using one flat buffer instead of one share_memory_() per tensor avoids
-                # exhausting the kernel's POSIX shm segment limit.
+                # Each tensor gets its own independent share_memory_() allocation.
                 if key in FileSystemWriterAsync._shm_tensor_cache:
-                    # Reuse existing flat buffer; overwrite views with fresh GPU values.
-                    _, existing_shm, _ = FileSystemWriterAsync._shm_tensor_cache[key]
-                    for shm_t, gpu_t in zip(existing_shm, gpu_data):
+                    # Reuse existing shm tensors.  The caller (Megatron) must have called
+                    # wait_for_async_call() before this, which drains comp_q and guarantees
+                    # the previous write has finished reading from these buffers.
+                    _, existing_shm = FileSystemWriterAsync._shm_tensor_cache[key]
+                    for i, (shm_t, gpu_t) in enumerate(zip(existing_shm, gpu_data)):
                         shm_t.copy_(gpu_t, non_blocking=True)
+                        # Periodically sync to avoid exhausting CUDA's pageable staging
+                        # pages (shm tensors are not pinned so copy_ is not a pinned DMA).
+                        if (i + 1) % 8 == 0:
+                            torch.cuda.synchronize()
+                    torch.cuda.synchronize()
                     logger.debug(
-                        f"Overwrote {len(existing_shm)} shm tensors with fresh GPU values "
+                        f"D2H'd {len(existing_shm)} shm tensors into reused allocations "
                         f"(key={key})"
                     )
                 else:
-                    # First checkpoint: build aligned layout, allocate one flat shm buffer,
-                    # and create per-tensor views into it.
-                    #
-                    # Each tensor's offset is aligned to max(element_size, 16) bytes so that
-                    # flat_buf[offset:offset+nbytes].view(dtype) is always valid.
-                    _ALIGN = 16
-
-                    def _aligned_up(off, elem_size):
-                        a = max(elem_size, _ALIGN)
-                        return (off + a - 1) & ~(a - 1)
-
-                    tensor_layout = []  # [(shape, dtype, offset, numel)]
-                    cur = 0
-                    for t in gpu_data:
-                        tc = t.contiguous()
-                        off = _aligned_up(cur, tc.element_size())
-                        nb = tc.numel() * tc.element_size()
-                        tensor_layout.append((tc.shape, tc.dtype, off, tc.numel()))
-                        cur = off + nb
-
-                    flat_buf = torch.empty(cur, dtype=torch.uint8).share_memory_()
-
+                    # First checkpoint: allocate one independent shm tensor per GPU tensor
+                    # and D2H-copy the current values in.
                     shm_tensors = []
-                    for t, (shape, dtype, off, numel) in zip(gpu_data, tensor_layout):
-                        nb = numel * t.element_size()
-                        view = flat_buf[off : off + nb].view(dtype).reshape(shape)
-                        view.copy_(t, non_blocking=True)
-                        shm_tensors.append(view)
+                    total_bytes = 0
+                    for i, t in enumerate(gpu_data):
+                        tc = t.contiguous()
+                        shm_t = torch.empty(tc.shape, dtype=tc.dtype).share_memory_()
+                        shm_t.copy_(tc, non_blocking=True)
+                        shm_tensors.append(shm_t)
+                        total_bytes += shm_t.nbytes
+                        # Periodically sync to avoid exhausting CUDA's pageable staging pages
+                        if (i + 1) % 8 == 0:
+                            torch.cuda.synchronize()
 
-                    FileSystemWriterAsync._shm_tensor_cache[key] = (
-                        gpu_items,
-                        shm_tensors,
-                        flat_buf,   # keep flat_buf alive
-                    )
+                    FileSystemWriterAsync._shm_tensor_cache[key] = (gpu_items, shm_tensors)
                     logger.debug(
-                        f"Allocated 1 flat shm buffer ({cur} bytes) for "
-                        f"{len(shm_tensors)} tensors and D2H'd GPU values (key={key})"
+                        f"Allocated {len(shm_tensors)} shm tensors ({total_bytes} bytes total) "
+                        f"and D2H'd GPU values (key={key})"
                     )
 
-                # Ensure D2H is complete before the worker process can read the shm tensors.
-                torch.cuda.synchronize()
-
-                _, shm_tensors, _ = FileSystemWriterAsync._shm_tensor_cache[key]
+                _, shm_tensors = FileSystemWriterAsync._shm_tensor_cache[key]
                 self.consistent_data_identifier = ConsistentDataIdentifier(key)
                 if cache_exists:
-                    # Worker already has shm tensor references cached; just update values.
+                    # Subsequent checkpoint: D2H already done into reused shm buffer above.
+                    # Worker already has the shm tensor references cached; send None to
+                    # signal it should reuse them (values are fresh after the D2H above).
                     self.cached_tensor_data = None
                     logger.debug(
                         f"Reusing worker-cached shm tensors (key={key}), "
                         f"{len(uncached_items)} uncached tensors passed fresh"
                     )
                 else:
-                    # First checkpoint: send shm tensors to worker so it can cache them.
+                    # First checkpoint: D2H already done above, synchronize now.
+                    torch.cuda.synchronize()
+                    # Send shm tensors to worker so it can cache them.
                     self.cached_tensor_data = (gpu_items, shm_tensors)
                     FileSystemWriterAsync._cached_identifiers.add(key)
                     logger.debug(
@@ -538,9 +556,21 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.write_preloaded_data_multithread, transform_list, self.use_msc, open_file
             )
 
+        inner_preload_fn = partial(
+            self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True
+        )
+
+        if self.use_cpu_shm_for_gpu_tensors:
+            # Shm path: wrap with write_fence marker so AsyncCallsQueue.schedule_async_request
+            # calls maybe_finalize_async_calls(blocking=True) before dispatching, ensuring any
+            # previous write completes before training overwrites the shm tensors with new values.
+            preload_fn = _FencedPreloadFn(inner_preload_fn)
+        else:
+            preload_fn = inner_preload_fn
+
         return (
             write_func,
-            partial(self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True),
+            preload_fn,
             [torch.distributed.get_rank(), None, self.results_queue],
         )
 
@@ -593,7 +623,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         if isinstance(identifier, ConsistentDataIdentifier):
             # Caching enabled: get or cache GPU tensor data in the worker process
-            # Uncached tensors (CPU or dequantized) are NOT cached (treated like ByteIO)
+            # Uncached tensors (CPU tensors, or dequantized on the GPU IPC path) are NOT cached
             key = identifier.key
             if cached_tensor_data is not None:
                 PersistentAsyncCaller._worker_data_cache[key] = cached_tensor_data
@@ -651,18 +681,23 @@ class FileSystemWriterAsync(FileSystemWriter):
                         )
                     )
 
-        # Now move GPU tensors to CPU (CPU tensors are already on CPU)
+        # Move GPU tensors to CPU.  For the shm path, tensors are already on CPU so the
+        # .to("cpu") branch is skipped entirely — no D2H, no sync needed.
         result: List[WriteBucket] = []
+        needs_sync = False
         for bucket in write_buckets:
             bucket_path, bucket_key, bucket_data = bucket
             bytes_data, tensor_data = bucket_data
             tensor_list = []
             for item, tensor in tensor_data:
-                # Move to CPU if needed (no-op if already on CPU)
-                tensor_list.append((item, tensor.to("cpu", non_blocking=non_blocking)))
+                if tensor.is_cuda:
+                    needs_sync = True
+                    tensor_list.append((item, tensor.to("cpu", non_blocking=non_blocking)))
+                else:
+                    tensor_list.append((item, tensor))
             result.append((bucket_path, bucket_key, (bytes_data, tensor_list)))
 
-        if non_blocking:
+        if non_blocking and needs_sync:
             torch.cuda.synchronize()
 
         end = time()
