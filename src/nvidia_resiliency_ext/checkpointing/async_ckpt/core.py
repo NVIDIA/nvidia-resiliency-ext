@@ -448,6 +448,7 @@ class PersistentAsyncCaller(AsyncCaller):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
+        cpu_shm_mode: bool = False,
     ):
         self.process: mp.Process = None
         self.start_time: Optional[float] = None
@@ -471,6 +472,7 @@ class PersistentAsyncCaller(AsyncCaller):
         self.background_worker_is_daemon = is_daemon
         self.cpu_priority = cpu_priority
         self.io_priority = io_priority
+        self.cpu_shm_mode = cpu_shm_mode
 
     def _start_worker(self, rank: int) -> None:
         """Start the background worker process.
@@ -495,6 +497,7 @@ class PersistentAsyncCaller(AsyncCaller):
                 logger.getEffectiveLevel(),
                 self.cpu_priority,
                 self.io_priority,
+                self.cpu_shm_mode,
             ),
             daemon=self.background_worker_is_daemon,
         )
@@ -670,6 +673,7 @@ class PersistentAsyncCaller(AsyncCaller):
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
+        cpu_shm_mode: bool = False,
     ):
         """Main function for the persistent checkpoint worker
 
@@ -706,18 +710,19 @@ class PersistentAsyncCaller(AsyncCaller):
             logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has started")
         else:
             logger.debug(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has started")
-        # Set CUDA device to appropriate local_rank to ensure allocations / CUDA contexts
-        # in this new process are on the right device, and device 0 on the node does not
-        # take on undue memory burden from other devices on node (default behavior without
-        # this line).
-        device_id = rank % torch.cuda.device_count()
-        torch.cuda.set_device(device_id)
-        # Allocate a small dummy tensor to force CUDA context initialization before any
-        # IPC handle is received via the queue. This prevents a handle type mismatch
-        # between the producer and consumer that otherwise manifests as:
-        #   RuntimeError: pidfd_getfd: Bad file descriptor
-        # See https://github.com/pytorch/pytorch/issues/179220 for details.
-        torch.empty(1, device=f'cuda:{device_id}')
+        if not cpu_shm_mode:
+            # Set CUDA device to appropriate local_rank to ensure allocations / CUDA contexts
+            # in this new process are on the right device, and device 0 on the node does not
+            # take on undue memory burden from other devices on node (default behavior without
+            # this line).
+            device_id = rank % torch.cuda.device_count()
+            torch.cuda.set_device(device_id)
+            # Allocate a small dummy tensor to force CUDA context initialization before any
+            # IPC handle is received via the queue. This prevents a handle type mismatch
+            # between the producer and consumer that otherwise manifests as:
+            #   RuntimeError: pidfd_getfd: Bad file descriptor
+            # See https://github.com/pytorch/pytorch/issues/179220 for details.
+            torch.empty(1, device=f'cuda:{device_id}')
 
         # Set QoS to deprioritize checkpoint writing vs training.
         # This prevents checkpoint I/O from interfering with data loader.
@@ -784,13 +789,14 @@ class PersistentAsyncCaller(AsyncCaller):
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
+        cpu_shm_mode: bool = False,
     ):
         """
         Main function for the persistent checkpoint worker called by a non daemon async process.
         In this loop, child processes may be created (For example: to parallelize File IO)
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority
+            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
         )
 
     @staticmethod
@@ -802,12 +808,13 @@ class PersistentAsyncCaller(AsyncCaller):
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
+        cpu_shm_mode: bool = False,
     ):
         """
         Main function for the persistent checkpoint worker called by a daemon async process
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority
+            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
         )
 
 
@@ -844,6 +851,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
+        cpu_shm_mode: bool = False,
     ):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
@@ -852,6 +860,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         self.cpu_priority = cpu_priority
         self.io_priority = io_priority
         self.sigterm_timeout = sigterm_timeout
+        self.cpu_shm_mode = cpu_shm_mode
         self.persistent_caller: AsyncCaller = None
 
     def _get_async_caller(self):
@@ -881,6 +890,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                     cpu_priority=self.cpu_priority,
                     io_priority=self.io_priority,
                     sigterm_timeout=self.sigterm_timeout,
+                    cpu_shm_mode=self.cpu_shm_mode,
                 )
         return self.persistent_caller
 
