@@ -464,12 +464,19 @@ class FileSystemWriterAsync(FileSystemWriter):
         logger.debug(f"prepare_write_data, time: {end - start}")
 
     @classmethod
-    def cleanup_shm_tensor_cache(cls) -> None:
-        """Release training-side shm tensor references and invalidate the identifier cache.
+    def cleanup_tensor_caches(cls) -> None:
+        """Release training-side tensor caches and invalidate the identifier set.
 
-        Must be called whenever the worker process is restarted so the next checkpoint
-        re-sends actual shm tensor objects instead of ``None`` (which would cause a
-        worker-side cache miss on the freshly restarted worker).
+        Must be called whenever the worker process is restarted.  A fresh worker
+        has an empty ``_worker_data_cache``, so both paths need re-priming:
+
+        - **CPU shm path** (``use_cpu_shm_for_gpu_tensors=True``): clears
+          ``_shm_tensor_cache`` so the next checkpoint re-allocates shm tensors
+          and sends them to the worker instead of sending ``None`` (which would
+          cause a worker-side cache miss).
+        - **GPU IPC path** (``use_cached_data_structure=True``): clearing
+          ``_cached_identifiers`` forces the next checkpoint to re-send the GPU
+          tensor IPC handles rather than assuming the worker already has them.
         """
         if cls._shm_tensor_cache:
             logger.info(f"Clearing shm tensor cache ({len(cls._shm_tensor_cache)} entries)")
@@ -1280,9 +1287,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 # Register cleanup hook so that when PersistentAsyncCaller spawns a new worker process
 # (e.g., after an abort/restart), the training-side shm tensor cache is invalidated and
 # the next checkpoint re-sends actual shm tensors to the fresh worker.
-PersistentAsyncCaller.register_worker_restart_callback(
-    FileSystemWriterAsync.cleanup_shm_tensor_cache
-)
+PersistentAsyncCaller.register_worker_restart_callback(FileSystemWriterAsync.cleanup_tensor_caches)
 
 
 def _split_by_size_and_type(bins: int, items: List[WriteItem]) -> List[List[WriteItem]]:
