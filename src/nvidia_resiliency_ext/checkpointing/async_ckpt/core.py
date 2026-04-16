@@ -928,6 +928,12 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 This can help the user keep track of the async calls.
         """
         self.call_idx += 1
+        # For CPU shm path: shm tensors are shared between training and worker, so the
+        # previous write must complete before training overwrites them with new values.
+        # Drain any pending writes now, before dispatching the next checkpoint.
+        # (For the GPU IPC path this is a no-op since write_fence is not set.)
+        if getattr(async_request.preload_fn, 'write_fence', False) and self.async_calls:
+            self.maybe_finalize_async_calls(blocking=True, no_dist=True)
         async_caller = self._get_async_caller()
         # Backward compatibility for local checkpointing built with the old AsyncRequest
         if len(async_request._fields) != len(AsyncRequest._fields):
