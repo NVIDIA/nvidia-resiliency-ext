@@ -209,12 +209,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         self.has_data_to_write: bool = False
         self.results_queue: Optional[mp.Queue] = None
         self.separation_hint = separation_hint
-        # Enable cached data structure via constructor arg or env var.
-        # NVRX_CKPT_USE_CACHED_STRUCTURE=1 lets callers (e.g. Megatron) opt in without
-        # changing their FileSystemWriterAsync construction call.
-        self.use_cached_data_structure = use_cached_data_structure or (
-            os.environ.get("NVRX_CKPT_USE_CACHED_STRUCTURE", "0") == "1"
-        )
+        self.use_cached_data_structure = use_cached_data_structure
         self.consistent_data_identifier: Optional[ConsistentDataIdentifier] = None
         # When this flag is True, the FileWriter can create multiple child processes
         # to parallelize File IO in the background async checkpoint process.
@@ -225,22 +220,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         # Use CPU shared-memory tensors instead of GPU IPC fabric handles.
         # Avoids cuMemImportFromShareableHandle on MNNVL systems where NVLink fabric
         # resources are exhausted by the training ranks.
-        # Also controllable via NVRX_CKPT_USE_CPU_SHM=1 (no Megatron changes needed).
-        self.use_cpu_shm_for_gpu_tensors = use_cpu_shm_for_gpu_tensors or (
-            os.environ.get("NVRX_CKPT_USE_CPU_SHM", "0") == "1"
-        )
-        # shm path requires the cached-data-structure code path — enable it automatically
-        # so callers that don't explicitly set use_cached_data_structure still benefit.
-        if self.use_cpu_shm_for_gpu_tensors and not self.use_cached_data_structure:
-            logger.info(
-                "NVRX_CKPT_USE_CPU_SHM is set: enabling use_cached_data_structure automatically"
-            )
-            self.use_cached_data_structure = True
-        if self.use_cached_data_structure or self.use_cpu_shm_for_gpu_tensors:
-            logger.info(
-                f"FileSystemWriterAsync: use_cached_data_structure={self.use_cached_data_structure}, "
-                f"use_cpu_shm_for_gpu_tensors={self.use_cpu_shm_for_gpu_tensors}"
-            )
+        self.use_cpu_shm_for_gpu_tensors = use_cpu_shm_for_gpu_tensors
 
     def prepare_write_data(self, plan: SavePlan, planner: SavePlanner) -> None:
         """
@@ -344,7 +324,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         # Handle GPU tensor caching (only GPU tensors can benefit from IPC or shm)
         # Uncached tensors: CPU tensors always; dequantized GPU tensors only on GPU IPC path
         # (on the CPU shm path, dequantized GPU tensors ARE included)
-        if self.use_cached_data_structure and tensor_items:
+        if (self.use_cached_data_structure or self.use_cpu_shm_for_gpu_tensors) and tensor_items:
             key = _compute_data_structure_key_from_plan(tensor_items)
             cache_exists = key in FileSystemWriterAsync._cached_identifiers
 
