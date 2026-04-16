@@ -481,9 +481,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         worker-side cache miss on the freshly restarted worker).
         """
         if cls._shm_tensor_cache:
-            logger.info(
-                f"Clearing shm tensor cache ({len(cls._shm_tensor_cache)} entries)"
-            )
+            logger.info(f"Clearing shm tensor cache ({len(cls._shm_tensor_cache)} entries)")
             cls._shm_tensor_cache.clear()
         cls._cached_identifiers.clear()
 
