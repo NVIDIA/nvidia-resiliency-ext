@@ -57,28 +57,32 @@ from ..shared_utils.health_check import (
     NicLinkStateHealthCheck,
     StoragePathHealthCheck,
 )
-from ..shared_utils.profiling import ProfilingEvent, record_profiling_event, set_profiling_cycle
+from ..shared_utils.profiling import (
+    ProfilingEvent,
+    get_profiling_cycle,
+    record_profiling_event,
+    set_profiling_cycle,
+)
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
-from .utils import get_infrastructure_rank, is_slurm_job_array
 
-# Conditionally import health check injector for testing/debugging
-# This only activates if NVRX_INJECT_GPU_FAILURE environment variable is set
+# Conditionally import failure injector (only active when NVRX_INJECT_GPU_FAILURE is set)
 if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
     from ..testing_utils import health_check_injector
+from .utils import get_infrastructure_rank, is_slurm_job_array, slurm_sort_addrs
 
 log = logging.getLogger(LogConfig.name)
 
-# Sentinel domain_id written to a participant's slot when they withdraw. Any use of
+# Sentinel domain_id written to a participant's slot when they leave. Any use of
 # participant data (_can_meet_segment_constraint, _assign_group_ranks) must exclude
 # participants with this domain_id.
-WITHDRAWN_DOMAIN_ID = "__withdrawn__"
+WITHDRAWN = "__withdrawn__"
 
 # Module-level reference to the barrier state that has joined (Step 1) but not yet
 # completed rendezvous. Set in perform_rendezvous after add(1), cleared in finally.
-# The signal handler sets _withdraw_on_unwind on this state so the finally can
-# decrement arrived_count (no store I/O in the handler).
+# The signal handler sets _leave_on_unwind on this state so the finally can
+# decrement join_count (no store I/O in the handler).
 _current_joined_state: Optional[Any] = None
 
 
@@ -86,7 +90,7 @@ def _rdzv_signal_exception_handler(sig: int, frame: Optional[FrameType]) -> None
     del frame
     global _current_joined_state
     if _current_joined_state is not None:
-        _current_joined_state._withdraw_on_unwind = True
+        _current_joined_state._leave_on_unwind = True
     raise SignalException(f"Received signal {sig} during rendezvous", signal.Signals(sig))
 
 
@@ -365,7 +369,7 @@ def _parse_domain_id_from_nvidia_smi() -> str:
                 "ClusterUUID is only available on systems with NVSwitch/NVLink fabrics (e.g., DGX, HGX systems)."
             )
 
-        log.debug(f"Retrieved domain ID from nvidia-smi ClusterUUID: {cluster_uuid}")
+        log.debug(f"domain_id={cluster_uuid} (nvidia-smi ClusterUUID)")
         return cluster_uuid
 
     except FileNotFoundError:
@@ -435,17 +439,25 @@ class _RendezvousBarrierState:
         self._rendezvous_start_time = None
         self._last_stale_check_time = 0.0  # Track last stale round check time for rate limiting
 
-        # When True, signal was received after we joined; finally will call _withdraw_from_rendezvous
-        self._withdraw_on_unwind = False
-        # Guard so we only decrement arrived_count at most once
-        self._has_withdrawn = False
+        # When True, signal was received after we joined; finally will call _leave_rendezvous
+        self._leave_on_unwind = False
+        # Guard so we only leave the rendezvous at most once per round
+        self._has_left = False
+        # When True, the round is closed (rank assigned); no more slot writes allowed.
+        # Slot keys are reused across rounds, so a leave after round closure would
+        # corrupt the next round's slot data.
+        self._round_closed = False
 
-        # Track rendezvous round number
-        # This is managed by the state since it coordinates the rendezvous
-        self._rendezvous_round = 0
-        # Last active/standby participant addrs (set by store host in assign_group_ranks for cycle info)
-        self._last_active_participant_addrs: Optional[List[str]] = None
-        self._last_standby_participant_addrs: Optional[List[str]] = None
+        # Track rendezvous round number. Each round corresponds to one rendezvous barrier
+        # invocation; keys are namespaced by round number to prevent cross-round contamination.
+        self._round = 0
+        # Current slot in the join order (1-based). Set in Step 1 of perform_rendezvous.
+        self._slot: Optional[int] = None
+        # Active/standby node addrs (set by store host in assign_group_ranks for cycle info)
+        self._active_node_addrs: Optional[List[str]] = None
+        self._standby_node_addrs: Optional[List[str]] = None
+        # Group ranks of active nodes, parallel to _active_node_addrs (same slot order)
+        self._active_ranks: Optional[List[int]] = None
 
         # Reference to agent (set via set_agent() method in handler)
         # Will be set by handler via set_agent() method
@@ -457,24 +469,40 @@ class _RendezvousBarrierState:
 
         # Key prefixes for the barrier
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
-        self.arrived_count_key = f"{self.prefix}:arrived_count"
-        self.withdrawn_count_key = f"{self.prefix}:withdrawn_count"
-        self.last_participant_arrived_key = f"{self.prefix}:last_participant_arrived"
-        self.ack_count_key = f"{self.prefix}:ack_count"
-        # Permanent close: once set, no further rendezvous rounds (graceful exit).
-        self.permanent_close_key = f"{self.prefix}:closed"
+        # Permanent shutdown: once set, no further rendezvous rounds (graceful exit).
+        self.shutdown_key = f"{self.prefix}:shutdown"
+        # Job-level unhealthy counter; persists across all rounds.
         self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
-        self.peer_aborted_count_key = f"{self.prefix}:peer_aborted_count"
-        self.global_cycle_key = f"{self.prefix}:global_cycle"
 
-        # Per-round open/close: last_participant_arrived_key value indicates whether
-        # the current round is accepting joiners or training is in progress.
-        # Initialize last_participant_arrived_key to 0 (open) if it doesn't exist.
-        # This key is always present and serves as the open/close indicator:
-        #   0 = rendezvous is OPEN (accepting new participants)
-        #   1 = rendezvous is CLOSED for this round (training in progress, hot spares wait)
-        if not self.store.check([self.last_participant_arrived_key]):
-            self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
+        # Per-round open/close indicator. round_done_key value:
+        #   0 = round is OPEN (accepting new participants)
+        #   1 = round is CLOSED (ranks assigned, training in progress)
+        # Initialize round_done_0 to 0 (open) if this is the first time any node connects.
+        if not self.store.check([self.round_done_key]):
+            self.store.set(self.round_done_key, "0".encode('utf-8'))
+
+    @property
+    def join_count_key(self) -> str:
+        """TCPStore key for the number of participants that have joined this round."""
+        return f"{self.prefix}:join_count_{self._round}"
+
+    @property
+    def leave_count_key(self) -> str:
+        """TCPStore key for the number of participants that have left this round."""
+        return f"{self.prefix}:leave_count_{self._round}"
+
+    @property
+    def round_done_key(self) -> str:
+        """TCPStore key for the open/close indicator of this round.
+
+        Value semantics:
+          0 = round is OPEN (accepting new participants)
+          1 = round is CLOSED (all ranks assigned, training in progress)
+
+        Writing "1" only happens AFTER all rank keys are written by the store host,
+        so any participant that sees "1" can immediately read its rank without racing.
+        """
+        return f"{self.prefix}:round_done_{self._round}"
 
     def _can_meet_segment_constraint(
         self,
@@ -505,7 +533,8 @@ class _RendezvousBarrierState:
         # Treat segment=None as segment=1
         segment = self.segment if self.segment is not None else 1
 
-        # Group by domain and count available complete segments
+        # Group by domain and count available complete segments.
+        # Participants with WITHDRAWN domain_id have already been excluded by the caller.
         if self.segment is not None:
             domain_to_count: Dict[str, int] = defaultdict(int)
             for node_desc, infra_rank, domain_id in participants:
@@ -630,9 +659,6 @@ class _RendezvousBarrierState:
             # Assign active ranks
             for node_desc, infra_rank in domain_participants[:nodes_to_take]:
                 result[node_desc] = active_rank
-                log.debug(
-                    f"Rank: {node_desc.addr} (infra={infra_rank}) -> group_rank={active_rank} (active)"
-                )
                 active_rank += 1
 
             active_segments += segments_to_take
@@ -641,18 +667,17 @@ class _RendezvousBarrierState:
             for node_desc, infra_rank in domain_participants[nodes_to_take:]:
                 result[node_desc] = standby_rank
                 standby_infra_ranks.append(infra_rank)  # Collect standby infra_rank
-                log.debug(
-                    f"Rank: {node_desc.addr} (infra={infra_rank}) -> group_rank={standby_rank} (standby)"
-                )
                 standby_rank += 1
 
             if nodes_to_take > 0:
                 log.debug(
-                    f"Domain {domain_id}: {segments_to_take} segments ({nodes_to_take} nodes) active, "
+                    f"Domain {domain_id[:8]}: {segments_to_take} segs ({nodes_to_take} nodes) active, "
                     f"{len(domain_participants) - nodes_to_take} standby"
                 )
             else:
-                log.debug(f"Domain {domain_id}: all {len(domain_participants)} nodes to standby")
+                log.debug(
+                    f"Domain {domain_id[:8]}: all {len(domain_participants)} nodes to standby"
+                )
 
         # Validate we have enough active segments
         if active_segments < num_segments:
@@ -669,7 +694,9 @@ class _RendezvousBarrierState:
             infra_range_str = format_rank_set_verbose(standby_infra_ranks).strip('{}')
             standby_info = f" and {standby_rank - world_size} standby ranks [{infra_range_str}]"
 
-        log.info(f"Assigned segments(segment={segment}): {active_segments} segments{standby_info}")
+        log.info(
+            f"Rank assignment (seg_size={segment}): {active_segments} active segs{standby_info}"
+        )
 
         return result
 
@@ -688,73 +715,61 @@ class _RendezvousBarrierState:
         unhealthy_count_bytes = self.store.get(self.unhealthy_count_key)
         return int(unhealthy_count_bytes.decode('utf-8'))
 
-    def _increment_peer_aborted_count(self) -> int:
-        """Increment the peer aborted count to signal a restart.
+    def is_next_round_open(self) -> bool:
+        """Return True if the next rendezvous round has been opened by any node in the cluster.
 
-        This is called by a launcher when it detects local worker failure and decides
-        to restart, notifying other healthy nodes to restart as well for faster
-        failure propagation.
-
-        Returns:
-            The new peer aborted count after incrementing
+        open_rendezvous() sets round_done_{N+1}=0 as the canonical signal that a failure
+        was detected and a new round is ready for joining.  Healthy nodes in the monitor
+        loop can poll this instead of a separate peer_restart_count key.
         """
-        new_count = self.store.add(self.peer_aborted_count_key, 1)
-        return new_count
+        next_key = f"{self.prefix}:round_done_{self._round + 1}"
+        return self.store.check([next_key])
 
-    def _get_peer_aborted_count(self) -> int:
-        """Get the current peer aborted count.
+    def _get_leave_count(self) -> int:
+        """Get the number of participants that left (withdrew) this rendezvous round.
 
-        This count tracks how many peers have detected local worker failures and
-        decided to restart, enabling faster failure propagation across the cluster.
-
-        Returns:
-            The number of peers that have aborted so far, or 0 if the key doesn't exist
+        Used together with join_count to compute active participant count.
+        Returns 0 if the key does not exist (no leaves yet).
         """
-        if not self.store.check([self.peer_aborted_count_key]):
+        if not self.store.check([self.leave_count_key]):
             return 0
+        leave_count_bytes = self.store.get(self.leave_count_key)
+        return int(leave_count_bytes.decode('utf-8'))
 
-        peer_aborted_count_bytes = self.store.get(self.peer_aborted_count_key)
-        return int(peer_aborted_count_bytes.decode('utf-8'))
+    def _sync_from_per_round_state(self) -> bool:
+        """Sync local _round by scanning round_done_N keys forward from current round.
 
-    def _get_withdrawn_count(self) -> int:
-        """Get the number of participants that withdrew this rendezvous cycle.
+        Scans `round_done_{N}` keys starting at the current `_round`. For each round
+        whose key exists and has value 1 (closed), advances N. Stops when the key does
+        not exist (round not yet opened) or has value 0 (round in progress).
 
-        Used together with arrived_count to compute active participant count.
-        Returns 0 if the key does not exist (no withdrawals yet).
-        """
-        if not self.store.check([self.withdrawn_count_key]):
-            return 0
-        withdrawn_count_bytes = self.store.get(self.withdrawn_count_key)
-        return int(withdrawn_count_bytes.decode('utf-8'))
-
-    def _sync_from_global_cycle(self) -> bool:
-        """Sync local _rendezvous_round from global_cycle_key if stale.
-
-        This method checks if the local _rendezvous_round is behind the global
-        cycle stored in the store and syncs it if needed.
+        This replaces the old `global_cycle_key` approach: instead of a single
+        monotonically-increasing counter written by the store host, replacement nodes
+        can reconstruct the current round by scanning per-round keys. The scan costs
+        O(restarts) round trips but is only performed during Step 0 rate-limited checks.
 
         Returns:
-            True if round was updated (was stale), False if already current
+            True if _round was advanced (was behind), False if already current
         """
-        if not self.store.check([self.global_cycle_key]):
-            return False
+        N = self._round
+        while True:
+            key = f"{self.prefix}:round_done_{N}"
+            if not self.store.check([key]):
+                break  # Round N not opened yet
+            val = int(self.store.get(key).decode('utf-8'))
+            if val == 1:
+                N += 1  # Round N completed, check N+1
+            else:
+                break  # Round N is open or in progress (val==0)
 
-        stored_cycle_bytes = self.store.get(self.global_cycle_key)
-        stored_cycle = int(stored_cycle_bytes.decode('utf-8'))
-
-        if stored_cycle > self._rendezvous_round:
-            old_round = self._rendezvous_round
-            self._rendezvous_round = stored_cycle
-            set_profiling_cycle(self._rendezvous_round)
-
+        if N > self._round:
+            old_round = self._round
+            self._round = N
+            set_profiling_cycle(N)
             # Sync agent's progress tracker if agent reference is available
             if self._agent is not None:
-                self._agent._progress_tracker.sync_cycle_number(self._rendezvous_round)
-
-            log.debug(
-                f"Synced rendezvous round from {old_round} to {self._rendezvous_round} "
-                f"(global_cycle_key)"
-            )
+                self._agent._progress_tracker.sync_cycle_number(N)
+            log.debug(f"Synced round {old_round} -> {N} (per-round scan)")
             return True
 
         return False
@@ -772,17 +787,17 @@ class _RendezvousBarrierState:
         return max(1.0, min(segment_check_interval, max(1.0, scaled_interval)))
 
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
-        """Check for early closure and timeout.
+        """Check for shutdown and timeout.
 
         Args:
             node_desc: Node descriptor for logging
 
         Raises:
-            RendezvousClosedError: If rendezvous was permanently closed
+            RendezvousClosedError: If rendezvous was permanently shut down
             RendezvousTimeoutError: If rendezvous has timed out
         """
-        # Check for permanent close
-        if self.is_permanently_closed():
+        # Check for permanent shutdown
+        if self.is_shutdown():
             msg = f"The node '{node_desc}' detected that rendezvous was permanently closed"
             log.info(msg)
             raise RendezvousClosedError(msg)
@@ -797,107 +812,310 @@ class _RendezvousBarrierState:
             log.error(msg)
             raise RendezvousTimeoutError(msg)
 
-    def _withdraw_from_rendezvous(self) -> None:
-        """Mark this participant as withdrawn so the store host can complete Step 3b.
+    def _leave_rendezvous(self) -> None:
+        """Mark this participant as having left so the store host can complete rendezvous.
 
-        Increments withdrawn_count_key and overwrites this participant's slot with
-        invalid domain_id (WITHDRAWN_DOMAIN_ID). Does not decrement arrived_count_key;
-        slot space stays monotonic. Ensures at most one withdraw per rendezvous round.
+        Increments leave_count_key and overwrites this participant's slot with
+        the WITHDRAWN sentinel domain_id. Does not decrement join_count_key;
+        slot space stays monotonic. Idempotent: at most one leave per round.
+
+        Note: This must not be called after _round_closed=True, because slot keys are
+        reused across rounds and writing WITHDRAWN would corrupt the next round's data.
         """
-        if self._has_withdrawn:
+        if self._has_left:
             return
-        self._has_withdrawn = True
+        self._has_left = True
         try:
-            self.store.add(self.withdrawn_count_key, 1)
+            self.store.add(self.leave_count_key, 1)
             # Overwrite our slot so consumers (segment constraint, rank assignment)
-            # exclude us by filtering on invalid domain_id
-            arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
-            withdrawn_data = RendezvousParticipantInfo.pack(
+            # exclude us by filtering on WITHDRAWN domain_id
+            slot_key = f"{self.prefix}:slot_{self._slot}"
+            leave_data = RendezvousParticipantInfo.pack(
                 _NodeDesc("", 0, 0),
                 -1,
-                WITHDRAWN_DOMAIN_ID,
-                self._rendezvous_round,
+                WITHDRAWN,
+                self._round,
             )
-            self.store.set(arrived_key, withdrawn_data.encode('utf-8'))
+            self.store.set(slot_key, leave_data.encode('utf-8'))
             log.debug(
-                f"Withdrew from rendezvous (incremented {self.withdrawn_count_key}, "
-                f"marked slot {self._arrived_count} as withdrawn)"
+                f"Left rendezvous (incremented {self.leave_count_key}, "
+                f"marked slot {self._slot} with WITHDRAWN)"
             )
         except Exception as e:
-            log.warning("Failed to withdraw from rendezvous: %s", e)
+            log.warning("Failed to leave rendezvous: %s", e)
 
     def _wait_for_rendezvous_open(self, node_desc: _NodeDesc) -> None:
-        """Step 0: Wait if rendezvous is closed. Hot spares and late arrivals wait here.
+        """Step 0: Wait until the current round is open. Hot spares and late arrivals wait here.
 
         This prevents hot spares and late-arriving nodes from disrupting ongoing training.
-        The rendezvous is considered:
+        A round is considered:
+        - NOT YET OPENED: round_done_key does not exist — wait for open_rendezvous() to call
         - OPEN (value=0): Accepting new participants for a new rendezvous round
-        - CLOSED (value=1): Training in progress, wait for next round
+        - CLOSED (value=1): Training in progress — advance round via _sync_from_per_round_state()
+          and wait for the next open round
 
-        Also checks for stale rendezvous rounds to allow hot spares to sync up when
-        other nodes have moved to a newer round.
+        For rounds N > 0, round_done_key is only created by open_rendezvous(), which is called
+        when a launcher detects a failure. For round 0, the key is initialized in __init__.
 
         Args:
             node_desc: Node descriptor for logging
 
         Raises:
-            RendezvousGracefulExitError: If rendezvous is permanently closed (graceful exit; launcher exits 0)
+            RendezvousGracefulExitError: If rendezvous is permanently shut down (graceful exit 0)
 
         Note:
-            Stale round detection and sync happen automatically during the wait loop.
-
             This wait does NOT timeout unless the rendezvous is permanently closed.
-            All waiting nodes (hot spares, late arrivals) wait passively until an
+            Waiting nodes (hot spares, late arrivals) wait passively until an
             active participant detects a failure and opens the next round.
         """
         wait_count = 0
         logged_waiting = False  # Track if we've logged the waiting message
 
         while True:
-            # Check for permanent close (no further rounds)
-            if self.is_permanently_closed():
+            # Check for permanent shutdown (no further rounds)
+            if self.is_shutdown():
                 msg = f"The node '{node_desc}' detected that rendezvous was permanently closed"
                 log.info(msg)
                 raise RendezvousGracefulExitError(msg)
 
-            # Check for stale rendezvous round (rate-limited to avoid thundering herd on TCPStore)
-            # This allows hot spares waiting at Step 0 to detect when other nodes have moved
-            # to a newer round and sync up. We only check this at Step 0 to avoid double-joining
-            # when a node is already participating in a rendezvous.
-            current_time = time.monotonic()
-            if current_time - self._last_stale_check_time >= self.stale_check_interval:
-                self._last_stale_check_time = current_time
-                if self._sync_from_global_cycle():
-                    # Synced to newer round, continue waiting
-                    continue
+            # Check if round_done_key exists for the current round.
+            # For round 0 it always exists (initialized in __init__). For round N > 0 it is
+            # created by open_rendezvous() when a launcher detects a failure.
+            key = self.round_done_key
+            if not self.store.check([key]):
+                # Round not yet opened; wait for open_rendezvous()
+                wait_count += 1
+                time.sleep(1.0)
+                continue
 
-            # Read the open/close indicator
-            # The key is always present (initialized in __init__)
-            value_bytes = self.store.get(self.last_participant_arrived_key)
-            value = int(value_bytes.decode('utf-8'))
+            value = int(self.store.get(key).decode('utf-8'))
 
             if value == 0:
-                # Rendezvous is open, can proceed
-                log.debug(
-                    f"[{node_desc}] [Step 0] Rendezvous is open (value=0), proceeding to join"
-                )
+                # Round is open — proceed to Step 1
+                log.debug(f"[{node_desc}] [Step 0] Round {self._round} is open, proceeding to join")
                 break
 
-            # value == 1: Rendezvous is closed (training in progress)
-            # Wait passively for an active participant to trigger the next round
+            # value == 1: Round is closed (training in progress).
+            # Rate-limited scan to detect if we're behind and need to advance _round.
             if not logged_waiting:
                 log.info(
-                    f"[{node_desc}] [Step 0] Rendezvous closed (training in progress), waiting..."
+                    f"[{node_desc}] [Step 0] Round {self._round} closed (training in progress), "
+                    f"waiting for next round..."
                 )
                 logged_waiting = True
             elif wait_count % 60 == 0:  # Log every 60 seconds
                 log.debug(
-                    f"[{node_desc}] [Step 0] Still waiting for rendezvous to open "
-                    f"(waited {wait_count} seconds)"
+                    f"[{node_desc}] [Step 0] Still waiting for next round to open "
+                    f"(round={self._round}, waited {wait_count} seconds)"
                 )
+
+            current_time = time.monotonic()
+            if current_time - self._last_stale_check_time >= self.stale_check_interval:
+                self._last_stale_check_time = current_time
+                if self._sync_from_per_round_state():
+                    # Synced to a newer round, reset logged_waiting flag for new round
+                    logged_waiting = False
 
             wait_count += 1
             time.sleep(1.0)  # Poll every 1 second
+
+    def _host_close_round(
+        self,
+        node_desc: _NodeDesc,
+        min_nodes: int,
+        max_nodes: int,
+        segment_check_interval: float,
+    ) -> None:
+        """Step 2 (store host only): Poll until segment constraint is met, assign ranks, close round.
+
+        Loops checking the current participant snapshot. When enough healthy nodes are present
+        and the segment constraint is satisfied, calls assign_group_ranks() and sets
+        round_done_key=1.  All rank keys are written BEFORE round_done_key=1 is set, so
+        any participant that sees round_done=1 in Step 3 can immediately read its rank.
+
+        Raises:
+            RendezvousClosedError: If shutdown is detected (too many unhealthy nodes).
+            RendezvousTimeoutError: If the rendezvous join timeout is exceeded.
+        """
+        last_segment_check_time = 0.0
+        effective_check_interval = self._compute_step2_poll_interval(
+            min_nodes, segment_check_interval
+        )
+        # Track how long a count mismatch has persisted so we can escalate to WARNING
+        # after a threshold and give actionable diagnostics before the join timeout fires.
+        mismatch_first_seen: Optional[float] = None
+
+        while True:
+            self._check_timeout_and_closure(node_desc)
+
+            # Early termination: if too many nodes are unhealthy it is mathematically
+            # impossible to complete with min_nodes active participants.
+            unhealthy_count = self._get_unhealthy_count()
+            if unhealthy_count > (max_nodes - min_nodes):
+                msg = (
+                    f"Rendezvous cannot complete: {unhealthy_count} unhealthy nodes detected, "
+                    f"max possible healthy nodes = {max_nodes - unhealthy_count} < {min_nodes} required. "
+                    f"Permanently closing rendezvous to terminate the job."
+                )
+                log.error(msg)
+                self.set_shutdown()
+                # Loop: _check_timeout_and_closure will raise RendezvousClosedError next iteration.
+                continue
+
+            current_joined = int(self.store.get(self.join_count_key).decode('utf-8'))
+            leave_count = self._get_leave_count()
+            active_count = current_joined - leave_count
+
+            # Only attempt snapshot + constraint check when enough nodes have joined.
+            if active_count < min_nodes:
+                time.sleep(0.1)
+                continue
+
+            current_time = time.monotonic()
+            if (current_time - last_segment_check_time) < effective_check_interval:
+                time.sleep(0.1)
+                continue
+            last_segment_check_time = current_time
+
+            # Fetch a full snapshot to avoid races with partially written slots.
+            fetch_start = time.monotonic()
+            all_participants = self.get_all_participants(
+                total_participants=current_joined,
+                expected_cycle_id=self._round,
+            )
+            fetch_elapsed = time.monotonic() - fetch_start
+
+            # Exclude left participants (WITHDRAWN domain_id) for constraint check.
+            active_participants = [p for p in all_participants if p[2] != WITHDRAWN]
+
+            # If snapshot count doesn't match counter, some slots are still being written
+            # (normal during slot write propagation) or a slot was permanently corrupted
+            # by a stale write from a previous round (bug scenario).  Either way, retry;
+            # _check_timeout_and_closure() is the hard backstop.  Escalate to WARNING
+            # after 30 s so a bug is diagnosable well before the join timeout fires.
+            if len(active_participants) != active_count:
+                now = time.monotonic()
+                if mismatch_first_seen is None:
+                    mismatch_first_seen = now
+                mismatch_duration = now - mismatch_first_seen
+                if mismatch_duration > 30.0:
+                    log.warning(
+                        f"[{node_desc}] [Step 2] Snapshot count mismatch has persisted "
+                        f"for {mismatch_duration:.0f}s "
+                        f"(active_snapshot={len(active_participants)}, "
+                        f"active_counter={active_count}, "
+                        f"joined={current_joined}, left={leave_count}, "
+                        f"round={self._round}). "
+                        f"Possible cause: a node incremented join_count but its slot "
+                        f"write was delayed or overwritten by a stale write from a "
+                        f"previous round. Will timeout after "
+                        f"{self.join_timeout_seconds}s total."
+                    )
+                else:
+                    log.debug(
+                        f"[{node_desc}] [Step 2] Full snapshot incomplete "
+                        f"(active_snapshot={len(active_participants)}, "
+                        f"active_counter={active_count}, "
+                        f"joined={current_joined}, left={leave_count}, "
+                        f"round={self._round}); retrying."
+                    )
+                continue
+
+            mismatch_first_seen = None  # resolved; reset for next occurrence
+
+            # Verify counters are still stable after the fetch before committing.
+            current_joined_after = int(self.store.get(self.join_count_key).decode('utf-8'))
+            leave_count_after = self._get_leave_count()
+            if current_joined_after != current_joined or leave_count_after != leave_count:
+                log.debug(
+                    f"[{node_desc}] [Step 2] Counters changed during snapshot "
+                    f"(joined {current_joined}->{current_joined_after}, "
+                    f"left {leave_count}->{leave_count_after}); retrying."
+                )
+                continue
+
+            # Check if the segment constraint is satisfied.
+            check_start = time.monotonic()
+            constraint_satisfied = self._can_meet_segment_constraint(active_participants, min_nodes)
+            check_elapsed = time.monotonic() - check_start
+
+            if not constraint_satisfied:
+                continue
+
+            log.info(
+                f"[slot={self._slot}] [Step 2] Constraint ok: {len(active_participants)} participants, "
+                f"min={min_nodes} (fetch {fetch_elapsed*1000:.1f}ms, check {check_elapsed*1000:.1f}ms)"
+            )
+            # Assign ranks BEFORE setting round_done=1 so Step 3 readers can get their rank
+            # immediately without any additional waiting.
+            self.assign_group_ranks(min_nodes, max_nodes, current_joined, node_desc)
+            self.store.set(self.round_done_key, "1".encode('utf-8'))
+            return
+
+    def _wait_for_round_done(self, node_desc: _NodeDesc, rank_key: str) -> Tuple[int, int]:
+        """Step 3 (all participants): Wait for round_done_key=1 then read the assigned rank.
+
+        The store host set round_done_key=1 only after writing all rank keys, so the rank
+        read here is guaranteed to be the final assigned value (no polling needed).
+
+        The rank value embeds the round number that wrote it (format: "rank,total,round").
+        If the embedded round doesn't match self._round, the slot was overwritten by a later
+        round (e.g. same port reuse caused a stale slow read); treat as UNASSIGNED so the
+        caller loops to the next round.
+
+        Returns:
+            Tuple of (group_rank, total_participants). group_rank may be UNASSIGNED
+            (late comer), a stale-round sentinel, or >= min_nodes (standby); callers
+            handle all non-active cases by looping.
+
+        Raises:
+            RendezvousClosedError: If shutdown is detected.
+            RendezvousTimeoutError: If the join timeout is exceeded.
+            RuntimeError: If the rank value cannot be parsed.
+        """
+        while True:
+            self._check_timeout_and_closure(node_desc)
+
+            # round_done_key always exists here (set to "0" at Step 0).
+            value = int(self.store.get(self.round_done_key).decode('utf-8'))
+            if value == 1:
+                break
+
+            time.sleep(0.1)
+
+        # Round is complete. All rank keys were written before round_done=1 was set.
+        # Mark round closed to block any further slot writes from this node.
+        self._round_closed = True
+
+        # Race 3 fix: rank_key may not exist when our add() arrived after the store
+        # host's double-check (round closed without us, so the host never wrote our
+        # rank). A blocking store.get() on a missing key would hang; detect first.
+        if not self.store.check([rank_key]):
+            log.debug(
+                f"[{node_desc}] rank_key {rank_key} absent — late comer, treating as UNASSIGNED"
+            )
+            return GroupRankStatus.UNASSIGNED.value, 0
+
+        rank_value = self.store.get(rank_key).decode('utf-8')
+        try:
+            rank_str, total_str, round_str = rank_value.split(',', 2)
+            rank, total, written_round = int(rank_str), int(total_str), int(round_str)
+        except (ValueError, AttributeError) as e:
+            raise RuntimeError(
+                f"[{node_desc}] Failed to parse rank value '{rank_value}': {e}. "
+                f"Expected format 'group_rank,total_participants,round'."
+            )
+
+        if written_round != self._round:
+            # Slot was overwritten by a later round (key reuse race). Treat as UNASSIGNED
+            # so perform_rendezvous() advances _round and retries.
+            log.warning(
+                f"[{node_desc}] Rank key stale: written_round={written_round} != "
+                f"self._round={self._round}. Treating as UNASSIGNED."
+            )
+            return GroupRankStatus.UNASSIGNED.value, 0
+
+        return rank, total
 
     def perform_rendezvous(
         self,
@@ -906,326 +1124,230 @@ class _RendezvousBarrierState:
         max_nodes: int,
         segment_check_interval: float = 5.0,
     ) -> Tuple[int, int]:
-        """Perform the complete rendezvous process: join, wait for completion, acknowledge, and get rank.
+        """Perform the complete rendezvous for this node, returning an active group rank.
 
-        DESIGN RATIONALE:
-        This atomic barrier-based rendezvous design balances flexibility with convergence guarantees:
+        Protocol steps (repeated until an active rank is obtained):
 
-        1. SEGMENT-AWARE COMPLETION: The rendezvous completes as soon as enough participants
-           arrive to satisfy the segment constraint. Specifically:
-           - We need enough complete segments across domains to form world_size (min_nodes)
-           - Store host incrementally checks this constraint as participants arrive
-           - Completion happens immediately when constraint is satisfied
+          Step 0 — Wait for round open (all participants):
+            Hot spares and late-arriving nodes block here until open_rendezvous() sets
+            round_done_N=0, signalling that round N is ready for joining.
 
-        2. OPTIMAL PERFORMANCE: By completing as soon as the segment constraint is met,
-           we minimize waiting time and start training with available resources. This is
-           especially important in fault-tolerant scenarios where some nodes may be down.
+          Step 1 — Join (all participants):
+            Atomically claim a slot via join_count_key. Write participant metadata and
+            an initial UNASSIGNED rank to the slot. Raise if max_nodes is exceeded.
 
-        3. CONVERGENCE: The rendezvous will complete when either:
-           - Segment constraint is satisfied (enough complete segments for min_nodes)
-           - All healthy nodes have arrived (effective_max_nodes reached)
+          Step 2 — Close round (store host only):
+            Poll the participant snapshot until the segment constraint is satisfied
+            (see _host_close_round). Then assign group ranks to all slots and set
+            round_done_N=1. Non-hosts skip this step entirely.
 
-        4. NEW COMER HANDLING:
-           - New comers arriving during active rendezvous participate in the current round
-           - New comers arriving after completion trigger the next rendezvous round
-           - All existing participants detect new comers and restart to join the new round
-           - This ensures eventual convergence with the new comer
+          Step 3 — Read rank assignment (all participants):
+            Poll round_done_N until it equals 1 (see _wait_for_round_done). Because
+            all rank keys are written before round_done_N=1 is set, the rank read is
+            always the final assigned value with no additional waiting.
 
-        5. HOT SPARE HANDLING (Step 0):
-           - Hot spares arriving after training starts will wait at Step 0
-           - They wait until a failure opens the rendezvous (value=0)
-           - This prevents disruption of ongoing training
+        After Step 3:
+          - Active rank (< min_nodes): return to launcher → start training workers.
+          - Standby rank (>= min_nodes) or UNASSIGNED (late comer): advance _round and
+            loop back to Step 0 to wait for the next round.
 
         Args:
             node_desc: Node descriptor for this participant
             min_nodes: Minimum number of nodes required for training to proceed
             max_nodes: Maximum number of nodes allowed (active + standby)
-            segment_check_interval: Interval in seconds for store host to run a full
-                                   participant snapshot check for completion (default 5.0 seconds).
-                                   Actual poll interval is adaptive by min_nodes with a
-                                   1-second floor for small rendezvous.
+            segment_check_interval: Base interval in seconds for the store host's snapshot
+                check in Step 2. Actual interval is adaptive by min_nodes (1s floor).
 
         Returns:
-            Tuple of (group_rank, total_participants)
+            Tuple of (group_rank, total_participants) where group_rank < min_nodes.
         """
-        # Step 0: Wait if rendezvous is closed (training in progress)
-        # Hot spares arriving late will wait here until a failure opens a new round
-        # Note: This also checks for permanent close (is_permanently_closed()), no need to check again
-        self._wait_for_rendezvous_open(node_desc)
+        while True:
+            # Reset per-round mutable state at the top of each attempt.
+            # _current_joined_state is cleared so a signal arriving during Step 0
+            # (before re-joining) does not trigger a spurious slot write.
+            # Reset _last_stale_check_time so _sync_from_per_round_state() fires
+            # immediately at Step 0 instead of waiting up to stale_check_interval.
+            global _current_joined_state
+            _current_joined_state = None
+            self._round_closed = False
+            self._has_left = False
+            self._leave_on_unwind = False
+            self._last_stale_check_time = 0.0
 
-        # Record start time for timeout monitoring
-        # Start timing AFTER Step 0 completes, since hot spares may wait indefinitely at Step 0
-        self._rendezvous_start_time = time.monotonic()
+            # Step 0: Wait until the current round is open.
+            # Hot spares and late-arriving nodes wait here indefinitely until a failure
+            # opens the next round. Also checks for permanent shutdown.
+            # Note: _wait_for_rendezvous_open() raises RendezvousGracefulExitError on shutdown.
+            self._wait_for_rendezvous_open(node_desc)
 
-        # Record rendezvous start event - start profiling AFTER waiting for rendezvous to open
-        # This ensures hot spares waiting at Step 0 don't skew the rendezvous performance measurement
-        rendezvous_start_event_id = record_profiling_event(
-            ProfilingEvent.RENDEZVOUS_STARTED,
-            node_id=node_desc,
-        )
+            # Record start time for timeout monitoring.
+            # Start timing AFTER Step 0 completes, since nodes may wait indefinitely at Step 0.
+            self._rendezvous_start_time = time.monotonic()
 
-        # Step 1: Join the rendezvous and get unique identifier
-        self._arrived_count = self.store.add(self.arrived_count_key, 1)
-        withdrawn_count = self._get_withdrawn_count()
-        active_count = self._arrived_count - withdrawn_count
-
-        # Check if active participants would exceed max_nodes
-        if active_count > max_nodes:
-            msg = (
-                f"Maximum number of nodes ({max_nodes}) exceeded. "
-                f"Active participant count would be {active_count} (arrived={self._arrived_count}, withdrawn={withdrawn_count}). "
-                f"This is likely a configuration error - please check max_nodes setting."
+            # Record rendezvous start event — start profiling AFTER waiting for round to open.
+            # This ensures hot spares waiting at Step 0 don't skew the rendezvous measurement.
+            rendezvous_start_event_id = record_profiling_event(
+                ProfilingEvent.RENDEZVOUS_STARTED,
+                node_id=node_desc,
             )
-            log.error(f"[{node_desc}] {msg}")
-            # Permanently close rendezvous so other nodes see this final state before we raise
-            self.set_permanently_closed()
-            raise RendezvousClosedError(msg)
 
-        global _current_joined_state
-        _current_joined_state = self
-        # Only withdraw (decrement) if we died before Step 3a; once we've acked we must not decrement.
-        # Cleanup (_current_joined_state + withdraw) runs in handler's finally via _maybe_withdraw_on_unwind().
-        self._has_acked = False
-        # Determine infrastructure rank
-        infra_rank = get_infrastructure_rank()
+            # Step 1: Join the rendezvous and get a unique slot identifier.
+            # join_count_key is per-round, so each round starts counting from 1.
+            self._slot = self.store.add(self.join_count_key, 1)
+            leave_count = self._get_leave_count()
+            active_count = self._slot - leave_count
 
-        # Determine domain ID (with caching to avoid re-parsing on every rendezvous)
-        if self._cached_domain_id is None:
-            if self.segment is not None:
-                # Segment is configured - domain_id is required, always use ClusterUUID
-                try:
-                    self._cached_domain_id = _parse_domain_id_from_nvidia_smi()
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Domain ID is required when --ft-segment is specified, but failed to parse: {e}"
-                    )
-            else:
-                # Segment not configured - domain_id not needed
-                self._cached_domain_id = "none"
-
-        domain_id = self._cached_domain_id
-        # Store participant information in arrived_<count> key using the unique identifier
-        arrived_key = f"{self.prefix}:arrived_{self._arrived_count}"
-        participant_data = RendezvousParticipantInfo.pack(
-            node_desc, infra_rank, domain_id, self._rendezvous_round
-        )
-        self.store.set(arrived_key, participant_data)
-
-        # Set initial group rank (unassigned)
-        rank_key = f"{self.prefix}:arrived_{self._arrived_count}_group_rank"
-        # Initially unassigned - use format "unassigned,0" for consistency
-        self.store.set(rank_key, f"{GroupRankStatus.UNASSIGNED.value},0".encode('utf-8'))
-
-        log.debug(
-            f"[{node_desc}] [Step 1] Joined rendezvous with arrived_count={self._arrived_count}"
-        )
-
-        # Step 2: Wait for rendezvous completion
-        # Store host periodically performs a full participant snapshot check.
-        last_segment_check_time = 0.0  # Track when we last checked segment constraint
-        effective_check_interval = self._compute_step2_poll_interval(
-            min_nodes, segment_check_interval
-        )
-
-        while True:
-            # Check for early closure and timeout
-            self._check_timeout_and_closure(node_desc)
-
-            # STORE HOST: Check if too many nodes are unhealthy (early termination condition)
-            # If unhealthy_count > max_nodes - min_nodes, then it's mathematically impossible
-            # to complete the rendezvous with min_nodes participants
-            if self.is_store_host:
-                unhealthy_count = self._get_unhealthy_count()
-                if unhealthy_count > (max_nodes - min_nodes):
-                    msg = (
-                        f"Rendezvous cannot complete: {unhealthy_count} unhealthy nodes detected, "
-                        f"max possible healthy nodes = {max_nodes - unhealthy_count} < {min_nodes} required. "
-                        f"Permanently closing rendezvous to terminate the job."
-                    )
-                    log.error(msg)
-                    self.set_permanently_closed()
-                    # Continue to next iteration to detect permanent close immediately.
-                    continue
-
-            # Check if rendezvous is already complete
-            # IMPORTANT: We check the VALUE, not just existence, since the key is always present
-            # Value "1" means complete, value "0" means open/in-progress
-            value_bytes = self.store.get(self.last_participant_arrived_key)
-            value = int(value_bytes.decode('utf-8'))
-            if value == 1:
-                log.debug(
-                    f"[{node_desc}] [Step 2] Detected rendezvous completion (last_participant_arrived_key=1)"
+            # Check if active participants would exceed max_nodes
+            if active_count > max_nodes:
+                msg = (
+                    f"Maximum number of nodes ({max_nodes}) exceeded. "
+                    f"Active participant count would be {active_count} "
+                    f"(joined={self._slot}, left={leave_count}). "
+                    f"This is likely a configuration error - please check max_nodes setting."
                 )
-                break
+                log.error(f"[{node_desc}] {msg}")
+                # Permanently shut down rendezvous so other nodes see this final state before we raise
+                self.set_shutdown()
+                raise RendezvousClosedError(msg)
 
-            # STORE HOST: Check if we should mark completion now
-            # Perform segment constraint check incrementally at specified interval
-            should_complete = False
+            # From here, a signal can trigger leaving of this slot.
+            # _current_joined_state is cleared in _maybe_leave_on_unwind() (handler's finally).
+            _current_joined_state = self
 
-            if self.is_store_host:
-                # Get current arrived count and withdrawn count; only check when we have
-                # at least min_nodes active (arrived - withdrawn)
-                current_arrived = int(self.store.get(self.arrived_count_key))
-                withdrawn_count = self._get_withdrawn_count()
-                active_count = current_arrived - withdrawn_count
+            # Determine infrastructure rank
+            infra_rank = get_infrastructure_rank()
 
-                if active_count >= min_nodes:
-                    current_time = time.monotonic()
-                    time_to_check = (
-                        current_time - last_segment_check_time
-                    ) >= effective_check_interval
-
-                    if time_to_check:
-                        last_segment_check_time = current_time
-
-                        # Always fetch a full snapshot to avoid races with partially written slots.
-                        fetch_start = time.monotonic()
-                        all_participants = self.get_all_participants(
-                            total_participants=current_arrived,
-                            expected_cycle_id=self._rendezvous_round,
+            # Determine domain ID (with caching to avoid re-parsing on every rendezvous)
+            if self._cached_domain_id is None:
+                if self.segment is not None:
+                    # Segment is configured - domain_id is required, always use ClusterUUID
+                    try:
+                        self._cached_domain_id = _parse_domain_id_from_nvidia_smi()
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"Domain ID is required when --ft-segment is specified, but failed to parse: {e}"
                         )
-                        fetch_elapsed = time.monotonic() - fetch_start
+                else:
+                    # Segment not configured - domain_id not needed
+                    self._cached_domain_id = "none"
 
-                        # Exclude withdrawn participants (invalid domain_id) for segment constraint
-                        active_participants = [
-                            p for p in all_participants if p[2] != WITHDRAWN_DOMAIN_ID
-                        ]
+            domain_id = self._cached_domain_id
 
-                        # If counts don't match, snapshot may be stale/incomplete; wait for next poll.
-                        if len(active_participants) != active_count:
-                            log.debug(
-                                f"[{node_desc}] [Step 2] Full snapshot incomplete "
-                                f"(active_snapshot={len(active_participants)}, active_counter={active_count}, "
-                                f"arrived={current_arrived}, withdrawn={withdrawn_count}, "
-                                f"cycle_id={self._rendezvous_round}); retrying."
-                            )
-                            continue
+            slot_key = f"{self.prefix}:slot_{self._slot}"
+            rank_key = f"{self.prefix}:slot_{self._slot}_rank"
 
-                        # Verify counters are still stable after fetch before deciding completion.
-                        current_arrived_after_fetch = int(self.store.get(self.arrived_count_key))
-                        withdrawn_count_after_fetch = self._get_withdrawn_count()
-                        if (
-                            current_arrived_after_fetch != current_arrived
-                            or withdrawn_count_after_fetch != withdrawn_count
-                        ):
-                            log.debug(
-                                f"[{node_desc}] [Step 2] Counters changed during full snapshot "
-                                f"(arrived {current_arrived}->{current_arrived_after_fetch}, "
-                                f"withdrawn {withdrawn_count}->{withdrawn_count_after_fetch}); retrying."
-                            )
-                            continue
+            # SLOT WRITE PROTOCOL — key reuse safety
+            #
+            # slot_key and rank_key are reused across rounds (bounded by max_nodes) to
+            # avoid TCPStore keyspace bloat.  Two races arise from reuse:
+            #
+            # Race 1 — slot_key overwrite:
+            #   If our add(join_count_N) arrived at the server AFTER the store host's
+            #   double-check, the round closed at K-1 (without us).  Our subsequent
+            #   set(slot_key) would arrive during round N+1 and overwrite another
+            #   participant's data, causing a persistent cycle_id mismatch the round
+            #   N+1 store host cannot resolve.  The store host spins until the join
+            #   timeout fires; a WARNING is emitted after 30 s to make the bug
+            #   diagnosable before the full timeout elapses.
+            #
+            #   Fix: read round_done_key before writing.  If already 1 the round is
+            #   closed; skip both writes.  In Step 3 we read a stale/absent rank_key →
+            #   embedded-round mismatch or store.check() miss → UNASSIGNED → loop.
+            #
+            #   A residual sub-millisecond TOCTOU window exists between this get() and
+            #   the set() calls below: the round could close and round N+1 could start
+            #   in that gap.  There is no TCPStore primitive that closes it: the condition
+            #   (round_done_key == 0) and the write (slot_key = data) are on different
+            #   keys, and TCPStore.compare_set() only atomically checks-and-sets a single
+            #   key — it cannot span two keys.  The residual window is accepted because
+            #   the compound probability of the race (add after double-check AND round N+1
+            #   fully advances AND B claims the same slot, all within one RTT) is
+            #   negligible in practice.
+            #
+            # Race 2 — rank_key UNASSIGNED overwrite:
+            #   With the naive order (set slot_key then set rank_key), the store host
+            #   can see valid slot_key, assign the real rank, write rank_key=rank,N, and
+            #   set round_done=1 — all before our delayed set(rank_key=UNASSIGNED)
+            #   arrives.  Our write then clobbers the assigned rank; we read UNASSIGNED
+            #   in Step 3 and loop to round N+1 while other nodes start training without
+            #   us → hang.
+            #
+            #   Fix: write rank_key BEFORE slot_key.  slot_key is the cycle_id trigger
+            #   the store host waits on; rank_key carries no such dependency.  Both
+            #   writes are blocking on the same TCP connection, so the server processes
+            #   rank_key before slot_key.  By the time the store host sees valid slot_key
+            #   and proceeds to assign ranks, rank_key=UNASSIGNED is already in the
+            #   store.  The store host's rank write therefore always follows ours.
+            round_already_closed = int(self.store.get(self.round_done_key).decode('utf-8')) == 1
 
-                        # Timing: Segment constraint check
-                        check_start = time.monotonic()
-                        constraint_satisfied = self._can_meet_segment_constraint(
-                            active_participants, min_nodes
-                        )
-                        check_elapsed = time.monotonic() - check_start
-
-                        if constraint_satisfied:
-                            should_complete = True
-                            log.info(
-                                f"[{node_desc}] [Step 2] Segment constraint satisfied with "
-                                f"{len(active_participants)} active participants (min_nodes={min_nodes}). "
-                                f"Perf: fetch {current_arrived} participants in {fetch_elapsed*1000:.1f}ms, "
-                                f"constraint check in {check_elapsed*1000:.1f}ms"
-                            )
-
-            if should_complete:
-                # Mark rendezvous as complete
-                self.store.set(self.last_participant_arrived_key, "1".encode('utf-8'))
-                log.debug(
-                    f"[{node_desc}] [Step 2] Rendezvous marked as complete with arrived_count={self._arrived_count}"
+            if not round_already_closed:
+                self.store.set(
+                    rank_key,
+                    f"{GroupRankStatus.UNASSIGNED.value},0,{self._round}".encode('utf-8'),
                 )
-                break
-
-            # Small delay before next check
-            time.sleep(0.1)
-
-        # Step 3: Perform two-step acknowledge phase
-        # Step 3a: All participants acknowledge completion
-        ack_count = self.store.add(self.ack_count_key, 1)
-        self._has_acked = True
-        log.debug(f"[{node_desc}] [Step 3a] Acknowledged completion, ack_count={ack_count}")
-
-        # Step 3b: TCPStore host participant waits for all acknowledgments, assigns ranks, and clears keys
-        if self.is_store_host:
-            while True:
-                # Check for early closure and timeout
-                self._check_timeout_and_closure(node_desc)
-
-                current_count = int(self.store.get(self.ack_count_key))
-                # Wait for acks from active participants only (exclude withdrawn)
-                arrived = int(self.store.get(self.arrived_count_key))
-                withdrawn = self._get_withdrawn_count()
-                total_participants = arrived - withdrawn
-                if current_count >= total_participants:
-                    log.debug(
-                        f"[{node_desc}] [Step 3b] All {total_participants} participants acknowledged "
-                        f"(ack_count={current_count}), proceeding to clear keys and assign ranks"
-                    )
-
-                    # Clear barrier keys first to prevent false positives in launcher's
-                    # num_nodes_waiting() detection. If arrived_count_key persists after
-                    # participants return to training, launcher may incorrectly detect a
-                    # new rendezvous and trigger unnecessary restarts.
-                    self._clear_barrier_keys(node_desc)
-
-                    # Assign group ranks after clearing keys (pass arrived = slot count for fetch)
-                    # New comers are blocked at Step 0 by closed rendezvous, so no race condition
-                    self.assign_group_ranks(min_nodes, max_nodes, arrived, node_desc)
-                    break
-
-                time.sleep(0.1)
-        else:
-            # Non-first participants just wait for rank assignment
-            pass
-
-        # Step 4: Wait for group rank assignment
-        log.debug(f"[{node_desc}] [Step 4] Waiting for group rank assignment")
-        while True:
-            # Check for early closure and timeout
-            self._check_timeout_and_closure(node_desc)
-
-            rank_value_bytes = self.store.get(rank_key)
-            rank_value = rank_value_bytes.decode('utf-8')
-
-            # Parse the combined rank value: "group_rank,total_participants"
-            try:
-                rank_str, total_participants_str = rank_value.split(',', 1)
-                rank = int(rank_str)
-                total_participants = int(total_participants_str)
-            except (ValueError, AttributeError) as e:
-                raise RuntimeError(
-                    f"[{node_desc}] Failed to parse rank value '{rank_value}': {e}. "
-                    f"Expected format 'group_rank,total_participants' but got malformed data."
+                participant_data = RendezvousParticipantInfo.pack(
+                    node_desc, infra_rank, domain_id, self._round
                 )
+                self.store.set(slot_key, participant_data.encode('utf-8'))
 
-            # Check if rank has been assigned (not unassigned)
-            if rank != GroupRankStatus.UNASSIGNED.value:
-                log.debug(
-                    f"[{node_desc}] [Step 4] Received group rank {rank}, total participants {total_participants}"
-                )
+            log.debug(
+                f"[slot={self._slot}] [Step 1] Joined round {self._round}"
+                + (" (late, round already closed)" if round_already_closed else "")
+            )
+
+            # Step 2 (store host only): Poll until the segment constraint is satisfied,
+            # assign group ranks to all participants, then set round_done_key=1.
+            # Non-hosts skip this step entirely and proceed directly to Step 3.
+            if self.is_store_host:
+                self._host_close_round(node_desc, min_nodes, max_nodes, segment_check_interval)
+
+            # Step 3 (all participants): Wait for round_done_key=1, then read rank.
+            # The store host set round_done_key=1 only AFTER writing all rank keys, so
+            # any participant that sees round_done=1 can immediately read its rank.
+            rank, total_participants = self._wait_for_round_done(node_desc, rank_key)
+
+            if rank != GroupRankStatus.UNASSIGNED.value and rank < min_nodes:
+                # Active rank: return to launcher to start training workers.
                 return rank, total_participants
 
-            # Delay before next check
-            time.sleep(1)
+            # rank == UNASSIGNED: late comer that joined after the store host's snapshot.
+            # rank >= min_nodes: standby node — too many nodes for this round.
+            # Both cases: advance to next round and wait at Step 0 for it to open.
+            if rank == GroupRankStatus.UNASSIGNED.value:
+                log.info(
+                    f"[{node_desc}] Late joiner detected for round {self._round} "
+                    f"(rank=UNASSIGNED); retrying in round {self._round + 1}"
+                )
+            else:
+                log.info(
+                    f"[{node_desc}] Standby (rank={rank}) for round {self._round}; "
+                    f"waiting for round {self._round + 1} to open"
+                )
+            # Loop back to Step 0; _sync_from_per_round_state() will advance _round
+            # from N to N+1 when it sees round_done_N=1 (closed).
 
-    def _maybe_withdraw_on_unwind(self) -> None:
-        """Clear joined-state ref and, if we received a signal before acking, withdraw (increment withdrawn_count, mark slot).
+    def _maybe_leave_on_unwind(self) -> None:
+        """Clear joined-state ref and conditionally leave the rendezvous on exception.
 
         Called from the handler's finally (next_rendezvous) so cleanup lives in one place.
         Clears _current_joined_state so the signal handler does not see a stale ref (e.g. during
-        training or between rounds). Resetting on each perform_rendezvous keeps the ref accurate
-        for the current attempt.
+        training or between retry rounds). Resetting on each perform_rendezvous loop iteration
+        keeps the ref accurate for the current attempt.
+
+        Only leaves (writes WITHDRAWN to slot) if:
+        - A signal was received after joining (Step 1) AND
+        - The round is NOT yet closed (_round_closed=False)
+
+        We must NOT leave after _round_closed=True because slot keys are reused across rounds.
+        Writing WITHDRAWN after round N closes would corrupt round N+1's slot data.
         """
         global _current_joined_state
         if _current_joined_state is self:
             _current_joined_state = None
-        if getattr(self, '_withdraw_on_unwind', False):
-            if not getattr(self, '_has_acked', True):
-                self._withdraw_from_rendezvous()
-            self._withdraw_on_unwind = False
+        if getattr(self, '_leave_on_unwind', False):
+            if not getattr(self, '_round_closed', True):
+                self._leave_rendezvous()
+            self._leave_on_unwind = False
 
     def get_all_participants(
         self,
@@ -1271,9 +1393,11 @@ class _RendezvousBarrierState:
         # Initialize result list
         participants = existing_participants if existing_participants is not None else []
 
-        # Prepare keys for multi_get (only fetch new participants)
+        # Prepare keys for multi_get (only fetch new participants).
+        # Slot keys (slot_N) are reused across rounds; they hold data for the current round
+        # and are overwritten at Step 1 of each new round for the same slot number.
         participant_keys = [
-            f"{self.prefix}:arrived_{i}" for i in range(start_index, total_participants + 1)
+            f"{self.prefix}:slot_{i}" for i in range(start_index, total_participants + 1)
         ]
 
         if not participant_keys:
@@ -1284,15 +1408,13 @@ class _RendezvousBarrierState:
         participant_data_list = self.store.multi_get(participant_keys)
 
         # Unpack participant information; one entry per slot so list index maps to slot
-        # (participants[i] = slot start_index + i). Use placeholder for missing/failed/withdrawn.
-        placeholder = (_NodeDesc("", 0, 0), -1, WITHDRAWN_DOMAIN_ID)
+        # (participants[i] = slot start_index + i). Use placeholder for missing/failed/left.
+        placeholder = (_NodeDesc("", 0, 0), -1, WITHDRAWN)
         for i, participant_data_bytes in enumerate(participant_data_list):
             actual_index = start_index + i
 
             if not participant_data_bytes:
-                log.warning(
-                    f"No participant data for slot arrived_{actual_index}; treating as placeholder"
-                )
+                log.warning(f"No participant data for slot_{actual_index}; treating as placeholder")
                 participants.append(placeholder)
                 continue
 
@@ -1303,68 +1425,40 @@ class _RendezvousBarrierState:
                 )
                 if expected_cycle_id is not None and cycle_id != expected_cycle_id:
                     log.debug(
-                        f"Cycle mismatch for arrived_{actual_index}: expected cycle "
+                        f"Cycle mismatch for slot_{actual_index}: expected cycle "
                         f"{expected_cycle_id}, got {cycle_id}; treating as placeholder"
                     )
                     participants.append(placeholder)
                     continue
                 participants.append((node_desc, infra_rank, domain_id))
             except Exception as e:
-                log.warning(f"Failed to unpack participant data for arrived_{actual_index}: {e}")
+                log.warning(f"Failed to unpack participant data for slot_{actual_index}: {e}")
                 participants.append(placeholder)
 
         return participants
 
-    def _clear_barrier_keys(self, node_desc: _NodeDesc):
-        """Clear main barrier keys to prepare for next rendezvous round.
-
-        Note: We do NOT clear last_participant_arrived_key because it serves as the
-        open/close indicator for the rendezvous. It remains set to 1 (closed) during
-        training and is reset to 0 (open) by the launcher when a failure is detected.
-
-        Note: We do NOT clear unhealthy_count_key because it is a global counter that
-        tracks unhealthy nodes across the entire job lifetime, not per cycle.
-
-        This method is called by the last participant to acknowledge in Step 3b, BEFORE
-        rank assignment. This ensures all participants are still waiting and cannot
-        start the next cycle yet, making it safe to clear the global counters.
-        """
-        # Clear main keys - individual arrived_<count> keys don't need clearing
-        # DO NOT clear last_participant_arrived_key - it indicates open/close state
-        # DO NOT clear unhealthy_count_key - it is a global job-level counter
-        keys_to_clear = [
-            self.arrived_count_key,
-            self.withdrawn_count_key,
-            self.ack_count_key,
-            self.peer_aborted_count_key,  # Clear peer aborted counter for next round
-        ]
-
-        # Delete main keys
-        for key in keys_to_clear:
-            try:
-                self.store.delete_key(key)
-            except Exception as e:
-                log.debug(f"[{node_desc}] Failed to delete key {key}: {e}")
-
     def assign_group_ranks(
         self, world_size: int, max_nodes: int, total_participants: int, node_desc: _NodeDesc
     ) -> bool:
-        """Assign group ranks to all participants. Called by Rank 0 (TCPStore host).
+        """Assign group ranks to all participants. Called by the store host in Step 2.
+
+        This is called BEFORE setting round_done_key=1 so that any participant reading
+        round_done=1 can immediately read its rank without waiting further.
 
         Args:
             world_size: Target world size for training (number of active participants)
             max_nodes: Maximum number of participants allowed
-            total_participants: Total number of participants (passed to avoid race condition)
+            total_participants: Slot count for this round (passed to avoid race condition)
         """
         all_participants = self.get_all_participants(
-            total_participants, expected_cycle_id=self._rendezvous_round
+            total_participants, expected_cycle_id=self._round
         )
         assert (
             len(all_participants) == total_participants
         ), f"Expected {total_participants} slots, got {len(all_participants)}"
 
-        # Exclude withdrawn participants (invalid domain_id) for rank assignment
-        active_participants = [p for p in all_participants if p[2] != WITHDRAWN_DOMAIN_ID]
+        # Exclude left participants (WITHDRAWN domain_id) for rank assignment
+        active_participants = [p for p in all_participants if p[2] != WITHDRAWN]
         assert (
             len(active_participants) > 0
         ), f"Expected at least one active participant. total_participants={total_participants}"
@@ -1378,87 +1472,73 @@ class _RendezvousBarrierState:
 
         assigned_group_ranks = self._assign_group_ranks(active_participants, world_size)
 
-        # Write rank to each active participant's slot (iterate by slot so key = arrived_{slot})
+        # Write rank to each active participant's slot_{N}_rank key.
+        # These writes happen BEFORE round_done_key is set to 1, ensuring all ranks
+        # are visible to participants as soon as they see round_done=1.
         rank_keys = []
         rank_values = []
-        self._last_active_participant_addrs = []
-        self._last_standby_participant_addrs = []
+        self._active_node_addrs = []
+        self._standby_node_addrs = []
+        self._active_ranks = []
         for slot in range(1, total_participants + 1):
             node_desc_item, _, domain_id = all_participants[slot - 1]
-            if domain_id != WITHDRAWN_DOMAIN_ID:
+            if domain_id != WITHDRAWN:
                 assigned_group_rank = assigned_group_ranks.get(node_desc_item, -1)
 
                 # Collect addrs for cycle info (active vs standby by group_rank vs world_size)
                 if assigned_group_rank < world_size:
-                    self._last_active_participant_addrs.append(node_desc_item.addr)
+                    self._active_node_addrs.append(node_desc_item.addr)
+                    self._active_ranks.append(assigned_group_rank)
                 else:
-                    self._last_standby_participant_addrs.append(node_desc_item.addr)
+                    self._standby_node_addrs.append(node_desc_item.addr)
 
                 if assigned_group_rank == -1:
                     raise RuntimeError(
                         f"Failed to assign group rank to participant {node_desc_item}. "
                         f"This should never happen - all active participants should be assigned ranks."
                     )
-                rank_key = f"{self.prefix}:arrived_{slot}_group_rank"
-                rank_value = f"{assigned_group_rank},{total_participants}"
+                rank_key = f"{self.prefix}:slot_{slot}_rank"
+                rank_value = f"{assigned_group_rank},{total_participants},{self._round}"
                 rank_keys.append(rank_key)
                 rank_values.append(rank_value.encode('utf-8'))
 
         self.store.multi_set(rank_keys, rank_values)
 
-        log.debug(
-            f"[{node_desc}] [Step 3b] Assigned group ranks to {len(active_participants)} participants"
-        )
+    def is_shutdown(self) -> bool:
+        """Check if rendezvous is permanently shut down (no further rounds)."""
+        return self.store.check([self.shutdown_key])
 
-    def is_permanently_closed(self) -> bool:
-        """Check if rendezvous is permanently closed (no further rounds)."""
-        return self.store.check([self.permanent_close_key])
-
-    def set_permanently_closed(self) -> None:
-        """Mark rendezvous as permanently closed (graceful exit, no further rounds)."""
+    def set_shutdown(self) -> None:
+        """Mark rendezvous as permanently shut down (graceful exit, no further rounds)."""
         try:
-            self.store.set(self.permanent_close_key, "1".encode('utf-8'))
+            self.store.set(self.shutdown_key, "1".encode('utf-8'))
         except Exception as e:
-            log.error(f"Failed to set permanent close: {e}")
+            log.error(f"Failed to set shutdown: {e}")
 
     def open_rendezvous(self):
-        """Open rendezvous for new participants to join (typically after failure detection).
+        """Open the next round (N+1) for participants to join after failure detection.
 
-        This is called by the launcher when it detects a worker failure and needs to
-        restart. Setting last_participant_arrived_key to 0 signals to all participants
-        (including hot spares waiting at Step 0) that a new rendezvous round can begin.
+        After completing round N, _round=N and round_done_N=1 (closed). This creates
+        round_done_{N+1}=0, which is the key polled by:
+          - is_next_round_open() on healthy training nodes
+          - _wait_for_rendezvous_open() (via _sync_from_per_round_state) on hot spares
+            and restarting nodes
 
-        RACE CONDITION PROTECTION:
-        We check if a rendezvous is currently in progress or being finalized.
-        If arrived_count_key exists, it means:
-        - Either a rendezvous is actively in progress (Step 1-2), OR
-        - Step 3b is in progress but hasn't cleared the keys yet
-        In this case, we DO NOT modify last_participant_arrived_key to avoid
-        racing with the active rendezvous.
+        RACE CONDITION SAFETY:
+        Multiple launchers detecting the same failure concurrently all target the same
+        round_done_{N+1} key and write the same "0" value — this is idempotent.
 
-        BEHAVIOR AFTER DEFER:
-        The calling node will proceed to Step 0 and check last_participant_arrived_key:
-        - If value=0 (rendezvous still open/joining), node can join the current rendezvous
-        - If value=1 (rendezvous complete), node will wait passively for next round
+        The check() guard ensures only the first caller writes; subsequent callers defer:
+        - If round_done_{N+1} does not exist: safe to open → set to "0"
+        - If round_done_{N+1} already exists: another node already opened it → defer
         """
-        # Check if a rendezvous is in progress or being finalized
-        # If arrived_count_key exists, it means participants are joining (Step 1) or
-        # finalizing (Step 3b before clearing). The key only exists with value >= 1.
-        if self.store.check([self.arrived_count_key]):
-            log.debug(
-                "open_rendezvous() deferred - rendezvous in progress. "
-                "Not modifying last_participant_arrived_key to avoid race with active rendezvous. "
-                "The node may still join the current rendezvous if it's still open (value=0)."
-            )
-            # Don't modify last_participant_arrived_key - let the current rendezvous manage it
-            # The calling node will check the value at Step 0:
-            # - If value=0 (still joining), the node can join the current rendezvous
-            # - If value=1 (completed), the node will wait for the next round
+        next_round_done_key = f"{self.prefix}:round_done_{self._round + 1}"
+        if self.store.check([next_round_done_key]):
+            log.debug(f"open_rendezvous() deferred - round_done_{self._round + 1} already exists.")
             return
 
-        # Safe to open - no rendezvous in progress
-        self.store.set(self.last_participant_arrived_key, "0".encode('utf-8'))
-        log.debug(f"Opened rendezvous for new round (set {self.last_participant_arrived_key}=0)")
+        self.store.set(next_round_done_key, "0".encode('utf-8'))
+        log.debug(f"Opened round {self._round + 1} for joining")
 
 
 class FtRendezvousBarrierHandler(RendezvousHandler):
@@ -1640,13 +1720,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
     @property
     def _rendezvous_round(self) -> int:
-        """Delegate to barrier state's rendezvous round."""
-        return self._barrier_state._rendezvous_round
+        """Delegate to barrier state's round counter."""
+        return self._barrier_state._round
 
     @_rendezvous_round.setter
     def _rendezvous_round(self, value: int) -> None:
-        """Delegate to barrier state's rendezvous round."""
-        self._barrier_state._rendezvous_round = value
+        """Delegate to barrier state's round counter."""
+        self._barrier_state._round = value
 
     def set_worker_group(self, worker_group: Any) -> None:
         """Set the worker group reference for this handler."""
@@ -1672,10 +1752,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         This is called after set_agent() to perform initialization tasks that
         need to sync with the agent, such as syncing the rendezvous round for
-        cross-array task coordination.
+        cross-array task coordination (replacement nodes joining an ongoing job).
         """
         old_round = self._rendezvous_round
-        if self._barrier_state._sync_from_global_cycle():
+        if self._barrier_state._sync_from_per_round_state():
             log.info(
                 f"[{self._this_node}] Synced rendezvous round at initialization "
                 f"({old_round} -> {self._rendezvous_round})"
@@ -1756,10 +1836,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
 
-        # Set current cycle for health check injection (if enabled)
-        if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
-            health_check_injector.set_current_cycle(self._rendezvous_round)
-
         # Perform GPU health check
         self._run_health_check(
             GPUHealthCheck(), "GPU health check", f"Node {self._this_node} has an unhealthy GPU."
@@ -1801,6 +1877,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 f"Node {self._this_node} is unhealthy.",
             )
 
+        # Perform failure injection check (testing only; no-op unless NVRX_INJECT_GPU_FAILURE is set)
+        if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
+            cycle = get_profiling_cycle()
+            infra_rank = get_infrastructure_rank(skip_nodename_logic=True)
+            if health_check_injector.should_inject_failure(cycle, infra_rank):
+                raise UnhealthyNodeException(
+                    f"Injected failure: infra_rank={infra_rank}, cycle={cycle}"
+                )
+
     def handle_control_requests_from_rank(self) -> None:
         """Check control messages received from local ranks."""
         # Check control messages received from local ranks
@@ -1830,47 +1915,17 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             self._settings.max_nodes,
         )
 
-        # Increment round number for the next rendezvous
-        # This ensures each rendezvous round uses an isolated namespace for MASTER_ADDR/MASTER_PORT
-        self._rendezvous_round += 1
-
-        # AFTER rendezvous: Store host updates global_cycle_key for job array coordination
-        #
-        # The global_cycle_key persists _rendezvous_round in the store, allowing replacement
-        # job array elements to sync their state. After this write:
-        #   - _rendezvous_round = N means N rendezvous have completed
-        #   - Workers are about to start for cycle (N-1)
-        #   - Replacement nodes will read this value, do another rendezvous, and run cycle N
-        #
-        # Example: If _rendezvous_round=3 after increment:
-        #   - 3 rendezvous have completed
-        #   - About to run cycle 2 (third attempt: initial + 2 restarts)
-        #   - If job crashes during/after cycle 2, replacement reads global_cycle_key=3
-        #   - Replacement does 4th rendezvous (round becomes 4) and runs cycle 3
-        if self._barrier_state.is_store_host:
-            self._barrier_state.store.set(
-                self._barrier_state.global_cycle_key, str(self._rendezvous_round).encode('utf-8')
-            )
-
         # Store the assigned rank and world size
         self._assigned_rank = group_rank
 
-        # World size for the training job is the number of *active* participants (min_nodes),
-        # not total_participants (active + standby). The launcher multiplies this by
-        # nproc_per_node to set WORLD_SIZE in worker env. Standby participants report
-        # local_world_size=0 and do not run workers; they must still see the same
-        # group world_size (min_nodes) so that WORLD_SIZE = min_nodes * nproc_per_node
-        # (e.g. 32*4=128) in every worker, not total_participants * nproc_per_node (e.g. 47*4=188).
-        # This is required when TORCH_ELASTIC_WORKER_IDENTICAL=1: PyTorch then uses this
-        # world_size directly (no multi_get of role_info), so it must be the active count.
+        # World size for the training job is the number of *active* participants (min_nodes).
+        # perform_rendezvous() only returns with an active rank (< min_nodes); standby nodes
+        # loop inside perform_rendezvous() until they become active. All workers therefore
+        # see WORLD_SIZE = min_nodes * nproc_per_node (e.g. 32*4=128), not total_participants.
+        # This is required when TORCH_ELASTIC_WORKER_IDENTICAL=1.
         self._world_size = self._settings.min_nodes
 
-        if group_rank == GroupRankStatus.UNASSIGNED.value:
-            log.warning("Failed to get group rank assignment, but continuing")
-        elif group_rank >= self._settings.min_nodes:
-            log.info(f"Node {self._this_node} is in standby mode (rank {group_rank})")
-        else:
-            log.info(f"Node {self._this_node} assigned group rank {group_rank}")
+        log.info(f"Assigned active rank {group_rank} (round={self._barrier_state._round})")
 
     def next_rendezvous(self) -> Union[RendezvousInfo, Tuple[Store, int, int]]:
         """See base class.
@@ -1908,18 +1963,14 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             world_size = self._world_size
             store = self._get_store()
 
-            # Adjust local_world_size based on whether this is a standby or active participant
+            # perform_rendezvous() only returns with an active rank (< min_nodes).
+            # Standby nodes loop inside perform_rendezvous() until they become active.
+            # Restore local_world_size for nodes that were previously standby (had 0 workers).
             assert (
                 self._worker_group is not None
             ), "set_worker_group must be called before next_rendezvous"
-            if rank >= self._settings.min_nodes:
-                # This is a standby participant, set local_world_size to 0
-                self._worker_group.spec.local_world_size = 0
-            else:
-                # This is an active participant, ensure local_world_size is correct
-                if self._worker_group.spec.local_world_size == 0:
-                    # Restore from the configured value in settings
-                    self._worker_group.spec.local_world_size = self._settings.nproc_per_node
+            if self._worker_group.spec.local_world_size == 0:
+                self._worker_group.spec.local_world_size = self._settings.nproc_per_node
 
         except Exception as e:
             self._record(
@@ -1928,10 +1979,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             )
             raise
         finally:
-            # If we received a signal after joining but before acking (Step 3a), withdraw so
-            # the store host can complete Step 3b. Centralized in handler's finally with other
+            # If we received a signal after joining but before round close, leave so
+            # the store host can finish the round. Centralized here with other
             # next_rendezvous cleanup (signal handler restore).
-            self._barrier_state._maybe_withdraw_on_unwind()
+            self._barrier_state._maybe_leave_on_unwind()
             _restore_rdzv_signal_handlers(prev_signal_handlers)
 
         msg = (
@@ -1972,9 +2023,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             return store, rank, world_size
 
     def is_closed(self) -> bool:
-        """See base class. Returns True if rendezvous is permanently closed."""
+        """See base class. Returns True if rendezvous is permanently shut down."""
         try:
-            return self._barrier_state.is_permanently_closed()
+            return self._barrier_state.is_shutdown()
         except Exception as e:
             self._record(
                 message=f"{type(e).__name__}: {str(e)}",
@@ -1994,14 +2045,26 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             raise
 
     def num_nodes_waiting(self) -> int:
-        """See base class."""
-        # Return active count (arrived - withdrawn) as the number of nodes waiting
-        if not self._barrier_state.store.check([self._barrier_state.arrived_count_key]):
+        """See base class.
+
+        Returns the number of nodes currently waiting to join the rendezvous.
+        Uses per-round join_count_key; if the key doesn't exist for the current
+        round (e.g. during training between rounds), returns 0 with no false positives.
+        """
+        if not self._barrier_state.store.check([self._barrier_state.join_count_key]):
             return 0
-        arrived_count_bytes = self._barrier_state.store.get(self._barrier_state.arrived_count_key)
-        arrived_count = int(arrived_count_bytes.decode('utf-8'))
-        withdrawn_count = self._barrier_state._get_withdrawn_count()
-        return max(0, arrived_count - withdrawn_count)
+        joined_count_bytes = self._barrier_state.store.get(self._barrier_state.join_count_key)
+        joined_count = int(joined_count_bytes.decode('utf-8'))
+        leave_count = self._barrier_state._get_leave_count()
+        return max(0, joined_count - leave_count)
+
+    def is_next_round_open(self) -> bool:
+        """Return True if the next rendezvous round has been opened by any node in the cluster.
+
+        Healthy nodes in the monitor loop call this to detect that a peer has triggered
+        a restart (open_rendezvous() sets round_done_{N+1}=0 as the signal).
+        """
+        return self._barrier_state.is_next_round_open()
 
     def remove_this_node(self):
         raise NotImplementedError("Not implemented")
@@ -2021,21 +2084,35 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """See base class."""
         return self._settings.run_id
 
-    def get_last_rendezvous_participant_addrs(self) -> Optional[List[str]]:
-        """Return the list of active participant addresses from the last completed rendezvous.
+    def get_active_node_addrs(self) -> Optional[List[str]]:
+        """Return active node addresses from the last completed rendezvous.
 
         Only the TCPStore host populates this (in assign_group_ranks). Other nodes
         will get None. Used by the launcher to build NVRx cycle info (active_nodes).
         """
-        return self._barrier_state._last_active_participant_addrs
+        return self._barrier_state._active_node_addrs
 
-    def get_last_rendezvous_standby_participant_addrs(self) -> Optional[List[str]]:
-        """Return the list of standby (hot spare) participant addresses from the last rendezvous.
+    def get_standby_node_addrs(self) -> Optional[List[str]]:
+        """Return standby (hot spare) node addresses from the last rendezvous.
 
         Only the TCPStore host populates this. Other nodes will get None.
         Used by the launcher to build NVRx cycle info (standby_nodes).
         """
-        return self._barrier_state._last_standby_participant_addrs
+        return self._barrier_state._standby_node_addrs
+
+    def get_active_ranks(self) -> Optional[List[int]]:
+        """Return group ranks of active nodes in SLURM hostname sort order.
+
+        active_ranks[i] corresponds to the i-th node in hostnames_to_slurm_nodelist()
+        expansion, enabling strict per-element rank-to-node alignment.
+        Only the TCPStore host populates this; other nodes return None.
+        """
+        addrs = self._barrier_state._active_node_addrs
+        ranks = self._barrier_state._active_ranks
+        if addrs is None or ranks is None:
+            return None
+        addr_to_rank = dict(zip(addrs, ranks))
+        return [addr_to_rank[a] for a in slurm_sort_addrs(addrs)]
 
     def shutdown(self) -> bool:
         """See base class."""
@@ -2058,8 +2135,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             raise
 
     def _close(self) -> None:
-        """Permanently close the rendezvous (no further rounds)."""
-        self._barrier_state.set_permanently_closed()
+        """Permanently shut down the rendezvous (no further rounds)."""
+        self._barrier_state.set_shutdown()
 
         msg = f"The node '{self._this_node}' has permanently closed the rendezvous '{self._settings.run_id}'."
         self._record(message=msg, node_state=NodeState.SUCCEEDED)
@@ -2071,9 +2148,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         Uses round number in the prefix to isolate MASTER_ADDR/MASTER_PORT keys
         between rendezvous rounds, preventing race conditions when rank 0 changes.
 
-        The round number is tracked in memory and increments each time next_rendezvous()
-        completes. This ensures each handler instance uses progressively isolated namespaces
-        for bootstrap keys without requiring TCPStore coordination.
+        _rendezvous_round == N after completing round N, so each training session
+        uses namespace N — a unique, naturally incrementing prefix per round.
         """
         key_prefix = f"torch.rendezvous.{self._settings.run_id}.{self._rendezvous_round}"
 

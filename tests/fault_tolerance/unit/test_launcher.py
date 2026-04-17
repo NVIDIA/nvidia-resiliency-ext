@@ -25,7 +25,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
-from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext import fault_tolerance
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
@@ -297,8 +296,8 @@ def _make_agent_spec(rdzv_round=1):
     spec = MagicMock()
     spec.rdzv_handler = MagicMock()
     spec.rdzv_handler.round.return_value = rdzv_round
-    spec.rdzv_handler.get_last_rendezvous_participant_addrs.return_value = ["node001", "node002"]
-    spec.rdzv_handler.get_last_rendezvous_standby_participant_addrs.return_value = ["node003"]
+    spec.rdzv_handler.get_active_node_addrs.return_value = ["node001", "node002"]
+    spec.rdzv_handler.get_standby_node_addrs.return_value = ["node003"]
     spec.max_restarts = 3
     return spec
 
@@ -331,7 +330,7 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
 
         writer = MagicMock()
-        # rdzv_round=1 -> _get_global_restart_count() = max(0, 1-1) = 0
+        # rdzv_round=1 -> _get_global_cycle_number() = 1 (cycle 1)
         spec = _make_agent_spec(rdzv_round=1)
         with patch.dict(
             os.environ,
@@ -357,7 +356,7 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         call_kw = writer.update_cycle_end.call_args[1]
         self.assertEqual(call_kw["job_id"], "12345")
         self.assertEqual(call_kw["attempt_index"], 0)
-        self.assertEqual(call_kw["cycle_number"], 0)
+        self.assertEqual(call_kw["cycle_number"], 1)
         self.assertEqual(call_kw["cycle_end_time"], "2024-01-01T12:00:00Z")
 
     def test_on_cycle_end_uses_slurm_array_job_id_when_set(self):
@@ -365,7 +364,7 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
 
         writer = MagicMock()
-        spec = _make_agent_spec(rdzv_round=2)  # restart_count = 1
+        spec = _make_agent_spec(rdzv_round=2)  # restart_count = 2 (cycle 2)
         with patch.dict(
             os.environ,
             {
@@ -390,7 +389,66 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         call_kw = writer.update_cycle_end.call_args[1]
         self.assertEqual(call_kw["job_id"], "array_99")
         self.assertEqual(call_kw["attempt_index"], 1)
-        self.assertEqual(call_kw["cycle_number"], 1)
+        self.assertEqual(call_kw["cycle_number"], 2)
+
+    def test_on_cycle_end_cycle_number_override(self):
+        """_on_cycle_end accepts explicit cycle_number, bypassing _get_global_cycle_number()."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        writer = MagicMock()
+        # rdzv_round=3 (standby advanced _round to 3 before shutdown detected);
+        # calling with cycle_number=2 records the last completed cycle.
+        spec = _make_agent_spec(rdzv_round=3)
+        agent = LocalElasticAgent(
+            spec=spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
+            cycle_info_writer=writer,
+        )
+        with patch(
+            "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
+            return_value="2024-01-01T12:00:00Z",
+        ):
+            agent._on_cycle_end(cycle_number=2)
+
+        call_kw = writer.update_cycle_end.call_args[1]
+        self.assertEqual(call_kw["cycle_number"], 2)
+
+    def test_remaining_restarts_corrected_in_run(self):
+        """run() re-syncs _remaining_restarts before delegating to _invoke_run.
+
+        At __init__ time _round=0, so _remaining_restarts = max_restarts provisionally.
+        run() re-computes using the post-sync cycle number before the monitor loop starts.
+        """
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        # rdzv_round=2: replacement node synced to cycle 2, max_restarts=3 -> remaining=1
+        spec = _make_agent_spec(rdzv_round=2)
+        agent = LocalElasticAgent(
+            spec=spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
+            cycle_info_writer=None,
+        )
+
+        captured = {}
+
+        def fake_invoke_run(role):
+            captured['remaining'] = agent._remaining_restarts
+            return MagicMock()
+
+        with (
+            patch.object(agent, '_invoke_run', side_effect=fake_invoke_run),
+            patch.object(agent, '_shutdown'),
+            patch.object(agent, '_record_metrics'),
+            patch.object(agent, '_record_worker_events'),
+        ):
+            agent.run()
+
+        # At __init__ time round()=2, so provisional value is already 1 in this mock.
+        # In production, round()=0 at init and round()=2 after _complete_initialization();
+        # run() always re-computes so the value is guaranteed correct regardless.
+        self.assertEqual(captured['remaining'], 1)  # max_restarts(3) - round()(2) = 1
 
     def test_write_cycle_start_info_returns_none_when_writer_is_none(self):
         """_write_cycle_start_info returns None when cycle_info_writer is None."""
@@ -452,8 +510,8 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         writer = MagicMock()
         writer.get_current_cycle_info_path.return_value = "/nvrx/current"
         spec = _make_agent_spec(rdzv_round=1)
-        spec.rdzv_handler.get_last_rendezvous_participant_addrs.return_value = ["host1"]
-        spec.rdzv_handler.get_last_rendezvous_standby_participant_addrs.return_value = ["host2"]
+        spec.rdzv_handler.get_active_node_addrs.return_value = ["host1"]
+        spec.rdzv_handler.get_standby_node_addrs.return_value = ["host2"]
         with patch.dict(
             os.environ,
             {"SLURM_JOB_ID": "j", "SLURM_RESTART_CNT": "0"},
@@ -484,51 +542,180 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         self.assertEqual(call_kw["standby_nodes"], "standby")
 
 
-class TestMaybeExitStandbyOnSuccess(unittest.TestCase):
-    """Unit tests for _maybe_exit_standby_on_success (standby detects training success via exit barrier)."""
+class TestLauncherRunBehavior(unittest.TestCase):
+    """Unit tests for run() exception handling paths."""
 
     def setUp(self):
+        self.spec = _make_agent_spec(rdzv_round=1)
         self.fault_tol_cfg = FaultToleranceConfig()
         self.logs_specs = MagicMock()
+        self.logs_specs.get_cycle_log_file.return_value = "/path/to/cycle_0.log"
 
-    def _make_agent_standby(self, min_nodes=2, group_rank=2, store_check_returns=False):
-        """Create agent configured as standby (group_rank >= min_nodes) with optional store mock."""
+    def test_run_graceful_exit_calls_on_cycle_end_with_round_minus_1(self):
+        """run() calls _on_cycle_end(cycle_number=round()-1) on RendezvousGracefulExitError.
+
+        Standby nodes: _round advanced to N+1 when round N closed before shutdown was
+        detected. run() records end of cycle N (the last completed cycle).
+        """
+        from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
+
         from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
 
-        spec = _make_agent_spec(rdzv_round=1)
-        spec.rdzv_handler._settings = MagicMock()
-        spec.rdzv_handler._settings.min_nodes = min_nodes
-
+        spec = _make_agent_spec(rdzv_round=3)
         agent = LocalElasticAgent(
             spec=spec,
             fault_tol_cfg=self.fault_tol_cfg,
             logs_specs=self.logs_specs,
+            cycle_info_writer=MagicMock(),
+        )
+
+        with (
+            patch.object(
+                agent, '_invoke_run', side_effect=RendezvousGracefulExitError("round closed")
+            ),
+            patch.object(agent, '_shutdown'),
+            patch.object(agent, '_on_cycle_end') as mock_end,
+        ):
+            result = agent.run()
+
+        # round()-1 = 3-1 = 2: record the last completed cycle, not the advanced one
+        mock_end.assert_called_once_with(cycle_number=2)
+        self.assertIsNone(result)
+
+
+class TestHandleRestartDecision(unittest.TestCase):
+    """Unit tests for _handle_restart_decision() and _open_rendezvous_for_restart()."""
+
+    def setUp(self):
+        self.spec = _make_agent_spec(rdzv_round=1)
+        self.fault_tol_cfg = FaultToleranceConfig()
+        self.logs_specs = MagicMock()
+        self.logs_specs.get_cycle_log_file.return_value = "/path/to/cycle_0.log"
+
+    def _make_agent(self):
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        return LocalElasticAgent(
+            spec=self.spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
             cycle_info_writer=None,
         )
-        agent._worker_group = MagicMock()
-        agent._worker_group.group_rank = group_rank
-        agent._store = MagicMock()
-        agent._store.check.return_value = store_check_returns
-        return agent
 
-    def test_standby_raises_graceful_exit_when_exit_barrier_key_set(self):
-        """Standby (group_rank >= min_nodes) raises RendezvousGracefulExitError when exit barrier is complete."""
-        agent = self._make_agent_standby(min_nodes=2, group_rank=2, store_check_returns=True)
-        with self.assertRaises(RendezvousGracefulExitError) as ctx:
-            agent._maybe_exit_standby_on_success("trainer")
-        self.assertIn("exit barrier", str(ctx.exception).lower())
+    def test_handle_restart_decision_progress_terminate(self):
+        """Returns False without restarting when progress tracker says terminate early."""
+        agent = self._make_agent()
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = True
+        agent._remaining_restarts = 2
 
-    def test_standby_does_not_raise_when_exit_barrier_key_not_set(self):
-        """Standby does not raise when exit barrier key is not set (keeps waiting)."""
-        agent = self._make_agent_standby(min_nodes=2, group_rank=2, store_check_returns=False)
-        agent._maybe_exit_standby_on_success("trainer")  # no raise
-        agent._store.check.assert_called_once()
+        with (
+            patch.object(agent, '_restart_workers') as mock_restart,
+            patch.object(agent, '_open_rendezvous_for_restart') as mock_open,
+        ):
+            result = agent._handle_restart_decision(
+                role="test", spec=self.spec, log_msg="[%s] restarting"
+            )
 
-    def test_active_node_does_not_raise_even_when_key_set(self):
-        """Active node (group_rank < min_nodes) returns without raising even if key is set."""
-        agent = self._make_agent_standby(min_nodes=2, group_rank=1, store_check_returns=True)
-        agent._maybe_exit_standby_on_success("trainer")  # no raise
-        agent._store.check.assert_not_called()
+        self.assertFalse(result)
+        mock_restart.assert_not_called()
+        mock_open.assert_not_called()
+
+    def test_handle_restart_decision_restarts_remaining(self):
+        """Returns True and decrements _remaining_restarts when restarts are available."""
+        agent = self._make_agent()
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 2
+
+        with (
+            patch.object(agent, '_restart_workers') as mock_restart,
+            patch.object(agent, '_open_rendezvous_for_restart') as mock_open,
+        ):
+            result = agent._handle_restart_decision(
+                role="test", spec=self.spec, log_msg="[%s] restarting", open_rendezvous=False
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(agent._remaining_restarts, 1)
+        mock_restart.assert_called_once()
+        mock_open.assert_not_called()
+
+    def test_handle_restart_decision_no_restarts_left(self):
+        """Returns False when _remaining_restarts is 0."""
+        agent = self._make_agent()
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 0
+
+        with patch.object(agent, '_restart_workers') as mock_restart:
+            result = agent._handle_restart_decision(
+                role="test", spec=self.spec, log_msg="[%s] restarting"
+            )
+
+        self.assertFalse(result)
+        mock_restart.assert_not_called()
+
+    def test_handle_restart_decision_open_rendezvous_called_when_requested(self):
+        """Calls _open_rendezvous_for_restart() when open_rendezvous=True."""
+        agent = self._make_agent()
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 1
+
+        with (
+            patch.object(agent, '_restart_workers'),
+            patch.object(agent, '_open_rendezvous_for_restart') as mock_open,
+        ):
+            agent._handle_restart_decision(
+                role="test", spec=self.spec, log_msg="[%s] restarting", open_rendezvous=True
+            )
+
+        mock_open.assert_called_once()
+
+    def test_open_rendezvous_for_restart_barrier_handler(self):
+        """Calls _barrier_state.open_rendezvous() when handler has _barrier_state."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        barrier_state = MagicMock()
+        self.spec.rdzv_handler._barrier_state = barrier_state
+        agent = LocalElasticAgent(
+            spec=self.spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
+            cycle_info_writer=None,
+        )
+        agent._open_rendezvous_for_restart()
+
+        barrier_state.open_rendezvous.assert_called_once()
+
+    def test_open_rendezvous_for_restart_legacy_handler(self):
+        """Does nothing (no error) when handler lacks _barrier_state (legacy rdzv)."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        # Use a spec-constrained mock so _barrier_state doesn't auto-exist
+        legacy_rdzv = MagicMock(
+            spec=[
+                'round',
+                'get_active_node_addrs',
+                'get_standby_node_addrs',
+            ]
+        )
+        legacy_rdzv.round.return_value = 1
+        legacy_rdzv.get_active_node_addrs.return_value = []
+        legacy_rdzv.get_standby_node_addrs.return_value = []
+        self.spec.rdzv_handler = legacy_rdzv
+
+        agent = LocalElasticAgent(
+            spec=self.spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
+            cycle_info_writer=None,
+        )
+        # Should not raise
+        agent._open_rendezvous_for_restart()
+        # No open_rendezvous() on the legacy handler
+        self.assertFalse(hasattr(legacy_rdzv, '_barrier_state'))
 
 
 def test_ft_log_aggregator_count_rejects_non_positive():

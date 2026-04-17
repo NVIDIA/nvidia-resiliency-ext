@@ -51,4 +51,8 @@ message NVRxCycleInfo {
   // write. A CAS update only succeeds when the stored generation equals the one
   // in the request; after a successful write, the new generation is (previous + 1).
   uint64 generation = 9;
+
+  // Group ranks of active nodes, aligned with active_nodes (same sort order).
+  // SLURM-range-compressed, e.g. "0-3,6".
+  string active_ranks = 10;
 }

@@ -95,14 +95,14 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
                 f"NVRX_INFRA_RANK_FROM_NODENAME is set but SLURMD_NODENAME '{nodename}' contains no digits"
             )
         infra_rank = int(digits)
-        logger.debug(f"Using infrastructure rank {infra_rank} from SLURMD_NODENAME '{nodename}'")
+        logger.debug(f"infra_rank={infra_rank} from SLURMD_NODENAME '{nodename}'")
         return infra_rank
 
     # Check CROSS_SLURM_PROCID second (for multi-job scenarios)
     cross_slurm_procid = os.getenv('CROSS_SLURM_PROCID')
     if cross_slurm_procid is not None:
         infra_rank = int(cross_slurm_procid)
-        logger.debug(f"Using infrastructure rank {infra_rank} from CROSS_SLURM_PROCID")
+        logger.debug(f"infra_rank={infra_rank} from CROSS_SLURM_PROCID")
         return infra_rank
 
     # Check SLURM_TOPOLOGY_ADDR with block awareness third
@@ -161,8 +161,8 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
             # This keeps block index in MSB for proper ordering
             infra_rank = block_num * multiplier + node_num
             logger.debug(
-                f"Using infrastructure rank {infra_rank} from SLURM_TOPOLOGY_ADDR '{topology_addr}' "
-                f"(block={block_num}, node={node_num}, multiplier={multiplier}) with pattern '{topology_pattern}'"
+                f"infra_rank={infra_rank} from SLURM_TOPOLOGY_ADDR '{topology_addr}' "
+                f"(block={block_num}, node={node_num}, pattern='{topology_pattern}')"
             )
             return infra_rank
 
@@ -196,7 +196,7 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
         # Calculate global infrastructure rank: array_task_id * nodes_per_task + local_node_id
         infra_rank = array_task_id * nnodes + proc_id
         logger.debug(
-            f"Using infrastructure rank {infra_rank} from SLURM job array "
+            f"infra_rank={infra_rank} from SLURM job array "
             f"(array_task_id={array_task_id}, nnodes={nnodes}, procid={proc_id})"
         )
         return infra_rank
@@ -206,7 +206,7 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
 
     if infra_rank_str is not None:
         infra_rank = int(infra_rank_str)
-        logger.debug(f"Using infrastructure rank {infra_rank} from environment")
+        logger.debug(f"infra_rank={infra_rank} from environment")
         return infra_rank
 
     # Check if we're running under SLURM - if so, SLURM_PROCID should be defined
@@ -618,3 +618,36 @@ def hostnames_to_slurm_nodelist(addrs: list) -> str:
         range_strs = _numbers_to_slurm_ranges(nums, pad)
         result_parts.append(f"{prefix}[{','.join(range_strs)}]")
     return ",".join(result_parts)
+
+
+def slurm_sort_addrs(addrs: list) -> list:
+    """Return addrs sorted by the same key as hostnames_to_slurm_nodelist.
+
+    Sorts by (prefix_alpha, numeric_suffix). Unparseable names sort last.
+    """
+
+    def _sort_key(addr: str):
+        short = addr.split(".")[0].strip()
+        p = _parse_hostname_prefix_suffix(short)
+        return (0, p[0], p[1]) if p else (1, short, 0)
+
+    return sorted(addrs, key=_sort_key)
+
+
+def ranks_to_range_str(ranks: list[int]) -> str:
+    """Compress an ordered list of ints into a SLURM-style range string.
+
+    Preserves input order (no re-sort). E.g. [0,1,2,5,6] -> "0-2,5-6", [] -> "".
+    """
+    if not ranks:
+        return ""
+    ranges: list[str] = []
+    start = end = ranks[0]
+    for r in ranks[1:]:
+        if r == end + 1:
+            end = r
+        else:
+            ranges.append(f"{start}-{end}" if start != end else str(start))
+            start = end = r
+    ranges.append(f"{start}-{end}" if start != end else str(start))
+    return ",".join(ranges)

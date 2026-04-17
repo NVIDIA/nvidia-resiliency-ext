@@ -54,8 +54,9 @@ class FaultToleranceProfiler:
         """Set the current cycle number.
 
         Called by the rendezvous handler when a newly joining node syncs its cycle number
-        from the global_cycle_key in the store. This ensures newly joining nodes (e.g.,
-        replacement array tasks) continue with the correct cycle number instead of starting from 0.
+        via _sync_from_per_round_state() which scans per-round round_done keys. This ensures
+        newly joining nodes (e.g., replacement array tasks) continue with the correct cycle
+        number instead of starting from 0.
 
         Args:
             cycle: The cycle number to set. Only sets if >= current cycle to prevent backward jumps.
@@ -125,6 +126,11 @@ def record_profiling_event(
         Event ID string
     """
     return _get_global_profiler().record_event(event, node_id, rank)
+
+
+def get_profiling_cycle() -> int:
+    """Return the current profiling cycle number."""
+    return _get_global_profiler()._current_cycle
 
 
 def set_profiling_cycle(cycle: int) -> None:
