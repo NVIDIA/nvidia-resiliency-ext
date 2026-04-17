@@ -39,7 +39,6 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 import torch
 from torch.distributed.argparse_util import check_env, env
 from torch.distributed.elastic import events, metrics, timer
-from torch.distributed.elastic.agent.server import api as _torch_elastic_agent_api
 from torch.distributed.elastic.agent.server.api import (
     RunResult,
     SimpleElasticAgent,
@@ -84,6 +83,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     hostnames_to_slurm_nodelist,
     is_slurm_job_array,
     patched_method,
+    ranks_to_range_str,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
@@ -106,21 +106,6 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
-# Key set by PyTorch's _exit_barrier() when all active agents have reached the barrier
-# (success path). Standby nodes can check this to detect successful training completion
-# without relying on is_permanently_closed() (which requires the store host to have called shutdown();
-# the store host may be a standby).
-#
-# Derive the prefix from PyTorch internals and fail loudly on incompatibility
-# to avoid silently checking a stale key when upstream changes.
-if not hasattr(_torch_elastic_agent_api, "_TERMINAL_STATE_SYNC_ID"):
-    raise RuntimeError(
-        "PyTorch internal '_TERMINAL_STATE_SYNC_ID' was not found. "
-        "Cannot derive _exit_barrier store key safely; update this integration "
-        f"for torch=={torch.__version__}."
-    )
-
-_EXIT_BARRIER_LAST_MEMBER_KEY = f"{_torch_elastic_agent_api._TERMINAL_STATE_SYNC_ID}/last_member"
 
 _legacy_ft_rdzv_deprecation_warned: bool = False
 
@@ -396,12 +381,9 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._rank_monitors:
             self._setup_rank_monitor_connections()
 
-        # Fix _remaining_restarts for job array deployments
-        # The base class (SimpleElasticAgent) sets _remaining_restarts = spec.max_restarts,
-        # assuming this is a fresh start. But for job array replacements, we need to account
-        # for restarts that already occurred in the original job array element.
-        # The global restart count persists across replacements via the rendezvous store.
-        restarts_initiated = self._get_global_restart_count()
+        # Provisional: _round=0 at construction (store not yet synced via set_agent()).
+        # Corrected at the start of run() after _complete_initialization() has run.
+        restarts_initiated = self._get_global_cycle_number()
         self._remaining_restarts = spec.max_restarts - restarts_initiated
 
         # Initialize progress tracker with global cycle number for job array deployments
@@ -431,34 +413,28 @@ class LocalElasticAgent(SimpleElasticAgent):
     # 1. _rendezvous_round (in FtRendezvousBarrierHandler):
     #    - Tracks number of COMPLETED rendezvous operations
     #    - Starts at 0, increments AFTER each rendezvous completes
-    #    - Persisted to store as 'global_cycle_key' by store host
-    #    - Synced by replacement nodes on initialization
+    #    - Synced by replacement nodes on initialization via per-round key scan
     #
     # 2. cycle_number:
     #    - Which training cycle is running (0 = initial, 1 = first restart, etc.)
     #    - Equals _rendezvous_round (one rendezvous per cycle)
     #    - Used by ProgressTracker for logging
     #
-    # 3. restart_count:
-    #    - How many RESTARTS have been initiated (cycle 0 is NOT a restart)
-    #    - Equals max(0, cycle_number - 1)
-    #    - Used to calculate _remaining_restarts
-    #
-    # 4. _remaining_restarts:
+    # 3. _remaining_restarts:
     #    - How many more restarts are allowed after current cycle fails
-    #    - Equals max_restarts - restart_count
+    #    - Equals max_restarts - cycle_number
     #    - Decremented on each restart decision
     #
     # Example Timeline (max_restarts=3):
-    #   Cycle 0: restart_count=0, _remaining_restarts=3, _rendezvous_round=1 (after rdzv)
-    #   Cycle 1: restart_count=1, _remaining_restarts=2, _rendezvous_round=2 (after rdzv)
-    #   Cycle 2: restart_count=2, _remaining_restarts=1, _rendezvous_round=3 (after rdzv)
-    #   Cycle 3: restart_count=3, _remaining_restarts=0, _rendezvous_round=4 (after rdzv)
+    #   Cycle 0: cycle_number=0, _remaining_restarts=3, _rendezvous_round=0
+    #   Cycle 1: cycle_number=1, _remaining_restarts=2, _rendezvous_round=1
+    #   Cycle 2: cycle_number=2, _remaining_restarts=1, _rendezvous_round=2
+    #   Cycle 3: cycle_number=3, _remaining_restarts=0, _rendezvous_round=3
     #
     # Job Array Replacement:
-    #   Original job crashes at cycle 2 with _rendezvous_round=3
-    #   Replacement reads global_cycle_key=3, sets _rendezvous_round=3
-    #   Calculates restart_count=2, _remaining_restarts=1
+    #   Original job crashes at cycle 2 with _rendezvous_round=2
+    #   Replacement scans round_done_{N} keys, finds _rendezvous_round=2
+    #   cycle_number=2, _remaining_restarts=1
     #   Continues with cycle 3 (one more restart allowed)
     # ============================================================================
 
@@ -482,32 +458,18 @@ class LocalElasticAgent(SimpleElasticAgent):
         """
         return self._rdzv_handler.round()
 
-    def _get_global_restart_count(self) -> int:
-        """Get the global restart count.
 
-        The restart count represents how many times we've restarted (not including
-        the initial attempt):
-        - 0 = running initial attempt (cycle 0), no restarts yet
-        - 1 = first restart initiated (cycle 1)
-        - 2 = second restart initiated (cycle 2), etc.
+    def _on_cycle_end(self, cycle_number: Optional[int] = None) -> None:
+        """Record cycle end time in cycle info file.
 
-        This value persists across job array element replacements via the rendezvous store.
-
-        Returns:
-            Number of restarts initiated (0-based)
-
-        Relationship to cycle_number:
-            restart_count = max(0, cycle_number - 1)
-            - Cycle 0 (initial) = 0 restarts
-            - Cycle N (N >= 1) = N restarts
+        Args:
+            cycle_number: Cycle to record. Defaults to current cycle (_get_global_cycle_number()).
+                Standby nodes must pass round()-1 since their _round was already advanced
+                to N+1 by the time shutdown is detected.
         """
-        return max(0, self._rdzv_handler.round() - 1)
-
-    def _on_cycle_end(self) -> None:
-        """Record cycle end time in cycle info file."""
         if self._cycle_info_writer is None:
             return
-        current_cycle = self._get_global_restart_count()
+        current_cycle = cycle_number if cycle_number is not None else self._get_global_cycle_number()
         job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
         attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
         self._cycle_info_writer.update_cycle_end(
@@ -525,16 +487,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
         cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
         # Legacy FtRendezvousHandler does not define these; barrier handler does.
-        get_active = getattr(
-            self._rdzv_handler, "get_last_rendezvous_participant_addrs", None
-        )
-        get_standby = getattr(
-            self._rdzv_handler, "get_last_rendezvous_standby_participant_addrs", None
-        )
+        get_active = getattr(self._rdzv_handler, "get_active_node_addrs", None)
+        get_standby = getattr(self._rdzv_handler, "get_standby_node_addrs", None)
+        get_active_ranks = getattr(self._rdzv_handler, "get_active_ranks", None)
         active_addrs = get_active() if callable(get_active) else None
         standby_addrs = get_standby() if callable(get_standby) else None
+        active_rank_list = get_active_ranks() if callable(get_active_ranks) else None
         active_nodes = hostnames_to_slurm_nodelist(active_addrs) if active_addrs else ""
         standby_nodes = hostnames_to_slurm_nodelist(standby_addrs) if standby_addrs else ""
+        active_ranks = ranks_to_range_str(active_rank_list) if active_rank_list is not None else ""
         self._cycle_info_writer.write_cycle_start(
             job_id=job_id,
             attempt_index=attempt_index,
@@ -543,6 +504,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             cycle_log_file=cycle_log_file,
             active_nodes=active_nodes,
             standby_nodes=standby_nodes,
+            active_ranks=active_ranks,
         )
         return self._cycle_info_writer.get_current_cycle_info_path(job_id)
 
@@ -550,6 +512,11 @@ class LocalElasticAgent(SimpleElasticAgent):
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
     def run(self, role: str = DEFAULT_ROLE) -> RunResult:
+        # Re-sync _remaining_restarts: _round=0 at __init__ time (store not yet synced).
+        # set_agent() -> _complete_initialization() has corrected _round by now.
+        self._remaining_restarts = (
+            self._worker_group.spec.max_restarts - self._get_global_cycle_number()
+        )
         start_time = time.monotonic()
         shutdown_called: bool = False
         try:
@@ -560,6 +527,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             return result
         except RendezvousGracefulExitError as e:
             logger.info("Rendezvous gracefully exited: %s", e)
+            # Standby nodes: _round was advanced to N+1 when round N closed before shutdown
+            # was detected. Record end of cycle N (the last completed cycle).
+            self._on_cycle_end(cycle_number=self._rdzv_handler.round() - 1)
             return None
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
@@ -576,7 +546,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         """Open rendezvous for restart when using barrier-based rendezvous.
 
         This method is called when a failure is detected and we need to restart workers.
-        For barrier-based rendezvous, it sets last_participant_arrived_key=0 to signal
+        For barrier-based rendezvous, it sets round_done_{N+1}=0 to signal
         that a new rendezvous round can begin, allowing hot spares and restarting nodes
         to join.
         """
@@ -584,10 +554,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         if hasattr(self._rdzv_handler, '_barrier_state'):
             try:
                 self._rdzv_handler._barrier_state.open_rendezvous()
-                logger.debug(
-                    "[group_rank=%s] Opened rendezvous for restart (barrier-based rendezvous)",
-                    self._worker_group.group_rank if self._worker_group else "N/A"
-                )
             except Exception as e:
                 logger.error(f"Failed to open rendezvous: {e}")
         # For legacy rendezvous, no action needed - it uses different mechanism
@@ -598,7 +564,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec: WorkerSpec,
         log_msg: str,
         open_rendezvous: bool = False,
-        notify_peer: bool = False,
     ) -> bool:
         """Handle restart decision logic based on progress tracking and remaining restarts.
 
@@ -606,8 +571,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             role: The role name for logging
             spec: Worker specification
             log_msg: Custom log message for restart
-            open_rendezvous: Whether to open rendezvous before restart (for barrier-based rendezvous)
-            notify_peer: Whether to notify peers to abort the workers in current cycle.
+            open_rendezvous: Whether to open rendezvous before restart.
 
         Returns:
             True if restart was initiated (caller should continue monitoring loop)
@@ -626,9 +590,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         elif self._remaining_restarts > 0:
             logger.info(log_msg, role)
             self._remaining_restarts -= 1
-            # Increment peer_aborted_count to notify other nodes (for barrier-based rendezvous)
-            if notify_peer and hasattr(self._rdzv_handler, '_barrier_state'):
-                self._rdzv_handler._barrier_state._increment_peer_aborted_count()
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
             self._restart_workers(self._worker_group)
@@ -687,7 +648,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 should_restart = self._handle_restart_decision(
                     role, spec, log_msg, open_rendezvous=True,
-                    notify_peer=True
                 )
 
                 if should_restart:
@@ -698,33 +658,23 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
-                # Check for cluster-wide issues: new nodes waiting or peer aborts
-                # Note: unhealthy_count is now a global job-level counter and is not used here
-                # for failure detection. It's only used in the rendezvous for early termination.
-                self._maybe_exit_standby_on_success(role)
-
-                num_nodes_waiting = rdzv_handler.num_nodes_waiting()
-                peer_aborted_count = self._check_cluster_peer_aborted_count()
-                group_rank = self._worker_group.group_rank
-
-                if num_nodes_waiting > 0 or peer_aborted_count > 0:
+                # Check if any node in the cluster has opened the next rendezvous round,
+                # which signals that a peer detected a failure and triggered a restart.
+                # open_rendezvous() sets round_done_{N+1}=0; this is both the spare-node
+                # wake-up signal and the peer-failure signal for healthy nodes here.
+                if rdzv_handler.is_next_round_open():
+                    group_rank = self._worker_group.group_rank
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
                         node_id=self._rdzv_handler._this_node,
-                        rank=self._worker_group.group_rank,
+                        rank=group_rank,
                     )
 
-                    log_msg = (
-                        f"[%s] Detected cluster changes from group_rank={group_rank} "
-                        f"(nodes_waiting={num_nodes_waiting}, peer_aborted={peer_aborted_count}); "
-                        f"will restart worker group"
-                    )
-                    # Note: The node that triggered the change (unhealthy or new) already opened
-                    # the rendezvous, so we don't need to open it again here.
+                    log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
+                    # The node that triggered the failure already opened the rendezvous.
                     should_restart = self._handle_restart_decision(
                         role, spec, log_msg, open_rendezvous=False,
-                        notify_peer=False
                     )
 
                     if not should_restart:
@@ -1033,9 +983,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Get the current cycle number from the rendezvous handler
         # At this point, rendezvous has completed and we're about to start workers.
         # The cycle number is used for profiling and environment variable setting.
-        # Note: We use _get_global_restart_count() because in the context of worker startup,
-        # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
-        current_cycle = restart_count = self._get_global_restart_count()  # Actually cycle number
+        current_cycle = restart_count = self._get_global_cycle_number()
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -1128,9 +1076,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Rank monitors are already created early (before gRPC) and connections established
         # in LocalElasticAgent.__init__(), so no need to call setup_rank_monitors here
 
-        # Standby nodes are those assigned a group_rank >= min_nodes after rendezvous.
-        # The rendezvous handler sets local_world_size to 0 for standby nodes, so no workers are created.
-        # Let the normal flow continue - PyTorch handles local_world_size=0 correctly.
+        # Standby nodes loop inside perform_rendezvous() until they become active or training ends.
+        # next_rendezvous() only returns with an active rank, so all nodes here start workers.
 
         assert spec.entrypoint is not None
         assert self._logs_specs is not None
@@ -1353,50 +1300,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._pcontext is not None:
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
-
-    def _check_cluster_peer_aborted_count(self) -> int:
-        """Check the cluster-wide peer aborted count from the rendezvous store.
-
-        This tracks how many peers have detected local failures and decided to restart,
-        enabling faster failure propagation across the cluster.
-
-        Only supported for barrier-based rendezvous. Returns 0 for legacy rendezvous.
-
-        Returns:
-            The number of peers that have aborted in this cycle, or 0 if not available.
-        """
-        # Only barrier-based rendezvous supports peer_aborted_count
-        if hasattr(self._rdzv_handler, '_barrier_state'):
-            return self._rdzv_handler._barrier_state._get_peer_aborted_count()
-
-        # Legacy rendezvous does not support peer aborted tracking
-        return 0
-
-    def _maybe_exit_standby_on_success(self, role: str) -> None:
-        """If this node is a standby and the exit barrier is complete, exit gracefully.
-
-        Active agents only call _exit_barrier() on the SUCCEEDED path; when its
-        \"last_member\" key is set, all actives have finished. Checking this key
-        (instead of is_closed()) works even when the store host is a standby.
-
-        Raises:
-            RendezvousGracefulExitError: When standby detects success (caller should not catch).
-        """
-        min_nodes = self._rdzv_handler._settings.min_nodes
-        group_rank = self._worker_group.group_rank
-        if group_rank < min_nodes:
-            return
-        if self._store.check([_EXIT_BARRIER_LAST_MEMBER_KEY]):
-            self._on_cycle_end()
-            logger.info(
-                "[%s] Standby (group_rank=%s) detected exit barrier complete; "
-                "training finished successfully, exiting gracefully.",
-                role,
-                group_rank,
-            )
-            raise RendezvousGracefulExitError(
-                "Standby detected all active agents reached exit barrier (success)."
-            )
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""

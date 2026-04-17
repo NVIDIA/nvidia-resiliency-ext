@@ -44,7 +44,7 @@ from nvidia_resiliency_ext.fault_tolerance import (
     ft_rendezvous_barrier as ft_rendezvous_barrier_module,
 )
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
-    WITHDRAWN_DOMAIN_ID,
+    WITHDRAWN,
     FtRendezvousBarrierHandler,
     RendezvousParticipantInfo,
     RendezvousTimeout,
@@ -273,11 +273,11 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         self.assertEqual(state.run_id, self.run_id)
         self.assertTrue(state.is_store_host)
         self.assertIn(self.run_id, state.prefix)
-        self.assertIn(self.run_id, state.arrived_count_key)
-        self.assertIn(self.run_id, state.last_participant_arrived_key)
+        self.assertIn(self.run_id, state.join_count_key)
+        self.assertIn(self.run_id, state.round_done_key)
 
-    def test_is_permanently_closed_initially_false(self):
-        """Test that rendezvous is not permanently closed initially."""
+    def test_is_shutdown_initially_false(self):
+        """Test that rendezvous is not shut down initially."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -285,10 +285,10 @@ class BarrierStateBasicTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        self.assertFalse(state.is_permanently_closed())
+        self.assertFalse(state.is_shutdown())
 
-    def test_set_permanently_closed(self):
-        """Test that set_permanently_closed marks rendezvous as permanently closed."""
+    def test_set_shutdown(self):
+        """Test that set_shutdown marks rendezvous as permanently shut down."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -296,11 +296,11 @@ class BarrierStateBasicTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
 
-        state.set_permanently_closed()
-        self.assertTrue(state.is_permanently_closed())
+        state.set_shutdown()
+        self.assertTrue(state.is_shutdown())
 
-    def test_join_increments_arrived_count(self):
-        """Test that joining increments the arrived_count atomically."""
+    def test_join_increments_join_count(self):
+        """Test that joining increments join_count atomically."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -309,15 +309,15 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         )
 
         # First join
-        count1 = self.store.add(state.arrived_count_key, 1)
+        count1 = self.store.add(state.join_count_key, 1)
         self.assertEqual(count1, 1)
 
         # Second join
-        count2 = self.store.add(state.arrived_count_key, 1)
+        count2 = self.store.add(state.join_count_key, 1)
         self.assertEqual(count2, 2)
 
         # Third join
-        count3 = self.store.add(state.arrived_count_key, 1)
+        count3 = self.store.add(state.join_count_key, 1)
         self.assertEqual(count3, 3)
 
     def test_get_all_participants_incremental_fetch(self):
@@ -343,9 +343,9 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         ]
 
         for i, (node_desc, infra_rank, domain_id) in enumerate(participants_data, start=1):
-            arrived_key = f"{state.prefix}:arrived_{i}"
+            slot_key = f"{state.prefix}:slot_{i}"
             participant_data = RendezvousParticipantInfo.pack(node_desc, infra_rank, domain_id)
-            self.store.set(arrived_key, participant_data)
+            self.store.set(slot_key, participant_data)
 
         # Test 1: Fetch all participants at once
         all_participants = state.get_all_participants(total_participants=5)
@@ -391,7 +391,7 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy3)
 
         # Test 6: Cycle filtering - mismatched cycle should be treated as placeholder
-        mismatch_key = f"{state.prefix}:arrived_3"
+        mismatch_key = f"{state.prefix}:slot_3"
         mismatch_data = RendezvousParticipantInfo.pack(
             participants_data[2][0], participants_data[2][1], participants_data[2][2], cycle_id=1
         )
@@ -400,7 +400,7 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         self.assertEqual(len(filtered), 5)
         self.assertEqual(
             filtered[2][2],
-            WITHDRAWN_DOMAIN_ID,
+            WITHDRAWN,
             "Cycle mismatch should be converted to placeholder participant",
         )
 
@@ -461,7 +461,7 @@ class Step2CompletionTest(BaseRendezvousTest):
         self.store = self.shared_store
         # Use uuid so run_id is globally unique. time.time()-based run_id can collide
         # when tests run in the same microsecond (retries/fast runs), leaving
-        # last_participant_arrived_key=1 from a prior run so participants wait at Step 0.
+        # round_done_0=1 from a prior run so participants wait at Step 0.
         self.run_id = f"test_step2_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
@@ -583,7 +583,7 @@ class RaceConditionTest(BaseRendezvousTest):
         arrived_counts = []
 
         def join_thread():
-            count = self.store.add(state.arrived_count_key, 1)
+            count = self.store.add(state.join_count_key, 1)
             arrived_counts.append(count)
 
         threads = []
@@ -600,17 +600,19 @@ class RaceConditionTest(BaseRendezvousTest):
         self.assertEqual(len(arrived_counts), num_participants)
         self.assertEqual(set(arrived_counts), set(range(1, num_participants + 1)))
 
-    def test_late_arrival_after_ack_check_before_key_clear(self):
-        """Test late arrival in the critical window: after ack check, before key clearing.
+    def test_late_arrival_after_snapshot_before_assignment(self):
+        """Test late arrival in the critical window: after store host snapshot, before assignment.
 
         This tests the race condition where:
-        1. Store host checks ack_count >= arrived_count (condition satisfied)
-        2. Late arrival joins and increments arrived_count
-        3. Late arrival acknowledges, incrementing ack_count
-        4. Store host clears keys and assigns ranks (may miss the late arrival)
+        1. Store host takes a double-checked snapshot of join_count_key (condition satisfied)
+        2. Late arrival joins and increments join_count_key after the snapshot
+        3. Store host assigns ranks based on the snapshot (late arrival is not included)
+        4. Late arrival sees UNASSIGNED in Step 3 and retries in the next round
 
-        The current design handles this by having store host snapshot the arrived_count
-        at the time it checks acknowledgments, ensuring consistent rank assignment.
+        The current design handles this by having the store host snapshot join_count at the
+        time of the double-check, ensuring consistent rank assignment. Late arrivals that
+        miss the snapshot detect UNASSIGNED via the embedded round number in rank_key and
+        loop to the next round.
         """
         min_nodes = 2
         max_nodes = 4
@@ -714,8 +716,8 @@ class RaceConditionTest(BaseRendezvousTest):
         )
 
         # Late arrival can be stuck in Step 0 (_wait_for_rendezvous_open): it sees
-        # last_participant_arrived_key=1 (round complete) and waits for the next round
-        # with no timeout. Unblock it by opening the rendezvous so it proceeds to Step 2,
+        # round_done_0=1 (round 0 complete) and waits for round_done_1 to appear.
+        # Unblock it by setting round_done_1=0 so it proceeds to Step 2,
         # then hits join_timeout_seconds and raises RendezvousTimeoutError.
         unblock_state = _RendezvousBarrierState(
             store=self.store,
@@ -723,7 +725,8 @@ class RaceConditionTest(BaseRendezvousTest):
             is_store_host=False,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
-        self.store.set(unblock_state.last_participant_arrived_key, "0".encode("utf-8"))
+        round1_done_key = f"{unblock_state.prefix}:round_done_1"
+        self.store.set(round1_done_key, "0".encode("utf-8"))
 
         t_late.join(timeout=join_timeout)
         self.assertFalse(
@@ -759,7 +762,7 @@ class RaceConditionTest(BaseRendezvousTest):
 
         # Multiple threads try to set the same key
         def set_completion():
-            self.store.set(state.last_participant_arrived_key, "1".encode('utf-8'))
+            self.store.set(state.round_done_key, "1".encode('utf-8'))
 
         threads = []
         for _ in range(5):
@@ -772,7 +775,7 @@ class RaceConditionTest(BaseRendezvousTest):
         _assert_threads_finished(self, threads, TEST_THREAD_JOIN_TIMEOUT_SECS)
 
         # Key should be set (no errors)
-        self.assertTrue(self.store.check([state.last_participant_arrived_key]))
+        self.assertTrue(self.store.check([state.round_done_key]))
 
 
 class StoreHostBehaviorTest(BaseRendezvousTest):
@@ -795,7 +798,7 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
         self.store = self.shared_store
         # Use uuid so run_id is globally unique. time.time()-based run_id can collide
         # when tests run in the same microsecond (retries/fast runs), leaving
-        # last_participant_arrived_key=1 so participants block at Step 0.
+        # round_done_0=1 so participants block at Step 0.
         self.run_id = f"test_host_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
@@ -1662,13 +1665,12 @@ class ErrorCaseTest(BaseRendezvousTest):
         """Test that exceeding max_nodes raises RendezvousClosedError.
 
         Root cause of previous flakiness:
-        - Three threads call store.add(arrived_count_key, 1) and get 1, 2, 3.
+        - Three threads call store.add(join_count_key, 1) and get 1, 2, 3.
         - The thread that gets 3 should raise RendezvousClosedError.
         - The two that get 1 and 2 enter Step 2; the store host runs a segment check
-          after segment_check_interval seconds, then completes and calls
-          _clear_barrier_keys(), which deletes arrived_count_key.
-        - If the third thread runs store.add() after the key was deleted, it can get
-          count 1 (new key) and not raise, so the test non-deterministically failed.
+          after segment_check_interval seconds, then completes.
+        - Per-round keys persist but the third thread joins with the same round, so it
+          still sees count 3 and raises, making the test deterministic.
 
         Deterministic design: disable Step 2 checks in this test by monkey-patching
         the per-state poll interval helper to a very large value. Then the first
@@ -1740,7 +1742,7 @@ class ErrorCaseTest(BaseRendezvousTest):
         Uses a dedicated TCPStore so the rendezvous is open (no leftover keys from
         other tests). We then hit the join timeout in Step 2 while waiting for min_nodes.
         """
-        # Dedicated store so last_participant_arrived_key does not exist; __init__ sets it to "0".
+        # Dedicated store so round_done_0 does not exist; __init__ sets it to "0".
         # This avoids waiting at Step 0 when the class shared_store has leftover state.
         # TCPStore does not provide close()/shutdown(); store is released when GC runs.
         store = TCPStore(
@@ -1775,8 +1777,8 @@ class ErrorCaseTest(BaseRendezvousTest):
         )
 
         # Permanently close the rendezvous
-        state.set_permanently_closed()
-        self.assertTrue(state.is_permanently_closed())
+        state.set_shutdown()
+        self.assertTrue(state.is_shutdown())
 
         min_nodes = 2
         max_nodes = 4
@@ -1868,13 +1870,11 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
             f"Expected {min_nodes} participants to acknowledge, got {len(results)}",
         )
 
-    def test_barrier_keys_cleared_after_acknowledgment(self):
-        """Test that barrier keys are cleared after all acknowledgments.
+    def test_per_round_keys_persist_after_round(self):
+        """Test that per-round keys persist after round completion (not cleared).
 
-        Keys cleared: arrived_count_key, withdrawn_count_key, ack_count_key, peer_aborted_count_key
-        Keys NOT cleared:
-        - last_participant_arrived_key: serves as open/close indicator
-        - unhealthy_count_key: global job-level counter across all cycles
+        join_count_{N+1} does not exist during training, so num_nodes_waiting() returns 0.
+        Round N keys persist with correct values — the per-round naming makes them harmless.
 
         Runs participants in separate processes (fork) so each has its own store
         connection; avoids shared-store contention that can hang with threads.
@@ -1907,21 +1907,28 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
             is_store_host=False,
             join_timeout_seconds=join_timeout_seconds,
         )
-        self.assertFalse(
-            store.check([check_state.arrived_count_key]),
-            "arrived_count_key should be cleared after all acks",
+
+        # Round 0 join_count persists with value = min_nodes
+        self.assertTrue(
+            store.check([check_state.join_count_key]),
+            "join_count_0 should persist after round (per-round key, not cleared)",
         )
-        self.assertFalse(
-            store.check([check_state.withdrawn_count_key]),
-            "withdrawn_count_key should be cleared after all acks",
+        join_count = int(store.get(check_state.join_count_key).decode('utf-8'))
+        self.assertEqual(join_count, min_nodes, f"join_count_0 should equal {min_nodes}")
+
+        # round_done_0 persists and is "1" (closed)
+        self.assertTrue(store.check([check_state.round_done_key]), "round_done_0 should persist")
+        self.assertEqual(
+            store.get(check_state.round_done_key).decode('utf-8'),
+            "1",
+            "round_done_0 should be 1 after completion",
         )
+
+        # Round 1 join_count does NOT exist — no false positive for num_nodes_waiting()
+        round1_join_count_key = f"{check_state.prefix}:join_count_1"
         self.assertFalse(
-            store.check([check_state.ack_count_key]),
-            "ack_count_key should be cleared after all acks",
-        )
-        self.assertFalse(
-            store.check([check_state.peer_aborted_count_key]),
-            "peer_aborted_count_key should be cleared after all acks",
+            store.check([round1_join_count_key]),
+            "join_count_1 must NOT exist during training (prevents num_nodes_waiting() false positive)",
         )
 
 
@@ -2130,7 +2137,7 @@ class StaleRoundDetectionTest(BaseRendezvousTest):
         self.assertEqual(state.stale_check_interval, 10.0)
 
     def test_stale_round_detection_rate_limiting(self):
-        """Test that stale round detection is rate-limited properly at Step 0."""
+        """Test that _sync_from_per_round_state is rate-limited properly at Step 0."""
         # Use a short interval for this test
         check_interval = 0.5  # 500ms
         state = _RendezvousBarrierState(
@@ -2141,40 +2148,27 @@ class StaleRoundDetectionTest(BaseRendezvousTest):
             stale_check_interval=check_interval,
         )
 
-        # Set rendezvous as closed (training in progress)
-        state.store.set(state.last_participant_arrived_key, b"1")
+        # Set round_done_0=1 to simulate training in progress after round 0
+        state.store.set(state.round_done_key, b"1")
 
-        # Set global cycle to a higher value to trigger stale round detection
-        state.store.set(state.global_cycle_key, b"2")
-
-        # Track how many times we would check the store
+        # Track how many times _sync_from_per_round_state would be called
         check_count = 0
         start_time = time.monotonic()
         test_duration = 1.5  # Run for 1.5 seconds
 
-        node_desc = self.node_desc_gen.generate()
-
-        # Simulate the waiting loop at Step 0
-        # We manually simulate the loop instead of calling _wait_for_rendezvous_open()
-        # to avoid the actual waiting behavior
+        # Simulate the waiting loop at Step 0 when value==1 (closed)
+        # We manually simulate the rate-limited check to avoid actual waiting behavior
         while time.monotonic() - start_time < test_duration:
-            # Save the last check time before checking
             last_check_time = state._last_stale_check_time
 
-            # Simulate the stale round check from _wait_for_rendezvous_open()
             current_time = time.monotonic()
             if current_time - state._last_stale_check_time >= state.stale_check_interval:
                 state._last_stale_check_time = current_time
-                if state.store.check([state.global_cycle_key]):
-                    stored_cycle_bytes = state.store.get(state.global_cycle_key)
-                    stored_cycle = int(stored_cycle_bytes.decode('utf-8'))
-                    # Would raise RendezvousStaleRoundError here, but we just count
+                state._sync_from_per_round_state()
 
-            # If last_check_time changed, a check was performed
             if state._last_stale_check_time != last_check_time:
                 check_count += 1
 
-            # Sleep a very short time to simulate tight loop
             time.sleep(0.01)
 
         # We expect approximately test_duration / check_interval checks
@@ -2190,8 +2184,8 @@ class StaleRoundDetectionTest(BaseRendezvousTest):
         # (which would be ~150 iterations at 10ms sleep over 1.5 seconds)
         self.assertLess(check_count, 10)
 
-    def test_stale_round_raises_exception(self):
-        """Test that detecting a stale round syncs automatically at Step 0."""
+    def test_stale_round_syncs_automatically(self):
+        """Test that _sync_from_per_round_state syncs round by scanning per-round keys."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -2200,29 +2194,28 @@ class StaleRoundDetectionTest(BaseRendezvousTest):
             stale_check_interval=0.1,  # Short interval for testing
         )
 
-        # Set initial local round
-        state._rendezvous_round = 1
-
-        # Set global cycle to a higher value to trigger stale round detection
-        state.store.set(state.global_cycle_key, b"5")
-
-        # Set rendezvous as open so we can exit the wait loop
-        state.store.set(state.last_participant_arrived_key, b"0")
+        # Simulate: rounds 0-4 all completed (round_done_{0..4}=1)
+        # Round 5 is open (round_done_5=0)
+        prefix = state.prefix
+        for i in range(5):
+            state.store.set(f"{prefix}:round_done_{i}", b"1")
+        state.store.set(f"{prefix}:round_done_5", b"0")
 
         node_desc = self.node_desc_gen.generate()
 
-        # Should sync automatically when stale round detected at Step 0
-        # The method should return normally (not raise exception)
+        # _wait_for_rendezvous_open starts at _round=0, sees round_done_0=1 (closed),
+        # calls _sync_from_per_round_state which scans forward and advances _round to 5.
+        # Then sees round_done_5=0 (open) and returns.
         state._wait_for_rendezvous_open(node_desc)
 
-        # Verify that the round was synced
-        self.assertEqual(state._rendezvous_round, 5)
+        # Verify that the round was synced to 5
+        self.assertEqual(state._round, 5)
 
 
-class SignalWithdrawRendezvousTest(BaseRendezvousTest):
-    """Test that a participant that receives SIGTERM after joining (Step 1) withdraws by
-    incrementing withdrawn_count_key and marking its slot with invalid domain_id, so the
-    store host can complete Step 3b (ack check uses arrived - withdrawn).
+class SignalLeaveRendezvousTest(BaseRendezvousTest):
+    """Test that a participant that receives SIGTERM after joining (Step 1) leaves by
+    incrementing leave_count_key and marking its slot with WITHDRAWN domain_id, so the
+    store host can compute active_count = join_count - leave_count for assignment.
     """
 
     @classmethod
@@ -2239,7 +2232,7 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
         """Set up test fixtures with unique run_id for each test."""
         super().setUp()
         self.store = self.shared_store
-        self.run_id = f"test_signal_withdraw_{self._testMethodName}_{uuid.uuid4().hex}"
+        self.run_id = f"test_signal_leave_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
     def tearDown(self):
@@ -2247,8 +2240,8 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
         super().tearDown()
         ft_rendezvous_barrier_module._current_joined_state = None
 
-    def test_withdraw_from_rendezvous_decrements_once(self):
-        """Test that _withdraw_from_rendezvous increments withdrawn_count_key and marks slot; idempotent."""
+    def test_leave_rendezvous_increments_once(self):
+        """Test that _leave_rendezvous increments leave_count_key and marks slot; idempotent."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -2256,35 +2249,35 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
         # Simulate one participant having joined (slot 1)
-        self.store.add(state.arrived_count_key, 1)
-        state._arrived_count = 1  # Simulate we are that participant
-        self.assertEqual(int(self.store.get(state.arrived_count_key).decode('utf-8')), 1)
+        self.store.add(state.join_count_key, 1)
+        state._slot = 1  # Simulate we are that participant
+        self.assertEqual(int(self.store.get(state.join_count_key).decode('utf-8')), 1)
 
-        state._withdraw_from_rendezvous()
-        # arrived_count stays 1; withdrawn_count becomes 1
+        state._leave_rendezvous()
+        # join_count stays 1; leave_count becomes 1
         self.assertEqual(
-            int(self.store.get(state.arrived_count_key).decode('utf-8')),
+            int(self.store.get(state.join_count_key).decode('utf-8')),
             1,
-            "arrived_count should remain 1 after withdraw (slot space is monotonic)",
+            "join_count should remain 1 after leave (slot space is monotonic)",
         )
         self.assertEqual(
-            int(self.store.get(state.withdrawn_count_key).decode('utf-8')),
+            int(self.store.get(state.leave_count_key).decode('utf-8')),
             1,
-            "withdrawn_count should be 1 after withdraw",
+            "leave_count should be 1 after leave",
         )
 
-        # Idempotent: second call must not increment withdrawn again
-        state._withdraw_from_rendezvous()
+        # Idempotent: second call must not increment leave_count again
+        state._leave_rendezvous()
         self.assertEqual(
-            int(self.store.get(state.withdrawn_count_key).decode('utf-8')),
+            int(self.store.get(state.leave_count_key).decode('utf-8')),
             1,
-            "withdrawn_count should still be 1 after second withdraw",
+            "leave_count should still be 1 after second leave",
         )
 
-    def test_signal_after_join_causes_withdraw(self):
+    def test_signal_after_join_causes_leave(self):
         """Test that when a participant is interrupted after Step 1 (e.g. SIGTERM), the
-        finally block withdraws (increments withdrawn_count_key, marks slot) so the store
-        host can complete Step 3b. We simulate the signal by using a store wrapper that
+        finally block leaves (increments leave_count_key, marks slot) so the store
+        host can complete Step 2. We simulate the signal by using a store wrapper that
         raises SignalException on get() once _current_joined_state is set (after join).
         """
         # min_nodes=2 so the host waits for both to join before marking complete (host is faster
@@ -2297,15 +2290,15 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
         # Host runs perform_rendezvous directly and waits for 2 participants.
         join_timeout_secs = 60.0
 
-        # Event set when participant has joined (add(arrived_count_key, 1)) so host can wait
+        # Event set when participant has joined (add(join_count_key, 1)) so host can wait
         # and not timeout before the participant reaches perform_rendezvous.
         participant_joined_event = threading.Event()
-        # Event set when participant has done the first get of last_participant_arrived_key in
-        # Step 2. Host waits on this before setting last_participant_arrived so the participant
-        # sees 0 on first get, then we raise on the second get (before returning 1).
+        # Event set when participant has done the first get of round_done_key in Step 3.
+        # Host waits on this before the round closes so the participant sees 0 on first
+        # get, then we raise on the second get (before returning 1).
         participant_did_first_get_event = threading.Event()
 
-        # Participant store: raise SignalException on 2nd get of last_participant_arrived_key;
+        # Participant store: raise SignalException on 2nd get of round_done_0;
         # set participant_did_first_get_event on 1st get so host knows to proceed.
         class StoreThatRaisesSignalAfterJoin:
             def __init__(self, underlying, joined_event, did_first_get_event):
@@ -2316,18 +2309,18 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
 
             def get(self, key):
                 if (
-                    key.endswith(":last_participant_arrived")
+                    ":round_done_" in key
                     and ft_rendezvous_barrier_module._current_joined_state is not None
                 ):
                     self._step2_get_count += 1
                     if self._step2_get_count == 1:
                         self._did_first_get_event.set()
                     if self._step2_get_count >= 2:
-                        # Simulate what the real signal handler does: set withdraw_on_unwind
-                        # so the handler's finally will call _withdraw_from_rendezvous().
+                        # Simulate what the real signal handler does: set _leave_on_unwind
+                        # so the handler's finally will call _leave_rendezvous().
                         state = ft_rendezvous_barrier_module._current_joined_state
                         if state is not None:
-                            state._withdraw_on_unwind = True
+                            state._leave_on_unwind = True
                         raise SignalException(
                             "Simulated signal during rendezvous",
                             sigval=signal.Signals(signal.SIGTERM),
@@ -2336,7 +2329,7 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
 
             def add(self, key, value):
                 result = self._store.add(key, value)
-                if key.endswith(":arrived_count") and value == 1:
+                if ":join_count_" in key and value == 1:
                     self._joined_event.set()
                 return result
 
@@ -2352,7 +2345,7 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
             def multi_set(self, keys, values):
                 return self._store.multi_set(keys, values)
 
-        # Host store: delay set(last_participant_arrived_key, 1) until participant has done
+        # Host store: delay set(round_done_0, 1) until participant has done
         # first get, so participant sees 0 then we raise on second get.
         class HostStoreWaitsForFirstGet:
             def __init__(self, underlying, did_first_get_event):
@@ -2366,7 +2359,7 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
                 return self._store.add(key, value)
 
             def set(self, key, value):
-                if key.endswith(":last_participant_arrived") and value == "1".encode("utf-8"):
+                if ":round_done_" in key and value == "1".encode("utf-8"):
                     self._did_first_get_event.wait(timeout=30.0)
                 return self._store.set(key, value)
 
@@ -2385,7 +2378,7 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
         host_store = HostStoreWaitsForFirstGet(self.store, participant_did_first_get_event)
         host_result = []
         participant_error = []
-        participant_count_after_withdraw = []
+        participant_count_after_leave = []
 
         def host_thread():
             state = _RendezvousBarrierState(
@@ -2430,112 +2423,80 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
             handler.next_rendezvous()
         except SignalException:
             participant_error.append(True)
-            # Simulated signal does not go through the real signal handler, so _withdraw_on_unwind
-            # is set in the wrapper; ensure withdraw runs so host can finish Step 3b.
-            handler._barrier_state._withdraw_on_unwind = True
-            handler._barrier_state._maybe_withdraw_on_unwind()
+            # Simulated signal does not go through the real signal handler, so _leave_on_unwind
+            # is set in the wrapper; ensure leave runs so host can finish Step 2.
+            handler._barrier_state._leave_on_unwind = True
+            handler._barrier_state._maybe_leave_on_unwind()
             try:
-                arrived = int(
-                    self.store.get(handler._barrier_state.arrived_count_key).decode('utf-8')
-                )
-                withdrawn = handler._barrier_state._get_withdrawn_count()
-                participant_count_after_withdraw.append((arrived, withdrawn))
+                joined = int(self.store.get(handler._barrier_state.join_count_key).decode('utf-8'))
+                left = handler._barrier_state._get_leave_count()
+                participant_count_after_leave.append((joined, left))
             except Exception:
                 pass
         t_host.join(timeout=70)
         _assert_threads_finished(self, [t_host], 70)
 
         self.assertTrue(participant_error, "Participant should have received SignalException")
-        # arrived_count stays 2 (both joined); withdrawn_count = 1 (participant withdrew)
+        # join_count stays 2 (both joined); leave_count = 1 (participant left)
         self.assertEqual(
-            participant_count_after_withdraw,
+            participant_count_after_leave,
             [(2, 1)],
-            "After participant withdrew: arrived_count=2 (unchanged), withdrawn_count=1",
+            "After participant left: join_count=2 (unchanged), leave_count=1",
         )
-        # Withdrawn participant's slot (participant joined first = slot 1) should be marked with WITHDRAWN_DOMAIN_ID
+        # Left participant's slot (participant joined first = slot 1) should be marked with WITHDRAWN
         state = handler._barrier_state
-        slot_key = f"{state.prefix}:arrived_1"
+        slot_key = f"{state.prefix}:slot_1"
         slot_data = self.store.get(slot_key).decode('utf-8')
         _, _, domain_id, cycle_id = RendezvousParticipantInfo.unpack(slot_data)
         self.assertEqual(
             domain_id,
-            WITHDRAWN_DOMAIN_ID,
-            "Withdrawn participant's slot should have WITHDRAWN_DOMAIN_ID",
+            WITHDRAWN,
+            "Left participant's slot should have WITHDRAWN domain_id",
         )
-        self.assertEqual(cycle_id, state._rendezvous_round)
+        self.assertEqual(cycle_id, state._round)
         self.assertEqual(len(host_result), 1, "Host should complete or error (not hang)")
         # Host either completes with world size 1 or errors (e.g. segment constraint) after
-        # participant withdrew; both are acceptable as long as the host did not hang in Step 3b.
+        # participant withdrew; both are acceptable as long as the host did not hang in Step 2.
         if host_result[0][0] == 'error':
             err = host_result[0][1]
+            # RendezvousTimeoutError is a common outcome when the participant withdraws
+            # and active_count drops below min_nodes; it IS a RendezvousError subclass but
+            # type().__name__ only matches the concrete class name, not base classes.
             self.assertIn(
                 type(err).__name__,
-                ('RuntimeError', 'RendezvousError'),
-                f"Host error should be RuntimeError or RendezvousError: {err}",
+                ('RuntimeError', 'RendezvousError', 'RendezvousTimeoutError'),
+                f"Host error should be a rendezvous or runtime error: {err}",
             )
         else:
             rank, total = host_result[0]
-            # total_participants in rank value is slot count (arrived=2), not active count
+            # total_participants in rank value is slot count (join_count=2), not active count
             self.assertEqual(
                 total, 2, "Host should see total_participants=2 (slot count) in rank value"
             )
-            # Rank assignment must be at the correct slot: host joined second = slot 2
-            host_rank_key = f"{state.prefix}:arrived_2_group_rank"
-            host_rank_value = self.store.get(host_rank_key).decode('utf-8')
-            self.assertEqual(
-                host_rank_value,
-                "0,2",
-                "Host (slot 2) should have rank 0 written at arrived_2_group_rank",
-            )
-            # Withdrawn slot (1) should not have been assigned a rank (we only write for active)
-            slot1_rank_key = f"{state.prefix}:arrived_1_group_rank"
-            slot1_rank_value = self.store.get(slot1_rank_key).decode('utf-8')
-            self.assertEqual(
-                slot1_rank_value.split(",")[0],
-                "-1",
-                "Withdrawn participant's slot (1) should keep unassigned rank, not overwritten",
-            )
+            # In the new protocol, ranks are assigned BEFORE round_done=1 is set, so
+            # both slots get a rank even if one later leaves. The left participant
+            # (slot 1) overwrites slot data with WITHDRAWN, but its slot_rank was already
+            # written by the host before the signal arrived. Just verify host got a valid rank.
+            self.assertGreaterEqual(rank, 0, "Host should have a valid group rank >= 0")
 
-    def test_signal_after_ack_does_not_decrement(self):
-        """Test that when a participant is interrupted after Step 3a (after ack), we do
-        NOT withdraw (no add(withdrawn_count_key, 1)). Only pre-ack withdrawal should withdraw.
+    def test_signal_after_round_closed_does_not_leave(self):
+        """Test that when _round_closed=True, a signal does NOT trigger withdrawal.
+
+        After round_done_N=1 is seen, _round_closed=True prevents spurious
+        leave_count increments. Only pre-round-close signals should cause withdrawal.
         """
-        # min_nodes=2 so the host waits for both to join and ack before completing.
-        min_nodes = 2
-        max_nodes = 2
-        segment_check_interval = _test_segment_check_interval()
-        join_timeout_secs = 60.0
+        add_calls = []
 
-        # Event set when participant has joined so host waits and does not timeout first.
-        participant_joined_event = threading.Event()
-
-        # Store wrapper that raises SignalException on the first get() AFTER the
-        # participant has called add(ack_count_key, 1) (i.e. after Step 3a).
-        # Records all add() calls so we can assert no add(withdrawn_count_key, 1).
-        class StoreThatRaisesSignalAfterAck:
-            def __init__(self, underlying, joined_event):
+        class TrackingStore:
+            def __init__(self, underlying):
                 self._store = underlying
-                self._joined_event = joined_event
-                self._add_calls = []
-                self._raise_on_next_get = False
 
             def get(self, key):
-                if self._raise_on_next_get:
-                    raise SignalException(
-                        "Simulated signal after ack",
-                        sigval=signal.Signals(signal.SIGTERM),
-                    )
                 return self._store.get(key)
 
             def add(self, key, value):
-                self._add_calls.append((key, value))
-                result = self._store.add(key, value)
-                if key.endswith(":arrived_count") and value == 1:
-                    self._joined_event.set()
-                # Step 3a is add(ack_count_key, 1); trigger raise on next get (Step 4)
-                if key.endswith(":ack_count") and value == 1:
-                    self._raise_on_next_get = True
-                return result
+                add_calls.append((key, value))
+                return self._store.add(key, value)
 
             def set(self, key, value):
                 return self._store.set(key, value)
@@ -2549,74 +2510,27 @@ class SignalWithdrawRendezvousTest(BaseRendezvousTest):
             def multi_set(self, keys, values):
                 return self._store.multi_set(keys, values)
 
-        participant_store = StoreThatRaisesSignalAfterAck(self.store, participant_joined_event)
-        host_result = []
-        participant_raised = []
-
-        def host_thread():
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=True,
-                join_timeout_seconds=join_timeout_secs,
-            )
-            try:
-                node = self.node_desc_gen.generate()
-                rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, segment_check_interval
-                )
-                host_result.append((rank, total))
-            except Exception as e:
-                host_result.append(('error', e))
-
-        # Participant must run in main thread so handler can install signal handlers.
-        # Host waits for participant to join before starting so the host does not timeout first.
-        start_barrier = threading.Barrier(2)
-
-        def host_with_sync():
-            start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
-            participant_joined_event.wait(timeout=60.0)
-            host_thread()
-
-        t_host = threading.Thread(target=host_with_sync)
-        t_host.start()
-        start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
-        handler = FtRendezvousBarrierHandler.from_backend(
+        state = _RendezvousBarrierState(
+            store=TrackingStore(self.store),
             run_id=self.run_id,
-            store=participant_store,
-            backend=None,
-            min_nodes=min_nodes,
-            max_nodes=max_nodes,
-            timeout=RendezvousTimeout(join=timedelta(seconds=join_timeout_secs)),
-            is_store_host=False,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
-        try:
-            handler.next_rendezvous()
-        except SignalException:
-            participant_raised.append(True)
-        t_host.join(timeout=70)
-        _assert_threads_finished(self, [t_host], 70)
+        state._slot = 1  # Simulate having joined (slot 1)
+        state._round_closed = True  # Signal came AFTER round_done_N=1 was seen
+        state._leave_on_unwind = True  # Signal handler set this
 
-        self.assertTrue(participant_raised, "Participant should have received SignalException")
-        state = handler._barrier_state
-        # Signal after ack: should NOT have withdrawn (no add(withdrawn_count_key, 1))
-        withdraw_calls = [
-            (k, v)
-            for k, v in participant_store._add_calls
-            if k == state.withdrawn_count_key and v == 1
-        ]
+        state._maybe_leave_on_unwind()
+
+        # Verify no leave_count was incremented
+        leave_calls = [(k, v) for k, v in add_calls if ":leave_count_" in k and v == 1]
         self.assertEqual(
-            len(withdraw_calls),
+            len(leave_calls),
             0,
-            "Participant received signal after Step 3a; should NOT have withdrawn "
-            "(withdraw only before ack). Got add(withdrawn_count_key, 1) calls: %s"
-            % participant_store._add_calls,
+            "After _round_closed=True, _leave_rendezvous must NOT be called. "
+            f"Got add calls: {add_calls}",
         )
-        # Host should have completed with 2 participants (both had acked before participant died)
-        self.assertEqual(len(host_result), 1)
-        self.assertNotEqual(host_result[0][0], 'error', f"Host should not error: {host_result[0]}")
-        rank, total = host_result[0]
-        self.assertEqual(total, 2, "Host completed with 2 participants; participant died after ack")
+        self.assertFalse(state._leave_on_unwind, "_leave_on_unwind should be reset to False")
 
 
 if __name__ == '__main__':
