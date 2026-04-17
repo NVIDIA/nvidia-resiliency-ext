@@ -132,6 +132,19 @@ _legacy_ft_rdzv_deprecation_warned: bool = False
 # Note: Must call run() before using logger to ensure proper configuration
 logger = logging.getLogger(LogConfig.name)
 
+# Set NVRX_FT_RESTART_DECISION_TIMING=1 to log and emit torchelastic metrics for phase
+# durations inside _handle_restart_decision (attribution, progress, open_rendezvous,
+# restart_workers). Used to quantify overlap opportunity before changing ordering.
+# Does not touch next_rendezvous / barrier (see NVRX_FT_RDZV_NEXT_RENDEZVOUS_TIMING in
+# ft_rendezvous_barrier.py).
+_FT_RESTART_DECISION_TIMING_ENV = "NVRX_FT_RESTART_DECISION_TIMING"
+
+
+def _ft_restart_decision_timing_enabled() -> bool:
+    v = os.environ.get(_FT_RESTART_DECISION_TIMING_ENV, "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
 # Populated on TCP store host when gRPC log aggregation is enabled: root-only [Popen] or
 # [root, leaf0, ..., leaf_{N-1}] when ft_log_aggregator_count > 1.
@@ -576,6 +589,42 @@ class LocalElasticAgent(SimpleElasticAgent):
             # record the execution time in case there were any exceptions during run.
             self._total_execution_time = int(time.monotonic() - start_time)
 
+    def _emit_ft_restart_decision_timing(
+        self,
+        role: str,
+        outcome: str,
+        phases: Dict[str, float],
+        t0_perf: float,
+        open_rendezvous_config: bool,
+        notify_peer_config: bool,
+    ) -> None:
+        """Log and export phase timings when NVRX_FT_RESTART_DECISION_TIMING is enabled."""
+        if not _ft_restart_decision_timing_enabled():
+            return
+        total_s = time.perf_counter() - t0_perf
+        gr: Any = None
+        if self._worker_group is not None:
+            gr = self._worker_group.group_rank
+        phase_str = " ".join(f"{k}={v:.4f}" for k, v in sorted(phases.items()))
+        logger.info(
+            "[ft_restart_timing] role=%s group_rank=%s is_store_host=%s outcome=%s "
+            "open_rendezvous=%s notify_peer=%s total_s=%.4f %s",
+            role,
+            gr,
+            getattr(self, "_is_store_host", False),
+            outcome,
+            open_rendezvous_config,
+            notify_peer_config,
+            total_s,
+            phase_str,
+        )
+        try:
+            put_metric(f"ft.restart_decision.{role}.total_s", total_s)
+            for name, sec in phases.items():
+                put_metric(f"ft.restart_decision.{role}.{name}", sec)
+        except Exception:
+            logger.debug("ft_restart_timing put_metric failed", exc_info=True)
+
     def _open_rendezvous_for_restart(self):
         """Open rendezvous for restart when using barrier-based rendezvous.
 
@@ -628,10 +677,17 @@ class LocalElasticAgent(SimpleElasticAgent):
         Returns:
             True if restart was initiated, False if no restart (caller should call _stop_workers).
         """
+        timing_on = _ft_restart_decision_timing_enabled()
+        t0_perf = time.perf_counter()
+        phases: Dict[str, float] = {}
+
         peer_abort_incremented = False
+        t_pn = time.perf_counter()
         if notify_peer and hasattr(self._rdzv_handler, '_barrier_state'):
             self._rdzv_handler._barrier_state._increment_peer_aborted_count()
             peer_abort_incremented = True
+        if timing_on:
+            phases["peer_notify_s"] = time.perf_counter() - t_pn
 
         def _rollback_peer_abort_notify() -> None:
             nonlocal peer_abort_incremented
@@ -641,8 +697,12 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._rdzv_handler._barrier_state._undo_peer_abort_notify()
             peer_abort_incremented = False
 
-        start = time.time()
+        start_wall = time.time()
+        t_attr = time.perf_counter()
         should_terminate_early = self._run_attribution()
+        if timing_on:
+            phases["attribution_s"] = time.perf_counter() - t_attr
+
         if should_terminate_early:
             if self._ft_cfg.attribution_dry_run:
                 logger.info(
@@ -653,10 +713,21 @@ class LocalElasticAgent(SimpleElasticAgent):
             else:
                 logger.error("[%s] Attribution says do not restart; will not restart.", role)
                 _rollback_peer_abort_notify()
+                self._emit_ft_restart_decision_timing(
+                    role,
+                    "veto_attribution",
+                    phases,
+                    t0_perf,
+                    open_rendezvous,
+                    notify_peer,
+                )
                 return False
 
+        t_prog = time.perf_counter()
         self._progress_tracker.analyze_previous_cycle()
         should_terminate_early = self._progress_tracker.should_terminate_early()
+        if timing_on:
+            phases["progress_s"] = time.perf_counter() - t_prog
 
         if should_terminate_early:
             logger.error(
@@ -665,21 +736,51 @@ class LocalElasticAgent(SimpleElasticAgent):
                 role
             )
             _rollback_peer_abort_notify()
+            self._emit_ft_restart_decision_timing(
+                role,
+                "veto_progress",
+                phases,
+                t0_perf,
+                open_rendezvous,
+                notify_peer,
+            )
             return False
         elif self._remaining_restarts > 0:
             logger.info(log_msg, role)
             self._remaining_restarts -= 1
             if open_rendezvous:
+                t_open = time.perf_counter()
                 self._open_rendezvous_for_restart()
-            time_consumed = time.time() - start
+                if timing_on:
+                    phases["open_rendezvous_s"] = time.perf_counter() - t_open
+            time_consumed = time.time() - start_wall
+            t_rw = time.perf_counter()
             self._restart_workers(
                 self._worker_group,
                 time_consumed_before_reclaim=time_consumed,
+            )
+            if timing_on:
+                phases["restart_workers_s"] = time.perf_counter() - t_rw
+            self._emit_ft_restart_decision_timing(
+                role,
+                "restart",
+                phases,
+                t0_perf,
+                open_rendezvous,
+                notify_peer,
             )
             return True
         else:
             # No more restarts available
             _rollback_peer_abort_notify()
+            self._emit_ft_restart_decision_timing(
+                role,
+                "veto_no_restarts",
+                phases,
+                t0_perf,
+                open_rendezvous,
+                notify_peer,
+            )
             return False
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
