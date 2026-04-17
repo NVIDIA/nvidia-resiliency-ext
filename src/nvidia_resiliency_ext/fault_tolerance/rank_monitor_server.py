@@ -526,7 +526,8 @@ class RankMonitorServer:
                 is_elapsed = True
         if not self.open_sections:
             if (
-                "warmup" not in self.cfg.rank_section_timeouts
+                self.cfg.rank_section_timeouts
+                and "warmup" not in self.cfg.rank_section_timeouts
                 and not self._step_section_seen_this_cycle
             ):
                 return False
