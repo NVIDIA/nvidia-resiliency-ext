@@ -179,12 +179,14 @@
 </li>
       <li><a href="checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache">CheckpointMetadataCache (class in nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver)</a>
 </li>
-      <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cleanup_worker_data_cache">cleanup_worker_data_cache() (nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller class method)</a>
+      <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.cleanup_tensor_caches">cleanup_tensor_caches() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync class method)</a>
 </li>
-      <li><a href="checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy">CliqueReplicationStrategy (class in nvidia_resiliency_ext.checkpointing.local.replication.strategies)</a>
+      <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cleanup_worker_data_cache">cleanup_worker_data_cache() (nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller class method)</a>
 </li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy">CliqueReplicationStrategy (class in nvidia_resiliency_ext.checkpointing.local.replication.strategies)</a>
+</li>
       <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller.close">close() (nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller method)</a>
 
       <ul>
@@ -597,6 +599,10 @@
 </li>
       <li><a href="fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClientError">RankMonitorClientError</a>
 </li>
+      <li><a href="checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.register_shm_drain_callback">register_shm_drain_callback() (nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync class method)</a>
+</li>
+      <li><a href="checkpointing/async/api/core.html#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.register_worker_restart_callback">register_worker_restart_callback() (nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller class method)</a>
+</li>
       <li><a href="checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy.replicate">replicate() (nvidia_resiliency_ext.checkpointing.local.replication.strategies.CliqueReplicationStrategy method)</a>
 
       <ul>
@@ -609,10 +615,10 @@
 </li>
       <li><a href="checkpointing/local/api/replication.html#nvidia_resiliency_ext.checkpointing.local.replication.strategies.ReplicationStrategy">ReplicationStrategy (class in nvidia_resiliency_ext.checkpointing.local.replication.strategies)</a>
 </li>
-      <li><a href="inprocess/api/exception.html#nvidia_resiliency_ext.inprocess.exception.RestartAbort">RestartAbort</a>
-</li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="inprocess/api/exception.html#nvidia_resiliency_ext.inprocess.exception.RestartAbort">RestartAbort</a>
+</li>
       <li><a href="inprocess/api/exception.html#nvidia_resiliency_ext.inprocess.exception.RestartError">RestartError</a>
 </li>
       <li><a href="checkpointing/local/api/base_state_dict.html#nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict.restore_tensor_device">restore_tensor_device() (nvidia_resiliency_ext.checkpointing.local.base_state_dict.TensorAwareStateDict method)</a>

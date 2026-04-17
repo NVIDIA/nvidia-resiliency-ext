@@ -111,7 +111,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">itertools</span><span class="w"> </span><span class="kn">import</span> <span class="n">chain</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">itemgetter</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">time</span><span class="w"> </span><span class="kn">import</span> <span class="n">time</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">ClassVar</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">multiprocessing</span> <span class="k">as</span> <span class="n">mp</span>
@@ -243,6 +243,17 @@
     <span class="c1"># Class-level cache to track identifiers that have been sent to worker across instances</span>
     <span class="n">_cached_identifiers</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
 
+    <span class="c1"># Training-side shm tensor cache: reuses allocations across checkpoints.</span>
+    <span class="c1"># Only populated when use_cpu_shm_for_gpu_tensors=True AND use_cached_data_structure=True.</span>
+    <span class="c1"># Key: SHA-256 of plan items (same as ConsistentDataIdentifier).</span>
+    <span class="c1"># Value: (gpu_items, shm_tensors) — one independent share_memory_() tensor per GPU tensor.</span>
+    <span class="n">_shm_tensor_cache</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">List</span><span class="p">,</span> <span class="n">List</span><span class="p">]]]</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="c1"># Blocking drain registered by AsyncCallsQueue when cpu_shm_mode=True.</span>
+    <span class="c1"># Called in prepare_write_data before the first copy_() into a reused shm tensor,</span>
+    <span class="c1"># so any prior write that is still reading from those tensors completes first.</span>
+    <span class="n">_shm_drain_callback</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]]]</span> <span class="o">=</span> <span class="kc">None</span>
+
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">path</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">PathLike</span><span class="p">],</span>
@@ -251,6 +262,7 @@
         <span class="n">use_msc</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
         <span class="n">is_multiproc_io</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
         <span class="n">use_cached_data_structure</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+        <span class="n">use_cpu_shm_for_gpu_tensors</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
         <span class="o">**</span><span class="n">kwargs</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span> <span class="o">=</span> <span class="n">path</span>
@@ -277,6 +289,10 @@
         <span class="c1"># Note: multi-proc IO requires is_daemon=False on PersistentAsyncCaller (AsyncCallsQueue),</span>
         <span class="c1"># whereas the default multithreaded IO is compatible with is_daemon=True (the default).</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">is_multi_proc_io</span> <span class="o">=</span> <span class="n">is_multiproc_io</span>
+        <span class="c1"># Use CPU shared-memory tensors instead of GPU IPC fabric handles.</span>
+        <span class="c1"># Avoids cuMemImportFromShareableHandle on MNNVL systems where NVLink fabric</span>
+        <span class="c1"># resources are exhausted by the training ranks.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">use_cpu_shm_for_gpu_tensors</span> <span class="o">=</span> <span class="n">use_cpu_shm_for_gpu_tensors</span>
 
 <div class="viewcode-block" id="FileSystemWriterAsync.prepare_write_data">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_write_data">[docs]</a>
@@ -349,23 +365,28 @@
         <span class="n">byte_io_items</span> <span class="o">=</span> <span class="p">[</span><span class="n">item</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">plan</span><span class="o">.</span><span class="n">items</span> <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="n">WriteItemType</span><span class="o">.</span><span class="n">BYTE_IO</span><span class="p">]</span>
 
         <span class="c1"># Helper to separate resolved tensors into cacheable (GPU) vs uncached buckets.</span>
-        <span class="c1"># Uncached tensors include: CPU tensors and dequantized GPU tensors.</span>
         <span class="c1"># Dequantized tensors are tracked explicitly via dequantized_flags because</span>
         <span class="c1"># some frameworks (e.g. TransformerEngine MXFP8) report bfloat16 as the dtype</span>
         <span class="c1"># for quantized tensors, making dtype-based detection unreliable.</span>
-        <span class="k">def</span><span class="w"> </span><span class="nf">separate_cacheable</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span><span class="p">,</span> <span class="n">dequantized_flags</span><span class="p">):</span>
-<span class="w">            </span><span class="sd">&quot;&quot;&quot;Separate tensor items into IPC-cacheable (GPU) and uncached categories.</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">separate_cacheable</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span><span class="p">,</span> <span class="n">dequantized_flags</span><span class="p">,</span> <span class="n">include_dequantized</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+<span class="w">            </span><span class="sd">&quot;&quot;&quot;Separate tensor items into cacheable (GPU) and uncached categories.</span>
 
-<span class="sd">            GPU tensors that were not dequantized are cacheable via IPC.</span>
-<span class="sd">            CPU tensors and dequantized GPU tensors are always passed fresh and never cached.</span>
+<span class="sd">            For the GPU IPC path (include_dequantized=False): dequantized tensors are</span>
+<span class="sd">            excluded because dequantize() produces a new temporary GPU allocation each</span>
+<span class="sd">            checkpoint, so a cached IPC handle from the previous step would be stale.</span>
+
+<span class="sd">            For the CPU shm path (include_dequantized=True): dequantized GPU tensors are</span>
+<span class="sd">            included — we copy values in from whatever GPU tensor the current step produces,</span>
+<span class="sd">            regardless of whether it was dequantized.</span>
 <span class="sd">            &quot;&quot;&quot;</span>
             <span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
             <span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
 
             <span class="k">for</span> <span class="n">item</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">was_dequantized</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">resolved_data</span><span class="p">,</span> <span class="n">dequantized_flags</span><span class="p">):</span>
-                <span class="k">if</span> <span class="p">(</span>
-                    <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="ow">and</span> <span class="n">data</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;cpu&quot;</span>
-                <span class="p">)</span> <span class="ow">or</span> <span class="n">was_dequantized</span><span class="p">:</span>
+                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="ow">and</span> <span class="n">data</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">&quot;cpu&quot;</span><span class="p">:</span>
+                    <span class="n">uncached_items</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+                    <span class="n">uncached_data</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+                <span class="k">elif</span> <span class="n">was_dequantized</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">include_dequantized</span><span class="p">:</span>
                     <span class="n">uncached_items</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
                     <span class="n">uncached_data</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
                 <span class="k">else</span><span class="p">:</span>
@@ -374,20 +395,100 @@
 
             <span class="k">return</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">),</span> <span class="p">(</span><span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span><span class="p">)</span>
 
-        <span class="c1"># Handle GPU tensor caching (only GPU tensors can benefit from IPC)</span>
-        <span class="c1"># Uncached tensors (CPU or dequantized) are always resolved fresh</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_cached_data_structure</span> <span class="ow">and</span> <span class="n">tensor_items</span><span class="p">:</span>
+        <span class="c1"># Handle GPU tensor caching (only GPU tensors can benefit from IPC or shm)</span>
+        <span class="c1"># Uncached tensors: CPU tensors always; dequantized GPU tensors only on GPU IPC path</span>
+        <span class="c1"># (on the CPU shm path, dequantized GPU tensors ARE included)</span>
+        <span class="k">if</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">use_cached_data_structure</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_cpu_shm_for_gpu_tensors</span><span class="p">)</span> <span class="ow">and</span> <span class="n">tensor_items</span><span class="p">:</span>
             <span class="n">key</span> <span class="o">=</span> <span class="n">_compute_data_structure_key_from_plan</span><span class="p">(</span><span class="n">tensor_items</span><span class="p">)</span>
             <span class="n">cache_exists</span> <span class="o">=</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_identifiers</span>
 
             <span class="c1"># Always resolve tensors to separate uncached tensors (which can&#39;t be cached)</span>
             <span class="n">resolved_tensors</span><span class="p">,</span> <span class="n">dequantized_flags</span> <span class="o">=</span> <span class="n">resolve_data</span><span class="p">(</span><span class="n">tensor_items</span><span class="p">)</span>
             <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">),</span> <span class="p">(</span><span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span><span class="p">)</span> <span class="o">=</span> <span class="n">separate_cacheable</span><span class="p">(</span>
-                <span class="n">tensor_items</span><span class="p">,</span> <span class="n">resolved_tensors</span><span class="p">,</span> <span class="n">dequantized_flags</span>
+                <span class="n">tensor_items</span><span class="p">,</span>
+                <span class="n">resolved_tensors</span><span class="p">,</span>
+                <span class="n">dequantized_flags</span><span class="p">,</span>
+                <span class="n">include_dequantized</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">use_cpu_shm_for_gpu_tensors</span><span class="p">,</span>
             <span class="p">)</span>
 
-            <span class="k">if</span> <span class="n">cache_exists</span><span class="p">:</span>
-                <span class="c1"># Reuse cached GPU tensors from worker</span>
+            <span class="k">if</span> <span class="n">gpu_items</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_cpu_shm_for_gpu_tensors</span><span class="p">:</span>
+                <span class="c1"># --- CPU shared-memory path ---</span>
+                <span class="c1"># D2H is done here (training side) into per-tensor CPU shared-memory tensors</span>
+                <span class="c1"># so the worker subprocess never needs CUDA IPC / fabric handles.</span>
+                <span class="k">if</span> <span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">use_cached_data_structure</span>
+                    <span class="ow">and</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_tensor_cache</span>
+                <span class="p">):</span>
+                    <span class="c1"># Reuse existing allocations.  Drain any in-flight write first:</span>
+                    <span class="c1"># the worker for checkpoint N may still be reading these buffers</span>
+                    <span class="c1"># while we are about to overwrite them with checkpoint N+1 values.</span>
+                    <span class="k">if</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_drain_callback</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                        <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_drain_callback</span><span class="p">()</span>
+                    <span class="n">_</span><span class="p">,</span> <span class="n">shm_tensors</span> <span class="o">=</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+                    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="p">(</span><span class="n">shm_t</span><span class="p">,</span> <span class="n">gpu_t</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">shm_tensors</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">)):</span>
+                        <span class="n">shm_t</span><span class="o">.</span><span class="n">copy_</span><span class="p">(</span><span class="n">gpu_t</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+                        <span class="c1"># Periodically sync to avoid exhausting CUDA&#39;s pageable staging</span>
+                        <span class="c1"># pages (shm tensors are not pinned so copy_ is not a pinned DMA).</span>
+                        <span class="k">if</span> <span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="mi">8</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                            <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+                    <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;D2H&#39;d </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">shm_tensors</span><span class="p">)</span><span class="si">}</span><span class="s2"> shm tensors into reused allocations &quot;</span>
+                        <span class="sa">f</span><span class="s2">&quot;(key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">)&quot;</span>
+                    <span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="c1"># Allocate one independent shm tensor per GPU tensor and D2H-copy</span>
+                    <span class="c1"># current values in.  Allocations are stored in _shm_tensor_cache</span>
+                    <span class="c1"># only when use_cached_data_structure=True so they are reused on</span>
+                    <span class="c1"># subsequent checkpoints; otherwise fresh tensors are allocated each</span>
+                    <span class="c1"># time and the worker receives them directly without caching.</span>
+                    <span class="n">shm_tensors</span> <span class="o">=</span> <span class="p">[]</span>
+                    <span class="n">total_bytes</span> <span class="o">=</span> <span class="mi">0</span>
+                    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">gpu_data</span><span class="p">):</span>
+                        <span class="n">tc</span> <span class="o">=</span> <span class="n">t</span><span class="o">.</span><span class="n">contiguous</span><span class="p">()</span>
+                        <span class="n">shm_t</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">tc</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">tc</span><span class="o">.</span><span class="n">dtype</span><span class="p">)</span><span class="o">.</span><span class="n">share_memory_</span><span class="p">()</span>
+                        <span class="n">shm_t</span><span class="o">.</span><span class="n">copy_</span><span class="p">(</span><span class="n">tc</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+                        <span class="n">shm_tensors</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">shm_t</span><span class="p">)</span>
+                        <span class="n">total_bytes</span> <span class="o">+=</span> <span class="n">shm_t</span><span class="o">.</span><span class="n">nbytes</span>
+                        <span class="c1"># Periodically sync to avoid exhausting CUDA&#39;s pageable staging pages</span>
+                        <span class="k">if</span> <span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="mi">8</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                            <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+                    <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_cached_data_structure</span><span class="p">:</span>
+                        <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">shm_tensors</span><span class="p">)</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;Allocated </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">shm_tensors</span><span class="p">)</span><span class="si">}</span><span class="s2"> shm tensors (</span><span class="si">{</span><span class="n">total_bytes</span><span class="si">}</span><span class="s2"> bytes total) &quot;</span>
+                        <span class="sa">f</span><span class="s2">&quot;and D2H&#39;d GPU values (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">)&quot;</span>
+                    <span class="p">)</span>
+
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_cached_data_structure</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span> <span class="o">=</span> <span class="n">ConsistentDataIdentifier</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">cache_exists</span><span class="p">:</span>
+                        <span class="c1"># Worker already has the shm tensor references cached; send None to</span>
+                        <span class="c1"># signal it should reuse them (values are fresh after the D2H above).</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="kc">None</span>
+                        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                            <span class="sa">f</span><span class="s2">&quot;Reusing worker-cached shm tensors (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
+                            <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors passed fresh&quot;</span>
+                        <span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="c1"># First checkpoint with caching: send shm tensors to worker.</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">shm_tensors</span><span class="p">)</span>
+                        <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_identifiers</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+                        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                            <span class="sa">f</span><span class="s2">&quot;Sending </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">shm_tensors</span><span class="p">)</span><span class="si">}</span><span class="s2"> shm tensors to worker (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
+                            <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors passed fresh&quot;</span>
+                        <span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="c1"># No caching: always send fresh shm tensors; worker uses them directly.</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span> <span class="o">=</span> <span class="kc">None</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">shm_tensors</span><span class="p">)</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;Sending </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">shm_tensors</span><span class="p">)</span><span class="si">}</span><span class="s2"> fresh shm tensors to worker (no caching), &quot;</span>
+                        <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors passed fresh&quot;</span>
+                    <span class="p">)</span>
+            <span class="k">elif</span> <span class="n">cache_exists</span><span class="p">:</span>
+                <span class="c1"># --- original GPU IPC path, reuse ---</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span> <span class="o">=</span> <span class="n">ConsistentDataIdentifier</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># Signal to reuse cached data</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
@@ -395,7 +496,7 @@
                     <span class="sa">f</span><span class="s2">&quot;resolved </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors fresh&quot;</span>
                 <span class="p">)</span>
             <span class="k">elif</span> <span class="n">gpu_items</span><span class="p">:</span>
-                <span class="c1"># First time caching - send GPU tensor data to worker</span>
+                <span class="c1"># --- original GPU IPC path, first time ---</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span> <span class="o">=</span> <span class="n">ConsistentDataIdentifier</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">)</span>
                 <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_identifiers</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
@@ -411,6 +512,21 @@
                     <span class="sa">f</span><span class="s2">&quot;No GPU tensors to cache (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
                     <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors passed fresh&quot;</span>
                 <span class="p">)</span>
+
+            <span class="c1"># When using CPU shm path, also D2H-copy any dequantized GPU tensors in</span>
+            <span class="c1"># uncached_data so they don&#39;t require CUDA IPC / fabric handles in the worker.</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_cpu_shm_for_gpu_tensors</span> <span class="ow">and</span> <span class="n">uncached_items</span><span class="p">:</span>
+                <span class="n">needs_sync</span> <span class="o">=</span> <span class="kc">False</span>
+                <span class="n">new_uncached_data</span> <span class="o">=</span> <span class="p">[]</span>
+                <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">uncached_data</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="ow">and</span> <span class="n">t</span><span class="o">.</span><span class="n">is_cuda</span><span class="p">:</span>
+                        <span class="n">new_uncached_data</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">t</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">))</span>
+                        <span class="n">needs_sync</span> <span class="o">=</span> <span class="kc">True</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">new_uncached_data</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">needs_sync</span><span class="p">:</span>
+                    <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+                <span class="n">uncached_data</span> <span class="o">=</span> <span class="n">new_uncached_data</span>
 
             <span class="c1"># Uncached tensors are always passed fresh (never cached)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">uncached_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">uncached_items</span><span class="p">,</span> <span class="n">uncached_data</span><span class="p">)</span> <span class="k">if</span> <span class="n">uncached_items</span> <span class="k">else</span> <span class="kc">None</span>
@@ -442,6 +558,41 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span> <span class="o">=</span> <span class="n">get_write_results_queue</span><span class="p">()</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">has_data_to_write</span> <span class="k">else</span> <span class="kc">None</span>
         <span class="n">end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;prepare_write_data, time: </span><span class="si">{</span><span class="n">end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.cleanup_tensor_caches">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.cleanup_tensor_caches">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">cleanup_tensor_caches</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Release training-side tensor caches and invalidate the identifier set.</span>
+
+<span class="sd">        Must be called whenever the worker process is restarted.  A fresh worker</span>
+<span class="sd">        has an empty ``_worker_data_cache``, so both paths need re-priming:</span>
+
+<span class="sd">        - **CPU shm path** (``use_cpu_shm_for_gpu_tensors=True``): clears</span>
+<span class="sd">          ``_shm_tensor_cache`` so the next checkpoint re-allocates shm tensors</span>
+<span class="sd">          and sends them to the worker instead of sending ``None`` (which would</span>
+<span class="sd">          cause a worker-side cache miss).</span>
+<span class="sd">        - **GPU IPC path** (``use_cached_data_structure=True``): clearing</span>
+<span class="sd">          ``_cached_identifiers`` forces the next checkpoint to re-send the GPU</span>
+<span class="sd">          tensor IPC handles rather than assuming the worker already has them.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Clearing shm tensor cache (</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="p">)</span><span class="si">}</span><span class="s2"> entries)&quot;</span><span class="p">)</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_cached_identifiers</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="FileSystemWriterAsync.register_shm_drain_callback">
+<a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.register_shm_drain_callback">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">register_shm_drain_callback</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">fn</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[],</span> <span class="kc">None</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Register (or clear with None) the blocking drain called before reusing shm tensors.</span>
+
+<span class="sd">        AsyncCallsQueue registers this when cpu_shm_mode=True so that</span>
+<span class="sd">        prepare_write_data drains any in-flight write before overwriting shm tensors.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_shm_drain_callback</span> <span class="o">=</span> <span class="n">fn</span></div>
 
 
 <div class="viewcode-block" id="FileSystemWriterAsync.get_save_function_and_args">
@@ -495,9 +646,11 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">write_preloaded_data_multithread</span><span class="p">,</span> <span class="n">transform_list</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_msc</span><span class="p">,</span> <span class="n">open_file</span>
             <span class="p">)</span>
 
+        <span class="n">preload_fn</span> <span class="o">=</span> <span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">preload_tensors</span><span class="p">,</span> <span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">),</span> <span class="n">data_to_pass</span><span class="p">),</span> <span class="kc">True</span><span class="p">)</span>
+
         <span class="k">return</span> <span class="p">(</span>
             <span class="n">write_func</span><span class="p">,</span>
-            <span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">preload_tensors</span><span class="p">,</span> <span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">),</span> <span class="n">data_to_pass</span><span class="p">),</span> <span class="kc">True</span><span class="p">),</span>
+            <span class="n">preload_fn</span><span class="p">,</span>
             <span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">(),</span> <span class="kc">None</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span><span class="p">],</span>
         <span class="p">)</span></div>
 
@@ -553,7 +706,7 @@
 
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">identifier</span><span class="p">,</span> <span class="n">ConsistentDataIdentifier</span><span class="p">):</span>
             <span class="c1"># Caching enabled: get or cache GPU tensor data in the worker process</span>
-            <span class="c1"># Uncached tensors (CPU or dequantized) are NOT cached (treated like ByteIO)</span>
+            <span class="c1"># Uncached tensors (CPU tensors, or dequantized on the GPU IPC path) are NOT cached</span>
             <span class="n">key</span> <span class="o">=</span> <span class="n">identifier</span><span class="o">.</span><span class="n">key</span>
             <span class="k">if</span> <span class="n">cached_tensor_data</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">_worker_data_cache</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">cached_tensor_data</span>
@@ -611,18 +764,23 @@
                         <span class="p">)</span>
                     <span class="p">)</span>
 
-        <span class="c1"># Now move GPU tensors to CPU (CPU tensors are already on CPU)</span>
+        <span class="c1"># Move GPU tensors to CPU.  For the shm path, tensors are already on CPU so the</span>
+        <span class="c1"># .to(&quot;cpu&quot;) branch is skipped entirely — no D2H, no sync needed.</span>
         <span class="n">result</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteBucket</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">needs_sync</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="k">for</span> <span class="n">bucket</span> <span class="ow">in</span> <span class="n">write_buckets</span><span class="p">:</span>
             <span class="n">bucket_path</span><span class="p">,</span> <span class="n">bucket_key</span><span class="p">,</span> <span class="n">bucket_data</span> <span class="o">=</span> <span class="n">bucket</span>
             <span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_data</span> <span class="o">=</span> <span class="n">bucket_data</span>
             <span class="n">tensor_list</span> <span class="o">=</span> <span class="p">[]</span>
             <span class="k">for</span> <span class="n">item</span><span class="p">,</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="n">tensor_data</span><span class="p">:</span>
-                <span class="c1"># Move to CPU if needed (no-op if already on CPU)</span>
-                <span class="n">tensor_list</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">item</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="n">non_blocking</span><span class="p">)))</span>
+                <span class="k">if</span> <span class="n">tensor</span><span class="o">.</span><span class="n">is_cuda</span><span class="p">:</span>
+                    <span class="n">needs_sync</span> <span class="o">=</span> <span class="kc">True</span>
+                    <span class="n">tensor_list</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">item</span><span class="p">,</span> <span class="n">tensor</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cpu&quot;</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="n">non_blocking</span><span class="p">)))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">tensor_list</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">item</span><span class="p">,</span> <span class="n">tensor</span><span class="p">))</span>
             <span class="n">result</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">bucket_path</span><span class="p">,</span> <span class="n">bucket_key</span><span class="p">,</span> <span class="p">(</span><span class="n">bytes_data</span><span class="p">,</span> <span class="n">tensor_list</span><span class="p">)))</span>
 
-        <span class="k">if</span> <span class="n">non_blocking</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">non_blocking</span> <span class="ow">and</span> <span class="n">needs_sync</span><span class="p">:</span>
             <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
 
         <span class="n">end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
@@ -1264,6 +1422,12 @@
         <span class="k">return</span> <span class="kc">False</span></div>
 </div>
 
+
+
+<span class="c1"># Register cleanup hook so that when PersistentAsyncCaller spawns a new worker process</span>
+<span class="c1"># (e.g., after an abort/restart), the training-side shm tensor cache is invalidated and</span>
+<span class="c1"># the next checkpoint re-sends actual shm tensors to the fresh worker.</span>
+<span class="n">PersistentAsyncCaller</span><span class="o">.</span><span class="n">register_worker_restart_callback</span><span class="p">(</span><span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">cleanup_tensor_caches</span><span class="p">)</span>
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">_split_by_size_and_type</span><span class="p">(</span><span class="n">bins</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">items</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">]]:</span>
