@@ -525,6 +525,16 @@ class LocalElasticAgent(SimpleElasticAgent):
         """
         return max(0, self._rdzv_handler.round() - 1)
 
+    def _elastic_worker_attempt_index(self, spec: WorkerSpec) -> int:
+        """Torchelastic-style worker attempt index (matches stock ``TORCHELASTIC_RESTART_COUNT``).
+
+        Increments each time the agent consumes a restart slot and starts a new worker group.
+        Used for per-attempt log paths (``*_cycle{N}.log``) and worker env. Unlike
+        :meth:`_get_global_restart_count` (derived from barrier rendezvous ``round()``), this
+        advances on local-only FT restarts so cycle log files do not all map to ``_cycle0``.
+        """
+        return spec.max_restarts - self._remaining_restarts
+
     def _on_cycle_end(self) -> None:
         """Record cycle end time in cycle info file."""
         if self._cycle_info_writer is None:
@@ -1112,8 +1122,10 @@ class LocalElasticAgent(SimpleElasticAgent):
             return False
         cycle_log_file = None
         if hasattr(self._logs_specs, "get_cycle_log_file"):
-            current_cycle = self._get_global_restart_count()
-            cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
+            spec = self._worker_group.spec
+            cycle_log_file = self._logs_specs.get_cycle_log_file(
+                self._elastic_worker_attempt_index(spec)
+            )
         if cycle_log_file is None:
             return False
         return self._log_analysis_client.should_stop(cycle_log_file)
@@ -1223,12 +1235,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
 
-        # Get the current cycle number from the rendezvous handler
-        # At this point, rendezvous has completed and we're about to start workers.
-        # The cycle number is used for profiling and environment variable setting.
-        # Note: We use _get_global_restart_count() because in the context of worker startup,
-        # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
-        current_cycle = restart_count = self._get_global_restart_count()  # Actually cycle number
+        # Per-attempt index for workers, rank monitors, and PipeBasedLogsSpecs (``*_cycle{N}.log``).
+        # Must match stock torchelastic ``TORCHELASTIC_RESTART_COUNT = max_restarts - remaining`` so
+        # ``reify()`` sees a new suffix after each local restart; do not use _get_global_restart_count()
+        # here (that follows barrier ``round()`` and stays flat across worker-only restarts).
+        current_cycle = restart_count = self._elastic_worker_attempt_index(spec)
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -1919,6 +1930,15 @@ def launch_agent(
             return None
 
         if result.is_failed():
+            # ChildFailedError.__init__ in PyTorch asserts failures is non-empty; the agent can
+            # return WorkerState.FAILED with an empty failures dict (e.g. max restarts exhausted
+            # after _stop_workers, no ProcessFailure payload). Do not raise ChildFailedError then.
+            if not result.failures:
+                raise RuntimeError(
+                    f"{entrypoint_name}: worker group ended in {result.state.name} with no "
+                    "per-rank failure records (typical when restarts are exhausted or the agent "
+                    "stopped workers without a torchelastic error file)."
+                )
             # ChildFailedError is treated specially by @record
             # if the error files for the failed children exist
             # @record will copy the first error (root cause)

@@ -28,7 +28,8 @@ Fault tolerance features demonstrated:
 1. Heartbeat sending during training
 2. Timeout calculation and setting
 3. State persistence through checkpoints
-4. Simulated fault injection
+4. Simulated fault injection (by default only on the first worker start; see
+   ``--simulated-fault-on-every-restart``).
 """
 
 import argparse
@@ -145,6 +146,13 @@ def parse_args():
         default=4.0,
         help='Extra random delay in [0, value) seconds added on top of the delay in --simulated_fault. '
         'Set to 0 for a deterministic fault time.',
+    )
+    parser.add_argument(
+        '--simulated-fault-on-every-restart',
+        action='store_true',
+        help='With --simulated_fault: re-arm the fault after each ft_launcher worker restart '
+        '(new processes). Default is off so fault injection runs only on the initial attempt '
+        '(TORCHELASTIC_RESTART_COUNT==0) and later cycles continue training.',
     )
     # fmt: on
 
@@ -293,6 +301,7 @@ def validation_loop(ft_client, model, val_dataloader, epoch_idx, device):
 
 _sim_fault_canceled = False
 _sim_fault_is_set = False
+_logged_sim_fault_skip_on_restart = False
 
 
 def _cancel_simulated_fault():
@@ -302,8 +311,25 @@ def _cancel_simulated_fault():
 
 def _maybe_setup_simulated_fault(ft_client, args, device) -> None:
     """Arm simulated fault once heartbeat timeouts are valid (see training_loop)."""
+    global _logged_sim_fault_skip_on_restart
     if not args.simulated_fault or _sim_fault_is_set:
         return
+    # After ft_launcher restarts workers, each rank is a new Python process: module globals
+    # like _sim_fault_is_set reset to False. Without this guard, --simulated_fault would
+    # re-arm every cycle and kill again. TORCHELASTIC_RESTART_COUNT is set by the launcher
+    # (0 = first attempt, >0 after a fault-tolerance restart).
+    if not args.simulated_fault_on_every_restart:
+        restart_cnt = int(os.environ.get('TORCHELASTIC_RESTART_COUNT', '0'))
+        if restart_cnt > 0:
+            if not _logged_sim_fault_skip_on_restart:
+                logging.info(
+                    'TORCHELASTIC_RESTART_COUNT=%s: not re-arming --simulated_fault so training '
+                    'can continue after this restart (use --simulated-fault-on-every-restart '
+                    'to inject on every new worker process).',
+                    restart_cnt,
+                )
+                _logged_sim_fault_skip_on_restart = True
+            return
     if ft_client.hb_timeouts.are_valid:
         _setup_simulated_fault(
             ft_client,
