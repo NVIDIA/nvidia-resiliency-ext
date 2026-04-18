@@ -436,6 +436,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        # Last peer_aborted_count value we already reacted to (restart path). Without this,
+        # notify_peer's store counter can stay >0 until the next full barrier clear, and a
+        # single-node agent would treat its own stale signal as a new cluster change every
+        # monitor tick after a local restart.
+        self._last_peer_aborted_observed: int = 0
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -836,6 +841,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     notify_peer=True,
                 )
                 if should_restart:
+                    self._last_peer_aborted_observed = self._check_cluster_peer_aborted_count()
                     continue
                 self._stop_workers(self._worker_group)
                 self._worker_group.state = WorkerState.FAILED
@@ -850,7 +856,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                 peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
 
-                if num_nodes_waiting > 0 or peer_aborted_count > 0:
+                if peer_aborted_count < self._last_peer_aborted_observed:
+                    self._last_peer_aborted_observed = peer_aborted_count
+                peer_aborted_increased = peer_aborted_count > self._last_peer_aborted_observed
+
+                if num_nodes_waiting > 0 or peer_aborted_increased:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -869,6 +879,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                         notify_peer=False,
                     )
                     if should_restart:
+                        self._last_peer_aborted_observed = self._check_cluster_peer_aborted_count()
                         continue
                     self._stop_workers(self._worker_group)
                     self._worker_group.state = WorkerState.FAILED
@@ -1127,6 +1138,13 @@ class LocalElasticAgent(SimpleElasticAgent):
         )
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
+        # Snapshot handlers before _shutdown clears _pcontext (avoids double-close when run()
+        # finally calls _shutdown again; handlers are still valid for pipe cleanup).
+        pipe_handlers: List[Any] = []
+        if isinstance(self._logs_specs, PipeBasedLogsSpecs) and self._pcontext is not None:
+            if hasattr(self._pcontext, "subprocess_handlers"):
+                pipe_handlers = list(self._pcontext.subprocess_handlers.values())
+
         # Rank monitors will detect worker shutdown when worker processes disconnect
         self._shutdown(timeout=self._workers_stop_timeout)
 
@@ -1170,7 +1188,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # then close pipe file objects to prevent FD reuse bugs
         if isinstance(self._logs_specs, PipeBasedLogsSpecs):
             time.sleep(0.3)
-            for handler in self._pcontext.subprocess_handlers.values():
+            for handler in pipe_handlers:
                 for stream in (handler.proc.stdout, handler.proc.stderr):
                     if stream:
                         try:
@@ -1333,6 +1351,14 @@ class LocalElasticAgent(SimpleElasticAgent):
             start_method=self._start_method,
         )
 
+        # _restart_workers calls _start_workers without _initialize_workers; Worker.id must
+        # match SubprocessContext/MultiprocessContext pids or the next _monitor_workers fails.
+        pids_by_local_rank = self._pcontext.pids()
+        for worker in worker_group.workers:
+            new_pid = pids_by_local_rank.get(worker.local_rank)
+            if new_pid is not None:
+                worker.id = new_pid
+
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
         # Start reader thread for pipe-based logging if using PipeBasedLogsSpecs
@@ -1461,7 +1487,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._worker_watchdog.stop()
             self._worker_watchdog = None
         if self._pcontext:
-            self._pcontext.close(death_sig, timeout=timeout)
+            try:
+                self._pcontext.close(death_sig, timeout=timeout)
+            finally:
+                # Idempotent second _shutdown from run() finally; avoids AssertionError from
+                # closing the same SubprocessContext twice.
+                self._pcontext = None
             # Best-effort cleanup for orphan descendants in worker process groups.
             # PID=1 can become parent when original worker parent exits.
             terminate_mp_processes(allowed_pgids=self._children_pgids)
@@ -1472,7 +1503,13 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _monitor_workers(self, worker_group: WorkerGroup) -> RunResult:
         role = worker_group.spec.role
         worker_pids = {w.id for w in worker_group.workers}
-        assert self._pcontext is not None
+        if self._pcontext is None:
+            logger.warning(
+                "[%s] _monitor_workers: process context is gone (workers already stopped); "
+                "returning FAILED.",
+                role,
+            )
+            return RunResult(state=WorkerState.FAILED)
         pc_pids = set(self._pcontext.pids().values())
         if worker_pids != pc_pids:
             logger.error(
