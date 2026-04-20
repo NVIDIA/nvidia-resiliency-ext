@@ -18,6 +18,7 @@ import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from nvidia_resiliency_ext.attribution.coalescing import LogAnalysisCoalesced
+# svc is a connector layer; cross-package imports from attribution.* are intentional.
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 from nvidia_resiliency_ext.attribution.mcp_integration import create_mcp_client
 from nvidia_resiliency_ext.attribution.path_utils import path_is_under_allowed_root

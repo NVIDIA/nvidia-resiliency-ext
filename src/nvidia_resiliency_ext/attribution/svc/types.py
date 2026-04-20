@@ -15,11 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 from .analysis_pipeline import AnalysisPipelineMode
-from .config import (
-    DEFAULT_LLM_BASE_URL,
-    DEFAULT_LLM_MODEL,
-    ErrorCode,
-)
+from .config import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL, ErrorCode
 
 if TYPE_CHECKING:
     from .config import LogSageExecutionConfig
