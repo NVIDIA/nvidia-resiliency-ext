@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nvidia_resiliency_ext.fault_tolerance.ft_attribution import AttributionRunConfig  # noqa: F401
+
 from .config import FaultToleranceConfig  # noqa: F401
 from .data import WorkloadAction  # noqa: F401
 from .data import WorkloadControlRequest  # noqa: F401

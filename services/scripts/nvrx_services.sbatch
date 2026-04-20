@@ -26,9 +26,9 @@
 #   NVRX_LOGS_DIR - Directory for service logs (default: current directory)
 #
 # API Key Options (in priority order):
-#   1. NVIDIA_API_KEY env var (direct key)
-#   2. NVIDIA_API_KEY_FILE env var (path to file containing key)
-#   3. Default: ~/.nvidia_api_key
+#   1. LLM_API_KEY env var (direct key)
+#   2. LLM_API_KEY_FILE env var (path to file containing key)
+#   3. Default: ~/.llm_api_key or ~/.config/nvrx/llm_api_key
 #
 # Example with custom output directory:
 #   export NVRX_LOGS_DIR=/my/logs
@@ -69,7 +69,7 @@ export NVRX_ATTRSVC_NVDATAFLOW_PROJECT="${NVRX_ATTRSVC_NVDATAFLOW_PROJECT:-}"
 export NVRX_ATTRSVC_CLUSTER_NAME="${NVRX_ATTRSVC_CLUSTER_NAME:-${SLURM_CLUSTER_NAME:-unknown}}"
 
 # Setup API key
-setup_nvidia_api_key || exit 1
+setup_llm_api_key || exit 1
 
 # Configuration - SLURM Monitor Service (can be overridden via env vars)
 export NVRX_SMONSVC_PORT="${NVRX_SMONSVC_PORT:-8100}"

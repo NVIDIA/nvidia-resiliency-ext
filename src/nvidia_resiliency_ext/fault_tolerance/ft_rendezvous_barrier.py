@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from torch.distributed import PrefixStore, Store
 from torch.distributed.elastic.events import NodeState, construct_and_record_rdzv_event
+from torch.distributed.elastic.metrics.api import put_metric
 from torch.distributed.elastic.multiprocessing import SignalException
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
@@ -51,11 +52,14 @@ except ImportError:
     RendezvousInfo = None
     RendezvousStoreInfo = None
 
+from nvidia_resiliency_ext.fault_tolerance.ft_attribution import (
+    AttributionRunConfig,
+    LogAnalysisClient,
+)
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..inprocess.utils import format_rank_set_verbose
 from ..shared_utils.health_check import (
-    AttributionService,
     DistributedStorageHealthCheck,
     GPUHealthCheck,
     NicLinkStateHealthCheck,
@@ -73,6 +77,17 @@ if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
     from ..testing_utils import health_check_injector
 
 log = logging.getLogger(LogConfig.name)
+
+# When NVRX_FT_RDZV_NEXT_RENDEZVOUS_TIMING=1, log and emit torchelastic metrics for
+# next_rendezvous phases (health, control IPC, barrier wait-open vs after-open). Independent
+# of NVRX_FT_RESTART_DECISION_TIMING (launcher._handle_restart_decision only).
+_FT_RDZV_NEXT_RENDEZVOUS_TIMING_ENV = "NVRX_FT_RDZV_NEXT_RENDEZVOUS_TIMING"
+
+
+def _ft_rdzv_next_rendezvous_timing_enabled() -> bool:
+    v = os.environ.get(_FT_RDZV_NEXT_RENDEZVOUS_TIMING_ENV, "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
 
 # Sentinel domain_id written to a participant's slot when they withdraw. Any use of
 # participant data (_can_meet_segment_constraint, _assign_group_ranks) must exclude
@@ -463,6 +478,9 @@ class _RendezvousBarrierState:
         # Only populated if segment is configured
         self._cached_domain_id: Optional[str] = None
 
+        # Populated when NVRX_FT_RDZV_NEXT_RENDEZVOUS_TIMING=1 after a successful perform_rendezvous
+        self._last_perform_rdzv_phases: Optional[Dict[str, float]] = None
+
         # Key prefixes for the barrier
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
         self.arrived_count_key = f"{self.prefix}:arrived_count"
@@ -708,6 +726,20 @@ class _RendezvousBarrierState:
         """
         new_count = self.store.add(self.peer_aborted_count_key, 1)
         return new_count
+
+    def _undo_peer_abort_notify(self) -> None:
+        """Best-effort undo of one :meth:`_increment_peer_aborted_count` (e.g. attribution veto).
+
+        Used when the launcher incremented to wake peers, then decided not to restart so
+        healthy nodes should not stay in a raised ``peer_aborted_count`` state.
+        """
+        try:
+            cur = self._get_peer_aborted_count()
+            if cur <= 0:
+                return
+            self.store.add(self.peer_aborted_count_key, -1)
+        except Exception as e:
+            log.warning("peer_aborted_count rollback failed: %s", e)
 
     def _get_peer_aborted_count(self) -> int:
         """Get the current peer aborted count.
@@ -956,10 +988,17 @@ class _RendezvousBarrierState:
         Returns:
             Tuple of (group_rank, total_participants)
         """
+        rdzv_timing = _ft_rdzv_next_rendezvous_timing_enabled()
+        self._last_perform_rdzv_phases = None
+
         # Step 0: Wait if rendezvous is closed (training in progress)
         # Hot spares arriving late will wait here until a failure opens a new round
         # Note: This also checks for permanent close (is_permanently_closed()), no need to check again
+        t_wait_open = time.perf_counter()
         self._wait_for_rendezvous_open(node_desc)
+        wait_open_s = time.perf_counter() - t_wait_open
+
+        t_after_open = time.perf_counter()
 
         # Record start time for timeout monitoring
         # Start timing AFTER Step 0 completes, since hot spares may wait indefinitely at Step 0
@@ -1214,6 +1253,11 @@ class _RendezvousBarrierState:
                 log.debug(
                     f"[{node_desc}] [Step 4] Received group rank {rank}, total participants {total_participants}"
                 )
+                if rdzv_timing:
+                    self._last_perform_rdzv_phases = {
+                        "rdzv_wait_open_s": wait_open_s,
+                        "rdzv_after_open_s": time.perf_counter() - t_after_open,
+                    }
                 return rank, total_participants
 
             # Delay before next check
@@ -1499,8 +1543,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
-        attrsvc_host: Optional[str] = None,
-        attrsvc_port: Optional[int] = None,
+        attribution_config: Optional[AttributionRunConfig] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1531,10 +1574,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 Template path for NIC link state files.
             storage_healthcheck_paths:
                 List of storage paths to check for health.
-            attrsvc_host:
-                Hostname or IP address of the attribution service.
-            attrsvc_port:
-                Port number of the attribution service.
+            attribution_config:
+                Multi-backend attribution config (:class:`~nvidia_resiliency_ext.fault_tolerance.ft_attribution.AttributionRunConfig`).
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -1560,8 +1601,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
-            attrsvc_host=attrsvc_host,
-            attrsvc_port=attrsvc_port,
+            attribution_config=attribution_config,
         )
 
     def __init__(
@@ -1575,8 +1615,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         enable_dist_storage_healthcheck: bool = False,
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
-        attrsvc_host: Optional[str] = None,
-        attrsvc_port: Optional[int] = None,
+        attribution_config: Optional[AttributionRunConfig] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1637,14 +1676,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
         )
 
-        # Attribution service client (optional, only on master node)
-        if is_store_host and attrsvc_host and attrsvc_port is not None:
-            self._attr_service = AttributionService(
-                host=attrsvc_host,
-                port=int(attrsvc_port),
-            )
-        else:
-            self._attr_service = None
+        # Attribution: log analysis client (optional, only when config enabled)
+        self._log_analysis_client = None
+        if is_store_host and attribution_config is not None:
+            self._log_analysis_client = LogAnalysisClient(attribution_config)
+
+    @property
+    def log_analysis_client(self) -> Optional[LogAnalysisClient]:
+        """Log analysis client for attribution, or None if not configured."""
+        return self._log_analysis_client
 
     @property
     def _rendezvous_round(self) -> int:
@@ -1795,11 +1835,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 f"Node {self._this_node} has invalid or unreadable paths.",
             )
 
-        # Perform optional log analysis (non-fatal)
-        # Note: _submit_log() was already called from launcher before workers started
-        if self._attr_service is not None:
-            self._attr_service()
-
         # Perform Node health check (external service if available)
         _nodehealth_checker = get_node_health_check()
         if _nodehealth_checker is not None:
@@ -1880,6 +1915,33 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         else:
             log.info(f"Node {self._this_node} assigned group rank {group_rank}")
 
+    def _emit_ft_rdzv_next_rendezvous_timing(
+        self,
+        phases: Dict[str, float],
+        total_s: float,
+    ) -> None:
+        """Log and export next_rendezvous phase timings (NVRX_FT_RDZV_NEXT_RENDEZVOUS_TIMING=1)."""
+        if not _ft_rdzv_next_rendezvous_timing_enabled():
+            return
+        phase_str = " ".join(f"{k}={v:.4f}" for k, v in sorted(phases.items()))
+        log.info(
+            "[ft_rdzv_timing] node=%s run_id=%s rendezvous_round=%s assigned_rank=%s "
+            "is_store_host=%s total_s=%.4f %s",
+            self._this_node,
+            self._settings.run_id,
+            getattr(self, "_rendezvous_round", None),
+            self._assigned_rank,
+            self._barrier_state.is_store_host,
+            total_s,
+            phase_str,
+        )
+        try:
+            put_metric("ft.rdzv.next_rendezvous.total_s", total_s)
+            for name, sec in phases.items():
+                put_metric(f"ft.rdzv.next_rendezvous.{name}", sec)
+        except Exception:
+            log.debug("ft_rdzv_timing put_metric failed", exc_info=True)
+
     def next_rendezvous(self) -> Union[RendezvousInfo, Tuple[Store, int, int]]:
         """See base class.
 
@@ -1896,20 +1958,36 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         log.info(msg)
 
         prev_signal_handlers = _install_rdzv_signal_handlers()
+        timing_on = _ft_rdzv_next_rendezvous_timing_enabled()
+        t0_perf = time.perf_counter()
+        rdzv_phases: Dict[str, float] = {}
+        next_rdzv_success = False
         try:
             # Check node health and control requests before starting rendezvous
             health_check_start = time.monotonic()
+            t_h = time.perf_counter()
             self.ensure_node_is_healthy()
             health_check_elapsed = time.monotonic() - health_check_start
+            if timing_on:
+                rdzv_phases["health_s"] = time.perf_counter() - t_h
             log.debug(
                 f"[{self._this_node}] Node health check completed in {health_check_elapsed:.3f}s"
             )
 
+            t_c = time.perf_counter()
             self.handle_control_requests_from_rank()
+            if timing_on:
+                rdzv_phases["control_ipc_s"] = time.perf_counter() - t_c
 
             # Perform the complete rendezvous process
             # Stale round detection and sync happens automatically in _wait_for_rendezvous_open()
+            t_p = time.perf_counter()
             self._perform_rendezvous()
+            if timing_on:
+                rdzv_phases["perform_rdzv_wall_s"] = time.perf_counter() - t_p
+                inner = getattr(self._barrier_state, "_last_perform_rdzv_phases", None)
+                if inner:
+                    rdzv_phases.update(inner)
 
             # Use stored rank and world size
             rank = self._assigned_rank
@@ -1929,6 +2007,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                     # Restore from the configured value in settings
                     self._worker_group.spec.local_world_size = self._settings.nproc_per_node
 
+            next_rdzv_success = True
+
         except Exception as e:
             self._record(
                 message=f"{type(e).__name__}: {str(e)}",
@@ -1941,6 +2021,12 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             # next_rendezvous cleanup (signal handler restore).
             self._barrier_state._maybe_withdraw_on_unwind()
             _restore_rdzv_signal_handlers(prev_signal_handlers)
+
+        if next_rdzv_success and timing_on:
+            self._emit_ft_rdzv_next_rendezvous_timing(
+                rdzv_phases,
+                time.perf_counter() - t0_perf,
+            )
 
         msg = (
             f"The node '{self._this_node}' has joined the rendezvous "
@@ -2153,8 +2239,10 @@ def create_handler(
         )
         storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
-        attrsvc_host = params.config.get('attrsvc_host', None)
-        attrsvc_port = params.config.get('attrsvc_port', None)
+        attribution_cfg_dict = params.config.get('attribution_config', None)
+        attribution_config = None
+        if attribution_cfg_dict:
+            attribution_config = AttributionRunConfig.from_dict(attribution_cfg_dict)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -2171,8 +2259,7 @@ def create_handler(
             enable_dist_storage_healthcheck=enable_dist_storage_healthcheck,
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
-            attrsvc_host=attrsvc_host,
-            attrsvc_port=attrsvc_port,
+            attribution_config=attribution_config,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

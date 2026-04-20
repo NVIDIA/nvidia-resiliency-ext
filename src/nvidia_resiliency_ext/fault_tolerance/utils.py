@@ -234,6 +234,16 @@ def is_slurm_job_array() -> bool:
     return os.getenv('SLURM_ARRAY_TASK_ID') is not None
 
 
+def job_user_from_env() -> str:
+    """Read job user from SLURM_JOB_USER or USER env."""
+    return os.environ.get("SLURM_JOB_USER") or os.environ.get("USER", "") or ""
+
+
+def job_id_from_env() -> str:
+    """Read job id from SLURM_ARRAY_JOB_ID or SLURM_JOB_ID env."""
+    return os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "") or ""
+
+
 def get_log_aggregator_shard_index(num_aggregators: int) -> int:
     """Shard index in ``[0, num_aggregators)`` for first-level log aggregator selection.
 
@@ -538,7 +548,9 @@ def install_exception_handler():
             f"{rank_str}: Process will exit with code 1\n"
         )
 
-        app_logger = logging.getLogger(__name__)
+        # Get logger from application context (not module-level logger)
+        # Use root logger to ensure we capture in application's logging context
+        app_logger = logging.getLogger()
         app_logger.error(error_msg)
 
         # Also print to stderr to ensure visibility

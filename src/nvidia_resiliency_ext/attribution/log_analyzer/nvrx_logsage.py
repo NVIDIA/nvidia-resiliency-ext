@@ -113,14 +113,14 @@ def chunk_logs_strict(lines):
 
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
-        from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
+        from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
 
         self._init_config = normalize_attribution_args(args)
-        self.api_key = load_nvidia_api_key()
+        self.api_key = load_llm_api_key()
         if not self.api_key:
             raise ValueError(
-                "NVIDIA_API_KEY not found. Set NVIDIA_API_KEY env var, "
-                "NVIDIA_API_KEY_FILE env var, or create ~/.nvidia_api_key"
+                "LLM API key not found. Set LLM_API_KEY or LLM_API_KEY_FILE, "
+                "or create ~/.llm_api_key or ~/.config/nvrx/llm_api_key"
             )
         logger.debug("API key loaded (length=%d)", len(self.api_key))
         logger.debug(

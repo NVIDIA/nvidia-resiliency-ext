@@ -77,6 +77,7 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
     UpdateConfigMsg,
 )
+from nvidia_resiliency_ext.fault_tolerance.ft_attribution import AttributionRunConfig
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
@@ -85,6 +86,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
     hostnames_to_slurm_nodelist,
     is_slurm_job_array,
+    job_id_from_env,
     patched_method,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
@@ -129,6 +131,19 @@ _legacy_ft_rdzv_deprecation_warned: bool = False
 # Logger instance (configured later in run() via setup_logger())
 # Note: Must call run() before using logger to ensure proper configuration
 logger = logging.getLogger(LogConfig.name)
+
+# Set NVRX_FT_RESTART_DECISION_TIMING=1 to log and emit torchelastic metrics for phase
+# durations inside _handle_restart_decision (attribution, progress, open_rendezvous,
+# restart_workers). Used to quantify overlap opportunity before changing ordering.
+# Does not touch next_rendezvous / barrier (see NVRX_FT_RDZV_NEXT_RENDEZVOUS_TIMING in
+# ft_rendezvous_barrier.py).
+_FT_RESTART_DECISION_TIMING_ENV = "NVRX_FT_RESTART_DECISION_TIMING"
+
+
+def _ft_restart_decision_timing_enabled() -> bool:
+    v = os.environ.get(_FT_RESTART_DECISION_TIMING_ENV, "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
 
 _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
 # Populated on TCP store host when gRPC log aggregation is enabled: root-only [Popen] or
@@ -421,6 +436,16 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        # Last peer_aborted_count value we already reacted to (restart path). Without this,
+        # notify_peer's store counter can stay >0 until the next full barrier clear, and a
+        # single-node agent would treat its own stale signal as a new cluster change every
+        # monitor tick after a local restart.
+        self._last_peer_aborted_observed: int = 0
+        # Set to True when attribution or progress tracker decides the job should stop
+        # permanently (not a node failure). Checked by callers of _handle_restart_decision
+        # to raise RendezvousGracefulExitError (exit 0) instead of RunResult(FAILED) (exit 1),
+        # preventing SLURM from requeueing a job that has a job-level stop signal.
+        self._graceful_stop_requested: bool = False
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -505,12 +530,22 @@ class LocalElasticAgent(SimpleElasticAgent):
         """
         return max(0, self._rdzv_handler.round() - 1)
 
+    def _elastic_worker_attempt_index(self, spec: WorkerSpec) -> int:
+        """Torchelastic-style worker attempt index (matches stock ``TORCHELASTIC_RESTART_COUNT``).
+
+        Increments each time the agent consumes a restart slot and starts a new worker group.
+        Used for per-attempt log paths (``*_cycle{N}.log``) and worker env. Unlike
+        :meth:`_get_global_restart_count` (derived from barrier rendezvous ``round()``), this
+        advances on local-only FT restarts so cycle log files do not all map to ``_cycle0``.
+        """
+        return spec.max_restarts - self._remaining_restarts
+
     def _on_cycle_end(self) -> None:
         """Record cycle end time in cycle info file."""
         if self._cycle_info_writer is None:
             return
         current_cycle = self._get_global_restart_count()
-        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        job_id = job_id_from_env()
         attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
         self._cycle_info_writer.update_cycle_end(
             job_id=job_id,
@@ -523,7 +558,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         """Write NVRx cycle info at cycle start. Returns path to current cycle info file, or None."""
         if self._cycle_info_writer is None:
             return None
-        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        job_id = job_id_from_env()
         attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
         cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
         # Legacy FtRendezvousHandler does not define these; barrier handler does.
@@ -574,6 +609,42 @@ class LocalElasticAgent(SimpleElasticAgent):
             # record the execution time in case there were any exceptions during run.
             self._total_execution_time = int(time.monotonic() - start_time)
 
+    def _emit_ft_restart_decision_timing(
+        self,
+        role: str,
+        outcome: str,
+        phases: Dict[str, float],
+        t0_perf: float,
+        open_rendezvous_config: bool,
+        notify_peer_config: bool,
+    ) -> None:
+        """Log and export phase timings when NVRX_FT_RESTART_DECISION_TIMING is enabled."""
+        if not _ft_restart_decision_timing_enabled():
+            return
+        total_s = time.perf_counter() - t0_perf
+        gr: Any = None
+        if self._worker_group is not None:
+            gr = self._worker_group.group_rank
+        phase_str = " ".join(f"{k}={v:.4f}" for k, v in sorted(phases.items()))
+        logger.info(
+            "[ft_restart_timing] role=%s group_rank=%s is_store_host=%s outcome=%s "
+            "open_rendezvous=%s notify_peer=%s total_s=%.4f %s",
+            role,
+            gr,
+            getattr(self, "_is_store_host", False),
+            outcome,
+            open_rendezvous_config,
+            notify_peer_config,
+            total_s,
+            phase_str,
+        )
+        try:
+            put_metric(f"ft.restart_decision.{role}.total_s", total_s)
+            for name, sec in phases.items():
+                put_metric(f"ft.restart_decision.{role}.{name}", sec)
+        except Exception:
+            logger.debug("ft_restart_timing put_metric failed", exc_info=True)
+
     def _open_rendezvous_for_restart(self):
         """Open rendezvous for restart when using barrier-based rendezvous.
 
@@ -594,6 +665,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                 logger.error(f"Failed to open rendezvous: {e}")
         # For legacy rendezvous, no action needed - it uses different mechanism
 
+    def _restart_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
+        """Override to pass will_restart and time_consumed_before_reclaim to _stop_workers."""
+        self._stop_workers(worker_group, *args, will_restart=True, **kwargs)
+        self._start_workers(worker_group)
+
     def _handle_restart_decision(
         self,
         role: str,
@@ -602,21 +678,81 @@ class LocalElasticAgent(SimpleElasticAgent):
         open_rendezvous: bool = False,
         notify_peer: bool = False,
     ) -> bool:
-        """Handle restart decision logic based on progress tracking and remaining restarts.
+        """Decide whether to restart based on attribution, progress tracking, and remaining restarts.
+
+        If restart: calls _restart_workers and returns True.
+        If stop: returns False; caller must call _stop_workers.
 
         Args:
             role: The role name for logging
             spec: Worker specification
             log_msg: Custom log message for restart
-            open_rendezvous: Whether to open rendezvous before restart (for barrier-based rendezvous)
-            notify_peer: Whether to notify peers to abort the workers in current cycle.
+            open_rendezvous: If True, open rendezvous for restart only after attribution and progress
+                checks pass (barrier handler only). Opening before then can let peers join a round this
+                node might never complete if attribution vetoes restart.
+            notify_peer: If True, increment ``peer_aborted_count`` immediately so healthy peers can
+                observe failure without waiting for local attribution. If attribution, progress, or
+                remaining-restart checks then veto restart, the increment is rolled back.
 
         Returns:
-            True if restart was initiated (caller should continue monitoring loop)
-            False if no restart (caller should stop workers and return failure)
+            True if restart was initiated, False if no restart (caller should call _stop_workers).
         """
+        timing_on = _ft_restart_decision_timing_enabled()
+        t0_perf = time.perf_counter()
+        phases: Dict[str, float] = {}
+
+        peer_abort_incremented = False
+        t_pn = time.perf_counter()
+        if notify_peer and hasattr(self._rdzv_handler, '_barrier_state'):
+            self._rdzv_handler._barrier_state._increment_peer_aborted_count()
+            peer_abort_incremented = True
+        if timing_on:
+            phases["peer_notify_s"] = time.perf_counter() - t_pn
+
+        def _rollback_peer_abort_notify() -> None:
+            nonlocal peer_abort_incremented
+            if not peer_abort_incremented:
+                return
+            if hasattr(self._rdzv_handler, '_barrier_state'):
+                self._rdzv_handler._barrier_state._undo_peer_abort_notify()
+            peer_abort_incremented = False
+
+        start_wall = time.time()
+        t_attr = time.perf_counter()
+        should_terminate_early = self._run_attribution()
+        if timing_on:
+            phases["attribution_s"] = time.perf_counter() - t_attr
+
+        if should_terminate_early:
+            if self._ft_cfg.attribution_dry_run:
+                logger.info(
+                    "[%s] Attribution dry run: would NOT restart (attribution says stop), "
+                    "but proceeding as configured (action not applied).",
+                    role,
+                )
+            else:
+                logger.error("[%s] Attribution says do not restart; will not restart.", role)
+                _rollback_peer_abort_notify()
+                # Attribution is a job-level stop: broadcast tombstone so all nodes exit
+                # cleanly rather than re-entering the restart loop.
+                if hasattr(self._rdzv_handler, '_barrier_state'):
+                    self._rdzv_handler._barrier_state.set_permanently_closed()
+                self._graceful_stop_requested = True
+                self._emit_ft_restart_decision_timing(
+                    role,
+                    "veto_attribution",
+                    phases,
+                    t0_perf,
+                    open_rendezvous,
+                    notify_peer,
+                )
+                return False
+
+        t_prog = time.perf_counter()
         self._progress_tracker.analyze_previous_cycle()
         should_terminate_early = self._progress_tracker.should_terminate_early()
+        if timing_on:
+            phases["progress_s"] = time.perf_counter() - t_prog
 
         if should_terminate_early:
             logger.error(
@@ -624,19 +760,57 @@ class LocalElasticAgent(SimpleElasticAgent):
                 "No more restarts will be attempted.",
                 role
             )
+            _rollback_peer_abort_notify()
+            # Progress tracker is a job-level stop: broadcast tombstone so all nodes exit
+            # cleanly rather than re-entering the restart loop.
+            if hasattr(self._rdzv_handler, '_barrier_state'):
+                self._rdzv_handler._barrier_state.set_permanently_closed()
+            self._graceful_stop_requested = True
+            self._emit_ft_restart_decision_timing(
+                role,
+                "veto_progress",
+                phases,
+                t0_perf,
+                open_rendezvous,
+                notify_peer,
+            )
             return False
         elif self._remaining_restarts > 0:
             logger.info(log_msg, role)
             self._remaining_restarts -= 1
-            # Increment peer_aborted_count to notify other nodes (for barrier-based rendezvous)
-            if notify_peer and hasattr(self._rdzv_handler, '_barrier_state'):
-                self._rdzv_handler._barrier_state._increment_peer_aborted_count()
             if open_rendezvous:
+                t_open = time.perf_counter()
                 self._open_rendezvous_for_restart()
-            self._restart_workers(self._worker_group)
+                if timing_on:
+                    phases["open_rendezvous_s"] = time.perf_counter() - t_open
+            time_consumed = time.time() - start_wall
+            t_rw = time.perf_counter()
+            self._restart_workers(
+                self._worker_group,
+                time_consumed_before_reclaim=time_consumed,
+            )
+            if timing_on:
+                phases["restart_workers_s"] = time.perf_counter() - t_rw
+            self._emit_ft_restart_decision_timing(
+                role,
+                "restart",
+                phases,
+                t0_perf,
+                open_rendezvous,
+                notify_peer,
+            )
             return True
         else:
             # No more restarts available
+            _rollback_peer_abort_notify()
+            self._emit_ft_restart_decision_timing(
+                role,
+                "veto_no_restarts",
+                phases,
+                t0_perf,
+                open_rendezvous,
+                notify_peer,
+            )
             return False
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
@@ -689,14 +863,17 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 should_restart = self._handle_restart_decision(
                     role, spec, log_msg, open_rendezvous=True,
-                    notify_peer=True
+                    notify_peer=True,
                 )
-
                 if should_restart:
-                    continue  # Continue monitoring after restart
-
-                # No more restarts (either exhausted or early termination)
+                    self._last_peer_aborted_observed = self._check_cluster_peer_aborted_count()
+                    continue
                 self._stop_workers(self._worker_group)
+                if self._graceful_stop_requested:
+                    self._graceful_stop_requested = False
+                    raise RendezvousGracefulExitError(
+                        "Job-level stop (attribution or progress tracker): job will not restart."
+                    )
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
@@ -709,7 +886,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                 peer_aborted_count = self._check_cluster_peer_aborted_count()
                 group_rank = self._worker_group.group_rank
 
-                if num_nodes_waiting > 0 or peer_aborted_count > 0:
+                if peer_aborted_count < self._last_peer_aborted_observed:
+                    self._last_peer_aborted_observed = peer_aborted_count
+                peer_aborted_increased = peer_aborted_count > self._last_peer_aborted_observed
+
+                if num_nodes_waiting > 0 or peer_aborted_increased:
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
@@ -722,17 +903,22 @@ class LocalElasticAgent(SimpleElasticAgent):
                         f"(nodes_waiting={num_nodes_waiting}, peer_aborted={peer_aborted_count}); "
                         f"will restart worker group"
                     )
-                    # Note: The node that triggered the change (unhealthy or new) already opened
-                    # the rendezvous, so we don't need to open it again here.
+                    # Note: The node that triggered the change already opened the rendezvous.
                     should_restart = self._handle_restart_decision(
                         role, spec, log_msg, open_rendezvous=False,
-                        notify_peer=False
+                        notify_peer=False,
                     )
-
-                    if not should_restart:
-                        self._stop_workers(self._worker_group)
-                        self._worker_group.state = WorkerState.FAILED
-                        return RunResult(state=WorkerState.FAILED)
+                    if should_restart:
+                        self._last_peer_aborted_observed = self._check_cluster_peer_aborted_count()
+                        continue
+                    self._stop_workers(self._worker_group)
+                    if self._graceful_stop_requested:
+                        self._graceful_stop_requested = False
+                        raise RendezvousGracefulExitError(
+                            "Job-level stop (attribution or progress tracker): job will not restart."
+                        )
+                    self._worker_group.state = WorkerState.FAILED
+                    return RunResult(state=WorkerState.FAILED)
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
 
@@ -950,16 +1136,51 @@ class LocalElasticAgent(SimpleElasticAgent):
         event = events.Event(name=name, source=events.EventSource.AGENT, metadata=metadata)
         events.record(event)
 
+    @property
+    def _log_analysis_client(self):
+        """Log analysis client from rdzv handler, or None if not configured."""
+        return getattr(self._rdzv_handler, "log_analysis_client", None)
+
+    def _run_attribution(self) -> bool:
+        """Run attribution if configured. Returns True if attribution says do not restart, else False."""
+        if not self._is_store_host or self._log_analysis_client is None:
+            return False
+        cycle_log_file = None
+        if hasattr(self._logs_specs, "get_cycle_log_file"):
+            spec = self._worker_group.spec
+            cycle_log_file = self._logs_specs.get_cycle_log_file(
+                self._elastic_worker_attempt_index(spec)
+            )
+        if cycle_log_file is None:
+            return False
+        return self._log_analysis_client.should_stop(cycle_log_file)
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
-    def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
+    def _stop_workers(
+        self, worker_group: WorkerGroup, *args, **kwargs
+    ) -> Optional[Any]:
         # Support both old and new SimpleElasticAgent._stop_workers signatures:
         # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
+        #
+        # Optional: will_restart [bool] - if True, wait for GPU reclaim before next cycle.
+        # Optional: time_consumed_before_reclaim [float] - deducted from reclaim budget when will_restart.
+        will_restart: bool = kwargs.pop("will_restart", False)
+        time_consumed_before_reclaim: float = kwargs.pop(
+            "time_consumed_before_reclaim", 0.0
+        )
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
+
+        # Snapshot handlers before _shutdown clears _pcontext (avoids double-close when run()
+        # finally calls _shutdown again; handlers are still valid for pipe cleanup).
+        pipe_handlers: List[Any] = []
+        if isinstance(self._logs_specs, PipeBasedLogsSpecs) and self._pcontext is not None:
+            if hasattr(self._pcontext, "subprocess_handlers"):
+                pipe_handlers = list(self._pcontext.subprocess_handlers.values())
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
         self._shutdown(timeout=self._workers_stop_timeout)
@@ -983,22 +1204,28 @@ class LocalElasticAgent(SimpleElasticAgent):
             else:
                 logger.debug("All worker processes and descendants terminated successfully")
 
-        # Wait for GPU memory to be reclaimed BEFORE returning control
-        # This ensures the node doesn't proceed to the next rendezvous cycle while memory is still tied up
-        if self._ft_cfg.gpu_memory_reclaim_timeout > 0:
-            logger.debug(
-                "Waiting for GPU memory to be reclaimed (timeout: %ds, tolerance: %d MB, poll interval: %ds)...",
-                int(self._ft_cfg.gpu_memory_reclaim_timeout),
-                int(self._ft_cfg.gpu_memory_tolerance_mb),
-                int(self._ft_cfg.gpu_memory_poll_interval),
-            )
-            self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
+        # Wait for GPU memory to be reclaimed only when restarting (shutdown case skips).
+        reclaim_timeout = self._ft_cfg.gpu_memory_reclaim_timeout
+        if will_restart and reclaim_timeout > 0:
+            remaining_reclaim = max(0.0, reclaim_timeout - time_consumed_before_reclaim)
+            if remaining_reclaim > 0:
+                logger.debug(
+                    "Waiting for GPU memory to be reclaimed (timeout: %.1fs, "
+                    "tolerance: %d MB, poll interval: %ds)...",
+                    remaining_reclaim,
+                    int(self._ft_cfg.gpu_memory_tolerance_mb),
+                    int(self._ft_cfg.gpu_memory_poll_interval),
+                )
+                self._wait_for_gpu_memory_reclaim(
+                    worker_group.spec.local_world_size,
+                    timeout_override=remaining_reclaim,
+                )
 
         # Wait for reader thread to drain pipes (polls every 100ms, wait 3 cycles)
         # then close pipe file objects to prevent FD reuse bugs
         if isinstance(self._logs_specs, PipeBasedLogsSpecs):
             time.sleep(0.3)
-            for handler in self._pcontext.subprocess_handlers.values():
+            for handler in pipe_handlers:
                 for stream in (handler.proc.stdout, handler.proc.stderr):
                     if stream:
                         try:
@@ -1023,6 +1250,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
         )
+        return None
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -1032,12 +1260,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
 
-        # Get the current cycle number from the rendezvous handler
-        # At this point, rendezvous has completed and we're about to start workers.
-        # The cycle number is used for profiling and environment variable setting.
-        # Note: We use _get_global_restart_count() because in the context of worker startup,
-        # the "restart_count" variable name is used to mean "cycle number" (for historical reasons).
-        current_cycle = restart_count = self._get_global_restart_count()  # Actually cycle number
+        # Per-attempt index for workers, rank monitors, and PipeBasedLogsSpecs (``*_cycle{N}.log``).
+        # Must match stock torchelastic ``TORCHELASTIC_RESTART_COUNT = max_restarts - remaining`` so
+        # ``reify()`` sees a new suffix after each local restart; do not use _get_global_restart_count()
+        # here (that follows barrier ``round()`` and stays flat across worker-only restarts).
+        current_cycle = restart_count = self._elastic_worker_attempt_index(spec)
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -1070,14 +1297,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
         )
 
-        # Submit current cycle's log to attribution service (master node only, before workers start)
-        if (
-            self._is_store_host
-            and self._rdzv_handler._attr_service is not None
-            and hasattr(self._logs_specs, 'get_cycle_log_file')
-        ):
-            cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
-            self._rdzv_handler._attr_service._submit_log(cycle_log_file)
+        # Early notify: HTTP backends (POST /logs) and MCP (Analyzer.submit only), before workers start
+        if self._is_store_host and hasattr(self._logs_specs, "get_cycle_log_file"):
+            client = self._log_analysis_client
+            if client is not None and client.path_notify is not None:
+                cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
+                client.path_notify(cycle_log_file)
 
         # Write NVRx cycle info and set env for workload
         current_cycle_info_path = self._write_cycle_start_info(current_cycle)
@@ -1162,6 +1387,14 @@ class LocalElasticAgent(SimpleElasticAgent):
             start_method=self._start_method,
         )
 
+        # _restart_workers calls _start_workers without _initialize_workers; Worker.id must
+        # match SubprocessContext/MultiprocessContext pids or the next _monitor_workers fails.
+        pids_by_local_rank = self._pcontext.pids()
+        for worker in worker_group.workers:
+            new_pid = pids_by_local_rank.get(worker.local_rank)
+            if new_pid is not None:
+                worker.id = new_pid
+
         self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
         # Start reader thread for pipe-based logging if using PipeBasedLogsSpecs
@@ -1187,7 +1420,9 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         return self._pcontext.pids()
 
-    def _wait_for_gpu_memory_reclaim(self, num_gpus: int) -> None:
+    def _wait_for_gpu_memory_reclaim(
+        self, num_gpus: int, timeout_override: Optional[float] = None
+    ) -> None:
         """
         Wait for GPU memory to be reclaimed below the tolerance threshold before starting new workers.
         This is called on restarts (not on initial start) to ensure memory has been cleaned up.
@@ -1196,6 +1431,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         Args:
             num_gpus: Number of GPUs on this node
+            timeout_override: If set, use this instead of gpu_memory_reclaim_timeout (for time accounting).
         """
         def log_memory_stats(memory_stats, num_gpus, log_func, message_template, *args):
             """Helper to log GPU memory statistics."""
@@ -1219,7 +1455,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                     )
 
         memory_logger = GPUMemoryLogger()
-        timeout = self._ft_cfg.gpu_memory_reclaim_timeout
+        timeout = (
+            timeout_override
+            if timeout_override is not None
+            else self._ft_cfg.gpu_memory_reclaim_timeout
+        )
+        if timeout <= 0:
+            return
         tolerance_mb = self._ft_cfg.gpu_memory_tolerance_mb
         poll_interval = self._ft_cfg.gpu_memory_poll_interval
 
@@ -1281,7 +1523,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._worker_watchdog.stop()
             self._worker_watchdog = None
         if self._pcontext:
-            self._pcontext.close(death_sig, timeout=timeout)
+            try:
+                self._pcontext.close(death_sig, timeout=timeout)
+            finally:
+                # Idempotent second _shutdown from run() finally; avoids AssertionError from
+                # closing the same SubprocessContext twice.
+                self._pcontext = None
             # Best-effort cleanup for orphan descendants in worker process groups.
             # PID=1 can become parent when original worker parent exits.
             terminate_mp_processes(allowed_pgids=self._children_pgids)
@@ -1292,7 +1539,13 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _monitor_workers(self, worker_group: WorkerGroup) -> RunResult:
         role = worker_group.spec.role
         worker_pids = {w.id for w in worker_group.workers}
-        assert self._pcontext is not None
+        if self._pcontext is None:
+            logger.warning(
+                "[%s] _monitor_workers: process context is gone (workers already stopped); "
+                "returning FAILED.",
+                role,
+            )
+            return RunResult(state=WorkerState.FAILED)
         pc_pids = set(self._pcontext.pids().values())
         if worker_pids != pc_pids:
             logger.error(
@@ -1702,6 +1955,15 @@ def launch_agent(
             return None
 
         if result.is_failed():
+            # ChildFailedError.__init__ in PyTorch asserts failures is non-empty; the agent can
+            # return WorkerState.FAILED with an empty failures dict (e.g. max restarts exhausted
+            # after _stop_workers, no ProcessFailure payload). Do not raise ChildFailedError then.
+            if not result.failures:
+                raise RuntimeError(
+                    f"{entrypoint_name}: worker group ended in {result.state.name} with no "
+                    "per-rank failure records (typical when restarts are exhausted or the agent "
+                    "stopped workers without a torchelastic error file)."
+                )
             # ChildFailedError is treated specially by @record
             # if the error files for the failed children exist
             # @record will copy the first error (root cause)
@@ -1762,9 +2024,7 @@ def launch_agent(
         # unhealthy_count) before the store goes away. shutdown_rdzv only controls explicit
         # permanent-close signaling; it cannot keep the store alive after process exit.
         if is_store_host:
-            # Trigger attribution service analysis for final cycle
-            if agent._rdzv_handler._attr_service is not None:
-                agent._rdzv_handler._attr_service()
+            # Attribution is invoked on the Restart & progress state path (inside _handle_restart_decision), not at exit.
 
             # No ordering required between cycle_info_writer and rendezvous: the writer
             # is independent I/O. Run grace-period wait and writer shutdown in parallel
@@ -2827,22 +3087,67 @@ def get_args_parser() -> ArgumentParser:
         "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
     )
 
-    # Attribution service configuration (optional)
+    # Attribution: repeat --ft-attribution-backend for multiple backends
     parser.add_argument(
-        "--ft-attrsvc-host",
-        "--ft_attrsvc_host",
-        type=str,
+        "--ft-attribution-backend",
+        "--ft_attribution_backend",
+        action="append",
         default=None,
-        dest="ft_attrsvc_host",
-        help="Hostname or IP for the attribution service (e.g., 127.0.0.1).",
+        dest="ft_attribution_backends",
+        metavar="BACKEND",
+        help="Attribution backend (repeatable): mcp or HTTP URL (e.g. http://127.0.0.1:8000). "
+        "Combined with YAML attribution_backends. Stop/restart if any backend says do not restart.",
     )
     parser.add_argument(
-        "--ft-attrsvc-port",
-        "--ft_attrsvc_port",
+        "--ft-attribution-timeout",
+        "--ft_attribution_timeout",
         type=int,
+        default=60,
+        dest="ft_attribution_timeout_seconds",
+        help="Attribution wait/timeout in seconds; skip result if exceeded (default: 60).",
+    )
+    parser.add_argument(
+        "--ft-attribution-dry-run",
+        "--ft_attribution_dry_run",
+        action="store_true",
         default=None,
-        dest="ft_attrsvc_port",
-        help="Port for the attribution service (e.g., 8000).",
+        dest="ft_attribution_dry_run",
+        help="Attribution dry run: run full attribution chain (log analysis, Slack, dataflow) "
+        "but do not apply the restart/stop decision. Log what would happen instead. "
+        "Useful for validating the chain without affecting behavior.",
+    )
+    parser.add_argument(
+        "--ft-llm-api-key-file",
+        "--ft_llm_api_key_file",
+        type=str,
+        default=None,
+        dest="ft_llm_api_key_file",
+        help="Path to file containing LLM API key for MCP attribution. Sets LLM_API_KEY_FILE "
+        "before the analyzer starts. Combined with YAML llm_api_key_file; CLI wins when both set.",
+    )
+    parser.add_argument(
+        "--ft-slack-channel",
+        "--ft_slack_channel",
+        type=str,
+        default=None,
+        dest="ft_slack_channel",
+        help="Slack channel for FT alerts (attribution, etc.).",
+    )
+    parser.add_argument(
+        "--ft-slack-token-file",
+        "--ft_slack_token_file",
+        type=str,
+        default=None,
+        dest="ft_slack_bot_token_file",
+        help="Path to file containing Slack bot token. Else uses SLACK_BOT_TOKEN/SLACK_BOT_TOKEN_FILE env.",
+    )
+    parser.add_argument(
+        "--ft-dataflow-index",
+        "--ft_dataflow_index",
+        type=str,
+        default=None,
+        dest="ft_dataflow_index",
+        help="Dataflow/Elasticsearch index for attribution posting (mcp/url). Requires nvdataflow.",
     )
 
     parser.add_argument(
@@ -3075,6 +3380,7 @@ def _validate_slurm_single_launcher_per_node() -> None:
             "  NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1"
         )
 
+
 def _validate_args(args: Any) -> None:
     """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
     n_log_agg = int(getattr(args, "ft_log_aggregator_count", 2))
@@ -3096,6 +3402,7 @@ def _validate_args(args: Any) -> None:
         raise ValueError(
             "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
         )
+
 
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
@@ -3169,18 +3476,27 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     # Pass segment-related configs to rendezvous config
     rdzv_configs['segment'] = fault_tol_cfg.segment
 
-    # Pass NIC health check configs to rendezvous config
-    rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
-    rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
-
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
-    # Pass attribution service configuration if provided
-    if getattr(fault_tol_cfg, 'attrsvc_host', None):
-        rdzv_configs['attrsvc_host'] = fault_tol_cfg.attrsvc_host
-    if getattr(fault_tol_cfg, 'attrsvc_port', None) is not None:
-        rdzv_configs['attrsvc_port'] = int(fault_tol_cfg.attrsvc_port)
+
+    # Attribution: merged backends (YAML + --ft-attribution-backend)
+    attribution_backends = getattr(fault_tol_cfg, "attribution_backends", None) or []
+    attribution_timeout = int(getattr(fault_tol_cfg, "attribution_timeout_seconds", 60))
+    ft_slack = getattr(fault_tol_cfg, "slack", None)
+    ft_dataflow_index = getattr(fault_tol_cfg, "dataflow_index", None)
+    if attribution_backends:
+        timeout_sec = max(1, attribution_timeout)
+        llm_key_file = getattr(fault_tol_cfg, "llm_api_key_file", None)
+        attribution_cfg = AttributionRunConfig.from_backend_strings(
+            attribution_backends,
+            timeout_seconds=timeout_sec,
+            slack=ft_slack,
+            dataflow_index=ft_dataflow_index,
+            llm_api_key_file=llm_key_file,
+        )
+        rdzv_configs["attribution_config"] = attribution_cfg.to_dict()
+
     # Pass distributed storage health check configuration
     cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)
     if cli_dist_storage is not None:
@@ -3629,6 +3945,7 @@ def _wait_grpc_subprocess_after_terminate(p: subprocess.Popen, wait_timeout: flo
             p.kill()
         with contextlib.suppress(Exception):
             p.wait()
+
 
 
 def run(args):

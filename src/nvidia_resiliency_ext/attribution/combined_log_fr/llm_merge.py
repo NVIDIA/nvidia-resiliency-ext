@@ -91,7 +91,7 @@ async def merge_log_fr_llm(
     log_result: Any,
     fr_result: Any,
     *,
-    nvidia_api_key: str,
+    llm_api_key: str,
     model: str,
     base_url: str,
     temperature: float = 0.2,
@@ -100,19 +100,19 @@ async def merge_log_fr_llm(
 ) -> str:
     """Run the Nemotron-style fusion prompt; ``fr_result`` may be :class:`FRAnalysisResult` or raw text.
 
-    Callers should pass a key obtained once (e.g. from :func:`~nvidia_resiliency_ext.attribution.api_keys.load_nvidia_api_key`
+    Callers should pass a key obtained once (e.g. from :func:`~nvidia_resiliency_ext.attribution.api_keys.load_llm_api_key`
     at startup or pipeline entry) so the merge step does not re-read env/files on every call.
     """
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import PromptTemplate
     from langchain_openai import ChatOpenAI
 
-    if not (nvidia_api_key and nvidia_api_key.strip()):
+    if not (llm_api_key and llm_api_key.strip()):
         raise ValueError(
-            "NVIDIA API key is empty. Load it once via load_nvidia_api_key() and pass nvidia_api_key=... "
+            "LLM API key is empty. Load it once via load_llm_api_key() and pass llm_api_key=... "
             "Required for log+FR LLM merge."
         )
-    api_key = nvidia_api_key.strip()
+    api_key = llm_api_key.strip()
 
     log_payload, _ = unpack_run_result(log_result)
     fr_payload, _ = unpack_run_result(fr_result)

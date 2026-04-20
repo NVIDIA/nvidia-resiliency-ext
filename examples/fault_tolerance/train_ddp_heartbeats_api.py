@@ -21,11 +21,15 @@ distributed training. It should be run with the ft_launcher command. E.g.:
 
 `ft_launcher --nproc-per-node=2 --ft-cfg-path=./examples/fault_tolerance/fault_tol_cfg_heartbeats.yaml examples/fault_tolerance/train_ddp_heartbeats_api.py --device=cpu`
 
+For a **fast** fault-injection smoke test (seconds instead of a full pass over the train set), shrink the dataset and use the quick path, for example:
+`... train_ddp_heartbeats_api.py --train_dataset_size=512 --epochs=4 --simulated_fault=rank_killed,2 --quick-simulated-fault --simulated-fault-jitter-sec=0`
+
 Fault tolerance features demonstrated:
 1. Heartbeat sending during training
 2. Timeout calculation and setting
 3. State persistence through checkpoints
-4. Simulated fault injection
+4. Simulated fault injection (by default only on the first worker start; see
+   ``--simulated-fault-on-every-restart``).
 """
 
 import argparse
@@ -130,6 +134,26 @@ def parse_args():
 
     parser.add_argument('--simulated_fault', type=fault_desc,
                         help='Description of a fault to be simulated')
+    parser.add_argument(
+        '--quick-simulated-fault',
+        action='store_true',
+        help='With --simulated_fault: compute HB timeouts after a few iterations of epoch 0 '
+        'instead of waiting until epoch 1 / iter 1 (which implies one full training epoch first).',
+    )
+    parser.add_argument(
+        '--simulated-fault-jitter-sec',
+        type=float,
+        default=4.0,
+        help='Extra random delay in [0, value) seconds added on top of the delay in --simulated_fault. '
+        'Set to 0 for a deterministic fault time.',
+    )
+    parser.add_argument(
+        '--simulated-fault-on-every-restart',
+        action='store_true',
+        help='With --simulated_fault: re-arm the fault after each ft_launcher worker restart '
+        '(new processes). Default is off so fault injection runs only on the initial attempt '
+        '(TORCHELASTIC_RESTART_COUNT==0) and later cycles continue training.',
+    )
     # fmt: on
 
     args = parser.parse_args()
@@ -200,11 +224,22 @@ def training_loop(
     last_log_time = time.monotonic()
 
     for iter_idx, x in enumerate(dataloader, start=progress['iter_idx']):
-        if ft_client.hb_timeouts.are_valid is False and epoch_idx == 1 and iter_idx == 1:
-            # after 0th epoch is completed and we've done 0th iteration of the 1st epoch,
-            # we can calculate and set timeouts. this is a good moment to do so,
-            # because now we've seen the possibly long interval where checkpoint was saved.
-            ft_client.calculate_and_set_hb_timeouts()
+        if not ft_client.hb_timeouts.are_valid:
+            if (
+                args.quick_simulated_fault
+                and args.simulated_fault
+                and epoch_idx == 0
+                and iter_idx == 2
+            ):
+                # Enough heartbeats for timeout calc without finishing a full epoch first.
+                # Requires >= 3 batches in this epoch (iter 0, 1, 2); use --train_dataset_size accordingly.
+                ft_client.calculate_and_set_hb_timeouts(skip_if_not_ready=True)
+            elif epoch_idx == 1 and iter_idx == 1:
+                # after 0th epoch is completed and we've done 0th iteration of the 1st epoch,
+                # we can calculate and set timeouts. this is a good moment to do so,
+                # because now we've seen the possibly long interval where checkpoint was saved.
+                ft_client.calculate_and_set_hb_timeouts()
+        _maybe_setup_simulated_fault(ft_client, args, device)
 
         optimizer.zero_grad()
         x = x.to(device)
@@ -266,6 +301,7 @@ def validation_loop(ft_client, model, val_dataloader, epoch_idx, device):
 
 _sim_fault_canceled = False
 _sim_fault_is_set = False
+_logged_sim_fault_skip_on_restart = False
 
 
 def _cancel_simulated_fault():
@@ -273,7 +309,37 @@ def _cancel_simulated_fault():
     _sim_fault_canceled = True
 
 
-def _setup_simulated_fault(ft_client, fault_desc, device):
+def _maybe_setup_simulated_fault(ft_client, args, device) -> None:
+    """Arm simulated fault once heartbeat timeouts are valid (see training_loop)."""
+    global _logged_sim_fault_skip_on_restart
+    if not args.simulated_fault or _sim_fault_is_set:
+        return
+    # After ft_launcher restarts workers, each rank is a new Python process: module globals
+    # like _sim_fault_is_set reset to False. Without this guard, --simulated_fault would
+    # re-arm every cycle and kill again. TORCHELASTIC_RESTART_COUNT is set by the launcher
+    # (0 = first attempt, >0 after a fault-tolerance restart).
+    if not args.simulated_fault_on_every_restart:
+        restart_cnt = int(os.environ.get('TORCHELASTIC_RESTART_COUNT', '0'))
+        if restart_cnt > 0:
+            if not _logged_sim_fault_skip_on_restart:
+                logging.info(
+                    'TORCHELASTIC_RESTART_COUNT=%s: not re-arming --simulated_fault so training '
+                    'can continue after this restart (use --simulated-fault-on-every-restart '
+                    'to inject on every new worker process).',
+                    restart_cnt,
+                )
+                _logged_sim_fault_skip_on_restart = True
+            return
+    if ft_client.hb_timeouts.are_valid:
+        _setup_simulated_fault(
+            ft_client,
+            args.simulated_fault,
+            device,
+            jitter_sec=args.simulated_fault_jitter_sec,
+        )
+
+
+def _setup_simulated_fault(ft_client, fault_desc, device, jitter_sec: float = 4.0):
     # FIXME: hanging rank with SIGTSTP results in rank monitor
     # blocked when trying to receive the data in _on_ipc_data_from_rank
 
@@ -306,7 +372,7 @@ def _setup_simulated_fault(ft_client, fault_desc, device):
     else:
         raise Exception(f"Unknown fault type {fault_type}")
 
-    delay = fault_desc['delay'] + 4.0 * rng.random()
+    delay = fault_desc['delay'] + jitter_sec * rng.random()
 
     logging.info(
         f"Selected fault={fault_type}; target rank={rank_to_fail}; delay={delay}",
@@ -513,10 +579,6 @@ def main():
         if dist_utils.is_true_on_any_rank(_signal_received):
             logging.info('Leaving the main loop, due to SIGTERM')
             break
-
-        # Setup simulated fault as soon as we have valid timeouts
-        if args.simulated_fault and not _sim_fault_is_set and ft_client.hb_timeouts.are_valid:
-            _setup_simulated_fault(ft_client, args.simulated_fault, device)
 
     _cancel_simulated_fault()
     ft_client.shutdown_workload_monitoring()

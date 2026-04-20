@@ -5,7 +5,7 @@ import argparse
 import logging
 from typing import Any, Mapping, Union
 
-from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
+from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
 from nvidia_resiliency_ext.attribution.base import (
     AttributionState,
     NVRxAttribution,
@@ -37,7 +37,7 @@ class CombinedLogFR(NVRxAttribution):
         )
         self._init_config = ad
         # Resolve once per CombinedLogFR instance so merge_log_fr_llm does not re-read env/files each call.
-        self._nvidia_api_key = load_nvidia_api_key()
+        self._llm_api_key = load_llm_api_key()
 
     async def preprocess_input(self) -> dict:
         cfg = merged_attribution_config(self._init_config)
@@ -59,7 +59,7 @@ class CombinedLogFR(NVRxAttribution):
         return await merge_log_fr_llm(
             log_result,
             fr_result,
-            nvidia_api_key=self._nvidia_api_key,
+            llm_api_key=self._llm_api_key,
             model=cfg.get("model", DEFAULT_LLM_MODEL),
             base_url=cfg.get("base_url", DEFAULT_LLM_BASE_URL),
             temperature=float(cfg.get("temperature", 0.2)),

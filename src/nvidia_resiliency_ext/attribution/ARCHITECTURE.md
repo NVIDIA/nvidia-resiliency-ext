@@ -116,6 +116,51 @@ flowchart TB
     AP --> CLF
 ```
 
+### 2.4 Fault tolerance: rendezvous health checks vs monitor / `_handle_restart_decision`
+
+When analyzing **FT launcher** logs, it helps to keep two **separate control-flow trees** in mind. They share configuration (for example `rdzv_configs` / barrier flags) and can influence each other only indirectly (for example cluster counters visible to the launcher, or workers exiting after a rendezvous failure). They are **not** a single pipeline like “run all health checks, then call `_handle_restart_decision`.”
+
+**What they share:** both are anchored to the same **fault-tolerance cycle / round** model. A **workload cycle** ends when local worker processes exit or the job moves to the next coordinated round; **Tree A** runs (or re-runs) as nodes **enter or advance rendezvous** for that next step—so health checks often appear in logs **around cycle boundaries** when the stack is re-syncing. **Tree B** is a **continuous** monitor loop, but **`_handle_restart_decision`** is reached when that loop observes a **post-cycle** local outcome (**FAILED** / **UNHEALTHY** after workers stop) or **HEALTHY** workers reacting to **cluster signals** that also stem from other nodes finishing or aborting a cycle. Same “turn of the crank” in the job; different code paths implementing different responsibilities.
+
+- **Rendezvous / barrier tree** (`fault_tolerance/ft_rendezvous_barrier.py`): optional **NIC**, **distributed storage**, **path storage**, and **node health** checks run in the rendezvous / round-join path. Outcomes affect whether nodes participate in rounds, `unhealthy_count`, early termination, and related store keys.
+- **Launcher monitor tree** (`fault_tolerance/launcher.py`): `time.sleep(monitor_interval)` → **`_monitor_workers`** (local worker / subprocess state via `PContext.wait`, not those rendezvous checks) → on **FAILED / UNHEALTHY** or on **HEALTHY** with **`num_nodes_waiting` / `peer_aborted_count`**, **`_handle_restart_decision`**. That path runs **`_run_attribution()`** (this package’s LogSage flow), progress checks, restart budget, then optionally **`_open_rendezvous_for_restart`** and **`_restart_workers`** (which may wait for **GPU memory reclaim** after a restart—not the same as NIC/storage checks above).
+
+```mermaid
+flowchart TB
+    SHARED["Shared lifecycle anchor: FT cycle / round boundary\nlocal workers end or job advances to next coordinated round"]
+
+    SHARED --> tree_rdzv
+    SHARED --> tree_launcher
+
+    subgraph tree_rdzv [Tree A — rendezvous / infra checks]
+        CFG1["FT / rdzv config\nenable_nic_healthcheck, storage flags, …"]
+        BAR["Rendezvous + barrier\nft_rendezvous_barrier"]
+        NIC["NIC link check"]
+        DS["Distributed storage check"]
+        SP["Path storage checks"]
+        NH["Node health check\nget_node_health_check"]
+        CFG1 --> BAR
+        BAR --> NIC
+        BAR --> DS
+        BAR --> SP
+        BAR --> NH
+        BAR --> ROUNDS["Round join / store keys\nunhealthy_count, peer signals, …"]
+    end
+
+    subgraph tree_launcher [Tree B — monitor loop and restart decision]
+        CFG2["WorkerSpec.monitor_interval,\nrdzv_handler for cluster reads"]
+        LOOP["sleep → _monitor_workers\nlocal worker state"]
+        HRD["_handle_restart_decision\n_run_attribution, progress, restarts"]
+        RESTART["_restart_workers / GPU reclaim wait\nwhen restarting"]
+        CFG2 --> LOOP
+        LOOP -->|FAILED or UNHEALTHY| HRD
+        LOOP -->|HEALTHY + nodes_waiting\nor peer_aborted| HRD
+        HRD --> RESTART
+    end
+
+    ROUNDS -.->|cluster counters / rendezvous state| LOOP
+```
+
 ---
 
 ## 3. Major subsystems
