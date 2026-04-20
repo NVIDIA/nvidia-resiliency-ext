@@ -441,6 +441,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         # single-node agent would treat its own stale signal as a new cluster change every
         # monitor tick after a local restart.
         self._last_peer_aborted_observed: int = 0
+        # Set to True when attribution or progress tracker decides the job should stop
+        # permanently (not a node failure). Checked by callers of _handle_restart_decision
+        # to raise RendezvousGracefulExitError (exit 0) instead of RunResult(FAILED) (exit 1),
+        # preventing SLURM from requeueing a job that has a job-level stop signal.
+        self._graceful_stop_requested: bool = False
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -728,6 +733,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             else:
                 logger.error("[%s] Attribution says do not restart; will not restart.", role)
                 _rollback_peer_abort_notify()
+                # Attribution is a job-level stop: broadcast tombstone so all nodes exit
+                # cleanly rather than re-entering the restart loop.
+                if hasattr(self._rdzv_handler, '_barrier_state'):
+                    self._rdzv_handler._barrier_state.set_permanently_closed()
+                self._graceful_stop_requested = True
                 self._emit_ft_restart_decision_timing(
                     role,
                     "veto_attribution",
@@ -751,6 +761,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                 role
             )
             _rollback_peer_abort_notify()
+            # Progress tracker is a job-level stop: broadcast tombstone so all nodes exit
+            # cleanly rather than re-entering the restart loop.
+            if hasattr(self._rdzv_handler, '_barrier_state'):
+                self._rdzv_handler._barrier_state.set_permanently_closed()
+            self._graceful_stop_requested = True
             self._emit_ft_restart_decision_timing(
                 role,
                 "veto_progress",
@@ -854,6 +869,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                     self._last_peer_aborted_observed = self._check_cluster_peer_aborted_count()
                     continue
                 self._stop_workers(self._worker_group)
+                if self._graceful_stop_requested:
+                    self._graceful_stop_requested = False
+                    raise RendezvousGracefulExitError(
+                        "Job-level stop (attribution or progress tracker): job will not restart."
+                    )
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
@@ -892,6 +912,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                         self._last_peer_aborted_observed = self._check_cluster_peer_aborted_count()
                         continue
                     self._stop_workers(self._worker_group)
+                    if self._graceful_stop_requested:
+                        self._graceful_stop_requested = False
+                        raise RendezvousGracefulExitError(
+                            "Job-level stop (attribution or progress tracker): job will not restart."
+                        )
                     self._worker_group.state = WorkerState.FAILED
                     return RunResult(state=WorkerState.FAILED)
             else:
