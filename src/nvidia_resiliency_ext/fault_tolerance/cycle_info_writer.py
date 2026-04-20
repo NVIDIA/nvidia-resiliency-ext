@@ -87,6 +87,7 @@ class CycleInfoWriter:
         cycle_log_file: str,
         active_nodes: str,
         standby_nodes: str = "",
+        active_ranks: str = "",
     ) -> None:
         """Enqueue writing the initial cycle info file and updating the .current symlink."""
         if self._shutdown_requested:
@@ -101,6 +102,7 @@ class CycleInfoWriter:
             "cycle_log_file": cycle_log_file,
             "active_nodes": active_nodes,
             "standby_nodes": standby_nodes,
+            "active_ranks": active_ranks,
         }
         self._current_cycle = (job_id, attempt_index, cycle_number)
         self._queue.put(_CycleInfoTask(op=_CycleInfoTask.CREATE, payload=payload))
