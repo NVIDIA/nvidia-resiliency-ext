@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh:*)",
+      "Bash(rsync:*)",
+      "Bash(scp:*)",
+      "Bash(/tmp/nvrx_watch_:*)"
+    ]
+  }
+}
