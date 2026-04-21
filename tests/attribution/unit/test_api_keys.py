@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 if sys.version_info < (3, 10):
     raise unittest.SkipTest(
-        "Attribution package requires Python 3.10+ (e.g. dataclass(slots=True) in log_analyzer.job)."
+        "Attribution package requires Python 3.10+ (e.g. dataclass(slots=True) in svc.job)."
     )
 
 from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key

@@ -4,7 +4,7 @@
 """Attribution result pipeline: build record, log, post to configured backend, optional Slack.
 
 :func:`build_dataflow_record` composes the posting dict: service fields (cluster, user) plus
-:func:`~nvidia_resiliency_ext.attribution.log_analyzer.llm_output.log_fields_for_dataflow_record` and
+:func:`~nvidia_resiliency_ext.attribution.svc.llm_output.log_fields_for_dataflow_record` and
 :func:`~nvidia_resiliency_ext.attribution.trace_analyzer.fr_support.fr_fields_for_dataflow_record`.
 
 :func:`post_analysis_items` posts each cycle item (LogSage + optional FR) via :func:`post_results`.

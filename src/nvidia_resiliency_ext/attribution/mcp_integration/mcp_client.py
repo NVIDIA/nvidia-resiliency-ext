@@ -73,7 +73,7 @@ def create_mcp_client(*, mcp_server_log_level: str = "INFO") -> "NVRxMCPClient":
 
     Args:
         mcp_server_log_level: Passed to ``server_launcher`` as ``--log-level`` (e.g. from
-            :class:`~nvidia_resiliency_ext.attribution.log_analyzer.config.LogSageExecutionConfig`).
+            :class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig`).
 
     Returns:
         Configured NVRxMCPClient ready for use as async context manager.
