@@ -4,7 +4,7 @@
 import asyncio
 import unittest
 
-from nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline import (
+from nvidia_resiliency_ext.attribution.svc.analysis_pipeline import (
     AnalysisPipelineMode,
     FrDumpPathNotFoundError,
     run_attribution_pipeline,

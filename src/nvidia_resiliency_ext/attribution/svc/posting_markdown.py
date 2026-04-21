@@ -6,7 +6,7 @@
 FR in Slack omits dump paths and appears only when hanging/missing ranks are non-empty
 (see :func:`~nvidia_resiliency_ext.attribution.trace_analyzer.fr_support.fr_markdown_appendix`).
 Used by Slack notifications and structured logging so message bodies stay aligned with
-:dataflow record keys (see :func:`~nvidia_resiliency_ext.attribution.log_analyzer.llm_output.log_fields_for_dataflow_record`).
+:dataflow record keys (see :func:`~nvidia_resiliency_ext.attribution.svc.llm_output.log_fields_for_dataflow_record`).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def format_attribution_markdown(
     """Build Markdown for core attribution fields (job id, failure text, terminal explanation).
 
     Aligns with dataflow keys ``s_job_id``, ``s_attribution``, ``s_auto_resume_explanation`` from
-    :func:`~nvidia_resiliency_ext.attribution.log_analyzer.llm_output.log_fields_for_dataflow_record`.
+    :func:`~nvidia_resiliency_ext.attribution.svc.llm_output.log_fields_for_dataflow_record`.
     """
     jid = job_id if job_id else "unknown"
     attr = attribution_text if attribution_text else "No attribution available"

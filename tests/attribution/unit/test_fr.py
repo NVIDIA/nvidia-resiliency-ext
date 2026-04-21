@@ -8,10 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
 from fr_attribution_test_utils import FRAttributionOutputParser
 
-from nvidia_resiliency_ext.attribution.log_analyzer.config import (
-    DEFAULT_LLM_BASE_URL,
-    DEFAULT_LLM_MODEL,
-)
+from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
 
 

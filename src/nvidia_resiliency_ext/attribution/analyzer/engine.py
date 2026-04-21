@@ -3,11 +3,11 @@
 
 """Attribution orchestration: :class:`Analyzer` (jobs, coalescing, cache, pipelines).
 
-This layer sits above :mod:`nvidia_resiliency_ext.attribution.log_analyzer` (LogSage, SLURM
+This layer sits above :mod:`nvidia_resiliency_ext.attribution.svc` (LogSage, SLURM
 parsers, splitlog, optional FR via :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`).
 :class:`Analyzer` adds request coalescing; on cache miss,
-:meth:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer.run_attribution_for_path`
-runs LogSage and optional FR (see :mod:`~nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline`).
+:meth:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer.run_attribution_for_path`
+runs LogSage and optional FR (see :mod:`~nvidia_resiliency_ext.attribution.svc.analysis_pipeline`).
 
 Standalone API (no HTTP):
 
@@ -20,7 +20,7 @@ Standalone API (no HTTP):
 
 Architecture:
 - :class:`Analyzer`: :class:`~nvidia_resiliency_ext.attribution.coalescing.RequestCoalescer` (cache) and
-  :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer` (jobs, LogSage, optional FR pipeline)
+  :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer` (jobs, LogSage, optional FR pipeline)
 
 **Event loop (splitlog / thread callbacks):** :meth:`~Analyzer.set_event_loop` must be called with the
 process main asyncio loop **as soon as it is available** (e.g. FastAPI ``startup``). Splitlog polling
@@ -66,11 +66,11 @@ logger = logging.getLogger(__name__)
 
 class Analyzer:
     """
-    Entry point: request coalescing plus :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer`.
+    Entry point: request coalescing plus :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`.
 
     On :meth:`analyze`, the coalescer returns a cached :class:`~nvidia_resiliency_ext.attribution.coalescing.LogAnalysisCoalesced`
     when possible; on a miss, :meth:`_run_llm_analysis` delegates to
-    :meth:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer.run_attribution_for_path`.
+    :meth:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer.run_attribution_for_path`.
 
     Call :meth:`set_event_loop` during app startup so splitlog background threads can schedule work on the
     main loop (see module docstring).
@@ -108,12 +108,12 @@ class Analyzer:
             log_analyzer: Optional log-side facade. When omitted, one is built from ``allowed_root``,
                 ``use_lib_log_analysis`` / ``log_sage``, the coalescer, and optional ``trace_analyzer``.
             trace_analyzer: Optional FR :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`
-                passed into the default :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer`
+                passed into the default :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`
                 (ignored when ``log_analyzer`` is provided).
-            log_sage: Optional :class:`~nvidia_resiliency_ext.attribution.log_analyzer.config.LogSageExecutionConfig`
+            log_sage: Optional :class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig`
                 (LLM model, temperature, lib vs MCP). When omitted, defaults are used with
                 ``use_lib_log_analysis`` only.
-            analysis_pipeline_mode: Passed to the default :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer`
+            analysis_pipeline_mode: Passed to the default :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`
                 (ignored when ``log_analyzer`` is provided). Default is :attr:`AnalysisPipelineMode.LOG_AND_TRACE`;
                 set :attr:`AnalysisPipelineMode.LOG_ONLY`, :attr:`AnalysisPipelineMode.TRACE_ONLY`, or
                 :attr:`AnalysisPipelineMode.LOG_AND_TRACE_WITH_LLM` without pre-building ``LogAnalyzer``.

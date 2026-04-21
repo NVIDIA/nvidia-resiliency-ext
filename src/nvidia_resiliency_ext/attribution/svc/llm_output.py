@@ -3,10 +3,10 @@
 
 """LogSage / LLM text parsing and dataflow field shaping from parsed output.
 
-This module is separate from :mod:`nvidia_resiliency_ext.attribution.log_analyzer.utils` (path
+This module is separate from :mod:`nvidia_resiliency_ext.attribution.svc.utils` (path
 validation and MCP/lib result shaping) because LLM output handling is a distinct concern.
 
-Path-derived job/cycle ids live in :mod:`nvidia_resiliency_ext.attribution.log_analyzer.log_path_metadata`.
+Path-derived job/cycle ids live in :mod:`nvidia_resiliency_ext.attribution.svc.log_path_metadata`.
 
 - :func:`parse_llm_response` / :class:`ParsedLLMResponse` — structured fields from raw LLM text
 - :func:`attribution_no_restart` — decision helper on attribution dicts
