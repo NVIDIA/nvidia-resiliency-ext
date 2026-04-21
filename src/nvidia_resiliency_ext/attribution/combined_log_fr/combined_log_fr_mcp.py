@@ -150,7 +150,7 @@ class CombinedLogFRMCPOrchestrator:
         run_kwargs: dict[str, Any] = {
             "input_data": arguments["input_data"],
             "model": arguments.get("model", DEFAULT_LLM_MODEL),
-            "base_url": arguments.get("base_url", "https://inference-api.nvidia.com/v1"),
+            "base_url": arguments.get("base_url", DEFAULT_LLM_BASE_URL),
             "temperature": float(arguments.get("temperature", 0.2)),
             "top_p": float(arguments.get("top_p", 0.7)),
             "max_tokens": int(arguments.get("max_tokens", 8192)),
