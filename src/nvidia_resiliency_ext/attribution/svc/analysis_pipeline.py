@@ -3,7 +3,7 @@
 
 """Orchestrate LogSage (log LLM) and optional NCCL flight-recorder (FR) analysis.
 
-Lives under :mod:`nvidia_resiliency_ext.attribution.log_analyzer` so :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer`
+Lives under :mod:`nvidia_resiliency_ext.attribution.svc` so :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`
 can run **log-only** or **log + FR** (via :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`).
 
 Callers inject LogSage via ``run_logsage`` when the mode needs it.

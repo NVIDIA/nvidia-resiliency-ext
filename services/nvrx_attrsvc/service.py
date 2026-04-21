@@ -26,8 +26,8 @@ from nvidia_resiliency_ext.attribution import (
     LogAnalyzerSubmitResult,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.config import LogSageExecutionConfig
 from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
+from nvidia_resiliency_ext.attribution.svc.config import LogSageExecutionConfig
 
 from .config import PRINT_PREVIEW_MAX_BYTES, Settings
 
