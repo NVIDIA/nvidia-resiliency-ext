@@ -133,6 +133,10 @@ def get_write_results_queue(mp_mode: str = 'spawn') -> mp.Queue:
     return _results_queue
 
 
+# Backward-compat alias for the former private name
+_get_write_results_queue = get_write_results_queue
+
+
 class FileSystemWriterAsync(FileSystemWriter):
     """
     Async-enabled implementation of FileSystemWriter using file I/O.
