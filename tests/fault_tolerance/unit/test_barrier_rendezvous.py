@@ -614,132 +614,121 @@ class RaceConditionTest(BaseRendezvousTest):
         miss the snapshot detect UNASSIGNED via the embedded round number in rank_key and
         loop to the next round.
         """
+        from .utils import find_free_port
+
         min_nodes = 2
         max_nodes = 4
-        segment_check_interval = _test_segment_check_interval()  # Short timeout for testing
+        segment_check_interval = _test_segment_check_interval()
 
-        results = []
-        errors = []
+        # Use separate forked processes (each with its own TCPStore connection) to avoid
+        # shared-socket mutex deadlock that occurs when threads share one TCPStore object.
+        # multiprocessing.Event crosses fork boundaries via OS semaphores.
+        host_addr = "127.0.0.1"
+        server_port = find_free_port(host_addr)
+        server_store = TCPStore(host_addr, server_port, is_master=True, wait_for_workers=False)
 
-        # Create a synchronization event to control timing
-        import threading as th
+        ctx = multiprocessing.get_context("fork")
+        ack_check_event = ctx.Event()
+        result_queue = ctx.Queue()
+        run_id = self.run_id
 
-        ack_check_event = th.Event()
-        late_arrival_done = th.Event()
+        def host_fn():
+            store = TCPStore(host_addr, server_port, is_master=False, wait_for_workers=False)
+            state = _RendezvousBarrierState(store=store, run_id=run_id, is_store_host=True)
+            node = _NodeDescGenerator().generate()
+            original_assign = state.assign_group_ranks
 
-        def store_host_thread():
-            """Store host that signals when it's checking acknowledgments."""
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=True,
-            )
+            def instrumented_assign(*args, **kwargs):
+                ack_check_event.set()
+                time.sleep(0.02)
+                return original_assign(*args, **kwargs)
+
+            state.assign_group_ranks = instrumented_assign
             try:
-                node = self.node_desc_gen.generate()
-
-                # Monkey-patch to inject synchronization point
-                original_assign = state.assign_group_ranks
-
-                def instrumented_assign(*args, **kwargs):
-                    # Signal that we're about to check/assign (after ack check)
-                    ack_check_event.set()
-                    # Give late arrival a chance to join in the critical window
-                    time.sleep(0.02)  # Minimal delay to test race condition
-                    return original_assign(*args, **kwargs)
-
-                state.assign_group_ranks = instrumented_assign
-
-                # Rendezvous completes when segment constraint is met
                 rank, total = state.perform_rendezvous(
                     node, min_nodes, max_nodes, segment_check_interval
                 )
-                results.append(('host', rank, total))
+                result_queue.put(('host', rank, total, None))
             except Exception as e:
-                errors.append(('host', e))
+                result_queue.put(('host', None, None, e))
 
-        def regular_participant_thread():
-            """Regular participant."""
-            state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
-                is_store_host=False,
-            )
+        def regular_fn():
+            store = TCPStore(host_addr, server_port, is_master=False, wait_for_workers=False)
+            state = _RendezvousBarrierState(store=store, run_id=run_id, is_store_host=False)
+            node = _NodeDescGenerator().generate()
             try:
-                node = self.node_desc_gen.generate()
-                # Test subsequent rendezvous behavior (not first rendezvous)
                 rank, total = state.perform_rendezvous(
                     node, min_nodes, max_nodes, segment_check_interval
                 )
-                results.append(('regular', rank, total))
+                result_queue.put(('regular', rank, total, None))
             except Exception as e:
-                errors.append(('regular', e))
+                result_queue.put(('regular', None, None, e))
 
-        def late_arrival_thread():
-            """Late arrival that joins after ack check but before key clear."""
-            # Wait for the ack check to happen
+        def late_arrival_fn():
             ack_check_event.wait(timeout=10)
-
+            store = TCPStore(host_addr, server_port, is_master=False, wait_for_workers=False)
             state = _RendezvousBarrierState(
-                store=self.store,
-                run_id=self.run_id,
+                store=store,
+                run_id=run_id,
                 is_store_host=False,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
+            node = _NodeDescGenerator().generate()
             try:
-                node = self.node_desc_gen.generate()
-                # Test subsequent rendezvous behavior (not first rendezvous)
                 rank, total = state.perform_rendezvous(
                     node, min_nodes, max_nodes, segment_check_interval
                 )
-                results.append(('late', rank, total))
+                result_queue.put(('late', rank, total, None))
             except Exception as e:
-                errors.append(('late', e))
-            finally:
-                late_arrival_done.set()
+                result_queue.put(('late', None, None, e))
 
-        # Start regular participants
-        t_host = th.Thread(target=store_host_thread)
-        t_regular = th.Thread(target=regular_participant_thread)
-        t_late = th.Thread(target=late_arrival_thread)
+        p_host = ctx.Process(target=host_fn)
+        p_regular = ctx.Process(target=regular_fn)
+        p_late = ctx.Process(target=late_arrival_fn)
 
-        t_host.start()
-        t_regular.start()
-        t_late.start()
+        p_host.start()
+        p_regular.start()
+        p_late.start()
 
         join_timeout = 15
-        t_host.join(timeout=join_timeout)
-        t_regular.join(timeout=join_timeout)
-        self.assertFalse(t_host.is_alive(), f"Host thread did not terminate within {join_timeout}s")
+        p_host.join(timeout=join_timeout)
+        p_regular.join(timeout=join_timeout)
         self.assertFalse(
-            t_regular.is_alive(),
-            f"Regular participant thread did not terminate within {join_timeout}s",
+            p_host.is_alive(), f"Host process did not terminate within {join_timeout}s"
+        )
+        self.assertFalse(
+            p_regular.is_alive(),
+            f"Regular participant process did not terminate within {join_timeout}s",
         )
 
         # Late arrival can be stuck in Step 0 (_wait_for_rendezvous_open): it sees
         # round_done_0=1 (round 0 complete) and waits for round_done_1 to appear.
         # Unblock it by setting round_done_1=0 so it proceeds to Step 2,
         # then hits join_timeout_seconds and raises RendezvousTimeoutError.
-        unblock_state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=False,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        round1_done_key = f"{unblock_state.prefix}:round_done_1"
-        self.store.set(round1_done_key, "0".encode("utf-8"))
+        prefix = f"ft_rendezvous_barrier:{run_id}"
+        round1_done_key = f"{prefix}:round_done_1"
+        server_store.set(round1_done_key, "0".encode("utf-8"))
 
-        t_late.join(timeout=join_timeout)
+        p_late.join(timeout=join_timeout)
         self.assertFalse(
-            t_late.is_alive(), f"Late arrival thread did not terminate within {join_timeout}s"
+            p_late.is_alive(), f"Late arrival process did not terminate within {join_timeout}s"
         )
 
-        # Check results
-        # The late arrival should either:
-        # 1. Be included in the current round if it joined before snapshot, OR
-        # 2. Timeout/restart if it missed the window
-        # Both behaviors are acceptable as long as no deadlock occurs
+        # Collect results from the queue
+        results = []
+        errors = []
+        while not result_queue.empty():
+            try:
+                name, rank, total, exc = result_queue.get_nowait()
+                if exc is None:
+                    results.append((name, rank, total))
+                else:
+                    errors.append((name, exc))
+            except Exception:
+                break
 
-        # At minimum, the first 2 participants should complete
+        # The late arrival should either be included in round 0 (if it joined before the
+        # snapshot) or timeout in round 1. Either is acceptable — no deadlock is the goal.
         successful_results = [r for r in results if r is not None]
         self.assertGreaterEqual(
             len(successful_results), min_nodes, "At least min_nodes should complete successfully"
