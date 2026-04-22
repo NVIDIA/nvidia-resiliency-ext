@@ -6,15 +6,17 @@
 import sys
 import unittest
 
-if sys.version_info < (3, 10):
-    raise unittest.SkipTest(
-        "Importing attribution.postprocessing requires Python 3.10+ (dataclass slots)."
-    )
+PY310_PLUS = sys.version_info >= (3, 10)
 
-from nvidia_resiliency_ext.attribution.postprocessing import post_backend
-from nvidia_resiliency_ext.attribution.postprocessing.post_backend import _nvdataflow_result_ok
+if PY310_PLUS:
+    from nvidia_resiliency_ext.attribution.postprocessing import post_backend
+    from nvidia_resiliency_ext.attribution.postprocessing.post_backend import _nvdataflow_result_ok
 
 
+@unittest.skipUnless(
+    PY310_PLUS,
+    "Importing attribution.postprocessing requires Python 3.10+ (dataclass slots).",
+)
 class TestNvdataflowResultOk(unittest.TestCase):
     def test_bool(self):
         self.assertIs(_nvdataflow_result_ok(True), True)
@@ -30,6 +32,10 @@ class TestNvdataflowResultOk(unittest.TestCase):
         self.assertIs(_nvdataflow_result_ok(1), False)
 
 
+@unittest.skipUnless(
+    PY310_PLUS,
+    "Importing attribution.postprocessing requires Python 3.10+ (dataclass slots).",
+)
 class TestPostWithRetries(unittest.TestCase):
     def tearDown(self) -> None:
         post_backend.set_post_override(None)

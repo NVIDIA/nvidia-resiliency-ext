@@ -4,13 +4,14 @@
 import sys
 import unittest
 
-if sys.version_info < (3, 10):
-    raise unittest.SkipTest("attribution tests require Python 3.10+")
+PY310_PLUS = sys.version_info >= (3, 10)
 
-from nvidia_resiliency_ext.attribution.base import AttributionState
-from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import unpack_run_result
+if PY310_PLUS:
+    from nvidia_resiliency_ext.attribution.base import AttributionState
+    from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import unpack_run_result
 
 
+@unittest.skipUnless(PY310_PLUS, "attribution tests require Python 3.10+")
 class TestUnpackRunResult(unittest.TestCase):
     def test_log_analyzer_list_of_tuples_joins_text(self):
         """NVRxLogAnalyzer.run_sync returns list[tuple[str, AttributionState]]."""

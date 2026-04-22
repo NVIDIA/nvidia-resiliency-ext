@@ -3,7 +3,7 @@
 
 """NVRX Attribution Service package."""
 
-from nvidia_resiliency_ext.attribution import (
+from nvidia_resiliency_ext.attribution.coalescing import (
     CacheResult,
     InflightResult,
     StatsResult,

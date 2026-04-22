@@ -8,15 +8,17 @@ import sys
 import unittest
 from unittest.mock import patch
 
-if sys.version_info < (3, 10):
-    raise unittest.SkipTest(
-        "Attribution package requires Python 3.10+ (e.g. dataclass(slots=True) in svc.job)."
-    )
+PY310_PLUS = sys.version_info >= (3, 10)
 
-from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
-from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import merge_log_fr_llm
+if PY310_PLUS:
+    from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
+    from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import merge_log_fr_llm
 
 
+@unittest.skipUnless(
+    PY310_PLUS,
+    "Attribution package requires Python 3.10+ (e.g. dataclass(slots=True) in svc.job).",
+)
 class TestLoadNvidiaApiKey(unittest.TestCase):
     def test_reads_and_strips_from_env(self):
         with patch.dict("os.environ", {"NVIDIA_API_KEY": "  sk-test  "}):
@@ -38,6 +40,10 @@ class TestLoadNvidiaApiKey(unittest.TestCase):
             self.assertEqual(load_nvidia_api_key(), "")
 
 
+@unittest.skipUnless(
+    PY310_PLUS,
+    "Attribution package requires Python 3.10+ (e.g. dataclass(slots=True) in svc.job).",
+)
 class TestMergeLogFrLlm(unittest.TestCase):
     def test_raises_when_api_key_empty(self):
         async def run():
