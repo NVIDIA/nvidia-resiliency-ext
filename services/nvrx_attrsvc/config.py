@@ -19,12 +19,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Re-export ErrorCode from library layer so service consumers can use:
 #   from nvrx_attrsvc.config import ErrorCode
 from nvidia_resiliency_ext.attribution import ErrorCode as ErrorCode
-from nvidia_resiliency_ext.attribution.log_analyzer.config import (
+from nvidia_resiliency_ext.attribution.svc.config import (
     DEFAULT_LLM_BASE_URL as DEFAULT_LLM_BASE_URL,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.config import (
-    DEFAULT_LLM_MODEL as DEFAULT_LLM_MODEL,
-)
+from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_MODEL as DEFAULT_LLM_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +37,7 @@ class Settings(BaseSettings):
     """Typed configuration loaded from environment/.env (pydantic-settings v2).
 
     LLM fields (``NVRX_ATTRSVC_LLM_*``) are passed into
-    :class:`~nvidia_resiliency_ext.attribution.log_analyzer.config.LogSageExecutionConfig` when set,
+    :class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig` when set,
     then into the library :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` via
     :class:`~nvrx_attrsvc.service.AttributionService`; unset fields keep library defaults.
 

@@ -3,7 +3,7 @@
 
 """Regexes and helpers for job id / cycle id derived from log file paths.
 
-Used by :mod:`~nvidia_resiliency_ext.attribution.log_analyzer.splitlog` (cycle and date ordering),
+Used by :mod:`~nvidia_resiliency_ext.attribution.svc.splitlog` (cycle and date ordering),
 :mod:`~nvidia_resiliency_ext.attribution.analyzer.engine` (per-cycle path detection), and
 :func:`extract_job_metadata` when building dataflow fields alongside parsed LLM output.
 

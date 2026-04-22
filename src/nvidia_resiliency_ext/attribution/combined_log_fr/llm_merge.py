@@ -4,7 +4,7 @@
 """Fuse LogSage output with NCCL flight-recorder analysis via an LLM (LangChain + ChatOpenAI).
 
 Used by :class:`~nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr.CombinedLogFR` and
-by :func:`~nvidia_resiliency_ext.attribution.log_analyzer.analysis_pipeline.run_attribution_pipeline` (``LOG_AND_TRACE_WITH_LLM``).
+by :func:`~nvidia_resiliency_ext.attribution.svc.analysis_pipeline.run_attribution_pipeline` (``LOG_AND_TRACE_WITH_LLM``).
 Kept as a standalone function so library code does not need ``NVRxAttribution`` or CLI wiring.
 """
 

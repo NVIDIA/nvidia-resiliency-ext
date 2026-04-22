@@ -11,7 +11,7 @@ import unittest
 if sys.version_info < (3, 10):
     raise unittest.SkipTest("attribution tests require Python 3.10+")
 
-from nvidia_resiliency_ext.attribution.log_analyzer.splitlog import SplitlogTracker
+from nvidia_resiliency_ext.attribution.svc.splitlog import SplitlogTracker
 
 
 class TestFindLogFiles(unittest.TestCase):

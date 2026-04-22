@@ -4,7 +4,7 @@
 """Path validation and LogSage/MCP result shaping for the log analyzer stack.
 
 For LLM response parsing, path-based job metadata, regex patterns for splitlog/cycles, and
-dataflow field extraction from parsed LLM output, see :mod:`nvidia_resiliency_ext.attribution.log_analyzer.llm_output`.
+dataflow field extraction from parsed LLM output, see :mod:`nvidia_resiliency_ext.attribution.svc.llm_output`.
 
 Sections here:
 - Path validation under an allowed root (:func:`validate_log_path`; containment helper in :mod:`~nvidia_resiliency_ext.attribution.path_utils`)

@@ -122,8 +122,9 @@ flowchart TB
 
 | Area | Responsibility |
 |------|------------------|
-| **`analyzer/`** | **`Analyzer`** (`engine.py`): path policy, `RequestCoalescer`, `submit` / `analyze`, splitlog branches; delegates heavy lifting to **`LogAnalyzer`**. Re-exports pipeline symbols from `log_analyzer.analysis_pipeline` for convenience. |
-| **`log_analyzer/`** | **`LogAnalyzer`**, `Job` / `FileInfo`, SLURM parsing, splitlog polling, LogSage (`NVRxLogAnalyzer`), **`run_attribution_pipeline`** / **`AnalysisPipelineMode`** (`analysis_pipeline.py`), `LogAnalyzerConfig` and result dataclasses (`types.py`), path validation, wire keys (`RESP_*`) |
+| **`analyzer/`** | **`Analyzer`** (`engine.py`): path policy, `RequestCoalescer`, `submit` / `analyze`, splitlog branches; delegates heavy lifting to **`LogAnalyzer`**. Re-exports pipeline symbols from `svc.analysis_pipeline` for convenience. |
+| **`log_analyzer/`** | LogSage package surface only: `NVRxLogAnalyzer` implementation plus its minimal `__init__.py` export. It no longer owns orchestration, parsing, splitlog, or config/types modules. |
+| **`svc/`** | Log-side service/orchestration subsystem: **`LogAnalyzer`**, `Job` / `FileInfo`, SLURM parsing, splitlog polling, **`run_attribution_pipeline`** / **`AnalysisPipelineMode`**, `LogAnalyzerConfig` and result dataclasses, path validation, wire keys (`RESP_*`), and LogSage execution config/runtime helpers. |
 | **`coalescing/`** | `RequestCoalescer`: dedupe concurrent analysis for the same path; cache entries as `LogAnalysisCoalesced` (LogSage dict + optional FR fields + optional LLM merge summary) |
 | **`trace_analyzer/`** | Flight-recorder dump discovery/analysis (`extract_fr_dump_path`, `analyze_fr_dump`, `CollectiveAnalyzer`, etc.) |
 | **`combined_log_fr/`** | **log + FR LLM fusion** (`CombinedLogFR`); MCP tool **`log_fr_analyzer`**; shared `merge_log_fr_llm()` for `LOG_AND_TRACE_WITH_LLM` |
@@ -217,7 +218,7 @@ The subset that **`LogSageRunner`** / **`LogAnalyzer`** actually consume for Log
 
 ## 8. LogSage output shape and parsing
 
-**Parsing structured text:** `log_analyzer.llm_output.parse_llm_response` → `ParsedLLMResponse` (`auto_resume`, `auto_resume_explanation`, `attribution_text`, `checkpoint_saved_flag`). Expected LLM layout includes a first-line decision, explanation, `Attribution:` section, and checkpoint flag.
+**Parsing structured text:** `svc.llm_output.parse_llm_response` → `ParsedLLMResponse` (`auto_resume`, `auto_resume_explanation`, `attribution_text`, `checkpoint_saved_flag`). Expected LLM layout includes a first-line decision, explanation, `Attribution:` section, and checkpoint flag.
 
 **Typical success dict** from the log analyzer module (MCP or lib), simplified:
 

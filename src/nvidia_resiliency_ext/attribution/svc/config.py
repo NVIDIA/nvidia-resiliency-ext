@@ -39,12 +39,12 @@ MIN_FILE_SIZE_KB = 4  # Minimum file size (KB) for classification
 
 @dataclass
 class LogSageExecutionConfig:
-    """Lib/MCP runtime knobs for :class:`~nvidia_resiliency_ext.attribution.log_analyzer.log_analyzer.LogAnalyzer`.
+    """Lib/MCP runtime knobs for :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`.
 
     ``use_lib_log_analysis`` selects **both** LogSage and flight-recorder analysis: in-process vs the
     same MCP subprocess used for ``log_analyzer`` / ``fr_analyzer`` tools.
 
-    Subset of orchestration :class:`~nvidia_resiliency_ext.attribution.log_analyzer.types.LogAnalyzerConfig`
+    Subset of orchestration :class:`~nvidia_resiliency_ext.attribution.svc.types.LogAnalyzerConfig`
     (no ``allowed_root`` — path policy stays in the attribution :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer`).
     """
 
@@ -58,7 +58,7 @@ class LogSageExecutionConfig:
     llm_max_tokens: int = 8192
 
 
-# Result/response keys (serialized shape of orchestration results; see log_analyzer.types)
+# Result/response keys (serialized shape of orchestration results; see svc.types)
 # Used by library and HTTP layer for consistent parsing. Job mode values are JobMode enum.
 RESP_MODE = "mode"
 RESP_RESULT = "result"
