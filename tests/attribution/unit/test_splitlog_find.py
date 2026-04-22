@@ -8,12 +8,13 @@ import sys
 import tempfile
 import unittest
 
-if sys.version_info < (3, 10):
-    raise unittest.SkipTest("attribution tests require Python 3.10+")
+PY310_PLUS = sys.version_info >= (3, 10)
 
-from nvidia_resiliency_ext.attribution.svc.splitlog import SplitlogTracker
+if PY310_PLUS:
+    from nvidia_resiliency_ext.attribution.svc.splitlog import SplitlogTracker
 
 
+@unittest.skipUnless(PY310_PLUS, "attribution tests require Python 3.10+")
 class TestFindLogFiles(unittest.TestCase):
     def test_slurm_subdir_jobid_dot_pattern(self):
         """Paths like 2058365.0.1.main_workload.log under logs/slurm/."""

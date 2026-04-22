@@ -25,13 +25,13 @@ import sys
 import threading
 import traceback
 from collections import defaultdict
+from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, Union
 from urllib.parse import quote_plus
 
 import defusedxml.ElementTree as ET
 import httpx
-from pydantic import BaseModel
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
@@ -1345,7 +1345,8 @@ class StoragePathHealthCheck:
         return True
 
 
-class AttrSvcResult(BaseModel):
+@dataclass
+class AttrSvcResult:
     result: Any
     status: str = "completed"
 

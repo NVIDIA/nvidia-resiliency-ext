@@ -7,18 +7,16 @@ import sys
 import tempfile
 import unittest
 
-# isort: off  # SkipTest before attribution import on Python < 3.10
-if sys.version_info < (3, 10):
-    raise unittest.SkipTest("attribution tests require Python 3.10+")
+PY310_PLUS = sys.version_info >= (3, 10)
 
-from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
-    extract_fr_dump_path,
-    fr_path_resolvable_for_collective_analyzer,
-)
-
-# isort: on
+if PY310_PLUS:
+    from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
+        extract_fr_dump_path,
+        fr_path_resolvable_for_collective_analyzer,
+    )
 
 
+@unittest.skipUnless(PY310_PLUS, "attribution tests require Python 3.10+")
 class TestFrDumpPathInference(unittest.TestCase):
     def test_checkpoints_sibling_of_logs(self):
         """Infer <run>/checkpoints when log is under <run>/logs/ and _dump_* files exist."""

@@ -5,12 +5,13 @@ import sys
 import unittest
 from unittest.mock import patch
 
-if sys.version_info < (3, 10):
-    raise unittest.SkipTest("attribution tests require Python 3.10+")
+PY310_PLUS = sys.version_info >= (3, 10)
 
-from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import get_server_command
+if PY310_PLUS:
+    from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import get_server_command
 
 
+@unittest.skipUnless(PY310_PLUS, "attribution tests require Python 3.10+")
 class TestGetServerCommand(unittest.TestCase):
     def test_prefers_nvrx_mcp_analysis_on_path(self):
         with patch(

@@ -22,11 +22,7 @@ import argparse
 import logging
 import sys
 
-from nvidia_resiliency_ext.attribution.mcp_integration.mcp_server import NVRxMCPServer
-from nvidia_resiliency_ext.attribution.mcp_integration.module_definitions import (
-    register_all_modules,
-)
-from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
+from nvidia_resiliency_ext.attribution._optional import reraise_if_missing_attribution_dependency
 
 _PROC_TITLE = "nvrx-mcp-analysis"
 
@@ -47,6 +43,19 @@ logger = logging.getLogger(__name__)
 def main():
     """Main entry point for the MCP server."""
     _set_process_title(_PROC_TITLE)
+
+    try:
+        from nvidia_resiliency_ext.attribution.mcp_integration.mcp_server import NVRxMCPServer
+        from nvidia_resiliency_ext.attribution.mcp_integration.module_definitions import (
+            register_all_modules,
+        )
+        from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
+    except ModuleNotFoundError as exc:
+        reraise_if_missing_attribution_dependency(
+            exc,
+            feature="nvrx-mcp-analysis",
+        )
+        raise
 
     parser = argparse.ArgumentParser(description='Launch NVRX Attribution MCP Server')
     parser.add_argument(
