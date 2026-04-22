@@ -15,7 +15,7 @@
 #
 # Required environment variables:
 #   NVRX_ATTRSVC_ALLOWED_ROOT - Root path for log files to analyze
-#   NVIDIA_API_KEY            - API key for LLM (or NVIDIA_API_KEY_FILE)
+#   LLM_API_KEY               - API key for LLM (or LLM_API_KEY_FILE)
 #
 # Optional environment variables:
 #   NVRX_LOGS_DIR             - Output directory for logs (default: ~/nvrx_logs)
@@ -28,7 +28,7 @@
 #
 # Example:
 #   export NVRX_ATTRSVC_ALLOWED_ROOT=/lustre/logs
-#   export NVIDIA_API_KEY=nvapi-...
+#   export LLM_API_KEY=your-llm-api-key-here
 #   ./run_services.sh install
 #   ./run_services.sh start
 #   ./run_services.sh status
@@ -104,29 +104,8 @@ cmd_start() {
     validate_attrsvc_allowed_root || exit 1
     ensure_directory "${NVRX_LOGS_DIR}" "logs directory" || exit 1
     
-    # Load API key from file if not already set
-    if [[ -z "$NVIDIA_API_KEY" ]]; then
-        # Check NVIDIA_API_KEY_FILE first
-        if [[ -n "$NVIDIA_API_KEY_FILE" && -f "$NVIDIA_API_KEY_FILE" ]]; then
-            export NVIDIA_API_KEY=$(cat "$NVIDIA_API_KEY_FILE")
-            echo "Loaded API key from: $NVIDIA_API_KEY_FILE"
-        # Check common locations
-        elif [[ -f "${HOME}/.nvidia_api_key" ]]; then
-            export NVIDIA_API_KEY=$(cat "${HOME}/.nvidia_api_key")
-            echo "Loaded API key from: ~/.nvidia_api_key"
-        elif [[ -f "${HOME}/.config/nvrx/nvidia_api_key" ]]; then
-            export NVIDIA_API_KEY=$(cat "${HOME}/.config/nvrx/nvidia_api_key")
-            echo "Loaded API key from: ~/.config/nvrx/nvidia_api_key"
-        else
-            echo -e "${RED}Error: NVIDIA_API_KEY not set and no key file found${NC}"
-            echo "Either:"
-            echo "  export NVIDIA_API_KEY=nvapi-xxx"
-            echo "  export NVIDIA_API_KEY_FILE=/path/to/keyfile"
-            echo "  Or create ~/.nvidia_api_key"
-            exit 1
-        fi
-    fi
-    
+    setup_llm_api_key || exit 1
+
     # Check if already running
     if is_running "${ATTRSVC_PID_FILE}"; then
         echo -e "${YELLOW}Attribution service already running (PID: $(cat ${ATTRSVC_PID_FILE}))${NC}"
@@ -283,27 +262,8 @@ cmd_run() {
     validate_attrsvc_allowed_root || exit 1
     ensure_directory "${NVRX_LOGS_DIR}" "logs directory" || exit 1
     
-    # Load API key from file if not already set
-    if [[ -z "$NVIDIA_API_KEY" ]]; then
-        if [[ -n "$NVIDIA_API_KEY_FILE" && -f "$NVIDIA_API_KEY_FILE" ]]; then
-            export NVIDIA_API_KEY=$(cat "$NVIDIA_API_KEY_FILE")
-            echo "Loaded API key from: $NVIDIA_API_KEY_FILE"
-        elif [[ -f "${HOME}/.nvidia_api_key" ]]; then
-            export NVIDIA_API_KEY=$(cat "${HOME}/.nvidia_api_key")
-            echo "Loaded API key from: ~/.nvidia_api_key"
-        elif [[ -f "${HOME}/.config/nvrx/nvidia_api_key" ]]; then
-            export NVIDIA_API_KEY=$(cat "${HOME}/.config/nvrx/nvidia_api_key")
-            echo "Loaded API key from: ~/.config/nvrx/nvidia_api_key"
-        else
-            echo -e "${RED}Error: NVIDIA_API_KEY not set and no key file found${NC}"
-            echo "Either:"
-            echo "  export NVIDIA_API_KEY=nvapi-xxx"
-            echo "  export NVIDIA_API_KEY_FILE=/path/to/keyfile"
-            echo "  Or create ~/.nvidia_api_key"
-            exit 1
-        fi
-    fi
-    
+    setup_llm_api_key || exit 1
+
     install_nvrx_packages "both" "${LIB_ROOT}"
     echo ""
     
