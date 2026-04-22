@@ -14,7 +14,7 @@
 #   # Run attribution service
 #   srun --container-image=/path/to/nvrx-services.sqsh \
 #        --container-env=NVRX_ATTRSVC_ALLOWED_ROOT=/data \
-#        --container-env=NVIDIA_API_KEY=${NVIDIA_API_KEY} \
+#        --container-env=LLM_API_KEY=${LLM_API_KEY} \
 #        --container-mounts=/path/to/logs:/data:ro \
 #        nvrx-attrsvc
 #
@@ -150,7 +150,7 @@ echo ""
 echo "  # Attribution service"
 echo "  srun --container-image=${OUTPUT_PATH} \\"
 echo "       --container-env=NVRX_ATTRSVC_ALLOWED_ROOT=/data \\"
-echo "       --container-env=NVIDIA_API_KEY=\${NVIDIA_API_KEY} \\"
+echo "       --container-env=LLM_API_KEY=\${LLM_API_KEY} \\"
 echo "       --container-mounts=/path/to/logs:/data:ro \\"
 echo "       nvrx-attrsvc"
 echo ""

@@ -94,10 +94,10 @@ Two layers: **library** (`nvidia_resiliency_ext.attribution`) and **service**
 **3.1 Environment variables** — Full table and defaults: **README.md** (source of truth).
 
 Summary:
-- Prefix **`NVRX_ATTRSVC_`** for service settings (see README for exceptions: NVIDIA
-  API key, Slack tokens, optional `NVIDIA_API_KEY_FILE` / file paths in `api_keys.py`).
-- **`NVIDIA_API_KEY`**: required for attribution; loaded in `config.setup()` after
-  logging — **empty/missing → log error and process exit**. Slack is optional.
+- Prefix **`NVRX_ATTRSVC_`** for service settings (see README for exceptions: LLM
+  API key, Slack tokens, optional `LLM_API_KEY_FILE` / file paths in `api_keys.py`).
+- **`LLM_API_KEY`** / **`LLM_API_KEY_FILE`**: required for attribution (or default key files);
+  loaded in `config.setup()` after logging — **empty/missing → log error and process exit**. Slack is optional.
 - LLM-related env vars are optional; unset → library defaults (`LogAnalyzerConfig`).
 - Rate limits: slowapi, `RATE_LIMIT_SUBMIT` / `RATE_LIMIT_ANALYZE` / `RATE_LIMIT_PREVIEW`.
 
@@ -144,7 +144,7 @@ Patterns tried in order (scheduler-agnostic where possible): `_(\d+)_date_`,
 --------------------------------------------------------------------------------
 
 **Startup (conceptual)**  
-Load `Settings` → configure logging → **require non-empty NVIDIA API key** → wire
+Load `Settings` → configure logging → **require non-empty LLM API key** → wire
 postprocessing (`configure`, poster, dataflow index, Slack) → construct
 `AttributionService` / **`Analyzer`** → background poll → Uvicorn. Optional cache
 import.

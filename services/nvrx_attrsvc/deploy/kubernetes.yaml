@@ -4,7 +4,7 @@
 #   kubectl apply -f services/nvrx_attrsvc/deploy/kubernetes.yaml
 #
 # Prerequisites:
-#   - Create secret: kubectl create secret generic nvidia-api-key --from-literal=api-key=nvapi-...
+#   - Create secret: kubectl create secret generic llm-api-key --from-literal=api-key=your-llm-api-key-here
 #   - Ensure log volume is accessible (update hostPath as needed)
 #
 # Deployment considerations:
@@ -54,10 +54,10 @@ spec:
             - configMapRef:
                 name: nvrx-attrsvc-config
           env:
-            - name: NVIDIA_API_KEY
+            - name: LLM_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: nvidia-api-key
+                  name: llm-api-key
                   key: api-key
           volumeMounts:
             - name: logs

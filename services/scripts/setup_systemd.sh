@@ -299,7 +299,7 @@ cmd_install() {
 # Shared by nvrx-attrsvc and nvrx-smonsvc
 
 # ─── Common ───
-NVIDIA_API_KEY_FILE=${CONFIG_DIR}/nvidia_api_key
+LLM_API_KEY_FILE=${CONFIG_DIR}/llm_api_key
 NVRX_LOGS_DIR=${LOG_DIR}
 
 # ─── Attribution Service (nvrx-attrsvc) ───
@@ -392,9 +392,9 @@ EOF
     echo ""
 
     if [[ "$USER_MODE" == true ]]; then
-        echo "1. Create NVIDIA API key file:"
-        echo "   echo 'nvapi-xxx' > ${CONFIG_DIR}/nvidia_api_key"
-        echo "   chmod 600 ${CONFIG_DIR}/nvidia_api_key"
+        echo "1. Create LLM API key file:"
+        echo "   echo 'your-llm-api-key-here' > ${CONFIG_DIR}/llm_api_key"
+        echo "   chmod 600 ${CONFIG_DIR}/llm_api_key"
         echo ""
         echo "2. Edit configuration (set NVRX_ATTRSVC_ALLOWED_ROOT):"
         echo "   vim ${CONFIG_DIR}/nvrx.env"
@@ -409,10 +409,10 @@ EOF
         echo "5. View logs:"
         echo "   $0 --user logs"
     else
-        echo "1. Create NVIDIA API key file:"
-        echo "   echo 'nvapi-xxx' | sudo tee ${CONFIG_DIR}/nvidia_api_key"
-        echo "   sudo chmod 640 ${CONFIG_DIR}/nvidia_api_key"
-        echo "   sudo chown root:${NVRX_GROUP} ${CONFIG_DIR}/nvidia_api_key"
+        echo "1. Create LLM API key file:"
+        echo "   echo 'your-llm-api-key-here' | sudo tee ${CONFIG_DIR}/llm_api_key"
+        echo "   sudo chmod 640 ${CONFIG_DIR}/llm_api_key"
+        echo "   sudo chown root:${NVRX_GROUP} ${CONFIG_DIR}/llm_api_key"
         echo ""
         echo "2. Edit configuration (set NVRX_ATTRSVC_ALLOWED_ROOT):"
         echo "   sudo vim ${CONFIG_DIR}/nvrx.env"
@@ -431,7 +431,7 @@ EOF
     echo ""
     echo "Configuration:"
     echo "   ${CONFIG_DIR}/nvrx.env        - All settings for both services"
-    echo "   ${CONFIG_DIR}/nvidia_api_key  - API key (create this)"
+    echo "   ${CONFIG_DIR}/llm_api_key  - LLM API key (create this)"
     echo ""
     echo "Installed:"
     echo "   ${INSTALL_DIR}/venv/bin/nvrx-attrsvc"
