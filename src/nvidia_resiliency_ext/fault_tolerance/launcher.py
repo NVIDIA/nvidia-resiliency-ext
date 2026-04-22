@@ -2286,12 +2286,14 @@ def get_args_parser() -> ArgumentParser:
         "--ft_log_aggregator_count",
         action=env,
         type=int,
-        default=2,
+        default=0,
         dest="ft_log_aggregator_count",
-        help="Number of first-level gRPC log aggregators (default 2). "
-        "When 1: single root server listens on --ft-log-server-port (legacy). "
-        "When N>1: N leaf servers on ports [P, P+1, ..., P+N-1] and one root on P+N "
-        "(P = --ft-log-server-port). Clients pick leaf via infra_rank %% N. "
+        help="Number of first-level gRPC log aggregators. "
+        "0 (default): auto — single root server for up to 1536 nodes, "
+        "adds leaf servers beyond that (one per 1536 nodes). "
+        "1: single root server (legacy). "
+        "N>1: N leaf servers on ports [P, P+1, ..., P+N-1] and one root on P+N "
+        "(P = --ft-log-server-port). "
         "Open TCP ports P through P+N on the TCP store host. "
         "Each node picks a leaf from SLURM array/procid when set, else from hostname.",
     )
@@ -2980,10 +2982,10 @@ def _validate_slurm_single_launcher_per_node() -> None:
 
 def _validate_args(args: Any) -> None:
     """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
-    n_log_agg = int(getattr(args, "ft_log_aggregator_count", 2))
-    if n_log_agg < 1:
+    n_log_agg = int(getattr(args, "ft_log_aggregator_count", 0))
+    if n_log_agg < 0:
         raise ValueError(
-            f"--ft-log-aggregator-count must be >= 1, got {n_log_agg}"
+            f"--ft-log-aggregator-count must be >= 0 (0 = auto), got {n_log_agg}"
         )
     _validate_slurm_single_launcher_per_node()
     if getattr(args, "ft_cycle_info_dir", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
@@ -3294,6 +3296,9 @@ def _grpc_log_path(base_log_file: str, suffix: str) -> str:
     return base_log_file + suffix
 
 
+_LOG_FUNNEL_NODES_PER_LEAF = 1536  # max nodes per single log server (≈6K GPU at 4 GPUs/node)
+
+
 @dataclass(frozen=True)
 class LogFunnelPorts:
     """Port assignments for the gRPC log funnel (single root vs N leaves + root).
@@ -3327,7 +3332,16 @@ class LogFunnelPorts:
     @classmethod
     def from_launcher_args(cls, args: Any) -> "LogFunnelPorts":
         base = int(getattr(args, "ft_log_server_port", 50051))
-        n = int(getattr(args, "ft_log_aggregator_count", 2))
+        n = int(getattr(args, "ft_log_aggregator_count", 0))
+        if n == 0:
+            _, max_nodes = parse_min_max_nnodes(getattr(args, "nnodes", "1"))
+            n = max(1, (max_nodes + _LOG_FUNNEL_NODES_PER_LEAF - 1) // _LOG_FUNNEL_NODES_PER_LEAF)
+            if n > 16:
+                logger.warning(
+                    f"Auto log aggregator count is {n} (max_nodes={max_nodes}); "
+                    f"head node will run {n} leaf processes (~{n * 50} MB extra RSS). "
+                    f"Override with --ft-log-aggregator-count if needed."
+                )
         if n < 1:
             raise ValueError(f"ft_log_aggregator_count must be >= 1, got {n}")
         return cls(base_port=base, first_level_count=n)
@@ -3421,7 +3435,7 @@ def _start_grpc_log_servers(
         root_port = funnel_ports.root_listen_port
         n = funnel_ports.first_level_count
         root_workers = max(n + 10, 32)
-        per_leaf = max(100, (max_nodes + n - 1) // n + 10)
+        per_leaf = max(100, (max_nodes + n - 1) // n + 100)
         raw_leaf_chunks = int(getattr(args, 'ft_log_leaf_max_queue_chunks', -1))
         if raw_leaf_chunks < 0:
             max_queue = min(1_000_000, max(16_384, per_leaf * 256))
