@@ -24,9 +24,9 @@ import subprocess  # nosec B404
 import sys
 import threading
 import traceback
-from collections import defaultdict
+from collections import defaultdict, deque
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 from urllib.parse import quote_plus
 
 import defusedxml.ElementTree as ET
@@ -969,6 +969,253 @@ class NVLHealthCheck(PynvmlMixin):
         except Exception as e:
             logger.warning(f"Unexpected Error checking GPU {device_index}: {str(e)}")
             return False
+
+
+class NVLinkWindowHealthCheck(PynvmlMixin):
+    """
+    Health check that counts NVLink "windows" (calls) with replay or recovery events.
+
+    Each call to _perform_health_check() is one window. A window is flagged when
+    any NVLink port shows a delta > 0 in DL_REPLAY or DL_RECOVERY error counters
+    vs. the previous call. Returns False when any single port exceeds ``threshold``
+    flagged windows within the last ``window_count`` calls.
+
+    Counter reading uses three tiers (first that works wins per port):
+
+    Tier 1 — GB200 / newer drivers (preferred):
+      ``nvmlDeviceGetFieldValues`` with per-port field IDs and scopeId = port:
+        NVML_FI_DEV_NVLINK_ERROR_DL_REPLAY   = 161
+        NVML_FI_DEV_NVLINK_ERROR_DL_RECOVERY = 162
+
+    Tier 2 — older hardware (ports 0-5 only):
+      ``nvmlDeviceGetFieldValues`` with per-lane field IDs L0..L5:
+        NVML_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_L{n}   = 46-51
+        NVML_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_L{n} = 53-58
+
+    Fallback — LEGACY (drivers <= 450):
+      ``nvmlDeviceGetNvLinkErrorCounter`` with NVML_NVLINK_ERROR_DL_REPLAY /
+      NVML_NVLINK_ERROR_DL_RECOVERY. Marked LEGACY for drivers > 450; may return
+      NVML_ERROR_NOT_SUPPORTED on GB200.
+
+    A one-time warning is logged if GB200 tier-1 field IDs exist in pynvml but the
+    driver returns not-supported, and again if all APIs fail on a port.
+    """
+
+    def __init__(
+        self,
+        device_index: Optional[int] = None,
+        interval: int = 60,
+        window_count: int = 30,
+        threshold: int = 15,
+        on_failure: Optional[Callable] = None,
+    ):
+        """
+        Args:
+            device_index: GPU device index to monitor. None checks all GPUs.
+            interval: Seconds between async health checks.
+            window_count: Rolling window size — how many past checks to consider.
+            threshold: Max allowed flagged windows before reporting failure.
+            on_failure: Callback invoked when health check fails.
+        """
+        super().__init__()
+        self.device_index = device_index
+        self.interval = interval
+        self.threshold = threshold
+        self.on_failure = on_failure
+        self.pynvml_available = self.check_pynvml_availability()
+
+        # Per-port rolling window: {(device_id, port): deque of bools}.
+        # Each bool = True if that port had a delta > 0 in that window.
+        self._window_history: Dict[Tuple[int, int], deque] = {}
+        self._window_count = window_count
+        # Cumulative error total per (device_id, port) from the previous call.
+        self._prev_counters: Dict[Tuple[int, int], int] = {}
+        # Separate probed flags for tier 1 (GB200) and tier 2 (older HW).
+        # None = not yet probed; True = supported; False = not supported.
+        self._tier1_api_supported: Optional[bool] = None
+        self._tier1_not_supported_warned = False
+        self._tier2_api_supported: Optional[bool] = None
+        # Warn only once when all APIs are unsupported for a port.
+        self._api_not_supported_warned = False
+
+    async def async_check(self) -> None:
+        """Periodically checks NVLink event windows; invokes on_failure when threshold is exceeded."""
+        while True:
+            await asyncio.sleep(self.interval)
+            result = await self._check_health()
+            if not result and self.on_failure:
+                await self.on_failure()
+
+    async def _check_health(self) -> bool:
+        return self._perform_health_check()
+
+    def __call__(self) -> Union[Optional[Exception], bool]:
+        """Synchronous NVLink window health check."""
+        return self._perform_health_check()
+
+    @with_pynvml_lock
+    def _perform_health_check(self) -> bool:
+        """
+        Sample NVLink counters, record whether this window had events, and
+        return False if the flagged window count exceeds the threshold.
+        """
+        if not self.pynvml_available:
+            return True
+
+        port_events: Dict[Tuple[int, int], bool] = {}
+        try:
+            self.pynvml.nvmlInit()
+            devices = (
+                [self.device_index]
+                if self.device_index is not None
+                else range(self.pynvml.nvmlDeviceGetCount())
+            )
+            port_events = self._sample_nvlink_events(devices)
+        except self.pynvml.NVMLError as e:
+            logger.warning(f"NVLinkWindowHealthCheck NVML error: {e}")
+            return True
+        except Exception as e:
+            logger.warning(f"NVLinkWindowHealthCheck unexpected error: {e}")
+            return True
+        finally:
+            try:
+                self.pynvml.nvmlShutdown()
+            except Exception as e:
+                logger.warning(f"NVLinkWindowHealthCheck NVML shutdown error: {e}")
+
+        # Update per-port rolling window and check threshold.
+        all_healthy = True
+        for key, had_events in port_events.items():
+            if key not in self._window_history:
+                self._window_history[key] = deque(maxlen=self._window_count)
+            self._window_history[key].append(had_events)
+            flagged = sum(self._window_history[key])
+            if flagged > self.threshold:
+                device_id, port = key
+                logger.warning(
+                    f"NVLinkWindowHealthCheck: device {device_id} port {port}: "
+                    f"{flagged}/{len(self._window_history[key])} windows had "
+                    f"NVLink replay/recovery events (threshold={self.threshold})."
+                )
+                all_healthy = False
+        return all_healthy
+
+    def _sample_nvlink_events(self, devices) -> Dict[Tuple[int, int], bool]:
+        """
+        Read replay + recovery counters per port.
+        Returns {(device_id, port): had_events_this_window}.
+        """
+        port_events: Dict[Tuple[int, int], bool] = {}
+        max_links = getattr(self.pynvml, "NVML_NVLINK_MAX_LINKS", 18)
+        for device_id in devices:
+            handle = self.pynvml.nvmlDeviceGetHandleByIndex(device_id)
+            for port in range(max_links):
+                total = self._read_port_error_total(handle, device_id, port)
+                if total is None:
+                    continue
+                key = (device_id, port)
+                prev = self._prev_counters.get(key)
+                self._prev_counters[key] = total
+                if prev is not None:
+                    port_events[key] = total > prev
+        return port_events
+
+    def _read_port_error_total(self, handle, device_id: int, port: int) -> Optional[int]:
+        """Try field-values API first (per port); fall back to legacy counter."""
+        total = self._read_via_field_values(handle, device_id, port)
+        if total is not None:
+            return total
+        return self._read_via_legacy(handle, device_id, port)
+
+    def _read_via_field_values(self, handle, device_id: int, port: int) -> Optional[int]:
+        """
+        Read replay + recovery for one port via nvmlDeviceGetFieldValues.
+
+        Tries tier 1 (GB200) then tier 2 (older HW) independently; each tier's
+        supported flag is tracked separately so a tier-2 failure never blocks tier 1.
+        Returns None if both tiers are unsupported.
+        """
+        nvml_success = getattr(self.pynvml, "NVML_SUCCESS", 0)
+
+        # Tier 1: GB200 per-port (scopeId = port number).
+        # Field IDs 161/162 with scopeId are supported on newer drivers (GB200+).
+        if self._tier1_api_supported is not False:
+            replay_fid = getattr(self.pynvml, "NVML_FI_DEV_NVLINK_ERROR_DL_REPLAY", None)
+            recovery_fid = getattr(self.pynvml, "NVML_FI_DEV_NVLINK_ERROR_DL_RECOVERY", None)
+            if replay_fid is not None or recovery_fid is not None:
+                queries = [(fid, port) for fid in (replay_fid, recovery_fid) if fid is not None]
+                try:
+                    results = self.pynvml.nvmlDeviceGetFieldValues(handle, queries)
+                    successful = [r for r in results if r.nvmlReturn == nvml_success]
+                    if successful:
+                        self._tier1_api_supported = True
+                        return sum(r.value.uiVal for r in successful)
+                    # Constants exist in pynvml but driver returned not-supported.
+                    if not self._tier1_not_supported_warned:
+                        logger.warning(
+                            f"NVLinkWindowHealthCheck: GB200 field IDs (161/162) not supported "
+                            f"on device {device_id} port {port}. "
+                            f"Falling back to tier-2 / legacy API."
+                        )
+                        self._tier1_not_supported_warned = True
+                    self._tier1_api_supported = False
+                except self.pynvml.NVMLError:
+                    pass  # fall through to tier 2
+
+        # Tier 2: per-lane field IDs L0-L5 (older hardware, ports 0-5 only).
+        if self._tier2_api_supported is not False and port < 6:
+            replay_lane = getattr(self.pynvml, f"NVML_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_L{port}", None)
+            recovery_lane = getattr(self.pynvml, f"NVML_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_L{port}", None)
+            field_ids = [fid for fid in (replay_lane, recovery_lane) if fid is not None]
+            if field_ids:
+                try:
+                    results = self.pynvml.nvmlDeviceGetFieldValues(handle, field_ids)
+                    successful = [r for r in results if r.nvmlReturn == nvml_success]
+                    if successful:
+                        self._tier2_api_supported = True
+                        return sum(r.value.uiVal for r in successful)
+                except self.pynvml.NVMLError as e:
+                    logger.warning(
+                        f"NVLinkWindowHealthCheck: nvmlDeviceGetFieldValues tier-2 not supported "
+                        f"on device {device_id}: {e}. Falling back to legacy API."
+                    )
+                self._tier2_api_supported = False
+
+        return None
+
+    def _read_via_legacy(self, handle, device_id: int, port: int) -> Optional[int]:
+        """
+        Legacy: DL_REPLAY + DL_RECOVERY for one port via nvmlDeviceGetNvLinkErrorCounter.
+        Marked LEGACY for drivers > 450; may return NVML_ERROR_NOT_SUPPORTED on GB200.
+        """
+        replay_type = getattr(self.pynvml, "NVML_NVLINK_ERROR_DL_REPLAY", None)
+        recovery_type = getattr(self.pynvml, "NVML_NVLINK_ERROR_DL_RECOVERY", None)
+        if replay_type is None and recovery_type is None:
+            return None
+
+        total = 0
+        any_supported = False
+        for counter_type in (replay_type, recovery_type):
+            if counter_type is None:
+                continue
+            try:
+                total += self.pynvml.nvmlDeviceGetNvLinkErrorCounter(handle, port, counter_type)
+                any_supported = True
+            except self.pynvml.NVMLError as e:
+                if "not supported" in str(e).lower() or "invalid argument" in str(e).lower():
+                    continue
+                raise
+
+        if not any_supported:
+            if not self._api_not_supported_warned:
+                logger.warning(
+                    f"NVLinkWindowHealthCheck: neither field-values nor legacy "
+                    f"nvmlDeviceGetNvLinkErrorCounter is supported on device {device_id} "
+                    f"port {port}. Health check will be skipped."
+                )
+                self._api_not_supported_warned = True
+            return None
+        return total
 
 
 class NodeHealthCheck:
