@@ -1,0 +1,40 @@
+# n3_super_8n_16n.pool — fault-injection pool for Nemotron-3 Super (TP=4, EP=32)
+# Minimum scale: 8 nodes (32 ranks, EP=32 requires exactly 32 ranks)
+# Maximum scale: 16 nodes (64 ranks)
+#
+# Rank coverage per node count (4 GPUs/node):
+#   8 nodes  → 32 ranks:  rank-0=0, rank-1=1, mid=16, last=31
+#   16 nodes → 64 ranks:  rank-0=0, rank-1=1, mid=32, last=63
+#
+# NOTE: 16-node jobs require ~20 min for NCCL init + CUDA graph capture before iter 1.
+# With 5-min watchdog timeout after fault + FR dumps, total is ~30+ min.
+# Use TIME=00:45:00 (set in workloads.conf) to avoid SLURM wall-time kills.
+#
+# Format: FAULT_TYPE:RANK:ITER:NODES  (one per line, # comments ignored)
+# GPU faults — highest priority; rank sweep across both node counts
+GPU_SLEEP:1:5:8
+GPU_SLEEP:0:5:8
+GPU_SLEEP:16:5:8
+GPU_SLEEP:31:5:8
+GPU_SLEEP:1:5:16
+GPU_SLEEP:32:5:16
+GPU_ERROR:1:5:8
+GPU_ERROR:0:5:8
+GPU_ERROR:16:5:8
+GPU_ERROR:1:5:16
+# Crash faults
+SIGKILL:1:5:8
+SIGKILL:0:5:8
+SIGKILL:1:5:16
+SEGFAULT:1:5:8
+OS_ABORT:1:5:8
+# Python-level hangs
+LOCK_GIL:1:5:8
+LOCK_GIL:0:5:8
+# Application exceptions
+WORKLOAD_EXC:1:5:8
+ASYNC_EXC:1:5:8
+# Signal-based
+SIGTERM:1:5:8
+SIGINT:1:5:8
+SIGNAL_EXC:1:5:8
