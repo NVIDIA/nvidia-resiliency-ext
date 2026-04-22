@@ -15,19 +15,21 @@ import logging
 import os
 from typing import Any
 
-from nvidia_resiliency_ext.attribution import (
-    Analyzer,
+from nvidia_resiliency_ext.attribution.analyzer import Analyzer
+from nvidia_resiliency_ext.attribution.coalescing import (
     CacheResult,
     InflightResult,
+    SubmittedResult,
+)
+from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
+from nvidia_resiliency_ext.attribution.svc.config import LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.svc.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
     LogAnalyzerFilePreview,
     LogAnalyzerSubmitResult,
-    SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
-from nvidia_resiliency_ext.attribution.svc.config import LogSageExecutionConfig
 
 from .config import PRINT_PREVIEW_MAX_BYTES, Settings
 

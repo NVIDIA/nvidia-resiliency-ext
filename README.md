@@ -38,10 +38,12 @@ For detailed documentation and usage information about each component, please re
 - `git clone https://github.com/NVIDIA/nvidia-resiliency-ext`
 - `cd nvidia-resiliency-ext`
 - `pip install .`
+- `pip install .[attribution]` if you also need log-analysis / attribution extras
 
 
 ### From PyPI wheel
 - `pip install nvidia-resiliency-ext`
+- `pip install 'nvidia-resiliency-ext[attribution]'` for attribution extras
 
 ### Platform Support
 
@@ -55,4 +57,3 @@ For detailed documentation and usage information about each component, please re
 | NVML Driver          | >= 535 (570 required for GPU health check)                                 |
 | NCCL Version         | < 2.28.3 OR >= 2.28.9 (avoid NCCL 2.28.3–2.28.8 due to inprocess issue)    |
 | TE Version           | >= 2.5                                                                     |
-

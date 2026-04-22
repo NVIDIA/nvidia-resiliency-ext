@@ -4,12 +4,13 @@
 import sys
 import unittest
 
-if sys.version_info < (3, 10):
-    raise unittest.SkipTest("attribution tests require Python 3.10+")
+PY310_PLUS = sys.version_info >= (3, 10)
 
-from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import fr_markdown_appendix
+if PY310_PLUS:
+    from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import fr_markdown_appendix
 
 
+@unittest.skipUnless(PY310_PLUS, "attribution tests require Python 3.10+")
 class TestFrMarkdownAppendix(unittest.TestCase):
     def test_no_section_when_only_dump_path(self):
         self.assertEqual(
