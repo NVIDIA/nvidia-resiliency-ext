@@ -20,8 +20,9 @@ a checkpoint save process in the background.
 import gc
 import logging
 import os
+import shutil
 import signal
-import subprocess
+import subprocess  # nosec B404
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
@@ -99,11 +100,15 @@ def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
                     f"Use io_priority=3 (idle) to deprioritize checkpoint I/O. Proceeding anyway."
                 )
             try:
+                ionice_path = shutil.which("ionice")
+                if ionice_path is None:
+                    raise FileNotFoundError("ionice executable not found in PATH")
+
                 # ionice -c <class> -p <pid>
                 # class 3 = idle (only when no other process needs I/O)
                 # class 2 = best-effort (default, can set priority 0-7)
-                subprocess.run(
-                    ["ionice", "-c", str(io_priority), "-p", str(pid)],
+                subprocess.run(  # nosec B603
+                    [ionice_path, "-c", str(io_priority), "-p", str(pid)],
                     check=True,
                     capture_output=True,
                 )
