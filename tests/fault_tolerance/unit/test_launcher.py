@@ -718,22 +718,44 @@ class TestHandleRestartDecision(unittest.TestCase):
         self.assertFalse(hasattr(legacy_rdzv, '_barrier_state'))
 
 
-def test_ft_log_aggregator_count_rejects_non_positive():
+def test_ft_log_aggregator_count_rejects_negative():
     from nvidia_resiliency_ext.fault_tolerance.launcher import _validate_args, get_args_parser
 
     parser = get_args_parser()
-    for bad in ('0', '-1'):
-        args = parser.parse_args(['--ft-log-aggregator-count', bad, 'train.py'])
-        with pytest.raises(ValueError, match='--ft-log-aggregator-count'):
-            _validate_args(args)
+    args = parser.parse_args(['--ft-log-aggregator-count', '-1', 'train.py'])
+    with pytest.raises(ValueError, match='--ft-log-aggregator-count'):
+        _validate_args(args)
 
 
-def test_log_funnel_ports_from_launcher_args_rejects_non_positive_aggregator_count():
+def test_log_funnel_ports_from_launcher_args_auto():
     from types import SimpleNamespace
 
     from nvidia_resiliency_ext.fault_tolerance.launcher import LogFunnelPorts
 
-    with pytest.raises(ValueError, match='>= 1'):
+    # 0 = auto: single-level for small jobs, two-level for large jobs
+    cases = [
+        ("1", 1),
+        ("1536", 1),
+        ("1537", 2),
+        ("3072", 2),
+        ("3073", 3),
+        ("4608", 3),
+    ]
+    for nnodes, expected_n in cases:
+        ports = LogFunnelPorts.from_launcher_args(
+            SimpleNamespace(ft_log_server_port=50051, ft_log_aggregator_count=0, nnodes=nnodes)
+        )
+        assert (
+            ports.first_level_count == expected_n
+        ), f"nnodes={nnodes}: expected n={expected_n}, got {ports.first_level_count}"
+
+
+def test_log_funnel_ports_from_launcher_args_rejects_negative():
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance.launcher import LogFunnelPorts
+
+    with pytest.raises(ValueError):
         LogFunnelPorts.from_launcher_args(
-            SimpleNamespace(ft_log_server_port=50051, ft_log_aggregator_count=0)
+            SimpleNamespace(ft_log_server_port=50051, ft_log_aggregator_count=-1, nnodes="100")
         )
