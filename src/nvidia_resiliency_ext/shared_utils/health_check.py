@@ -1164,8 +1164,12 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
 
         # Tier 2: per-lane field IDs L0-L5 (older hardware, ports 0-5 only).
         if self._tier2_api_supported is not False and port < 6:
-            replay_lane = getattr(self.pynvml, f"NVML_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_L{port}", None)
-            recovery_lane = getattr(self.pynvml, f"NVML_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_L{port}", None)
+            replay_lane = getattr(
+                self.pynvml, f"NVML_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_L{port}", None
+            )
+            recovery_lane = getattr(
+                self.pynvml, f"NVML_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_L{port}", None
+            )
             field_ids = [fid for fid in (replay_lane, recovery_lane) if fid is not None]
             if field_ids:
                 try:
