@@ -25,6 +25,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKLOADS_CONF="${SCRIPT_DIR}/workloads.conf"
+SLURM_DEFAULTS_CONF="${SCRIPT_DIR}/slurm.conf"
+
+if [[ -f "${SLURM_DEFAULTS_CONF}" ]]; then
+    # shellcheck disable=SC1090
+    source "${SLURM_DEFAULTS_CONF}"
+fi
 
 # ── Workload resolution from workloads.conf ────────────────────────────────────
 # If WORKLOAD is set, look it up in workloads.conf and derive SBATCH_SCRIPT and
@@ -48,7 +54,9 @@ if [[ -n "${WORKLOAD:-}" ]]; then
     _CONF_TIME=$(echo "${_CONF_LINE}"   | awk '{print $6}')
     # Only set if not already overridden in the environment
     SBATCH_SCRIPT="${SBATCH_SCRIPT:-${SCRIPT_DIR}/${_CONF_SCRIPT}}"
-    BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR:-${_CONF_BASE}}"
+    if [[ -n "${_CONF_BASE}" && "${_CONF_BASE}" != "-" ]]; then
+        BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR:-${_CONF_BASE}}"
+    fi
     if [[ -n "${_CONF_TIME}" && "${_CONF_TIME}" != "-" ]]; then
         TIME="${TIME:-${_CONF_TIME}}"
     fi
@@ -65,13 +73,13 @@ if [[ -n "${WORKLOAD:-}" ]]; then
     echo ">>> Workload: ${WORKLOAD}  (${_CONF_DESC//_/ })"
 fi
 
-ACCOUNT="${ACCOUNT:-root}"
-PARTITION="${PARTITION:-gb-nvl-134-135}"
+ACCOUNT="${ACCOUNT:-}"
+PARTITION="${PARTITION:-}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
 TIME="${TIME:-00:30:00}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
-BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR:-/home/sbak/experiments/llama4-scout-gb200}"
+BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR:-${HOME}/nvrx-attr-experiments}"
 
 # ---------------------------------------------------------------------------
 # Fault pool — ordered by priority (GPU-related first, then crash, then other)
@@ -131,9 +139,7 @@ submit_one() {
     mkdir -p "${EXPERIMENT_DIR}/tensorboard"
 
     local JOB_ID
-    JOB_ID=$(sbatch \
-        --account="${ACCOUNT}" \
-        --partition="${PARTITION}" \
+    local SBATCH_ARGS=(
         --nodes="${NODES}" \
         --ntasks-per-node="${GPUS_PER_NODE}" \
         --gpus-per-node="${GPUS_PER_NODE}" \
@@ -143,8 +149,15 @@ submit_one() {
         --output="${EXPERIMENT_DIR}/logs/slurm/%j.launch.out" \
         --error="${EXPERIMENT_DIR}/logs/slurm/%j.launch.err" \
         --export=ALL,FAULT_TYPE="${FAULT_TYPE}",FAULT_RANK="${RANK}",FAULT_AT_ITER="${ITER}",GPUS_PER_NODE="${GPUS_PER_NODE}",EXPERIMENT_DIR="${EXPERIMENT_DIR}",BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR}" \
-        --parsable \
-        "${SBATCH_SCRIPT}")
+        --parsable
+    )
+    if [[ -n "${ACCOUNT}" ]]; then
+        SBATCH_ARGS+=(--account="${ACCOUNT}")
+    fi
+    if [[ -n "${PARTITION}" ]]; then
+        SBATCH_ARGS+=(--partition="${PARTITION}")
+    fi
+    JOB_ID=$(sbatch "${SBATCH_ARGS[@]}" "${SBATCH_SCRIPT}")
 
     # Print to stderr so callers using $(...) capture only the job ID on stdout
     printf "  submitted: %s rank=%-2s iter=%s nodes=%s -> job=%s\n" \

@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # Validated only with Megatron-LM as the feedback-loop example workload.
+# Direct sbatch usage:
+#   sbatch --account=<account> --partition=<partition> scripts/l4_gb200_reduced.sh
+# If your cluster has defaults for those, the extra flags are not required.
 
-#SBATCH --account=root
-#SBATCH --partition=gb-nvl-134-135
 #SBATCH --time=00:30:00
 
 #SBATCH --job-name=llama4-scout-gb200
@@ -16,6 +17,10 @@
 #SBATCH --exclusive
 #SBATCH --mem=0
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NVRX_SRC_ROOT_DEFAULT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+NVRX_REPO_ROOT_DEFAULT="$(cd "${SCRIPT_DIR}/../../../../.." && pwd)"
+
 log_msg() {
     local msg="$1"
     UNIX_DATETIME=$(date +%s)
@@ -25,12 +30,8 @@ log_msg() {
 
 log_msg "START SBATCH"
 echo "Running on nodes: ${SLURM_NODELIST}"
-export RITS_PLATFORM_TYPE=gb200
-export RITS_GPUS_PER_NODE=4
-export RITS_NVL_DOMAIN_SIZE=72
 export NCCL_IB_DISABLE=0
 export NCCL_NET_GDR_LEVEL=3
-export RITS_CLUSTER_NAME=nvl72
 export PYXIS_LOG_LEVEL=debug
 export NCCL_IB_SL=1
 export NCCL_IB_TIMEOUT=19
@@ -58,26 +59,49 @@ export TORCH_INCLUDE_ONLY_ACTIVE=1
 export TORCH_NCCL_EXTRA_DUMP_ON_EXEC=1
 
 # Fault injection parameters (overridable via sbatch --export or environment)
+# Current Megatron behavior:
+# - FAULT_AT_ITER anchors the fault-delay timer after iteration N completes
+# - FAULT_DELAY is the delay in seconds from that anchor (or from training start if unset)
 export FAULT_AT_ITER="${FAULT_AT_ITER:-5}"
+export FAULT_DELAY="${FAULT_DELAY:-}"
 export FAULT_RANK="${FAULT_RANK:-1}"
 export FAULT_TYPE="${FAULT_TYPE:-GPU_SLEEP}"
+export ENABLE_FAULT_INJECTION="${ENABLE_FAULT_INJECTION:-1}"
 
 # Checkpoint settings (overridable via sbatch --export)
 export NVRX_CKPT_USE_CPU_SHM="${NVRX_CKPT_USE_CPU_SHM:-0}"
 # Enable GPU-IPC cached-data-structure path without cpu-shm (for comparison baseline)
 export NVRX_CKPT_USE_CACHED_STRUCTURE="${NVRX_CKPT_USE_CACHED_STRUCTURE:-0}"
 export DIST_TIMEOUT_AFTER_INIT="${DIST_TIMEOUT_AFTER_INIT:-1}"
+export ENABLE_NFS_CACHE_STAGING="${ENABLE_NFS_CACHE_STAGING:-0}"
+export NFS_TRITON_CACHE="${NFS_TRITON_CACHE:-}"
+export NFS_INDUCTOR_CACHE="${NFS_INDUCTOR_CACHE:-}"
 # USE_ASYNC_CKPT=1: enable async checkpointing every CKPT_SAVE_INTERVAL iters
 export USE_ASYNC_CKPT="${USE_ASYNC_CKPT:-0}"
 export CKPT_SAVE_INTERVAL="${CKPT_SAVE_INTERVAL:-100}"
+export ENABLE_ENROOT_CLEANUP="${ENABLE_ENROOT_CLEANUP:-0}"
 
 # Node / task geometry (SLURM_NNODES is set by SLURM from --nodes override)
 export GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
 TOTAL_TASKS=$((SLURM_NNODES * GPUS_PER_NODE))
 
 # Per-experiment output directory (overridable via sbatch --export)
-export BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR:-/home/sbak/experiments/llama4-scout-gb200}"
-export EXPERIMENT_DIR="${EXPERIMENT_DIR:-${BASE_EXPERIMENTS_DIR}/fault_injection/manual/n${SLURM_NNODES}_${FAULT_TYPE}_r${FAULT_RANK}_i${FAULT_AT_ITER}}"
+export BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR:-${HOME}/nvrx-attr-experiments}"
+FAULT_LABEL="i${FAULT_AT_ITER}"
+if [[ -n "${FAULT_DELAY}" ]]; then
+    FAULT_LABEL="d${FAULT_DELAY}"
+fi
+export EXPERIMENT_DIR="${EXPERIMENT_DIR:-${BASE_EXPERIMENTS_DIR}/fault_injection/manual/n${SLURM_NNODES}_${FAULT_TYPE}_r${FAULT_RANK}_${FAULT_LABEL}}"
+export NVRX_REPO_ROOT="${NVRX_REPO_ROOT:-${NVRX_REPO_ROOT_DEFAULT}}"
+export NVRX_SRC_ROOT="${NVRX_SRC_ROOT:-${NVRX_SRC_ROOT_DEFAULT}}"
+export NVRX_CONTAINER_REPO_PATH="${NVRX_CONTAINER_REPO_PATH:-${HOME}/nvidia-resiliency-ext}"
+export NVRX_CONTAINER_SRC_PATH="${NVRX_CONTAINER_SRC_PATH:-${NVRX_CONTAINER_REPO_PATH}/src}"
+export SHARED_TMP_BASE_DIR="${SHARED_TMP_BASE_DIR:-${HOME}/tmp}"
+export MEGATRON_REPO_HOST_PATH="${MEGATRON_REPO_HOST_PATH:-${HOME}/megatron-lm}"
+export WORKSPACE_HOST_PATH="${WORKSPACE_HOST_PATH:-${HOME}/tmp}"
+export CONTAINER_IMAGE="${CONTAINER_IMAGE:-nvcr.io/nvidia/nemo:26.04}"
+export CONTAINER_NAME="${CONTAINER_NAME:-}"
+export CONTAINER_WORKDIR="${CONTAINER_WORKDIR:-/}"
 
 mkdir -p ${BASE_EXPERIMENTS_DIR}/datacache
 mkdir -p ${EXPERIMENT_DIR}/tensorboard
@@ -91,7 +115,7 @@ LOG_FILE_BASE="${LOG_DIR}/slurm/${SLURM_JOB_ID}.${SLURM_RESTART_COUNT}"
 
 # ── Shared-tmp directory (NFS, for cross-srun-step communication) ─────────────
 # Mounted to /shared_tmp (NOT /tmp) so the container keeps its native fast /tmp.
-SHARED_TMP_HOST=/home/sbak/tmp/${SLURM_JOB_ID}
+SHARED_TMP_HOST=${SHARED_TMP_BASE_DIR}/${SLURM_JOB_ID}
 mkdir -p ${SHARED_TMP_HOST}
 
 # ── Pre-populate .myenv with all variables that must reach the container ───────
@@ -106,48 +130,64 @@ export DIST_TIMEOUT_AFTER_INIT=${DIST_TIMEOUT_AFTER_INIT}
 export USE_ASYNC_CKPT=${USE_ASYNC_CKPT}
 export CKPT_SAVE_INTERVAL=${CKPT_SAVE_INTERVAL}
 export FAULT_AT_ITER=${FAULT_AT_ITER}
+export FAULT_DELAY=${FAULT_DELAY}
 export FAULT_RANK=${FAULT_RANK}
 export FAULT_TYPE=${FAULT_TYPE}
-# Prepend local nvrx src so container picks up our changes without a pip install step.
-export PYTHONPATH=/home/sbak/nvidia-resiliency-ext/src:\${PYTHONPATH}
+export ENABLE_FAULT_INJECTION=${ENABLE_FAULT_INJECTION}
+export ENABLE_NFS_CACHE_STAGING=${ENABLE_NFS_CACHE_STAGING}
+export NFS_TRITON_CACHE=${NFS_TRITON_CACHE}
+export NFS_INDUCTOR_CACHE=${NFS_INDUCTOR_CACHE}
+# Prepend local nvrx checkout so container picks up our changes without a pip install step.
+export NVRX_REPO_ROOT=${NVRX_CONTAINER_REPO_PATH}
+export NVRX_SRC_ROOT=${NVRX_CONTAINER_SRC_PATH}
+export PYTHONPATH=\${NVRX_REPO_ROOT}:\${NVRX_SRC_ROOT}:\${PYTHONPATH}
 MYENVEOF
 
 # Mounts
 LUSTRE=/home:/home
 SHARED_TMP=${SHARED_TMP_HOST}:/shared_tmp
 LOGS=${EXPERIMENT_DIR}/logs:/logs
-MEGATRON_REPO=/home/sbak/megatron-lm-main:/megatron-lm_repo
+MEGATRON_REPO=${MEGATRON_REPO_HOST_PATH}:/megatron-lm_repo
 DATACACHE=${BASE_EXPERIMENTS_DIR}/datacache:/datacache
 TENSORBOARD=${EXPERIMENT_DIR}/tensorboard:/tensorboard
-WORKSPACE=/home/sbak/tmp:/workspace
+WORKSPACE=${WORKSPACE_HOST_PATH}:/workspace
 CHECKPOINTS=${EXPERIMENT_DIR}/checkpoints:/checkpoints
 mkdir -p ${EXPERIMENT_DIR}/checkpoints
 CONTAINER_MOUNTS=$LUSTRE,$SHARED_TMP,$LOGS,$MEGATRON_REPO,$DATACACHE,$TENSORBOARD,$WORKSPACE,$CHECKPOINTS
+CONTAINER_ARGS=(
+    --container-mounts "${CONTAINER_MOUNTS}"
+    --container-image "${CONTAINER_IMAGE}"
+    --container-workdir "${CONTAINER_WORKDIR}"
+)
+if [[ -n "${CONTAINER_NAME}" ]]; then
+    CONTAINER_ARGS+=(--container-name "${CONTAINER_NAME}")
+fi
 
 # ── Disk cleanup: remove stale enroot containers from prior jobs ──────────────
-log_msg "START disk_cleanup"
-srun \
-    --label \
-    --ntasks-per-node=1 \
-    --ntasks=${SLURM_NNODES} \
-    --kill-on-bad-exit=0 \
-    --mpi=none \
-    bash -c '
-        ENROOT_DIR="/var/lib/enroot/data/$(id -u)"
-        rm -rf "${ENROOT_DIR:?}"/* 2>/dev/null || true
-        echo "$(hostname): / $(df -h / | tail -1 | awk "{print \$3\" used, \"\$4\" avail\"}")"
-    '
-log_msg "END disk_cleanup"
+if [[ "${ENABLE_ENROOT_CLEANUP}" == "1" ]]; then
+    log_msg "START disk_cleanup"
+    srun \
+        --label \
+        --ntasks-per-node=1 \
+        --ntasks=${SLURM_NNODES} \
+        --kill-on-bad-exit=0 \
+        --mpi=none \
+        bash -c '
+            ENROOT_DIR="/var/lib/enroot/data/$(id -u)"
+            rm -rf "${ENROOT_DIR:?}"/* 2>/dev/null || true
+            echo "$(hostname): / $(df -h / | tail -1 | awk "{print \$3\" used, \"\$4\" avail\"}")"
+        '
+    log_msg "END disk_cleanup"
+else
+    log_msg "SKIP disk_cleanup"
+fi
 
 # all node setup
 #--------------------------------
 log_msg "START all_node_setup"
 srun \
     --label \
-    --container-mounts ${CONTAINER_MOUNTS} \
-    --container-image /home/sbak/mcore_ci_0415.sqsh \
-    --container-name ${SLURM_JOB_ID} \
-    --container-workdir / \
+    "${CONTAINER_ARGS[@]}" \
     --exclusive \
     --error=${LOG_FILE_BASE}.0.all_node_setup.log \
     --output=${LOG_FILE_BASE}.0.all_node_setup.log \
@@ -163,6 +203,8 @@ srun \
         CURRENT_BRANCH=$(git -C /megatron-lm_repo branch --show-current)
         echo "Cloning Megatron branch $CURRENT_BRANCH to ${MEGATRON_PATH}"
         git clone --single-branch --branch $CURRENT_BRANCH /megatron-lm_repo .
+        rm -rf ${MEGATRON_PATH}/nvidia_resiliency_ext
+        rsync -a ${NVRX_CONTAINER_SRC_PATH}/nvidia_resiliency_ext/ ${MEGATRON_PATH}/nvidia_resiliency_ext/
         popd
     '
 log_msg "END all_node_setup"
@@ -172,10 +214,7 @@ log_msg "END all_node_setup"
 log_msg "START main_workload"
 srun \
     --label \
-    --container-mounts ${CONTAINER_MOUNTS} \
-    --container-image /home/sbak/mcore_ci_0415.sqsh \
-    --container-name ${SLURM_JOB_ID} \
-    --container-workdir / \
+    "${CONTAINER_ARGS[@]}" \
     --error=${LOG_FILE_BASE}.1.main_workload.log \
     --output=${LOG_FILE_BASE}.1.main_workload.log \
     --ntasks-per-node=${GPUS_PER_NODE} \
@@ -184,38 +223,48 @@ srun \
     --mpi=none \
     bash -c '
         source /shared_tmp/.myenv_${SLURM_JOB_ID}.sh
-
-        # Match the per-node path used in all_node_setup.
         MEGATRON_PATH=/shared_tmp/megatron_$(hostname)_${SLURM_JOB_ID}
-
-        NFS_TRITON_CACHE=/home/sbak/experiments/llama4-scout-gb200/triton_cache
-        NFS_INDUCTOR_CACHE=/home/sbak/experiments/llama4-scout-gb200/inductor_cache
+        export PYTHONPATH=${MEGATRON_PATH}:${NVRX_REPO_ROOT}:${NVRX_SRC_ROOT}:${PYTHONPATH}
+        echo "NVRX_REPO_ROOT=${NVRX_REPO_ROOT}"
+        echo "NVRX_SRC_ROOT=${NVRX_SRC_ROOT}"
+        echo "PYTHONPATH=${PYTHONPATH}"
+        python3 - <<'"'"'PY'"'"'
+import sys
+print(f"sys.path[:8]={sys.path[:8]}")
+import nvidia_resiliency_ext
+from nvidia_resiliency_ext.shared_utils.inject_fault import Fault
+print(f"nvidia_resiliency_ext={nvidia_resiliency_ext.__file__}")
+print(f"fault_enum={Fault}")
+PY
 
         # Per-rank Triton/inductor cache on the container native /tmp (local fast storage).
         export TRITON_CACHE_DIR=/tmp/triton_${SLURM_LOCALID}
         export TORCHINDUCTOR_CACHE_DIR=/tmp/inductor_${SLURM_LOCALID}
         mkdir -p ${TRITON_CACHE_DIR} ${TORCHINDUCTOR_CACHE_DIR}
 
-        # Pre-stage: warm local cache from NFS (one rank per node)
-        if [[ "${SLURM_LOCALID}" == "0" ]]; then
-            if [[ -d "${NFS_TRITON_CACHE}" ]]; then
-                echo "Pre-staging triton cache from NFS..."
+        # Optional pre/post-stage between a shared cache and the node-local /tmp cache.
+        if [[ "${ENABLE_NFS_CACHE_STAGING}" == "1" && "${SLURM_LOCALID}" == "0" ]]; then
+            if [[ -n "${NFS_TRITON_CACHE}" && -d "${NFS_TRITON_CACHE}" ]]; then
+                echo "Pre-staging triton cache from ${NFS_TRITON_CACHE}..."
                 rsync -a --ignore-existing "${NFS_TRITON_CACHE}/" "${TRITON_CACHE_DIR}/" 2>/dev/null || true
             fi
-            if [[ -d "${NFS_INDUCTOR_CACHE}" ]]; then
-                echo "Pre-staging inductor cache from NFS..."
+            if [[ -n "${NFS_INDUCTOR_CACHE}" && -d "${NFS_INDUCTOR_CACHE}" ]]; then
+                echo "Pre-staging inductor cache from ${NFS_INDUCTOR_CACHE}..."
                 rsync -a --ignore-existing "${NFS_INDUCTOR_CACHE}/" "${TORCHINDUCTOR_CACHE_DIR}/" 2>/dev/null || true
             fi
         fi
 
         # Post-stage: write back to NFS on exit (one rank per node)
         _stage_back() {
-            if [[ "${SLURM_LOCALID}" == "0" ]]; then
-                echo "Staging triton cache back to NFS..."
-                mkdir -p "${NFS_TRITON_CACHE}" "${NFS_INDUCTOR_CACHE}"
-                rsync -a --ignore-existing "${TRITON_CACHE_DIR}/" "${NFS_TRITON_CACHE}/" 2>/dev/null || true
-                rsync -a --ignore-existing "${TORCHINDUCTOR_CACHE_DIR}/" "${NFS_INDUCTOR_CACHE}/" 2>/dev/null || true
-                echo "Cache staged back."
+            if [[ "${ENABLE_NFS_CACHE_STAGING}" == "1" && "${SLURM_LOCALID}" == "0" ]]; then
+                if [[ -n "${NFS_TRITON_CACHE}" ]]; then
+                    mkdir -p "${NFS_TRITON_CACHE}"
+                    rsync -a --ignore-existing "${TRITON_CACHE_DIR}/" "${NFS_TRITON_CACHE}/" 2>/dev/null || true
+                fi
+                if [[ -n "${NFS_INDUCTOR_CACHE}" ]]; then
+                    mkdir -p "${NFS_INDUCTOR_CACHE}"
+                    rsync -a --ignore-existing "${TORCHINDUCTOR_CACHE_DIR}/" "${NFS_INDUCTOR_CACHE}/" 2>/dev/null || true
+                fi
             fi
         }
         trap _stage_back EXIT
@@ -239,6 +288,21 @@ srun \
         LAUNCHER_ARGS=" \
         "
         WORKLOAD_CMD=${MEGATRON_PATH}/pretrain_gpt.py
+        FAULT_INJECTOR_ARGS=""
+        if [[ "${ENABLE_FAULT_INJECTION}" == "1" ]]; then
+            FAULT_INJECTOR_ARGS=" \
+                --fault-injector-ranks ${FAULT_RANK} \
+                --fault-injector-fault-types ${FAULT_TYPE} \
+            "
+            if [[ -n "${FAULT_DELAY}" ]]; then
+                FAULT_INJECTOR_ARGS="${FAULT_INJECTOR_ARGS} --fault-injector-fault-delay ${FAULT_DELAY}"
+                if [[ -n "${FAULT_AT_ITER}" ]]; then
+                    FAULT_INJECTOR_ARGS="${FAULT_INJECTOR_ARGS} --fault-injector-delay-start-iteration ${FAULT_AT_ITER}"
+                fi
+            elif [[ -n "${FAULT_AT_ITER}" ]]; then
+                FAULT_INJECTOR_ARGS="${FAULT_INJECTOR_ARGS} --fault-injector-fault-delay 0 --fault-injector-delay-start-iteration ${FAULT_AT_ITER}"
+            fi
+        fi
         WORKLOAD_ARGS=" \
             --exit-duration-in-mins 5750 \
             --distributed-timeout-minutes 10 \
@@ -347,13 +411,12 @@ srun \
             --local-rank ${SLURM_LOCALID} \
             --context-parallel-size 1 \
             --vocab-size 238600 \
-            --megatron-fault-at-iter ${FAULT_AT_ITER} \
-            --megatron-fault-rank ${FAULT_RANK} \
-            --megatron-fault-type ${FAULT_TYPE} \
+            ${FAULT_INJECTOR_ARGS} \
             --distributed-timeout-seconds-after-init ${DIST_TIMEOUT_AFTER_INIT} \
             --flight-recorder-dump-path ${CKPT_DIR} \
         "
-        $LAUNCHER_CMD $LAUNCHER_ARGS $WORKLOAD_CMD $WORKLOAD_ARGS $CKPT_SAVE_ARGS
+        PYTHONPATH=${MEGATRON_PATH}:${NVRX_REPO_ROOT}:${NVRX_SRC_ROOT}:${PYTHONPATH} \
+            $LAUNCHER_CMD $LAUNCHER_ARGS $WORKLOAD_CMD $WORKLOAD_ARGS $CKPT_SAVE_ARGS
     '
 log_msg "END main_workload"
 
