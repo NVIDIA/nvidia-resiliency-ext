@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """LLM-judge scorer for fault-injection attribution experiments.
 
-Uses the same ChatOpenAI / NVIDIA-inference-API setup as nvrx_logsage.py.
+Uses the same ChatOpenAI / NVIDIA inference API setup as nvrx_logsage.py.
 Reads ground-truth fault parameters and the raw text outputs of nvrx_logsage
-and CollectiveAnalyzer, then asks a Sonnet/Opus judge to score each attribution
+and CollectiveAnalyzer, then asks a judge model to score each attribution
 dimension and return structured JSON.
 
 Usage (called by watch_and_analyze.sh):
@@ -11,8 +11,8 @@ Usage (called by watch_and_analyze.sh):
         --fault-type GPU_SLEEP --rank 0 --iter 5 --nodes 2 \
         --log-output "$LOG_OUT" \
         --fr-output  "$FR_OUT" \
-        [--model claude-sonnet-4-6] \
-        [--base-url https://inference-api.nvidia.com/v1]
+        [--model qwen/qwen3.5-397b-a17b] \
+        [--base-url https://inference.api.nvidia.com/v1]
 
 Stdout: one line of JSON with keys:
     restart_correct, rank_primary, rank_any, fault_described, fr_rank_correct, notes
@@ -21,6 +21,7 @@ Stdout: one line of JSON with keys:
 import argparse
 import json
 import logging
+import os
 import sys
 from typing import Union
 
@@ -32,8 +33,13 @@ from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+INJECTION_MARKERS = (
+    "FAULT INJECTION",
+    "nvidia_resiliency_ext.shared_utils.inject_fault",
+)
+
 # Default judge model — override with --model
-DEFAULT_JUDGE_MODEL = "azure/anthropic/claude-sonnet-4-6"
+DEFAULT_JUDGE_MODEL = "qwen/qwen3.5-397b-a17b"
 
 # Expected restart decision and rationale per fault type
 _RESTART_TABLE = {
@@ -71,7 +77,7 @@ def load_log_excerpt(log_path, max_lines=400):
         lines = [line for line in lines if "[workload:" not in line or 'Cycle:' in line]
         # Strip fault-injection markers — the judge must not see which rank/fault was
         # injected in the raw log; it knows the ground truth from the structured args.
-        lines = [line for line in lines if "[MEGATRON_FAULT]" not in line]
+        lines = [line for line in lines if not any(marker in line for marker in INJECTION_MARKERS)]
         if len(lines) > max_lines:
             lines = lines[-max_lines:]
         return "".join(lines).strip()
@@ -161,17 +167,29 @@ Respond ONLY with a JSON object — no markdown, no explanation outside the JSON
 
 def score(args):
     args.run_valid = args.run_valid.lower() == "true"
-    api_key = load_nvidia_api_key()
+    api_key = os.getenv("JUDGE_API_KEY", "").strip()
+    if not api_key:
+        judge_key_file = os.getenv("JUDGE_API_KEY_FILE", "").strip()
+        if judge_key_file:
+            try:
+                with open(judge_key_file, encoding="utf-8") as f:
+                    api_key = f.read().strip()
+            except OSError:
+                api_key = ""
+    if not api_key:
+        api_key = load_nvidia_api_key()
     if not api_key:
         raise ValueError(
-            "NVIDIA_API_KEY not found. Set NVIDIA_API_KEY env var, "
-            "NVIDIA_API_KEY_FILE, or create ~/.nvidia_api_key"
+            "Judge API key not found. Set JUDGE_API_KEY/JUDGE_API_KEY_FILE, "
+            "or NVIDIA_API_KEY/NVIDIA_API_KEY_FILE, or create ~/.nvidia_api_key"
         )
+
+    base_url = os.getenv("JUDGE_BASE_URL", "").strip() or args.base_url
 
     llm = ChatOpenAI(
         model=args.model,
         api_key=api_key,
-        base_url=args.base_url,
+        base_url=base_url,
         temperature=0.0,
         max_completion_tokens=512,
     )

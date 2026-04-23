@@ -207,7 +207,7 @@ The judge is given:
 4. Raw logsage stdout (5-field text format)
 5. Raw CollectiveAnalyzer text output
 
-Default judge model: `azure/anthropic/claude-sonnet-4-6`. Override with `--model` in `score_attribution.py`.
+Default judge model: `qwen/qwen3.5-397b-a17b`. Override with `--model` in `score_attribution.py`.
 
 ---
 

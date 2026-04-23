@@ -22,6 +22,13 @@ SCORE_PY="${SCRIPT_DIR}/score_attribution.py"
 # Ensure nvidia_resiliency_ext is importable from source tree
 export PYTHONPATH="${NVRX_SRC_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 
+strip_injection_markers() {
+    local input_log="$1"
+    local output_log="$2"
+    grep -v -E 'FAULT INJECTION|nvidia_resiliency_ext\.shared_utils\.inject_fault' \
+        "${input_log}" > "${output_log}" 2>/dev/null || true
+}
+
 REPORT_FILE="${TRACKING_FILE%.tsv}_report.md"
 DONE_JOBS_FILE="${TRACKING_FILE%.tsv}_done.txt"
 
@@ -75,23 +82,25 @@ while true; do
         LOG_FILE=$(ls ${LOG_GLOB} 2>/dev/null | head -1 || true)
         LOG_OUT=""
 
-        # ---- Check run validity: did the fault actually fire? ----
-        # The fault injection prints: [MEGATRON_FAULT] global_rank=RANK/...: injecting FAULT_TYPE at iteration ITER
+        # ---- Check run validity: did the fault actually arm/fire? ----
+        # The fault injector prints:
+        #   [timestamp] FAULT INJECTION: Rank R will inject fault TYPE at timestamp
         RUN_VALID="false"
         STRIPPED_LOG=""
         if [[ -n "${LOG_FILE}" && -f "${LOG_FILE}" ]]; then
             echo "    log: ${LOG_FILE}"
-            if grep -qF "[MEGATRON_FAULT]" "${LOG_FILE}" 2>/dev/null; then
+            if grep -q "FAULT INJECTION" "${LOG_FILE}" 2>/dev/null; then
                 RUN_VALID="true"
             fi
             echo "    run_valid: ${RUN_VALID}"
 
             # Strip fault-injection markers so neither nvrx_logsage nor the judge
             # can see which rank/fault was injected — evaluation must be fair.
-            # [MEGATRON_FAULT] lines are printed by Megatron's debug_fault_injection.py
-            # and are not covered by --exclude_nvrx_logs.
+            # This removes:
+            # - scheduler lines from megatron.core.fault_injector ("FAULT INJECTION")
+            # - direct fault-tool log lines from nvidia_resiliency_ext.shared_utils.inject_fault
             STRIPPED_LOG=$(mktemp /tmp/fi_log_stripped.XXXXXX)
-            grep -vF "[MEGATRON_FAULT]" "${LOG_FILE}" > "${STRIPPED_LOG}" 2>/dev/null || true
+            strip_injection_markers "${LOG_FILE}" "${STRIPPED_LOG}"
 
             # nvrx_logsage.py prints 5 newline-joined fields to stdout:
             #   line 1: restart_decision

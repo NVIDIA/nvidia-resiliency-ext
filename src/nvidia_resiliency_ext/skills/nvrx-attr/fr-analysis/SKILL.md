@@ -52,7 +52,7 @@ python scripts/fr_attribution.py \
 | `--verbose`, `-v` | off | Print detailed per-rank collective tables |
 | `--health-check`, `-c` | off | Include node health check results in output |
 | `--llm-analyze`, `-l` | off | Pass structured findings to the LLM for a narrative summary |
-| `--model`, `-m` | `nvdev/nvidia/llama-3.3-nemotron-super-49b-v1` | LLM model (only used with `--llm-analyze`) |
+| `--model`, `-m` | `nvidia/nemotron-3-super-120b-a12b` | LLM model (only used with `--llm-analyze`) |
 | `--debug` | off | Convert binary trace files to JSON for inspection |
 
 ---
@@ -68,7 +68,7 @@ analyzer = CollectiveAnalyzer({
     "verbose": False,
     "health_check": False,
     "llm_analyze": False,
-    "model": "nvdev/nvidia/llama-3.3-nemotron-super-49b-v1",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
 })
 results = analyzer.run_sync({
     "fr_path": "/path/to/fr_dumps/",
