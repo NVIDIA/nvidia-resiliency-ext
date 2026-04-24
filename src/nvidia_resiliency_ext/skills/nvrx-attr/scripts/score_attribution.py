@@ -39,6 +39,8 @@ INJECTION_MARKERS = (
 
 # Default judge model — override with --model
 DEFAULT_JUDGE_MODEL = "qwen/qwen3.5-397b-a17b"
+DEFAULT_GPUS_PER_NODE = int(os.getenv("GPUS_PER_NODE", "4"))
+DEFAULT_FR_RACK_SIZE = int(os.getenv("FR_RACK_SIZE", "32"))
 
 # Expected restart decision and rationale per fault type
 _RESTART_TABLE = {
@@ -94,9 +96,21 @@ def load_log_excerpt(log_path, max_lines=400):
 
 
 def build_judge_prompt(
-    fault_type, rank, iter_, nodes, run_valid, log_output, fr_output, log_excerpt
+    fault_type,
+    rank,
+    iter_,
+    nodes,
+    run_valid,
+    log_output,
+    fr_output,
+    log_excerpt,
+    gpus_per_node,
+    rack_size,
 ):
-    total_ranks = nodes * 4  # GPUS_PER_NODE=4 in the example SBATCH_SCRIPT
+    total_ranks = nodes * gpus_per_node
+    node_index = rank // gpus_per_node
+    rack_start = (rank // rack_size) * rack_size
+    rack_end = min(rack_start + rack_size - 1, total_ranks - 1)
     expected_restart, restart_rationale = _RESTART_TABLE.get(
         fault_type, ("unknown", "unknown fault type")
     )
@@ -126,13 +140,21 @@ distributed ML training.
 ## Ground truth (injected fault)
 - Fault type : {fault_type}
 - Injected rank : {rank}  (global rank index, 0-based; total ranks = {total_ranks})
+- Injected node : {node_index}  (using {gpus_per_node} GPUs per node)
+- Injected rack : ranks {rack_start}-{rack_end}  (using rack size {rack_size})
 - Injected at iteration : {iter_}
-- Cluster : {nodes} nodes × 4 GPUs = {total_ranks} total ranks
+- Cluster : {nodes} nodes × {gpus_per_node} GPUs = {total_ranks} total ranks
 
 ## Expected correct behavior
 - restart_decision should be : {expected_restart}
   Rationale: {restart_rationale}
 - Rank {rank} should appear in Primary issues as the root cause
+- FR scope scoring:
+  - "rank" if FR points directly to rank {rank}
+  - "node" if FR does not isolate rank {rank} but correctly narrows to node {node_index}
+  - "rack" if FR does not isolate rank {rank} or node {node_index} but correctly narrows to rack ranks {rack_start}-{rack_end}
+  - "false" if FR points elsewhere or is not useful
+  - "no_dumps" if there is no actionable FR output
 
 ## Raw job log (filtered, last 400 lines)
 {log_section}
@@ -159,8 +181,13 @@ Score each dimension below. Use only the values listed for each.
    (e.g., GPU hang, segfault, signal kill) appropriate for {fault_type}?
    Values: "true" | "false" | "partial" (category right but specifics wrong)
 
-5. **fr_rank_correct** — Does the FR analysis output identify rank {rank} as a suspect?
-   Values: "true" | "false" | "no_dumps" (no FR dumps available)
+5. **fr_rank_correct** — How precise is the FR analysis output?
+   Values: "rank" | "node" | "rack" | "false" | "no_dumps"
+   Use "rank" only if rank {rank} is explicitly implicated.
+   Use "node" only if the FR output narrows correctly to node {node_index} but not the exact rank.
+   Use "rack" only if the FR output narrows correctly to rack ranks {rack_start}-{rack_end} but not the exact node or rank.
+   Use "false" if the FR output points somewhere else, is misleading, or does not narrow correctly.
+   Use "no_dumps" if there is no actionable FR output.
 
 6. **notes** — One concise sentence summarizing the main gap or confirming correctness.
 
@@ -215,6 +242,8 @@ def score(args):
         log_output=args.log_output,
         fr_output=args.fr_output,
         log_excerpt=log_excerpt,
+        gpus_per_node=args.gpus_per_node,
+        rack_size=args.rack_size,
     )
 
     # build_judge_prompt returns a dict directly for invalid runs (no LLM call needed)
@@ -249,6 +278,18 @@ def main():
     parser.add_argument("--fr-output", default="no_dumps", help="Raw text from CollectiveAnalyzer")
     parser.add_argument("--model", default=DEFAULT_JUDGE_MODEL, help="Judge LLM model")
     parser.add_argument("--base-url", default=DEFAULT_LLM_BASE_URL, help="API base URL")
+    parser.add_argument(
+        "--gpus-per-node",
+        type=int,
+        default=DEFAULT_GPUS_PER_NODE,
+        help="GPUs per node for rank-to-node mapping",
+    )
+    parser.add_argument(
+        "--rack-size",
+        type=int,
+        default=DEFAULT_FR_RACK_SIZE,
+        help="Ranks per rack for coarse FR scope scoring",
+    )
     args = parser.parse_args()
 
     try:
