@@ -234,7 +234,7 @@ srun \
             else
                 TRITON_CACHE_WAS_WARM=0
             fi
-            for r in 0 1 2 3; do
+            for ((r=0; r<GPUS_PER_NODE; r++)); do
                 mkdir -p /tmp/triton_${r} /tmp/inductor_${r}
                 [[ -d "${NFS_TRITON_CACHE}" ]] && rsync -a --ignore-existing "${NFS_TRITON_CACHE}/" "/tmp/triton_${r}/" 2>/dev/null || true
                 [[ -d "${NFS_INDUCTOR_CACHE}" ]] && rsync -a --ignore-existing "${NFS_INDUCTOR_CACHE}/" "/tmp/inductor_${r}/" 2>/dev/null || true
