@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import sys
-from typing import Union
 
 from langchain_openai import ChatOpenAI
 
@@ -43,18 +42,27 @@ DEFAULT_JUDGE_MODEL = "qwen/qwen3.5-397b-a17b"
 
 # Expected restart decision and rationale per fault type
 _RESTART_TABLE = {
-    "GPU_SLEEP":    ("RESTART IMMEDIATE", "transient GPU hang, recoverable"),
-    "LOCK_GIL":     ("RESTART IMMEDIATE", "transient Python GIL hang, recoverable"),
-    "SIGTERM":      ("RESTART IMMEDIATE", "external termination signal, recoverable"),
-    "SIGINT":       ("RESTART IMMEDIATE", "external interrupt signal, recoverable"),
-    "SIGSTOP":      ("RESTART IMMEDIATE", "external stop signal, recoverable"),
-    "SIGNAL_EXC":   ("RESTART IMMEDIATE", "signal-based exception, typically recoverable"),
-    "GPU_ERROR":    ("STOP - DONT RESTART IMMEDIATE", "hardware GPU error, may be persistent"),
-    "SIGKILL":      ("STOP - DONT RESTART IMMEDIATE", "hard kill, possible external pressure or OOM"),
-    "SEGFAULT":     ("STOP - DONT RESTART IMMEDIATE", "segmentation fault, likely code or memory corruption"),
-    "OS_ABORT":     ("STOP - DONT RESTART IMMEDIATE", "OS abort, likely severe system or hardware fault"),
+    "GPU_SLEEP": ("RESTART IMMEDIATE", "transient GPU hang, recoverable"),
+    "LOCK_GIL": ("RESTART IMMEDIATE", "transient Python GIL hang, recoverable"),
+    "SIGTERM": ("RESTART IMMEDIATE", "external termination signal, recoverable"),
+    "SIGINT": ("RESTART IMMEDIATE", "external interrupt signal, recoverable"),
+    "SIGSTOP": ("RESTART IMMEDIATE", "external stop signal, recoverable"),
+    "SIGNAL_EXC": ("RESTART IMMEDIATE", "signal-based exception, typically recoverable"),
+    "GPU_ERROR": ("STOP - DONT RESTART IMMEDIATE", "hardware GPU error, may be persistent"),
+    "SIGKILL": ("STOP - DONT RESTART IMMEDIATE", "hard kill, possible external pressure or OOM"),
+    "SEGFAULT": (
+        "STOP - DONT RESTART IMMEDIATE",
+        "segmentation fault, likely code or memory corruption",
+    ),
+    "OS_ABORT": (
+        "STOP - DONT RESTART IMMEDIATE",
+        "OS abort, likely severe system or hardware fault",
+    ),
     "WORKLOAD_EXC": ("STOP - DONT RESTART IMMEDIATE", "application exception, likely a code bug"),
-    "ASYNC_EXC":    ("STOP - DONT RESTART IMMEDIATE", "async exception in workload, likely a code bug"),
+    "ASYNC_EXC": (
+        "STOP - DONT RESTART IMMEDIATE",
+        "async exception in workload, likely a code bug",
+    ),
 }
 
 
@@ -85,7 +93,9 @@ def load_log_excerpt(log_path, max_lines=400):
         return f"(could not read log file: {exc})"
 
 
-def build_judge_prompt(fault_type, rank, iter_, nodes, run_valid, log_output, fr_output, log_excerpt):
+def build_judge_prompt(
+    fault_type, rank, iter_, nodes, run_valid, log_output, fr_output, log_excerpt
+):
     total_ranks = nodes * 4  # GPUS_PER_NODE=4 in the example SBATCH_SCRIPT
     expected_restart, restart_rationale = _RESTART_TABLE.get(
         fault_type, ("unknown", "unknown fault type")
@@ -217,9 +227,7 @@ def score(args):
     # Strip markdown code fences if present
     if text.startswith("```"):
         lines = text.splitlines()
-        text = "\n".join(
-            line for line in lines if not line.startswith("```")
-        ).strip()
+        text = "\n".join(line for line in lines if not line.startswith("```")).strip()
 
     result = json.loads(text)
     return result
@@ -231,8 +239,11 @@ def main():
     parser.add_argument("--rank", type=int, required=True, help="Injected global rank")
     parser.add_argument("--iter", type=int, required=True, help="Injected iteration")
     parser.add_argument("--nodes", type=int, required=True, help="Node count")
-    parser.add_argument("--run-valid", default="true",
-                        help="'true' if training reached the fault injection point, 'false' otherwise")
+    parser.add_argument(
+        "--run-valid",
+        default="true",
+        help="'true' if training reached the fault injection point, 'false' otherwise",
+    )
     parser.add_argument("--log-path", default="", help="Path to the raw job log file")
     parser.add_argument("--log-output", default="", help="Raw stdout from nvrx_logsage")
     parser.add_argument("--fr-output", default="no_dumps", help="Raw text from CollectiveAnalyzer")
