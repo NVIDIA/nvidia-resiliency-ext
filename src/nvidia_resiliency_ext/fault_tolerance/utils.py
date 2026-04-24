@@ -161,8 +161,8 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
             # This keeps block index in MSB for proper ordering
             infra_rank = block_num * multiplier + node_num
             logger.debug(
-                f"infra_rank={infra_rank} from SLURM_TOPOLOGY_ADDR '{topology_addr}' "
-                f"(block={block_num}, node={node_num}, pattern='{topology_pattern}')"
+                f"Using infrastructure rank {infra_rank} from SLURM_TOPOLOGY_ADDR '{topology_addr}' "
+                f"(block={block_num}, node={node_num}, multiplier={multiplier}) with pattern '{topology_pattern}'"
             )
             return infra_rank
 
