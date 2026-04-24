@@ -13,6 +13,11 @@ TRACKING_FILE="${1:?Usage: $0 <tracking_file.tsv>}"
 POLL_INTERVAL=30
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+USER_ENV_FILE="${SCRIPT_DIR}/user.env"
+if [[ -f "${USER_ENV_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${USER_ENV_FILE}"
+fi
 SKILL_DIR="$(dirname "${SCRIPT_DIR}")"
 NVRX_SRC_DIR="$(cd "${SKILL_DIR}/../../.." && pwd)"
 
@@ -20,9 +25,9 @@ LOGSAGE_PY="${SKILL_DIR}/log-analysis/scripts/nvrx_logsage.py"
 FR_ANALYSIS_MODULE="nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution"
 SCORE_PY="${SCRIPT_DIR}/score_attribution.py"
 LOG_ANALYSIS_MODEL="${LOG_ANALYSIS_MODEL:-${NVRX_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b}}"
-LOG_ANALYSIS_BASE_URL="${LOG_ANALYSIS_BASE_URL:-${NVRX_LLM_BASE_URL:-https://inference-api.nvidia.com}}"
+LOG_ANALYSIS_BASE_URL="${LOG_ANALYSIS_BASE_URL:-${NVRX_LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}}"
 JUDGE_MODEL="${JUDGE_MODEL:-qwen/qwen3.5-397b-a17b}"
-JUDGE_BASE_URL="${JUDGE_BASE_URL:-https://inference-api.nvidia.com}"
+JUDGE_BASE_URL="${JUDGE_BASE_URL:-https://integrate.api.nvidia.com/v1}"
 FR_PATTERN="${FR_PATTERN:-_dump_*}"
 
 # Ensure nvidia_resiliency_ext is importable from source tree

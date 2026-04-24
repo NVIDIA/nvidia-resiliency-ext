@@ -101,7 +101,7 @@ cp scripts/user.env.example scripts/user.env
 ```
 
 Then edit `scripts/user.env` with cluster-specific settings. This file is
-sourced by `run_session.sh`, `prepare_node_alloc.sh`, and
+sourced by `run_session.sh`, `prepare_node_alloc.sh`, `watch_and_analyze.sh`, and
 `l4_gb200_reduced.sh`, and it is intended to stay local and untracked.
 
 Recommended contents:
@@ -113,12 +113,20 @@ MEGATRON_REPO_HOST_PATH="${HOME}/megatron-lm-main"
 SHARED_TMP_BASE_DIR="${HOME}/tmp"
 WORKSPACE_HOST_PATH="${HOME}/tmp"
 CONTAINER_IMAGE="nvcr.io/nvidia/nemo:26.04"
+NVIDIA_API_KEY_FILE="${HOME}/.nvidia_api_key"
+JUDGE_API_KEY_FILE="${HOME}/.nvidia_api_key"
+NVRX_LLM_MODEL="nvidia/nemotron-3-super-120b-a12b"
+NVRX_LLM_BASE_URL="https://integrate.api.nvidia.com/v1"
+JUDGE_MODEL="qwen/qwen3.5-397b-a17b"
+JUDGE_BASE_URL="https://integrate.api.nvidia.com/v1"
+FR_RACK_SIZE=32
 ```
 
 Use `user.env` for stable site defaults such as partition, container image, and
-host paths. Use per-run environment overrides for experiment-specific controls
-such as `POOL`, `WORKLOAD`, `BATCH_SIZE`, `FAULT_TYPE`, `FAULT_AT_ITER`, or
-`FAULT_DELAY`.
+host paths, plus local LLM credentials and endpoint settings for log-analysis
+and the judge. Use per-run environment overrides for experiment-specific
+controls such as `POOL`, `WORKLOAD`, `BATCH_SIZE`, `FAULT_TYPE`,
+`FAULT_AT_ITER`, or `FAULT_DELAY`.
 
 Environment variables:
 
@@ -136,6 +144,13 @@ Environment variables:
 | `SHARED_TMP_BASE_DIR` | `${HOME}/tmp` | Shared filesystem path used for cross-step coordination |
 | `WORKSPACE_HOST_PATH` | `${HOME}/tmp` | Host path mounted at `/workspace` inside the container |
 | `CONTAINER_IMAGE` | `nvcr.io/nvidia/nemo:26.04` | Container image used by the workload script |
+| `NVIDIA_API_KEY_FILE` | _unset_ | File containing the log-analysis API key |
+| `JUDGE_API_KEY_FILE` | _unset_ | File containing the judge API key |
+| `NVRX_LLM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Model for log-analysis |
+| `NVRX_LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for log-analysis |
+| `JUDGE_MODEL` | `qwen/qwen3.5-397b-a17b` | Model for judge scoring |
+| `JUDGE_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for judge scoring |
+| `FR_RACK_SIZE` | `32` | Ranks per rack for coarse FR scoring |
 | `SBATCH_SCRIPT` | `scripts/l4_gb200_reduced.sh` | Job script to submit |
 | `POOL` | _(default pool above)_ | Space-separated experiment triplets |
 
@@ -206,7 +221,7 @@ The watcher:
    `restart_decision` and `attribution_text`
 3. Calls FR analysis as `python -m nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution --fr-path "${EXPERIMENT_DIR}/checkpoints" -p "_dump_*"` and passes the raw table output to the judge
 4. Scores 7 dimensions (restart correctness, rank primary, rank any, category, type, FR rank)
-5. Appends a scored row to `<session>_report.md`
+5. Appends a scored row to `<session>_report.md` as a markdown table row
 6. Repeats until all experiments are analyzed
 
 To also run the sub-skills interactively for a single experiment:
@@ -229,7 +244,7 @@ analysis output, then returns structured JSON scores with a reasoning note.
 | **rank_primary** | `true` / `false` / `partial` | Injected rank is the primary root-cause in attribution |
 | **rank_any** | `true` / `false` | Injected rank mentioned anywhere in attribution |
 | **fault_described** | `true` / `false` / `partial` | Fault nature (hang/crash/signal/exception) correctly described |
-| **fr_rank_correct** | `true` / `false` / `no_dumps` | FR analysis identifies injected rank as suspect |
+| **fr_rank_correct** | `rank` / `node` / `rack` / `false` / `no_dumps` | FR analysis narrows correctly to the injected rank, node, rack, or fails to narrow usefully |
 | **judge_notes** | string | One-sentence summary of the main gap or confirmation |
 
 The judge is given:
@@ -238,12 +253,18 @@ The judge is given:
 3. Filtered raw log (last 400 lines, same `exclude_nvrx_logs` filtering as logsage)
 4. Raw logsage stdout (5-field text format)
 5. Raw FR analysis table output from `fr_attribution.py --fr-path ... -p "_dump_*"`
+6. `GPUS_PER_NODE` and `FR_RACK_SIZE` to map the injected rank to node and rack scopes for FR scoring
 
 Default judge model: `qwen/qwen3.5-397b-a17b`. Override with `--model` in `score_attribution.py`.
+Default rack size for FR scope scoring: `32` ranks. Override with `FR_RACK_SIZE`.
 
 ---
 
 ## Step 5 — Aggregate Results
+
+The canonical output of the loop is the markdown table in `<session>_report.md`.
+When summarizing results for users, prefer linking to that file and reproducing the
+same table shape rather than flattening the results into plain prose.
 
 The report markdown table from `watch_and_analyze.sh` gives a matrix view. Look for
 patterns across rows:
@@ -266,6 +287,8 @@ Common failure mode patterns and their meaning:
 | `fault_described=partial` for crash types | Crash keywords present but fault type not specifically named |
 | `restart_correct=false` for GPU_ERROR | LLM conflating hardware error with recoverable hang |
 | `fr_rank_correct=no_dumps` | NCCL watchdog did not fire before job ended — adjust `TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC` |
+| `fr_rank_correct=node` | FR isolated the correct node but not the exact rank |
+| `fr_rank_correct=rack` | FR isolated the correct rack-sized rank group but not the exact node/rank |
 
 ---
 
