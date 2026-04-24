@@ -36,7 +36,7 @@ export PYTHONPATH="${NVRX_SRC_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 strip_injection_markers() {
     local input_log="$1"
     local output_log="$2"
-    grep -v -E 'FAULT INJECTION|nvidia_resiliency_ext\.shared_utils\.inject_fault' \
+    grep -a -v -E 'FAULT INJECTION|nvidia_resiliency_ext\.shared_utils\.inject_fault' \
         "${input_log}" > "${output_log}" 2>/dev/null || true
 }
 
@@ -100,7 +100,7 @@ while true; do
         STRIPPED_LOG=""
         if [[ -n "${LOG_FILE}" && -f "${LOG_FILE}" ]]; then
             echo "    log: ${LOG_FILE}"
-            if grep -q "FAULT INJECTION" "${LOG_FILE}" 2>/dev/null; then
+            if grep -a -q "FAULT INJECTION" "${LOG_FILE}" 2>/dev/null; then
                 RUN_VALID="true"
             fi
             echo "    run_valid: ${RUN_VALID}"
