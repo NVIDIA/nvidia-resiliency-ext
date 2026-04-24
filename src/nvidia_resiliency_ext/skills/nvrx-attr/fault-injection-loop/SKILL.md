@@ -128,6 +128,11 @@ and the judge. Use per-run environment overrides for experiment-specific
 controls such as `POOL`, `WORKLOAD`, `BATCH_SIZE`, `FAULT_TYPE`,
 `FAULT_AT_ITER`, or `FAULT_DELAY`.
 
+If you use local Triton/Inductor cache staging, set the cache variables in
+`scripts/user.env`. See `scripts/user.env.example` for the supported
+`ENABLE_NFS_CACHE_STAGING`, `NFS_TRITON_CACHE`, and `NFS_INDUCTOR_CACHE`
+entries and workload-specific path examples.
+
 Environment variables:
 
 | Variable | Default | Description |
