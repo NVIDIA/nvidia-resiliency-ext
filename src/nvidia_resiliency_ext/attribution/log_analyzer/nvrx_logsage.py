@@ -123,7 +123,9 @@ def _finished_status_name(status: Any) -> str:
     return getattr(status, "name", status)
 
 
-def _sleep_with_backoff(attempt: int, retries: int, backoff: float, max_backoff: float, jitter: float) -> float:
+def _sleep_with_backoff(
+    attempt: int, retries: int, backoff: float, max_backoff: float, jitter: float
+) -> float:
     sleep_for = min(backoff, max_backoff) + random.uniform(0.0, jitter)
     logger.info(
         "Retrying log-analysis LLM in %.2fs after attempt %d/%d",
@@ -169,9 +171,7 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
     for attempt in range(1, retries + 1):
         try:
             result = llm_call()
-            if result and not any(
-                field == LOGSAGE_LLM_ENDPOINT_FAILED for field in result[:4]
-            ):
+            if result and not any(field == LOGSAGE_LLM_ENDPOINT_FAILED for field in result[:4]):
                 return result
             last_error = LOGSAGE_LLM_ENDPOINT_FAILED
         except Exception as exc:
