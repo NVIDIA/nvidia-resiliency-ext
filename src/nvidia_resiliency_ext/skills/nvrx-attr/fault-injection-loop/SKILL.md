@@ -158,7 +158,12 @@ Environment variables:
 
 | Name | Script | Base dir | Description |
 |---|---|---|---|
-| `llama4_scout` | `l4_gb200_reduced.sh` | `${HOME}/nvrx-attr-experiments` | Llama4-Scout (reduced layers) on GB200 |
+| `llama4_scout` | `l4_gb200_reduced.sh` | `${HOME}/nvrx-attr-experiments` | Llama4-Scout (reduced layers) on GB200; minimum supported size is 2 nodes |
+| `n3_super` | `n3_super_gb200_fi.sh` | `${HOME}/nvrx-attr-experiments` | Nemotron3-Super on GB200; minimum supported size is 8 nodes |
+
+Workload note:
+- `llama4_scout` requires at least 2 nodes.
+- `n3_super` requires at least 8 nodes. Its default registered pool contains only 8-node experiments.
 
 ```bash
 # Run the full pool against the validated example workload

@@ -1,0 +1,10 @@
+# n3_super minimum supported size is 8 nodes.
+# Format: FAULT_TYPE:RANK:ITER:NODES
+
+GPU_SLEEP:1:5:8
+GPU_SLEEP:0:5:8
+GPU_SLEEP:16:5:8
+GPU_SLEEP:31:5:8
+GPU_ERROR:1:5:8
+GPU_ERROR:0:5:8
+SIGKILL:1:5:8
