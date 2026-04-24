@@ -458,11 +458,24 @@ def main():
         action='store_true',
         help='Input is already per-cycle data (skip filtering and chunking)',
     )
+    parser.add_argument(
+        '--emit-stdout',
+        action='store_true',
+        help='Print final attribution payload to stdout for machine consumers',
+    )
 
     args = parser.parse_args()
 
     analyzer = NVRxLogAnalyzer(args)
-    analyzer.run_sync(args)
+    results = analyzer.run_sync(args)
+
+    if args.emit_stdout:
+        for result in results:
+            if not result:
+                continue
+            payload = result[0] if isinstance(result, tuple) else result
+            if payload:
+                print(payload)
 
 
 if __name__ == "__main__":

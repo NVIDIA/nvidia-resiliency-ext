@@ -17,7 +17,13 @@ SKILL_DIR="$(dirname "${SCRIPT_DIR}")"
 NVRX_SRC_DIR="$(cd "${SKILL_DIR}/../../.." && pwd)"
 
 LOGSAGE_PY="${SKILL_DIR}/log-analysis/scripts/nvrx_logsage.py"
+FR_ANALYSIS_MODULE="nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution"
 SCORE_PY="${SCRIPT_DIR}/score_attribution.py"
+LOG_ANALYSIS_MODEL="${LOG_ANALYSIS_MODEL:-${NVRX_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b}}"
+LOG_ANALYSIS_BASE_URL="${LOG_ANALYSIS_BASE_URL:-${NVRX_LLM_BASE_URL:-https://inference-api.nvidia.com}}"
+JUDGE_MODEL="${JUDGE_MODEL:-qwen/qwen3.5-397b-a17b}"
+JUDGE_BASE_URL="${JUDGE_BASE_URL:-https://inference-api.nvidia.com}"
+FR_PATTERN="${FR_PATTERN:-_dump_*}"
 
 # Ensure nvidia_resiliency_ext is importable from source tree
 export PYTHONPATH="${NVRX_SRC_DIR}${PYTHONPATH:+:$PYTHONPATH}"
@@ -110,6 +116,9 @@ while true; do
             #   last line: checkpoint_saved ("True" / "False")
             LOG_OUT=$(python3 "${LOGSAGE_PY}" \
                 --log-path "${STRIPPED_LOG}" \
+                --model "${LOG_ANALYSIS_MODEL}" \
+                --base_url "${LOG_ANALYSIS_BASE_URL}" \
+                --emit-stdout \
                 --exclude_nvrx_logs 2>/dev/null || echo "")
             LOG_RESTART=$(echo "${LOG_OUT}" | head -1)
             echo "    restart_decision: ${LOG_RESTART:-<empty>}"
@@ -122,33 +131,17 @@ while true; do
         FR_DIR="${EXPERIMENT_DIR}/checkpoints"
         FR_OUT="no_dumps"
 
-        if [[ "${RUN_VALID}" == "true" ]] && ls "${FR_DIR}"/_dump_* 2>/dev/null | grep -q .; then
-            echo "    FR dumps: $(ls "${FR_DIR}"/_dump_* 2>/dev/null | wc -l) files"
-            FR_OUT=$(python3 -c "
-import sys, logging
-logging.basicConfig(level=logging.WARNING)
-sys.path.insert(0, '${NVRX_SRC_DIR}')
-from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
-try:
-    ca = CollectiveAnalyzer({'fr_path': '${FR_DIR}'})
-    results = ca.run_sync({'fr_path': '${FR_DIR}'})
-    if results:
-        result_data = results[0]
-        if isinstance(result_data, dict):
-            text = result_data.get('analysis_text', '')
-            ranks = result_data.get('hanging_ranks', '')
-            if text:
-                print(text)
-            if ranks:
-                print(ranks)
-        else:
-            print(str(result_data))
-    else:
-        print('no results')
-except Exception as e:
-    print('error: ' + str(e), file=sys.stderr)
-    print('no_dumps')
-" 2>/dev/null || echo "no_dumps")
+        if [[ "${RUN_VALID}" == "true" ]] && ls "${FR_DIR}"/${FR_PATTERN} 2>/dev/null | grep -q .; then
+            echo "    FR dumps: $(ls "${FR_DIR}"/${FR_PATTERN} 2>/dev/null | wc -l) files"
+            # Use the FR CLI contract directly:
+            #   --fr-path <directory containing dumps> -p '_dump_*'
+            FR_OUT=$(python3 -m "${FR_ANALYSIS_MODULE}" \
+                --fr-path "${FR_DIR}" \
+                --emit-stdout \
+                -p "${FR_PATTERN}" 2>/dev/null || echo "no_dumps")
+            if [[ -z "${FR_OUT}" ]]; then
+                FR_OUT="no_dumps"
+            fi
         elif [[ "${RUN_VALID}" == "false" ]]; then
             FR_OUT="run_invalid"
             echo "    FR analysis skipped (run did not reach fault injection point)"
@@ -164,7 +157,9 @@ except Exception as e:
             --run-valid "${RUN_VALID}" \
             --log-path "${STRIPPED_LOG:-}" \
             --log-output "${LOG_OUT}" \
-            --fr-output "${FR_OUT}" 2>/dev/null || echo '{"notes":"judge_failed"}')
+            --fr-output "${FR_OUT}" \
+            --model "${JUDGE_MODEL}" \
+            --base-url "${JUDGE_BASE_URL}" 2>/dev/null || echo '{"notes":"judge_failed"}')
 
         # Clean up temp stripped log
         [[ -n "${STRIPPED_LOG}" && -f "${STRIPPED_LOG}" ]] && rm -f "${STRIPPED_LOG}"

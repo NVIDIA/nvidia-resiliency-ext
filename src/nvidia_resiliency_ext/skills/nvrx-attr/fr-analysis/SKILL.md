@@ -22,7 +22,7 @@ and isolate the ranks responsible, using `CollectiveAnalyzer`.
 
 ## What it does
 
-1. Loads all FR dump files (JSON or binary pickle) matching a glob pattern under `--fr-path`.
+1. Loads all FR dump files matching a glob pattern under `--fr-path`.
 2. Parses each dump into `Collective` records (op type, ranks, process group, timing, state).
 3. Groups collectives by process group and sequence ID across ranks to detect mismatches.
 4. Identifies the **wavefront** — the process group boundary where collectives diverge — and
@@ -37,7 +37,7 @@ and isolate the ranks responsible, using `CollectiveAnalyzer`.
 ```bash
 python scripts/fr_attribution.py \
     --fr-path /path/to/fr_dumps/ \
-    [--pattern "*.json"] \
+    [-p "_dump_*"] \
     [--verbose] \
     [--health-check] \
     [--llm-analyze] \
@@ -48,7 +48,7 @@ python scripts/fr_attribution.py \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--fr-path` | required | Path to a directory (or single file) containing FR dump files |
-| `--pattern` | `*.json` | Glob pattern for dump files within `--fr-path` |
+| `--pattern`, `-p` | `_dump_*` | Glob pattern for dump files within `--fr-path` |
 | `--verbose`, `-v` | off | Print detailed per-rank collective tables |
 | `--health-check`, `-c` | off | Include node health check results in output |
 | `--llm-analyze`, `-l` | off | Pass structured findings to the LLM for a narrative summary |
@@ -64,7 +64,7 @@ from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import Coll
 
 analyzer = CollectiveAnalyzer({
     "fr_path": "/path/to/fr_dumps/",
-    "pattern": "*.json",
+    "pattern": "_dump_*",
     "verbose": False,
     "health_check": False,
     "llm_analyze": False,
@@ -80,10 +80,10 @@ results = analyzer.run_sync({
 
 ## Output
 
-Returns `(text, AttributionState)` pairs where `text` describes:
+Returns `(text, AttributionState)` pairs where `text` is the FR analysis table and describes:
 
-- The **wavefront process group** where collectives diverged
-- **Missing ranks** at the wavefront (root-cause suspects)
+- The selected wavefront/front process group
+- **Missing ranks** at that process group (root-cause suspects)
 - Per-rank collective status tables (when `--verbose`)
 - Node health summary (when `--health-check`)
 - LLM narrative (when `--llm-analyze`)
@@ -97,8 +97,8 @@ may be restartable after isolating the identified ranks.
 
 | Format | Notes |
 |--------|-------|
-| JSON (`.json`) | Standard PyTorch FR export; default glob pattern |
-| Binary pickle | Detected automatically; use `--debug` to convert to JSON |
+| `_dump_*` files | PyTorch FR dump prefix pattern used by the feedback loop |
+| Binary pickle / JSON payloads | Detected automatically; use `--debug` to convert binary traces to JSON |
 
 FR dumps are typically written to the directory specified by `TORCH_NCCL_DEBUG_INFO_TEMP_FILE`
 or triggered automatically on NCCL timeout.
