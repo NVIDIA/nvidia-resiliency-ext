@@ -11,6 +11,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+USER_ENV_FILE="${SCRIPT_DIR}/user.env"
+if [[ -f "${USER_ENV_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${USER_ENV_FILE}"
+fi
 WORKLOAD="${WORKLOAD:-llama4_scout}"
 
 # ---- Phase 1: submit and wait for all experiments ----
@@ -22,7 +27,7 @@ WORKLOAD="${WORKLOAD}" bash "${SCRIPT_DIR}/prepare_node_alloc.sh"
 # prepare_node_alloc.sh prints the tracking file path; re-derive it the same way
 # (SESSION_TAG is the timestamp when prepare_node_alloc ran, which is a few seconds
 # before this line — find the newest session dir instead of recomputing the tag)
-BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR:-/home/sbak/experiments/llama4-scout-gb200}"
+BASE_EXPERIMENTS_DIR="${BASE_EXPERIMENTS_DIR:-${HOME}/nvrx-attr-experiments}"
 TRACKING_FILE=$(ls -td "${BASE_EXPERIMENTS_DIR}/fault_injection"/[0-9]* 2>/dev/null \
     | head -1)/experiments.tsv
 

@@ -92,18 +92,44 @@ To run a custom subset, override `POOL` before calling the script:
 POOL="GPU_SLEEP:0:5:2 GPU_SLEEP:1:5:2" bash scripts/prepare_node_alloc.sh
 ```
 
+## Local User Config
+
+Put cluster-specific settings in `scripts/user.env`. This file is sourced by
+`run_session.sh`, `prepare_node_alloc.sh`, and `l4_gb200_reduced.sh`, and it is
+intended to stay local and untracked.
+
+Recommended contents:
+
+```bash
+PARTITION=gb-nvl-134-135
+BASE_EXPERIMENTS_DIR="${HOME}/nvrx-attr-experiments"
+MEGATRON_REPO_HOST_PATH="${HOME}/megatron-lm-main"
+SHARED_TMP_BASE_DIR="${HOME}/tmp"
+WORKSPACE_HOST_PATH="${HOME}/tmp"
+CONTAINER_IMAGE="nvcr.io/nvidia/nemo:26.04"
+```
+
+Use `user.env` for stable site defaults such as partition, container image, and
+host paths. Use per-run environment overrides for experiment-specific controls
+such as `POOL`, `WORKLOAD`, `BATCH_SIZE`, `FAULT_TYPE`, `FAULT_AT_ITER`, or
+`FAULT_DELAY`.
+
 Environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
 | `WORKLOAD` | `llama4_scout` | Select a registered workload by name (see `scripts/workloads.conf`) |
-| `ACCOUNT` | `root` | SLURM account |
-| `PARTITION` | `gb-nvl-134-135` | SLURM partition |
+| `ACCOUNT` | _(cluster default or `scripts/slurm.conf`)_ | SLURM account |
+| `PARTITION` | _(cluster default or `scripts/slurm.conf`)_ | SLURM partition |
 | `GPUS_PER_NODE` | `4` | GPUs per node |
 | `TIME` | `00:30:00` | Per-job wall-clock limit |
 | `BATCH_SIZE` | `2` | Jobs submitted per round |
 | `POLL_INTERVAL` | `30` | Seconds between queue polls |
-| `BASE_EXPERIMENTS_DIR` | _(from workloads.conf or `llama4-scout-gb200`)_ | Root for all output |
+| `BASE_EXPERIMENTS_DIR` | `${HOME}/nvrx-attr-experiments` | Root for all output |
+| `MEGATRON_REPO_HOST_PATH` | `${HOME}/megatron-lm-main` | Host path to the Megatron checkout mounted into the container |
+| `SHARED_TMP_BASE_DIR` | `${HOME}/tmp` | Shared filesystem path used for cross-step coordination |
+| `WORKSPACE_HOST_PATH` | `${HOME}/tmp` | Host path mounted at `/workspace` inside the container |
+| `CONTAINER_IMAGE` | `nvcr.io/nvidia/nemo:26.04` | Container image used by the workload script |
 | `SBATCH_SCRIPT` | `scripts/l4_gb200_reduced.sh` | Job script to submit |
 | `POOL` | _(default pool above)_ | Space-separated experiment triplets |
 
@@ -111,7 +137,7 @@ Environment variables:
 
 | Name | Script | Base dir | Description |
 |---|---|---|---|
-| `llama4_scout` | `l4_gb200_reduced.sh` | `.../llama4-scout-gb200` | Llama4-Scout (reduced layers) on GB200 |
+| `llama4_scout` | `l4_gb200_reduced.sh` | `${HOME}/nvrx-attr-experiments` | Llama4-Scout (reduced layers) on GB200 |
 
 ```bash
 # Run the full pool against the validated example workload
@@ -187,7 +213,7 @@ To also run the sub-skills interactively for a single experiment:
 
 ## Step 4 — Score Each Experiment
 
-Scoring is performed by `scripts/score_attribution.py`, an LLM judge (Sonnet or Opus) that
+Scoring is performed by `scripts/score_attribution.py`, an LLM judge that
 receives the ground truth, the filtered raw log, the logsage attribution output, and the FR
 analysis output, then returns structured JSON scores with a reasoning note.
 
@@ -292,7 +318,7 @@ Required changes for a custom workload script:
    `${EXPERIMENT_DIR}/logs/slurm/${SLURM_JOB_ID}.*.1.main_workload.log`
    so `watch_and_analyze.sh` can find it.
 3. Write NCCL flight-recorder dumps under `${EXPERIMENT_DIR}/checkpoints/`.
-4. Emit a `[MEGATRON_FAULT] ...` marker when the fault is injected.
+4. Emit a fault-injection marker when the fault is injected.
    `watch_and_analyze.sh` uses this to decide whether the run reached the injection point.
 5. Preserve the per-experiment directory layout:
    `logs/slurm/`, `checkpoints/`, and `tensorboard/`.
@@ -308,11 +334,12 @@ The example `SBATCH_SCRIPT` reads these env vars from `prepare_node_alloc.sh` vi
 | Variable | Default | Description |
 |---|---|---|
 | `FAULT_AT_ITER` | `5` | Training iteration at which to inject |
+| `FAULT_DELAY` | `15` | Delay in seconds before fault injection after the iteration anchor |
 | `FAULT_RANK` | `1` | Global rank to inject `[0, total_ranks)` |
 | `FAULT_TYPE` | `GPU_SLEEP` | Megatron fault type enum name |
 | `GPUS_PER_NODE` | `4` | GPUs per node (used to compute `TOTAL_TASKS`) |
 | `EXPERIMENT_DIR` | `${BASE_EXPERIMENTS_DIR}/fault_injection/n${SLURM_NNODES}_${FAULT_TYPE}_r${FAULT_RANK}_i${FAULT_AT_ITER}` | Per-experiment output root |
-| `BASE_EXPERIMENTS_DIR` | `/home/sbak/experiments/llama4-scout-gb200` | Shared root (datacache, triton/inductor caches) |
+| `BASE_EXPERIMENTS_DIR` | `${HOME}/nvrx-attr-experiments` | Shared root (datacache, triton/inductor caches) |
 
 Valid `FAULT_TYPE` values:
 `GPU_ERROR`, `GPU_SLEEP`, `WORKLOAD_EXC`, `ASYNC_EXC`, `SIGNAL_EXC`, `OS_ABORT`,
@@ -324,13 +351,23 @@ Valid `FAULT_TYPE` values:
 
 ```bash
 # Manual runs land under fault_injection/manual/ by default (no session dir needed)
-EXPERIMENT_DIR=/home/sbak/experiments/llama4-scout-gb200/fault_injection/manual/n2_GPU_SLEEP_r1_i5
+EXPERIMENT_DIR=${HOME}/nvrx-attr-experiments/fault_injection/manual/n2_GPU_SLEEP_r1_i5
 mkdir -p ${EXPERIMENT_DIR}/logs/slurm ${EXPERIMENT_DIR}/checkpoints ${EXPERIMENT_DIR}/tensorboard
 
 sbatch \
     --nodes=2 \
     --output=${EXPERIMENT_DIR}/logs/slurm/%j.launch.out \
     --error=${EXPERIMENT_DIR}/logs/slurm/%j.launch.err \
-    --export=ALL,FAULT_TYPE=GPU_SLEEP,FAULT_RANK=1,FAULT_AT_ITER=5,GPUS_PER_NODE=4,EXPERIMENT_DIR=${EXPERIMENT_DIR} \
+    --export=ALL,FAULT_TYPE=GPU_SLEEP,FAULT_RANK=1,FAULT_AT_ITER=5,FAULT_DELAY=15,GPUS_PER_NODE=4,EXPERIMENT_DIR=${EXPERIMENT_DIR} \
     scripts/l4_gb200_reduced.sh
+```
+
+Optional site-specific cleanup:
+
+```bash
+export CONTAINER_CLEANUP_CMD='
+ENROOT_DIR="/var/lib/enroot/data/$(id -u)"
+rm -rf "${ENROOT_DIR:?}"/* 2>/dev/null || true
+echo "$(hostname): / $(df -h / | tail -1 | awk "{print \$3\" used, \"\$4\" avail\"}")"
+'
 ```

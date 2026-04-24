@@ -18,8 +18,13 @@
 #SBATCH --mem=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+USER_ENV_FILE="${SCRIPT_DIR}/user.env"
 NVRX_SRC_ROOT_DEFAULT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 NVRX_REPO_ROOT_DEFAULT="$(cd "${SCRIPT_DIR}/../../../../.." && pwd)"
+if [[ -f "${USER_ENV_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${USER_ENV_FILE}"
+fi
 
 log_msg() {
     local msg="$1"
@@ -63,7 +68,7 @@ export TORCH_NCCL_EXTRA_DUMP_ON_EXEC=1
 # - FAULT_AT_ITER anchors the fault-delay timer after iteration N completes
 # - FAULT_DELAY is the delay in seconds from that anchor (or from training start if unset)
 export FAULT_AT_ITER="${FAULT_AT_ITER:-5}"
-export FAULT_DELAY="${FAULT_DELAY:-}"
+export FAULT_DELAY="${FAULT_DELAY:-15}"
 export FAULT_RANK="${FAULT_RANK:-1}"
 export FAULT_TYPE="${FAULT_TYPE:-GPU_SLEEP}"
 export ENABLE_FAULT_INJECTION="${ENABLE_FAULT_INJECTION:-1}"
@@ -79,7 +84,7 @@ export NFS_INDUCTOR_CACHE="${NFS_INDUCTOR_CACHE:-}"
 # USE_ASYNC_CKPT=1: enable async checkpointing every CKPT_SAVE_INTERVAL iters
 export USE_ASYNC_CKPT="${USE_ASYNC_CKPT:-0}"
 export CKPT_SAVE_INTERVAL="${CKPT_SAVE_INTERVAL:-100}"
-export ENABLE_ENROOT_CLEANUP="${ENABLE_ENROOT_CLEANUP:-0}"
+export CONTAINER_CLEANUP_CMD="${CONTAINER_CLEANUP_CMD:-}"
 
 # Node / task geometry (SLURM_NNODES is set by SLURM from --nodes override)
 export GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
@@ -163,8 +168,8 @@ if [[ -n "${CONTAINER_NAME}" ]]; then
     CONTAINER_ARGS+=(--container-name "${CONTAINER_NAME}")
 fi
 
-# ── Disk cleanup: remove stale enroot containers from prior jobs ──────────────
-if [[ "${ENABLE_ENROOT_CLEANUP}" == "1" ]]; then
+# ── Optional site-specific container cleanup hook ──────────────────────────────
+if [[ -n "${CONTAINER_CLEANUP_CMD}" ]]; then
     log_msg "START disk_cleanup"
     srun \
         --label \
@@ -172,11 +177,7 @@ if [[ "${ENABLE_ENROOT_CLEANUP}" == "1" ]]; then
         --ntasks=${SLURM_NNODES} \
         --kill-on-bad-exit=0 \
         --mpi=none \
-        bash -c '
-            ENROOT_DIR="/var/lib/enroot/data/$(id -u)"
-            rm -rf "${ENROOT_DIR:?}"/* 2>/dev/null || true
-            echo "$(hostname): / $(df -h / | tail -1 | awk "{print \$3\" used, \"\$4\" avail\"}")"
-        '
+        bash -lc "${CONTAINER_CLEANUP_CMD}"
     log_msg "END disk_cleanup"
 else
     log_msg "SKIP disk_cleanup"
@@ -313,7 +314,6 @@ PY
             --no-mmap-bin-files \
             --tokenizer-type NullTokenizer \
             --tiktoken-pattern v2 \
-            --tokenizer-model /lustre/fsw/portfolios/llmservice/projects/llmservice_nlp_fm/nemotron6/tokenizers/multiMixV8.gpt4o_nc_sd.500000.128k.vocab.json \
             --micro-batch-size 1 \
             --global-batch-size 64 \
             --train-samples 10240000 \
