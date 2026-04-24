@@ -18,9 +18,9 @@
 #   NVRX_ATTRSVC_ALLOWED_ROOT - Root path for log files to analyze
 #
 # API Key Options (in priority order):
-#   1. NVIDIA_API_KEY env var (direct key)
-#   2. NVIDIA_API_KEY_FILE env var (path to file containing key)
-#   3. Default: ~/.nvidia_api_key
+#   1. LLM_API_KEY env var (direct key)
+#   2. LLM_API_KEY_FILE env var (path to file containing key)
+#   3. Default: ~/.llm_api_key or ~/.config/nvrx/llm_api_key
 #
 # Example:
 #   NVRX_ATTRSVC_ALLOWED_ROOT=/lustre/logs sbatch --account=myaccount slurm.sbatch
@@ -48,7 +48,7 @@ export NVRX_ATTRSVC_NVDATAFLOW_PROJECT="${NVRX_ATTRSVC_NVDATAFLOW_PROJECT:-}"
 export NVRX_ATTRSVC_CLUSTER_NAME="${NVRX_ATTRSVC_CLUSTER_NAME:-${SLURM_CLUSTER_NAME:-unknown}}"
 
 # Setup API key
-setup_nvidia_api_key || exit 1
+setup_llm_api_key || exit 1
 
 # Install packages
 install_nvrx_packages "attrsvc"

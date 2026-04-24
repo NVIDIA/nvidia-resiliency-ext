@@ -5,51 +5,41 @@
 # Get the directory where this script lives
 COMMON_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Setup NVIDIA API key from environment, file, or default locations
+# Setup LLM API key for processes that read nvidia_resiliency_ext.attribution.api_keys.load_llm_api_key
 # Checks in order:
-#   1. NVIDIA_API_KEY environment variable
-#   2. NVIDIA_API_KEY_FILE environment variable (path to file)
-#   3. ~/.nvidia_api_key file
-#   4. ~/.config/nvrx/nvidia_api_key file
-# Sets NVIDIA_API_KEY environment variable
-setup_nvidia_api_key() {
-    if [[ -n "${NVIDIA_API_KEY}" ]]; then
-        echo "Using NVIDIA_API_KEY from environment"
+#   1. LLM_API_KEY environment variable
+#   2. LLM_API_KEY_FILE (path to file; must exist)
+#   3. ~/.llm_api_key — sets export LLM_API_KEY_FILE to that path
+#   4. ~/.config/nvrx/llm_api_key
+setup_llm_api_key() {
+    if [[ -n "${LLM_API_KEY}" ]]; then
+        echo "Using LLM_API_KEY from environment"
         return 0
     fi
-    
-    # Check NVIDIA_API_KEY_FILE
-    if [[ -n "${NVIDIA_API_KEY_FILE}" ]]; then
-        if [[ ! -f "${NVIDIA_API_KEY_FILE}" ]]; then
-            echo "ERROR: NVIDIA_API_KEY_FILE specified but not found: ${NVIDIA_API_KEY_FILE}"
+
+    if [[ -n "${LLM_API_KEY_FILE}" ]]; then
+        if [[ ! -f "${LLM_API_KEY_FILE}" ]]; then
+            echo "ERROR: LLM_API_KEY_FILE specified but not found: ${LLM_API_KEY_FILE}"
             return 1
         fi
-        export NVIDIA_API_KEY=$(cat "${NVIDIA_API_KEY_FILE}" | tr -d '[:space:]')
-        if [[ -z "${NVIDIA_API_KEY}" ]]; then
-            echo "ERROR: NVIDIA_API_KEY_FILE is empty: ${NVIDIA_API_KEY_FILE}"
-            return 1
-        fi
-        echo "Using API key from: ${NVIDIA_API_KEY_FILE}"
+        echo "Using LLM_API_KEY_FILE=${LLM_API_KEY_FILE}"
         return 0
     fi
-    
-    # Check default locations
+
     local KEY_LOCATIONS=(
-        "${HOME}/.nvidia_api_key"
-        "${HOME}/.config/nvrx/nvidia_api_key"
+        "${HOME}/.llm_api_key"
+        "${HOME}/.config/nvrx/llm_api_key"
     )
     for key_file in "${KEY_LOCATIONS[@]}"; do
         if [[ -f "${key_file}" ]]; then
-            export NVIDIA_API_KEY=$(cat "${key_file}" | tr -d '[:space:]')
-            if [[ -n "${NVIDIA_API_KEY}" ]]; then
-                echo "Using API key from: ${key_file}"
-                return 0
-            fi
+            export LLM_API_KEY_FILE="${key_file}"
+            echo "Using API key from: ${key_file}"
+            return 0
         fi
     done
-    
-    echo "WARNING: NVIDIA_API_KEY not found - LLM analysis may fail"
-    echo "  Set NVIDIA_API_KEY, NVIDIA_API_KEY_FILE, or create ~/.nvidia_api_key"
+
+    echo "WARNING: LLM API key not found - LLM analysis may fail"
+    echo "  Set LLM_API_KEY, LLM_API_KEY_FILE, or create ~/.llm_api_key"
     return 1
 }
 

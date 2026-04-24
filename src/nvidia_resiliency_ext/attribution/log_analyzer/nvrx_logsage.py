@@ -110,14 +110,14 @@ def chunk_logs_strict(lines):
 
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
-        from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
+        from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
 
         self._init_config = normalize_attribution_args(args)
-        self.api_key = load_nvidia_api_key()
+        self.api_key = load_llm_api_key()
         if not self.api_key:
             raise ValueError(
-                "NVIDIA_API_KEY not found. Set NVIDIA_API_KEY env var, "
-                "NVIDIA_API_KEY_FILE env var, or create ~/.nvidia_api_key"
+                "LLM_API_KEY not found. Set LLM_API_KEY env var, "
+                "LLM_API_KEY_FILE env var, or create ~/.llm_api_key"
             )
         logger.debug("API key loaded (length=%d)", len(self.api_key))
         logger.debug(
@@ -314,8 +314,9 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
     async def print_output(
         self, attribution_results: list[str]
-    ) -> list[tuple[str, AttributionState]]:
+    ) -> tuple[list[tuple[str, AttributionState]], AttributionState]:
         output_list = []
+        overall_state = AttributionState.CONTINUE
         for attribution_result in attribution_results:
             if attribution_result:
                 logger.info(f"attribution_result: {attribution_result}")
@@ -326,8 +327,10 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     concatenated_result = str(attribution_result)
                     head = concatenated_result
                 attr_state = AttributionState.STOP if 'STOP' in head else AttributionState.CONTINUE
+                if attr_state == AttributionState.STOP:
+                    overall_state = AttributionState.STOP
                 output_list.append((concatenated_result, attr_state))
-        return output_list
+        return (output_list, overall_state)
 
 
 def main():

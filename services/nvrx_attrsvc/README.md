@@ -24,8 +24,8 @@ pip install -e .
 
 # Run
 export NVRX_ATTRSVC_ALLOWED_ROOT=/path/to/logs
-# API key: set env var OR create ~/.nvidia_api_key file
-export NVIDIA_API_KEY=nvapi-...
+# API key: set env var OR create ~/.llm_api_key file
+export LLM_API_KEY=your-llm-api-key-here
 nvrx-attrsvc
 ```
 
@@ -57,11 +57,11 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 | `NVRX_ATTRSVC_COMPUTE_TIMEOUT`  | Timeout for analysis in seconds                                                                                                                                                                               |
 | `NVRX_ATTRSVC_ANALYSIS_BACKEND` | `mcp` (subprocess MCP, default) or `lib` (in-process LogSage and flight-recorder analysis). Same setting for both; library behavior: **ARCHITECTURE.md §7**. Legacy env: `NVRX_ATTRSVC_LOG_ANALYSIS_BACKEND`. |
 
-**NVIDIA API Key** (required, checked in order):
-1. `NVIDIA_API_KEY` environment variable
-2. `NVIDIA_API_KEY_FILE` environment variable (path to file)
-3. `~/.nvidia_api_key` file
-4. `~/.config/nvrx/nvidia_api_key` file
+**LLM API Key** (required, checked in order — see `api_keys.load_llm_api_key`):
+1. `LLM_API_KEY` environment variable
+2. `LLM_API_KEY_FILE` environment variable (path to file)
+3. `~/.llm_api_key` file
+4. `~/.config/nvrx/llm_api_key` file
 
 **Slack Notifications** (optional; no `NVRX_ATTRSVC_` prefix):
 

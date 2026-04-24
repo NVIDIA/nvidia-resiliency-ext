@@ -7,7 +7,7 @@
 #   docker run -d \
 #       -p 8000:8000 \
 #       -e NVRX_ATTRSVC_ALLOWED_ROOT=/data/logs \
-#       -e NVIDIA_API_KEY=nvapi-... \
+#       -e LLM_API_KEY=your-llm-api-key-here \
 #       -v /path/to/logs:/data/logs:ro \
 #       nvrx-attrsvc
 #
