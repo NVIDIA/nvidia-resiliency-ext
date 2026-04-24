@@ -34,6 +34,42 @@ def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
 
+def _parse_rank_list(rank_text: str) -> List[int]:
+    ranks = []
+    for token in rank_text.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            ranks.append(int(token))
+        except ValueError:
+            continue
+    return ranks
+
+
+def _extract_missing_ranks_from_table(text: str) -> List[int]:
+    hanging_ranks = set()
+    capture = False
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("PGID") and "Missing Ranks" in stripped:
+            capture = True
+            continue
+        if not capture or "|" not in stripped:
+            continue
+
+        columns = [col.strip() for col in stripped.split("|")]
+        if len(columns) < 6:
+            continue
+        for rank in _parse_rank_list(columns[-1]):
+            hanging_ranks.add(rank)
+
+    return sorted(hanging_ranks)
+
+
 @dataclass
 class Collective:
     """
@@ -134,12 +170,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                 hanging_ranks_str = hanging_ranks.group(1).strip()
                 hanging_ranks_list = list(map(int, hanging_ranks_str.split(',')))
         else:
-            for idx, line in enumerate(text.split('\n')):
-                line_list = line.split('|')
-                if len(line_list) >= 5:
-                    logger.info(line)
-                    if idx >= 1:
-                        hanging_ranks_list.append(line_list[5])
+            hanging_ranks_list = _extract_missing_ranks_from_table(text)
         hanging_ranks = f"hanging ranks: {hanging_ranks_list}"
         # Dict form preserves collective table text for MCP clients and FRAnalysisResult parity.
         return (
@@ -218,20 +249,18 @@ class CollectiveAnalyzer(NVRxAttribution):
         # analyze collectives to find process groups with missing and completed ranks
         completed_pg, missing_pg = self.analyze_matches(verbose=bool(cfg.get("verbose")))
         grouped_missing_pgs = {}
-        grouped_completed_pgs = {}
 
         # if the dump file contains health check results, parse the health check results
         # and print them in a format
         if cfg.get("health_check"):
             self.print_node_health_status(verbose=bool(cfg.get("verbose")))
 
-        # group the process groups with missing and completed ranks
-        # by finding longest paths in the graph
+        # Group only process groups with missing ranks.
+        # Completed-rank summaries are not actionable for attribution and create
+        # misleading output in the feedback loop.
         grouped_missing_pgs = self.group_pgs(missing_pg)
-        if len(grouped_missing_pgs) == 0:
-            grouped_completed_pgs = self.group_pgs(completed_pg)
 
-        # gather the head node of each group with missing and completed ranks
+        # gather the head node of each group with missing ranks
         # the head node is the first node in the group
         # the missing ranks in the head node of the missing process groups
         # are considered to cause the other nodes in the group to hang
@@ -242,16 +271,16 @@ class CollectiveAnalyzer(NVRxAttribution):
             return head_nodes
 
         head_nodes_missing = None
-        head_nodes_completed = None
-        # Gather the head node of each group
+        # Gather the head node of each missing-rank group.
         if len(grouped_missing_pgs) > 0:
             head_nodes_missing = gather_head_nodes(grouped_missing_pgs)
             logger.debug(f"head_nodes of missing_pg: {head_nodes_missing}")
-        else:
-            head_nodes_completed = gather_head_nodes(grouped_completed_pgs)
-            logger.debug(f"head_nodes of completed_pg: {head_nodes_completed}")
         # Print the analysis output
-        with capture_logs() as output:
+        original_level = logger.level
+        if logger.getEffectiveLevel() > logging.INFO:
+            logger.setLevel(logging.INFO)
+
+        with capture_logs(logger.name) as output:
 
             def print_ranks_in_pgs(head_nodes, pg_dict, missing_or_completed="Missing"):
                 logger.info(
@@ -273,10 +302,8 @@ class CollectiveAnalyzer(NVRxAttribution):
             if head_nodes_missing:
                 logger.debug(f"head_nodes_missing: {head_nodes_missing}")
                 print_ranks_in_pgs(head_nodes_missing, missing_pg, "Missing")
-            # TODO: using this completed pg needs to be updated with new algorithm for isolation
-            if head_nodes_completed:
-                print_ranks_in_pgs(head_nodes_completed, completed_pg, "Completed")
         analysis_output = output.getvalue()
+        logger.setLevel(original_level)
         return analysis_output
 
     async def collective_analysis(self, analysis_output: str) -> Optional[str]:
@@ -1117,7 +1144,7 @@ def main():
         '--fr-path', type=str, help='Path to JSON files or directories containing JSON files'
     )
     parser.add_argument(
-        '-p', '--pattern', default="*.json", help='File pattern to match (default: *.json)'
+        '-p', '--pattern', default="_dump_*", help='File pattern to match (default: _dump_*)'
     )
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose output')
     parser.add_argument(
@@ -1143,11 +1170,25 @@ def main():
         action='store_true',
         help='Convert the trace file to json file, if the trace is binary, for debugging',
     )
+    parser.add_argument(
+        '--emit-stdout',
+        action='store_true',
+        help='Print final FR summary table to stdout for machine consumers',
+    )
 
     args = parser.parse_args()
 
     analyzer = CollectiveAnalyzer(args)
-    analyzer.run_sync(args)
+    result = analyzer.run_sync(args)
+
+    if args.emit_stdout and isinstance(result, tuple) and result:
+        payload = result[0]
+        if isinstance(payload, dict):
+            text = payload.get("analysis_text", "")
+            if text:
+                print(text)
+        elif payload:
+            print(payload)
 
 
 if __name__ == "__main__":

@@ -94,9 +94,15 @@ POOL="GPU_SLEEP:0:5:2 GPU_SLEEP:1:5:2" bash scripts/prepare_node_alloc.sh
 
 ## Local User Config
 
-Put cluster-specific settings in `scripts/user.env`. This file is sourced by
-`run_session.sh`, `prepare_node_alloc.sh`, and `l4_gb200_reduced.sh`, and it is
-intended to stay local and untracked.
+Start from the tracked template:
+
+```bash
+cp scripts/user.env.example scripts/user.env
+```
+
+Then edit `scripts/user.env` with cluster-specific settings. This file is
+sourced by `run_session.sh`, `prepare_node_alloc.sh`, and
+`l4_gb200_reduced.sh`, and it is intended to stay local and untracked.
 
 Recommended contents:
 
@@ -198,7 +204,7 @@ The watcher:
 1. Reads each row from the tracking TSV
 2. Calls `nvrx_logsage.py --exclude_nvrx_logs` and parses the text output to get
    `restart_decision` and `attribution_text`
-3. Calls `CollectiveAnalyzer` from `fr_attribution.py` to get suspect ranks
+3. Calls FR analysis as `python -m nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution --fr-path "${EXPERIMENT_DIR}/checkpoints" -p "_dump_*"` and passes the raw table output to the judge
 4. Scores 7 dimensions (restart correctness, rank primary, rank any, category, type, FR rank)
 5. Appends a scored row to `<session>_report.md`
 6. Repeats until all experiments are analyzed
@@ -206,7 +212,7 @@ The watcher:
 To also run the sub-skills interactively for a single experiment:
 ```bash
 /log-analysis --log-path "${EXPERIMENT_DIR}/logs/slurm/${JOB_ID}.*.1.main_workload.log"
-/fr-analysis  --fr-path  "${EXPERIMENT_DIR}/checkpoints/"
+/fr-analysis  --fr-path "${EXPERIMENT_DIR}/checkpoints" -p "_dump_*"
 ```
 
 ---
@@ -231,7 +237,7 @@ The judge is given:
 2. Expected restart decision + rationale (derived from `score_attribution.py:_RESTART_TABLE`)
 3. Filtered raw log (last 400 lines, same `exclude_nvrx_logs` filtering as logsage)
 4. Raw logsage stdout (5-field text format)
-5. Raw CollectiveAnalyzer text output
+5. Raw FR analysis table output from `fr_attribution.py --fr-path ... -p "_dump_*"`
 
 Default judge model: `qwen/qwen3.5-397b-a17b`. Override with `--model` in `score_attribution.py`.
 
