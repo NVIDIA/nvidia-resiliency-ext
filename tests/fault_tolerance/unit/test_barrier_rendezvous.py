@@ -46,12 +46,15 @@ from nvidia_resiliency_ext.fault_tolerance import (
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     WITHDRAWN,
     FtRendezvousBarrierHandler,
+    GroupRankStatus,
     RendezvousParticipantInfo,
+    RendezvousStoreValue,
     RendezvousTimeout,
     RendezvousTimeoutError,
     _NodeDesc,
     _NodeDescGenerator,
     _RendezvousBarrierState,
+    _StaleRendezvousRoundError,
 )
 
 # Test timeout configuration - use short timeouts to make tests run faster
@@ -63,6 +66,17 @@ BARRIER_WAIT_TIMEOUT_SECS = 10.0
 
 # Process-based participant timeout (each process has its own store connection; no contention)
 PROCESS_JOIN_TIMEOUT_SECS = 60
+
+
+def _participant_store_value(round_id, node_desc, infra_rank=-1, domain_id="none"):
+    return RendezvousStoreValue.pack(
+        round_id,
+        RendezvousParticipantInfo.to_payload(node_desc, infra_rank, domain_id),
+    ).encode("utf-8")
+
+
+def _rank_store_value(round_id, rank, total):
+    return RendezvousStoreValue.pack(round_id, {"rank": rank, "total": total}).encode("utf-8")
 
 
 def _run_participant_process(
@@ -320,12 +334,137 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         count3 = self.store.add(state.join_count_key, 1)
         self.assertEqual(count3, 3)
 
+    def test_round_fenced_slot_cas_refuses_newer_round(self):
+        """A stale participant metadata write must not clobber a newer round's slot."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        slot_key = f"{state.prefix}:slot_1"
+        newer_node = _NodeDesc("newer", 2, 0)
+        stale_node = _NodeDesc("stale", 1, 0)
+        newer_value = _participant_store_value(1, newer_node, 2, "none")
+        stale_value = _participant_store_value(0, stale_node, 1, "none")
+        self.store.set(slot_key, newer_value)
+
+        with self.assertRaises(_StaleRendezvousRoundError):
+            state._round_fenced_compare_set(
+                slot_key,
+                stale_value,
+            )
+
+        self.assertEqual(self.store.get(slot_key), newer_value)
+        self.assertEqual(state._round, 0)
+
+    def test_round_fenced_rank_cas_refuses_newer_round(self):
+        """A stale initial rank placeholder must not overwrite a newer round's rank key."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        rank_key = f"{state.prefix}:slot_1_rank"
+        newer_value = _rank_store_value(1, GroupRankStatus.UNASSIGNED.value, 0)
+        stale_value = _rank_store_value(0, 0, 1)
+        self.store.set(rank_key, newer_value)
+
+        with self.assertRaises(_StaleRendezvousRoundError):
+            state._round_fenced_compare_set(
+                rank_key,
+                stale_value,
+            )
+
+        self.assertEqual(self.store.get(rank_key), newer_value)
+        self.assertEqual(state._round, 0)
+
+    def test_round_fenced_cas_rejects_same_round_conflict(self):
+        """Same-round conflicts indicate broken slot ownership and must fail loudly."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        rank_key = f"{state.prefix}:slot_1_rank"
+        assigned_value = _rank_store_value(0, 0, 1)
+        self.store.set(rank_key, assigned_value)
+
+        with self.assertRaisesRegex(RuntimeError, "same-round rendezvous write conflict"):
+            state._round_fenced_compare_set(
+                rank_key,
+                _rank_store_value(0, GroupRankStatus.UNASSIGNED.value, 0),
+            )
+
+        self.assertEqual(self.store.get(rank_key), assigned_value)
+
+    def test_leave_rendezvous_refuses_newer_round_slot(self):
+        """A stale leave must not mark a newer round's slot as WITHDRAWN."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        state._slot = 1
+        state._joined_node_desc = _NodeDesc("stale", 1, 0)
+        slot_key = f"{state.prefix}:slot_1"
+        newer_node = _NodeDesc("newer", 2, 0)
+        newer_value = _participant_store_value(1, newer_node, 2, "none")
+        self.store.set(slot_key, newer_value)
+
+        state._leave_rendezvous()
+
+        self.assertEqual(self.store.get(slot_key), newer_value)
+        self.assertEqual(state._round, 0)
+
+    def test_leave_rendezvous_updates_same_node_slot(self):
+        """A participant may mark its own same-round slot as WITHDRAWN."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        node = _NodeDesc("node", 1, 0)
+        state._slot = 1
+        state._joined_node_desc = node
+        slot_key = f"{state.prefix}:slot_1"
+        self.store.set(slot_key, _participant_store_value(0, node, 1, "none"))
+
+        state._leave_rendezvous()
+
+        round_id, payload = RendezvousStoreValue.unpack(self.store.get(slot_key).decode("utf-8"))
+        _, infra_rank, domain_id = RendezvousParticipantInfo.from_payload(payload)
+        self.assertEqual(round_id, 0)
+        self.assertEqual(infra_rank, -1)
+        self.assertEqual(domain_id, WITHDRAWN)
+
+    def test_leave_rendezvous_rejects_same_round_different_node(self):
+        """A participant must not mark another same-round node's slot as WITHDRAWN."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        owner = _NodeDesc("owner", 1, 0)
+        leaving = _NodeDesc("leaving", 2, 0)
+        state._slot = 1
+        state._joined_node_desc = leaving
+        slot_key = f"{state.prefix}:slot_1"
+        original_value = _participant_store_value(0, owner, 1, "none")
+        self.store.set(slot_key, original_value)
+
+        with self.assertRaisesRegex(RuntimeError, "same-round rendezvous write conflict"):
+            state._leave_rendezvous()
+
+        self.assertEqual(self.store.get(slot_key), original_value)
+
     def test_get_all_participants_incremental_fetch(self):
         """Test incremental fetching of participants using get_all_participants."""
-        from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
-            RendezvousParticipantInfo,
-        )
-
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -344,7 +483,7 @@ class BarrierStateBasicTest(BaseRendezvousTest):
 
         for i, (node_desc, infra_rank, domain_id) in enumerate(participants_data, start=1):
             slot_key = f"{state.prefix}:slot_{i}"
-            participant_data = RendezvousParticipantInfo.pack(node_desc, infra_rank, domain_id)
+            participant_data = _participant_store_value(0, node_desc, infra_rank, domain_id)
             self.store.set(slot_key, participant_data)
 
         # Test 1: Fetch all participants at once
@@ -390,25 +529,25 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         )
         self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy3)
 
-        # Test 6: Cycle filtering - mismatched cycle should be treated as placeholder
+        # Test 6: Round filtering - mismatched round should be treated as placeholder
         mismatch_key = f"{state.prefix}:slot_3"
-        mismatch_data = RendezvousParticipantInfo.pack(
-            participants_data[2][0], participants_data[2][1], participants_data[2][2], cycle_id=1
+        mismatch_data = _participant_store_value(
+            1, participants_data[2][0], participants_data[2][1], participants_data[2][2]
         )
         self.store.set(mismatch_key, mismatch_data)
-        filtered = state.get_all_participants(total_participants=5, expected_cycle_id=0)
+        filtered = state.get_all_participants(total_participants=5, expected_round_id=0)
         self.assertEqual(len(filtered), 5)
         self.assertEqual(
             filtered[2][2],
             WITHDRAWN,
-            "Cycle mismatch should be converted to placeholder participant",
+            "Round mismatch should be converted to placeholder participant",
         )
 
-    def test_participant_info_unpack_requires_cycle_fields(self):
-        """Test participant info unpack requires strict schema fields."""
-        missing_cycle_data = '{"addr":"n1","pid":1,"local_id":0,"infra_rank":0,"domain_id":"d1"}'
+    def test_store_value_unpack_requires_round_field(self):
+        """Test store value unpack requires round-fencing fields."""
+        missing_round_data = '{"payload":{"addr":"n1","pid":1,"local_id":0}}'
         with self.assertRaises(ValueError):
-            RendezvousParticipantInfo.unpack(missing_cycle_data)
+            RendezvousStoreValue.unpack(missing_round_data)
 
     def test_step2_poll_interval_adaptive_scaling(self):
         """Test adaptive Step 2 poll interval floor and cap behavior."""
@@ -2333,6 +2472,9 @@ class SignalLeaveRendezvousTest(BaseRendezvousTest):
             def set(self, key, value):
                 return self._store.set(key, value)
 
+            def compare_set(self, key, expected_value, desired_value):
+                return self._store.compare_set(key, expected_value, desired_value)
+
             def check(self, keys):
                 return self._store.check(keys)
 
@@ -2363,6 +2505,9 @@ class SignalLeaveRendezvousTest(BaseRendezvousTest):
                 if ":round_done_" in key and value == "1".encode("utf-8"):
                     self._did_first_get_event.wait(timeout=30.0)
                 return self._store.set(key, value)
+
+            def compare_set(self, key, expected_value, desired_value):
+                return self._store.compare_set(key, expected_value, desired_value)
 
             def check(self, keys):
                 return self._store.check(keys)
@@ -2449,14 +2594,14 @@ class SignalLeaveRendezvousTest(BaseRendezvousTest):
         # Left participant's slot (participant joined first = slot 1) should be marked with WITHDRAWN
         state = handler._barrier_state
         slot_key = f"{state.prefix}:slot_1"
-        slot_data = self.store.get(slot_key).decode('utf-8')
-        _, _, domain_id, cycle_id = RendezvousParticipantInfo.unpack(slot_data)
+        slot_round, payload = RendezvousStoreValue.unpack(self.store.get(slot_key).decode('utf-8'))
+        _, _, domain_id = RendezvousParticipantInfo.from_payload(payload)
         self.assertEqual(
             domain_id,
             WITHDRAWN,
             "Left participant's slot should have WITHDRAWN domain_id",
         )
-        self.assertEqual(cycle_id, state._round)
+        self.assertEqual(slot_round, state._round)
         self.assertEqual(len(host_result), 1, "Host should complete or error (not hang)")
         # Host either completes with world size 1 or errors (e.g. segment constraint) after
         # participant withdrew; both are acceptable as long as the host did not hang in Step 2.
@@ -2503,6 +2648,9 @@ class SignalLeaveRendezvousTest(BaseRendezvousTest):
 
             def set(self, key, value):
                 return self._store.set(key, value)
+
+            def compare_set(self, key, expected_value, desired_value):
+                return self._store.compare_set(key, expected_value, desired_value)
 
             def check(self, keys):
                 return self._store.check(keys)
