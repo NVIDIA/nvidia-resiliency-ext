@@ -7,8 +7,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Modifications made by NVIDIA
 # This file implements a new fault-tolerant rendezvous barrier design
-# that eliminates the need for compare_set operations by using atomic
-# increments and a simpler key-based approach.
+# that uses atomic increments for slot allocation and compare_set for
+# round-fenced writes to reused slot/rank keys.
 
 import inspect
 import json
@@ -270,7 +270,7 @@ class GroupRankStatus(Enum):
 
 
 class RendezvousParticipantInfo:
-    """Participant information for storage in arrived_<count> keys.
+    """Participant metadata stored inside a round-fenced TCPStore value.
 
     A rendezvous participant can be a physical node or a process in a physical node
     in the simulation case. This class provides a JSON-based format that can store:
@@ -283,43 +283,86 @@ class RendezvousParticipantInfo:
     """
 
     @staticmethod
-    def pack(
-        node_desc: _NodeDesc, infra_rank: int = -1, domain_id: str = "none", cycle_id: int = 0
-    ) -> str:
+    def to_payload(
+        node_desc: _NodeDesc, infra_rank: int = -1, domain_id: str = "none"
+    ) -> Dict[str, Any]:
+        """Convert participant information into the store wrapper payload."""
+        return {
+            "addr": node_desc.addr,
+            "pid": node_desc.pid,
+            "local_id": node_desc.local_id,
+            "infra_rank": infra_rank,
+            "domain_id": domain_id,
+        }
+
+    @staticmethod
+    def from_payload(payload: Dict[str, Any]) -> Tuple[_NodeDesc, int, str]:
+        """Convert a store wrapper payload into participant information."""
+        try:
+            node_desc = _NodeDesc(
+                addr=payload["addr"], pid=payload["pid"], local_id=payload["local_id"]
+            )
+            infra_rank = payload["infra_rank"]
+            domain_id = payload["domain_id"]
+            return node_desc, infra_rank, domain_id
+        except KeyError as e:
+            raise ValueError(f"Invalid participant info payload: {e}")
+
+    @staticmethod
+    def pack(node_desc: _NodeDesc, infra_rank: int = -1, domain_id: str = "none") -> str:
         """Pack participant information into JSON format.
 
         Args:
             node_desc: Node descriptor
             infra_rank: Infrastructure rank (-1 if not assigned)
             domain_id: Domain ID string, or "none" if segment not configured
-            cycle_id: Rendezvous cycle identifier for stale-data detection
         """
-        data = {
-            "addr": node_desc.addr,
-            "pid": node_desc.pid,
-            "local_id": node_desc.local_id,
-            "infra_rank": infra_rank,
-            "domain_id": domain_id,
-            "cycle_id": cycle_id,
-        }
-        return json.dumps(data)
+        return json.dumps(RendezvousParticipantInfo.to_payload(node_desc, infra_rank, domain_id))
 
     @staticmethod
-    def unpack(data: str) -> Tuple[_NodeDesc, int, str, int]:
+    def unpack(data: str) -> Tuple[_NodeDesc, int, str]:
         """Unpack participant information from JSON format.
 
         Returns:
-            Tuple of (node_desc, infra_rank, domain_id, cycle_id)
+            Tuple of (node_desc, infra_rank, domain_id)
         """
         try:
-            info = json.loads(data)
-            node_desc = _NodeDesc(addr=info["addr"], pid=info["pid"], local_id=info["local_id"])
-            infra_rank = info["infra_rank"]
-            domain_id = info["domain_id"]
-            cycle_id = info["cycle_id"]
-            return node_desc, infra_rank, domain_id, cycle_id
-        except (json.JSONDecodeError, KeyError) as e:
+            return RendezvousParticipantInfo.from_payload(json.loads(data))
+        except (json.JSONDecodeError, ValueError) as e:
             raise ValueError(f"Invalid participant info data: {e}")
+
+
+class RendezvousStoreValue:
+    """Round-fenced TCPStore value wrapper for reused rendezvous keys."""
+
+    @staticmethod
+    def pack(round_id: int, payload: Dict[str, Any]) -> str:
+        return json.dumps({"round": round_id, "payload": payload})
+
+    @staticmethod
+    def unpack(data: str) -> Tuple[int, Dict[str, Any]]:
+        try:
+            value = json.loads(data)
+            round_id = int(value["round"])
+            payload = value["payload"]
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be an object")
+            return round_id, payload
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"Invalid rendezvous store value: {e}")
+
+
+class _StaleRendezvousRoundError(RuntimeError):
+    """Raised when a reused key already contains data from a newer rendezvous round."""
+
+    def __init__(self, observed_round: int, attempted_round: int, key: str):
+        self.observed_round = observed_round
+        self.attempted_round = attempted_round
+        self.key = key
+        super().__init__(
+            f"Stale rendezvous write for {key}: attempted round {attempted_round}, "
+            f"observed round {observed_round}"
+        )
 
 
 def _parse_domain_id_from_nvidia_smi() -> str:
@@ -394,14 +437,14 @@ class _RendezvousBarrierState:
     """Hold the state of a rendezvous barrier.
 
     This class manages the barrier state using atomic operations and
-    simple key-based coordination instead of compare_set operations.
+    simple key-based coordination.
 
     DESIGN PHILOSOPHY:
     This implementation prioritizes flexibility and fault tolerance over strict
     synchronization. Key design principles:
 
-    1. ATOMIC BARRIER: Uses atomic increments instead of compare-and-swap operations
-       for better performance and simpler coordination
+    1. ATOMIC BARRIER: Uses atomic increments for slot allocation and per-key
+       compare-and-swap writes for reused slot/rank state
 
     2. GRACEFUL COMPLETION: Completes rendezvous on last_call_timeout rather than
        waiting for max_nodes, enabling hot-fix scenarios and flexible scaling
@@ -461,6 +504,7 @@ class _RendezvousBarrierState:
         self._round = 0
         # Current slot in the join order (1-based). Set in Step 1 of perform_rendezvous.
         self._slot: Optional[int] = None
+        self._joined_node_desc: Optional[_NodeDesc] = None
         # Active/standby node addrs (set by store host in assign_group_ranks for cycle info)
         self._active_node_addrs: Optional[List[str]] = None
         self._standby_node_addrs: Optional[List[str]] = None
@@ -794,6 +838,118 @@ class _RendezvousBarrierState:
         scaled_interval = min_nodes / 2000.0
         return max(1.0, min(segment_check_interval, max(1.0, scaled_interval)))
 
+    @staticmethod
+    def _store_value_to_bytes(value: Union[str, bytes, bytearray]) -> bytes:
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, bytearray):
+            return bytes(value)
+        return str(value).encode('utf-8')
+
+    @classmethod
+    def _store_value_to_str(cls, value: Union[str, bytes, bytearray]) -> str:
+        return cls._store_value_to_bytes(value).decode('utf-8')
+
+    @classmethod
+    def _store_value_round(cls, value: Union[str, bytes, bytearray]) -> int:
+        try:
+            round_id, _ = RendezvousStoreValue.unpack(cls._store_value_to_str(value))
+            return round_id
+        except Exception:
+            return -1
+
+    @staticmethod
+    def _rank_payload(rank: int, total_participants: int) -> Dict[str, int]:
+        return {"rank": rank, "total": total_participants}
+
+    @classmethod
+    def _pack_rank_value(cls, rank: int, total_participants: int, round_id: int) -> bytes:
+        return cls._store_value_to_bytes(
+            RendezvousStoreValue.pack(round_id, cls._rank_payload(rank, total_participants))
+        )
+
+    @classmethod
+    def _unpack_rank_value(cls, value: Union[str, bytes, bytearray]) -> Tuple[int, int, int]:
+        round_id, payload = RendezvousStoreValue.unpack(cls._store_value_to_str(value))
+        try:
+            return int(payload["rank"]), int(payload["total"]), round_id
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"Invalid rank payload: {e}")
+
+    @classmethod
+    def _pack_participant_value(
+        cls,
+        node_desc: _NodeDesc,
+        infra_rank: int,
+        domain_id: str,
+        round_id: int,
+    ) -> bytes:
+        return cls._store_value_to_bytes(
+            RendezvousStoreValue.pack(
+                round_id,
+                RendezvousParticipantInfo.to_payload(node_desc, infra_rank, domain_id),
+            )
+        )
+
+    @classmethod
+    def _unpack_participant_value(
+        cls, value: Union[str, bytes, bytearray]
+    ) -> Tuple[int, _NodeDesc, int, str]:
+        round_id, payload = RendezvousStoreValue.unpack(cls._store_value_to_str(value))
+        node_desc, infra_rank, domain_id = RendezvousParticipantInfo.from_payload(payload)
+        return round_id, node_desc, infra_rank, domain_id
+
+    def _round_fenced_compare_set(
+        self,
+        key: str,
+        desired_value: Union[str, bytes, bytearray],
+        expected_owner: Optional[_NodeDesc] = None,
+    ) -> None:
+        """CAS a reused key once, refusing newer-round state.
+
+        Slot and rank keys are intentionally reused across rounds.  The value stored
+        in each key embeds the round that wrote it; this makes the check and write
+        atomic on the same key and prevents a slow writer from round N from clobbering
+        round N+1 data.  A same-round conflict is a protocol invariant violation
+        unless expected_owner verifies that the caller owns the current slot value.
+        """
+        desired_bytes = self._store_value_to_bytes(desired_value)
+        desired_round = self._store_value_round(desired_bytes)
+        if desired_round < 0:
+            raise ValueError(f"Desired value for {key} must be round-fenced")
+
+        expected_bytes = b""
+        if self.store.check([key]):
+            expected_bytes = self.store.get(key)
+            current_round = self._store_value_round(expected_bytes)
+            if current_round > desired_round:
+                raise _StaleRendezvousRoundError(current_round, desired_round, key)
+            if current_round == desired_round and expected_bytes != desired_bytes:
+                if expected_owner is None:
+                    raise RuntimeError(
+                        f"Unexpected same-round rendezvous write conflict for {key} "
+                        f"in round {desired_round}"
+                    )
+                _, node_desc, _, _ = self._unpack_participant_value(expected_bytes)
+                if node_desc != expected_owner:
+                    raise RuntimeError(
+                        f"Unexpected same-round rendezvous write conflict for {key}: "
+                        f"slot owner {node_desc}, expected owner {expected_owner}"
+                    )
+
+        result = self.store.compare_set(key, expected_bytes, desired_bytes)
+        result_bytes = self._store_value_to_bytes(result)
+        if result_bytes == desired_bytes:
+            return
+
+        current_round = self._store_value_round(result_bytes)
+        if current_round > desired_round:
+            raise _StaleRendezvousRoundError(current_round, desired_round, key)
+        raise RuntimeError(
+            f"Unexpected rendezvous CAS conflict for {key}: attempted round "
+            f"{desired_round}, observed round {current_round}"
+        )
+
     def _check_timeout_and_closure(self, node_desc: _NodeDesc) -> None:
         """Check for shutdown and timeout.
 
@@ -834,21 +990,33 @@ class _RendezvousBarrierState:
             return
         self._has_left = True
         try:
-            self.store.add(self.leave_count_key, 1)
             # Overwrite our slot so consumers (segment constraint, rank assignment)
             # exclude us by filtering on WITHDRAWN domain_id
             slot_key = f"{self.prefix}:slot_{self._slot}"
-            leave_data = RendezvousParticipantInfo.pack(
+            leave_data = self._pack_participant_value(
                 _NodeDesc("", 0, 0),
                 -1,
                 WITHDRAWN,
                 self._round,
             )
-            self.store.set(slot_key, leave_data.encode('utf-8'))
+            self._round_fenced_compare_set(
+                slot_key,
+                leave_data,
+                expected_owner=self._joined_node_desc,
+            )
+            self.store.add(self.leave_count_key, 1)
             log.debug(
                 f"Left rendezvous (incremented {self.leave_count_key}, "
                 f"marked slot {self._slot} with WITHDRAWN)"
             )
+        except _StaleRendezvousRoundError as e:
+            log.debug(
+                f"Skipped stale leave write for round {e.attempted_round}; "
+                f"slot already belongs to round {e.observed_round}"
+            )
+        except RuntimeError as e:
+            log.error("Failed to leave rendezvous due to protocol error: %s", e)
+            raise
         except Exception as e:
             log.warning("Failed to leave rendezvous: %s", e)
 
@@ -989,7 +1157,7 @@ class _RendezvousBarrierState:
             fetch_start = time.monotonic()
             all_participants = self.get_all_participants(
                 total_participants=current_joined,
-                expected_cycle_id=self._round,
+                expected_round_id=self._round,
             )
             fetch_elapsed = time.monotonic() - fetch_start
 
@@ -1066,7 +1234,7 @@ class _RendezvousBarrierState:
         The store host set round_done_key=1 only after writing all rank keys, so the rank
         read here is guaranteed to be the final assigned value (no polling needed).
 
-        The rank value embeds the round number that wrote it (format: "rank,total,round").
+        The rank value is wrapped with the round number that wrote it.
         If the embedded round doesn't match self._round, the slot was overwritten by a later
         round (e.g. same port reuse caused a stale slow read); treat as UNASSIGNED so the
         caller loops to the next round.
@@ -1104,14 +1272,14 @@ class _RendezvousBarrierState:
             )
             return GroupRankStatus.UNASSIGNED.value, 0
 
-        rank_value = self.store.get(rank_key).decode('utf-8')
+        rank_value = self.store.get(rank_key)
         try:
-            rank_str, total_str, round_str = rank_value.split(',', 2)
-            rank, total, written_round = int(rank_str), int(total_str), int(round_str)
+            rank, total, written_round = self._unpack_rank_value(rank_value)
         except (ValueError, AttributeError) as e:
             raise RuntimeError(
-                f"[{node_desc}] Failed to parse rank value '{rank_value}': {e}. "
-                f"Expected format 'group_rank,total_participants,round'."
+                f"[{node_desc}] Failed to parse rank value "
+                f"'{self._store_value_to_str(rank_value)}': {e}. "
+                f"Expected a round-fenced rank value."
             )
 
         if written_round != self._round:
@@ -1180,6 +1348,7 @@ class _RendezvousBarrierState:
             self._round_closed = False
             self._has_left = False
             self._leave_on_unwind = False
+            self._joined_node_desc = None
             self._last_stale_check_time = 0.0
 
             # Step 0: Wait until the current round is open.
@@ -1220,6 +1389,7 @@ class _RendezvousBarrierState:
 
             # From here, a signal can trigger leaving of this slot.
             # _current_joined_state is cleared in _maybe_leave_on_unwind() (handler's finally).
+            self._joined_node_desc = node_desc
             _current_joined_state = self
 
             # Determine infrastructure rank
@@ -1247,61 +1417,43 @@ class _RendezvousBarrierState:
             # SLOT WRITE PROTOCOL — key reuse safety
             #
             # slot_key and rank_key are reused across rounds (bounded by max_nodes) to
-            # avoid TCPStore keyspace bloat.  Two races arise from reuse:
+            # avoid TCPStore keyspace bloat.  Each value embeds the round that wrote it,
+            # so participant-published writes use per-key CAS:
             #
-            # Race 1 — slot_key overwrite:
-            #   If our add(join_count_N) arrived at the server AFTER the store host's
-            #   double-check, the round closed at K-1 (without us).  Our subsequent
-            #   set(slot_key) would arrive during round N+1 and overwrite another
-            #   participant's data, causing a persistent cycle_id mismatch the round
-            #   N+1 store host cannot resolve.  The store host spins until the join
-            #   timeout fires; a WARNING is emitted after 30 s to make the bug
-            #   diagnosable before the full timeout elapses.
+            #   old_value, old_round = get(key)
+            #   if old_round > this_round: go back to Step 0
+            #   compare_set(key, old_value, new_value_for_this_round)
             #
-            #   Fix: read round_done_key before writing.  If already 1 the round is
-            #   closed; skip both writes.  In Step 3 we read a stale/absent rank_key →
-            #   embedded-round mismatch or store.check() miss → UNASSIGNED → loop.
-            #
-            #   A residual sub-millisecond TOCTOU window exists between this get() and
-            #   the set() calls below: the round could close and round N+1 could start
-            #   in that gap.  There is no TCPStore primitive that closes it: the condition
-            #   (round_done_key == 0) and the write (slot_key = data) are on different
-            #   keys, and TCPStore.compare_set() only atomically checks-and-sets a single
-            #   key — it cannot span two keys.  The residual window is accepted because
-            #   the compound probability of the race (add after double-check AND round N+1
-            #   fully advances AND B claims the same slot, all within one RTT) is
-            #   negligible in practice.
-            #
-            # Race 2 — rank_key UNASSIGNED overwrite:
-            #   With the naive order (set slot_key then set rank_key), the store host
-            #   can see valid slot_key, assign the real rank, write rank_key=rank,N, and
-            #   set round_done=1 — all before our delayed set(rank_key=UNASSIGNED)
-            #   arrives.  Our write then clobbers the assigned rank; we read UNASSIGNED
-            #   in Step 3 and loop to round N+1 while other nodes start training without
-            #   us → hang.
-            #
-            #   Fix: write rank_key BEFORE slot_key.  slot_key is the cycle_id trigger
-            #   the store host waits on; rank_key carries no such dependency.  Both
-            #   writes are blocking on the same TCP connection, so the server processes
-            #   rank_key before slot_key.  By the time the store host sees valid slot_key
-            #   and proceeds to assign ranks, rank_key=UNASSIGNED is already in the
-            #   store.  The store host's rank write therefore always follows ours.
-            round_already_closed = int(self.store.get(self.round_done_key).decode('utf-8')) == 1
-
-            if not round_already_closed:
-                self.store.set(
+            # This makes the freshness check and write atomic on the reused key.  A slow
+            # writer from round N can refresh older values, but it cannot overwrite
+            # state that has already been published for round N+1.
+            try:
+                self._round_fenced_compare_set(
                     rank_key,
-                    f"{GroupRankStatus.UNASSIGNED.value},0,{self._round}".encode('utf-8'),
+                    self._pack_rank_value(
+                        GroupRankStatus.UNASSIGNED.value,
+                        0,
+                        self._round,
+                    ),
                 )
-                participant_data = RendezvousParticipantInfo.pack(
-                    node_desc, infra_rank, domain_id, self._round
+                participant_data = self._pack_participant_value(
+                    node_desc,
+                    infra_rank,
+                    domain_id,
+                    self._round,
                 )
-                self.store.set(slot_key, participant_data.encode('utf-8'))
+                self._round_fenced_compare_set(
+                    slot_key,
+                    participant_data,
+                )
+            except _StaleRendezvousRoundError as e:
+                log.info(
+                    f"[{node_desc}] Detected newer rendezvous round {e.observed_round} "
+                    f"while joining round {e.attempted_round}; retrying"
+                )
+                continue
 
-            log.debug(
-                f"[slot={self._slot}] [Step 1] Joined round {self._round}"
-                + (" (late, round already closed)" if round_already_closed else "")
-            )
+            log.debug(f"[slot={self._slot}] [Step 1] Joined round {self._round}")
 
             # Step 2 (store host only): Poll until the segment constraint is satisfied,
             # assign group ranks to all participants, then set round_done_key=1.
@@ -1361,7 +1513,7 @@ class _RendezvousBarrierState:
         self,
         total_participants: int,
         start_index: int = 1,
-        expected_cycle_id: Optional[int] = None,
+        expected_round_id: Optional[int] = None,
         existing_participants: Optional[List[Tuple[_NodeDesc, int, str]]] = None,
     ) -> List[Tuple[_NodeDesc, int, str]]:
         """Get participants that have arrived using multi_get.
@@ -1372,7 +1524,7 @@ class _RendezvousBarrierState:
         Args:
             total_participants: Total number of participants to fetch up to
             start_index: Starting index for fetching (1-based, inclusive). Defaults to 1 (fetch all).
-            expected_cycle_id: If provided, only participants from this cycle are accepted.
+            expected_round_id: If provided, only participants from this round are accepted.
                                Mismatched entries are treated as placeholders.
             existing_participants: Optional list of already-fetched participants to extend.
                                   If provided, new participants are appended to this list.
@@ -1427,14 +1579,13 @@ class _RendezvousBarrierState:
                 continue
 
             try:
-                participant_data = participant_data_bytes.decode('utf-8')
-                node_desc, infra_rank, domain_id, cycle_id = RendezvousParticipantInfo.unpack(
-                    participant_data
+                round_id, node_desc, infra_rank, domain_id = self._unpack_participant_value(
+                    participant_data_bytes
                 )
-                if expected_cycle_id is not None and cycle_id != expected_cycle_id:
+                if expected_round_id is not None and round_id != expected_round_id:
                     log.debug(
-                        f"Cycle mismatch for slot_{actual_index}: expected cycle "
-                        f"{expected_cycle_id}, got {cycle_id}; treating as placeholder"
+                        f"Round mismatch for slot_{actual_index}: expected round "
+                        f"{expected_round_id}, got {round_id}; treating as placeholder"
                     )
                     participants.append(placeholder)
                     continue
@@ -1459,7 +1610,7 @@ class _RendezvousBarrierState:
             total_participants: Slot count for this round (passed to avoid race condition)
         """
         all_participants = self.get_all_participants(
-            total_participants, expected_cycle_id=self._round
+            total_participants, expected_round_id=self._round
         )
         assert (
             len(all_participants) == total_participants
@@ -1506,9 +1657,13 @@ class _RendezvousBarrierState:
                         f"This should never happen - all active participants should be assigned ranks."
                     )
                 rank_key = f"{self.prefix}:slot_{slot}_rank"
-                rank_value = f"{assigned_group_rank},{total_participants},{self._round}"
+                rank_value = self._pack_rank_value(
+                    assigned_group_rank,
+                    total_participants,
+                    self._round,
+                )
                 rank_keys.append(rank_key)
-                rank_values.append(rank_value.encode('utf-8'))
+                rank_values.append(rank_value)
 
         self.store.multi_set(rank_keys, rank_values)
 
