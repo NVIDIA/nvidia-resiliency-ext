@@ -279,31 +279,32 @@ class CollectiveAnalyzer(NVRxAttribution):
         original_level = logger.level
         if logger.getEffectiveLevel() > logging.INFO:
             logger.setLevel(logging.INFO)
+        try:
+            with capture_logs(logger.name) as output:
 
-        with capture_logs(logger.name) as output:
-
-            def print_ranks_in_pgs(head_nodes, pg_dict, missing_or_completed="Missing"):
-                logger.info(
-                    f"{'PGID':<6} | {'Process Group Desc':<25} | {'Op Type':<10} | {'Size':<8} \
-                        | {'Dtype':<8} | {missing_or_completed} Ranks"
-                )
-                for pg_idx in head_nodes:
-                    entry = list(pg_dict[pg_idx][0])
-                    entry.remove(entry[-2])
-                    if missing_or_completed == "Missing":
-                        ranks_to_print = entry[6]
-                    else:
-                        ranks_to_print = entry[5]
+                def print_ranks_in_pgs(head_nodes, pg_dict, missing_or_completed="Missing"):
                     logger.info(
-                        f"{entry[0]:<6} | {entry[1]:<25} | {entry[2]:<10} | {entry[3]:<8} \
-                            | {entry[4]:<8} | {ranks_to_print}"
+                        f"{'PGID':<6} | {'Process Group Desc':<25} | {'Op Type':<10} | {'Size':<8} \
+                            | {'Dtype':<8} | {missing_or_completed} Ranks"
                     )
+                    for pg_idx in head_nodes:
+                        entry = list(pg_dict[pg_idx][0])
+                        entry.remove(entry[-2])
+                        if missing_or_completed == "Missing":
+                            ranks_to_print = entry[6]
+                        else:
+                            ranks_to_print = entry[5]
+                        logger.info(
+                            f"{entry[0]:<6} | {entry[1]:<25} | {entry[2]:<10} | {entry[3]:<8} \
+                                | {entry[4]:<8} | {ranks_to_print}"
+                        )
 
-            if head_nodes_missing:
-                logger.debug(f"head_nodes_missing: {head_nodes_missing}")
-                print_ranks_in_pgs(head_nodes_missing, missing_pg, "Missing")
-        analysis_output = output.getvalue()
-        logger.setLevel(original_level)
+                if head_nodes_missing:
+                    logger.debug(f"head_nodes_missing: {head_nodes_missing}")
+                    print_ranks_in_pgs(head_nodes_missing, missing_pg, "Missing")
+            analysis_output = output.getvalue()
+        finally:
+            logger.setLevel(original_level)
         return analysis_output
 
     async def collective_analysis(self, analysis_output: str) -> Optional[str]:
