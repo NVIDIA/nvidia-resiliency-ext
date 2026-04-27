@@ -1,5 +1,11 @@
-Try InJob on a small 1–2 node example. No production script needed — uses the built-in
-`train_ddp_sections_api.py` example. Injects one fault so you can watch a restart happen.
+---
+name: nvrx-quickstart
+description: Try InJob on a small 1–2 node example using the built-in train_ddp_sections_api.py. Injects a fault to demonstrate a live restart. Use when the user is new to InJob, wants to see a restart without a production script, or asks for a quick demo.
+argument-hint: [--nodes <N>] [--nproc-per-node <N>] [--device cuda|cpu] [--image <path>] [--run-dir <path>] [--ssh-config <yaml>]
+allowed-tools: [Read, Write, Bash, Glob]
+---
+
+Try InJob on a small 1–2 node example using the built-in train_ddp_sections_api.py. Injects one fault so you can watch a restart happen.
 
 ## Usage
 ```

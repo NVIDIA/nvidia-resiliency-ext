@@ -1,3 +1,10 @@
+---
+name: nvrx-validate
+description: Validate InJob restart correctness from collected artifacts. Checks fault detection, restart timing, throughput, and membership. Writes report.md with PASS/FAIL per check. Use after a job completes and artifacts are collected.
+argument-hint: <artifacts_dir> [--thresholds <thresholds.yaml>]
+allowed-tools: [Read, Write, Bash, Glob, Grep]
+---
+
 Validate InJob restart correctness from collected artifacts.
 
 Checks three things: (A) failure detection, (B) restart timing, (C) training throughput + membership.
@@ -123,8 +130,8 @@ python tools/fault_tolerance/cycle_info_reader.py <artifacts_dir> --job-id <job_
 From the output:
 - Verify no gaps in cycle sequence
 - Verify all cycles have `cycle_end_time` set
-- For HW fault cycles: `active_nodes` must change between fault cycle and next cycle (replacement node joined)
-- For SW fault cycles: `active_nodes` must be identical before and after fault cycle
+- For each cycle: verify `active_nodes` is a subset of the union of the original active set and all known standby nodes (no unknown nodes appeared)
+- Note: node swaps can occur even with SW-only faults when the rendezvous host constraint policy is ANY — do NOT assume SW fault → same nodes. Node membership changes are not a reliable indicator of HW vs SW fault type.
 
 Check checkpoint monotonicity:
 ```bash

@@ -1,3 +1,10 @@
+---
+name: nvrx-run
+description: Run the full InJob validation pipeline end-to-end: nvrx-create → nvrx-submit → nvrx-watch → nvrx-validate. Use when the user has their own sbatch script and wants to test InJob fault tolerance from start to finish in one command.
+argument-hint: <original_sbatch> [--profile <profile.yaml>] [--hot-spare <N>] [--ssh-config <yaml>]
+allowed-tools: [Read, Write, Bash, Glob, Grep]
+---
+
 Run the full InJob validation pipeline end-to-end: enable → deploy → monitor → validate.
 
 ## Usage

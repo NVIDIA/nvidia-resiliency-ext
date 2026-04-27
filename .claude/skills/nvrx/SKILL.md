@@ -1,3 +1,8 @@
+---
+name: nvrx
+description: Show all NVRx InJob slash commands and their purpose. Use when the user types /nvrx, asks what InJob commands are available, or wants an overview of the fault-tolerance toolchain.
+---
+
 Show all NVRx InJob slash commands and their purpose.
 
 ## Your task

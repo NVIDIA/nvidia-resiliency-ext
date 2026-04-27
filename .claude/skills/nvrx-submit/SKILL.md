@@ -1,3 +1,10 @@
+---
+name: nvrx-submit
+description: Upload an InJob-enabled sbatch script to a remote cluster and submit it via SSH. Manages SSH ControlMaster and writes a state file for nvrx-watch. Use after nvrx-create, or when the user wants to deploy a script to a cluster.
+argument-hint: <nvrx_sbatch> [--ssh-config <yaml>]
+allowed-tools: [Read, Write, Bash]
+---
+
 Upload an InJob-enabled sbatch script to a cluster and submit it via SSH.
 
 ## Usage

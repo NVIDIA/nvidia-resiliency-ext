@@ -1,3 +1,10 @@
+---
+name: nvrx-watch
+description: Poll a running InJob SLURM job and collect artifacts when it completes. Reads the state file written by nvrx-submit. Use after submitting a job with nvrx-submit, or when the user wants to monitor a job and gather logs and cycle infos.
+argument-hint: [<artifacts_dir>] [--ssh-config <yaml>]
+allowed-tools: [Read, Write, Bash]
+---
+
 Poll a running InJob SLURM job and collect artifacts when it completes.
 
 ## Usage

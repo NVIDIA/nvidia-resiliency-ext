@@ -1,3 +1,10 @@
+---
+name: nvrx-create
+description: Transform an original sbatch script into an InJob-enabled version. Use when the user has an sbatch script and wants to add ft_launcher / fault tolerance, or asks how to make a training script restartable.
+argument-hint: <original_sbatch> [--profile <profile.yaml>] [--hot-spare <N>] [--fault-schedule "cycle:rank,..."]
+allowed-tools: [Read, Write]
+---
+
 Transform an original sbatch script into an InJob-enabled version.
 
 ## Usage
