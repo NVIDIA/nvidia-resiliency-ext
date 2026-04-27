@@ -1,6 +1,6 @@
 # NVRX Attribution Service (nvrx-attrsvc)
 
-FastAPI server that exposes log analysis over HTTP. It wraps the **`nvidia_resiliency_ext.attribution`** library (**`Analyzer`**, coalescing, postprocessing) with pydantic `Settings`, routes, and optional cache persistence.
+FastAPI server that exposes log analysis over HTTP. It wraps the **`nvidia_resiliency_ext.attribution`** library (**`AttributionController`**, **`Analyzer`**, coalescing, postprocessing) with pydantic `Settings`, routes, and rate limits.
 
 ---
 
@@ -8,7 +8,7 @@ FastAPI server that exposes log analysis over HTTP. It wraps the **`nvidia_resil
 
 | | **Library** (`nvidia_resiliency_ext.attribution`) | **This package** (`nvrx_attrsvc`) |
 |---|--------------------------------------------------|-----------------------------------|
-| **Role** | **`Analyzer`** (→ `LogAnalyzer`, pipelines, MCP/lib LogSage, FR analysis, jobs/splitlog) | HTTP API, env-based `Settings`, rate limits, ledger file |
+| **Role** | **`AttributionController`** (config, cache persistence, health/status, dataflow/Slack stats) over **`Analyzer`** (→ `LogAnalyzer`, pipelines, MCP/lib LogSage, FR analysis, jobs/splitlog) | HTTP API, env-based `Settings`, rate limits, ledger file |
 | **Docs** | [`src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md`](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md), [`README.md`](../../src/nvidia_resiliency_ext/attribution/README.md) | This file, [`ATTRSVC_SPEC.md`](ATTRSVC_SPEC.md) |
 
 Do not duplicate library internals here—**ARCHITECTURE.md** is the source of truth for package layout, `LogAnalyzerConfig` / `AnalysisPipelineMode` (default `LOG_AND_TRACE` for this service), MCP vs in-process backends, and analysis flow.
@@ -45,7 +45,7 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 | `RATE_LIMIT_ANALYZE` | `60/minute` | Rate limit for GET /logs |
 | `RATE_LIMIT_PREVIEW` | `120/minute` | Rate limit for GET /print |
 
-**LLM / analysis** (optional — unset vars keep library defaults). Use the prefixed names below in the environment or ``.env``; ``AttributionService`` passes them into ``LogSageExecutionConfig`` and the library ``Analyzer`` (LogSage / MCP / merge paths). See **ARCHITECTURE.md §7**.
+**LLM / analysis** (optional — unset vars keep library defaults). Use the prefixed names below in the environment or ``.env``; ``AttributionHttpAdapter`` passes them into ``AttributionControllerConfig``, which wires ``LogSageExecutionConfig`` and the library ``Analyzer`` (LogSage / MCP / merge paths). See **ARCHITECTURE.md §7**.
 
 | Variable (with prefix)          | Description                                                                                                                                                                                                   |
 |---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -67,7 +67,7 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SLACK_BOT_TOKEN` | `""` | Bot token (empty = try file fallbacks below via `setup()`) |
+| `SLACK_BOT_TOKEN` | `""` | Bot token (empty = controller tries file fallbacks below) |
 | `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token (checked before `~/.slack_bot_token` / `~/.slack_token`) |
 | `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env`, quote values that start with `#`: `SLACK_CHANNEL="#trng-alerts"` |
 
@@ -232,20 +232,20 @@ For combined deployment with monitor, see `../scripts/nvrx_services.sbatch`
 
 ## Python API
 
-**Embedding the library** (no HTTP): use **`Analyzer`** (or `LogAnalyzer` / `LogAnalyzerConfig` for lower-level control) from `nvidia_resiliency_ext.attribution`. Overview and examples: **[attribution README](../../src/nvidia_resiliency_ext/attribution/README.md)** · **[ARCHITECTURE.md](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md)**.
+**Embedding the library** (no HTTP): use **`AttributionController`** for the service-grade boundary, or **`Analyzer`** / `LogAnalyzer` / `LogAnalyzerConfig` for lower-level control, from `nvidia_resiliency_ext.attribution`. Overview and examples: **[attribution README](../../src/nvidia_resiliency_ext/attribution/README.md)** · **[ARCHITECTURE.md](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md)**.
 
-**In-process service wrapper** (same repo, after `pip install`):
+**In-process HTTP adapter** (same repo, after `pip install`):
 
 ```python
 import asyncio
-from nvrx_attrsvc import AttributionService, setup
+from nvrx_attrsvc import AttributionHttpAdapter, setup
 
 async def main():
     cfg = setup()
-    service = AttributionService(cfg)
+    adapter = AttributionHttpAdapter(cfg)
     
-    result = await service.analyze_log("/path/to/job.log")
-    service.shutdown()
+    result = await adapter.analyze_log("/path/to/job.log")
+    adapter.shutdown()
 
 asyncio.run(main())
 ```
@@ -255,8 +255,8 @@ asyncio.run(main())
 | File | Description |
 |------|-------------|
 | `app.py` | FastAPI routes and middleware |
-| `service.py` | `AttributionService` — wraps **`Analyzer`** |
-| `config.py` | `Settings` (pydantic), `setup()` wires postprocessing (poster via `post_backend.post`, Slack) from cfg |
+| `service.py` | `AttributionHttpAdapter` — wraps **`AttributionController`** |
+| `config.py` | `Settings` (pydantic), `setup()` loads settings and configures logging |
 | `deploy/run_attrsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_attrsvc.sh` | Periodic endpoint snapshot for debugging |
 | `deploy/Dockerfile` | Docker build instructions |
@@ -273,5 +273,6 @@ asyncio.run(main())
 ## Configuration and postprocessing (summary)
 
 - **Service config** is in `config.py` (`Settings` from env with prefix `NVRX_ATTRSVC_`).
-- **`setup()`** in `config.py` loads settings, configures logging, and wires the library postprocessing singleton via `configure(default_poster=..., cluster_name=..., dataflow_index=..., slack_bot_token=..., slack_channel=...)`.
-- The analyzer calls `post_results()` from the library when it has results; posting and Slack use the values set in `configure()`.
+- **`setup()`** in `config.py` loads settings and configures logging only.
+- **`AttributionHttpAdapter`** translates `Settings` into `AttributionControllerConfig`; **`AttributionController`** validates the LLM API key and wires postprocessing (`cluster_name`, `dataflow_index`, Slack, and the default poster).
+- The analyzer calls `post_results()` from the library when it has results; dataflow and Slack use the values owned by the controller.

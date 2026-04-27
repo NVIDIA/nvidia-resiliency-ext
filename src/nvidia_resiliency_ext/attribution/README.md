@@ -8,7 +8,8 @@ Install the optional attribution dependency set with:
 pip install 'nvidia-resiliency-ext[attribution]'
 ```
 
-**How it is structured (subsystems, diagrams, `Analyzer` / `LogAnalyzerConfig`, MCP vs in-process LogSage, pipeline modes):**  
+**How it is structured (subsystems, diagrams, `AttributionController`, `Analyzer` / `LogAnalyzerConfig`, MCP vs in-process LogSage, pipeline modes):**
+
 **[ARCHITECTURE.md](./ARCHITECTURE.md)**
 
 The public API is re-exported from `nvidia_resiliency_ext.attribution` (see package `__init__.py`).

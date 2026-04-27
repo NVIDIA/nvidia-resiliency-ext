@@ -79,7 +79,7 @@ processed-files ledger (`CACHE_FILE`) — see §3.7. **README.md** for runbooks.
 --------------------------------------------------------------------------------
 
 Two layers: **library** (`nvidia_resiliency_ext.attribution`) and **service**
-(`services/nvrx_attrsvc/` — FastAPI, `Settings`, rate limits, `AttributionService`).
+(`services/nvrx_attrsvc/` — FastAPI, `Settings`, rate limits, `AttributionHttpAdapter`).
 
 | Layer | See |
 |-------|-----|
@@ -97,7 +97,8 @@ Summary:
 - Prefix **`NVRX_ATTRSVC_`** for service settings (see README for exceptions: LLM
   API key, Slack tokens, optional `LLM_API_KEY_FILE` / file paths in `api_keys.py`).
 - **`LLM_API_KEY`** / **`LLM_API_KEY_FILE`**: required for attribution (or default key files);
-  loaded in `config.setup()` after logging — **empty/missing → log error and process exit**. Slack is optional.
+  validated by `AttributionController` at startup — **empty/missing → log error and startup failure**.
+  Slack is optional.
 - LLM-related env vars are optional; unset → library defaults (`LogAnalyzerConfig`).
 - Rate limits: slowapi, `RATE_LIMIT_SUBMIT` / `RATE_LIMIT_ANALYZE` / `RATE_LIMIT_PREVIEW`.
 
@@ -108,7 +109,7 @@ Summary:
 | TTL | `TTL_PENDING_SECONDS`, `TTL_TERMINATED_SECONDS`, `TTL_MAX_JOB_AGE_SECONDS` |
 | Intervals | `POLL_INTERVAL_SECONDS`, `DEFAULT_COMPUTE_TIMEOUT_SECONDS` |
 | Limits | `MAX_JOBS`, `MIN_FILE_SIZE_KB` |
-| Health thresholds | ~20% degraded, ~50% fail (compute / posting error rates in health) |
+| Health thresholds | ~20% degraded, ~50% fail (compute / dataflow error rates in health) |
 
 **3.3 Markers** (mode detection)
 
@@ -144,10 +145,10 @@ Patterns tried in order (scheduler-agnostic where possible): `_(\d+)_date_`,
 --------------------------------------------------------------------------------
 
 **Startup (conceptual)**  
-Load `Settings` → configure logging → **require non-empty LLM API key** → wire
-postprocessing (`configure`, poster, dataflow index, Slack) → construct
-`AttributionService` / **`Analyzer`** → background poll → Uvicorn. Optional cache
-import.
+Load `Settings` → configure logging → construct `AttributionHttpAdapter` /
+**`AttributionController`** / **`Analyzer`**. Controller startup validates the LLM
+API key and wires postprocessing (poster, dataflow index, Slack) before analysis
+begins. Then background poll → Uvicorn. Optional cache import.
 
 **Shutdown**  
 Drain HTTP → stop poll → export cache (if configured) → exit. Job map is not
@@ -193,7 +194,7 @@ mitigates abuse.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | /healthz | Health (`status`, `issues`); optional `?pretty=true` |
-| GET | /stats | Counters + gauges (library + posting + slack) — **§20** |
+| GET | /stats | Counters + gauges (library + dataflow + slack) — **§20** |
 | GET | /jobs | Paginated job dump (`mode`, `limit`, `offset`) |
 | GET | /print | First 4KB preview (`log_path`) |
 | GET | /inflight | In-flight analyses |
@@ -201,15 +202,14 @@ mitigates abuse.
 | GET | /logs | Analyze / return results (`log_path`, optional `file`, `wl_restart`, `all_files`) |
 
 **GET /healthz**  
-Uses cumulative compute stats (errors + timeouts vs total) and posting failure rate
-when posting is active. Thresholds: ~20% → degraded, ~50% → fail (see service
+Uses cumulative compute stats (errors + timeouts vs total) and dataflow failure rate
+when dataflow posting is active. Thresholds: ~20% → degraded, ~50% → fail (see service
 implementation). Worst issue wins. MCP connectivity may add issues when backend is `mcp`.
 
 **GET /stats**  
 Merges `Analyzer.get_stats()` (coalescer, splitlog folder stats, detection,
-deferred, permission errors, …) with **posting** counters and **Slack** stats.
-**`posting`** holds `total_posts`, `total_successful`, `total_failed`; **`dataflow`**
-is a legacy alias of the same object.
+deferred, permission errors, …) with **dataflow** counters and **Slack** stats.
+**`dataflow`** holds `total_posts`, `total_successful`, `total_failed`.
 
 **POST /logs** body
 
@@ -232,8 +232,8 @@ flowchart TD
     A[GET /logs] --> B[Rate limit: RATE_LIMIT_ANALYZE]
     B --> C[attribution_log_path]
   end
-  subgraph svc["Service layer"]
-    C --> D[AttributionService.analyze_log]
+  subgraph adapter["HTTP adapter"]
+    C --> D[AttributionHttpAdapter.analyze_log]
   end
   subgraph lib["Library: Analyzer"]
     D --> E[analyze: validate path, resolve job mode]
@@ -366,8 +366,9 @@ and inline comments in **`Analyzer`** / `RequestCoalescer`. Do not duplicate her
 - **Library** (`Analyzer.get_stats`): coalescer stats (hits/misses, compute,
   submissions, …), splitlog folder stats under the `splitlog` key, `detection`,
   `deferred`, `permission_errors`, poll gauges, etc. — **exact keys per implementation**.
-- **Service** (`AttributionService.get_stats`): adds **`posting`** (and **`dataflow`**
-  alias), **`slack`** (attempts, successes, failures, user lookup stats when enabled).
+- **Controller/adapter** (`AttributionController.get_stats`, exposed by
+  `AttributionHttpAdapter.get_stats`): adds **`dataflow`** (ES/dataflow post
+  attempts) and **`slack`** (attempts, successes, failures, user lookup stats when enabled).
 
 Refer to live **`GET /stats`** response or OpenAPI for the current JSON shape.
 
@@ -377,9 +378,10 @@ Refer to live **`GET /stats`** response or OpenAPI for the current JSON shape.
 --------------------------------------------------------------------------------
 
 Postprocessing posts results when `DATAFLOW_INDEX` / cluster env configured; Slack
-when `SLACK_BOT_TOKEN` set. Wiring: `config.setup()` → `configure()`. Record build:
-`build_dataflow_record`; backend: `postprocessing/post_backend.py`. Retry behavior
-in implementation.
+when `SLACK_BOT_TOKEN` set or token fallback files are present. Wiring:
+`Settings` → `AttributionControllerConfig` → `AttributionController`. Record build:
+`build_dataflow_record`; backend: `postprocessing/post_backend.py`. Retry behavior in
+implementation.
 
 ================================================================================
                          OPERATIONS & DEVELOPMENT (POINTERS)

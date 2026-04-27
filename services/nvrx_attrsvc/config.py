@@ -36,10 +36,9 @@ PRINT_PREVIEW_MAX_BYTES = 4096  # Max bytes to return for /print endpoint
 class Settings(BaseSettings):
     """Typed configuration loaded from environment/.env (pydantic-settings v2).
 
-    LLM fields (``NVRX_ATTRSVC_LLM_*``) are passed into
-    :class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig` when set,
-    then into the library :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` via
-    :class:`~nvrx_attrsvc.service.AttributionService`; unset fields keep library defaults.
+    Attribution fields are translated into
+    :class:`~nvidia_resiliency_ext.attribution.controller.AttributionControllerConfig` by
+    :class:`~nvrx_attrsvc.service.AttributionHttpAdapter`; unset fields keep library defaults.
 
     ``LOG_LEVEL`` sets the root log level, FastAPI ``debug`` (when ``LOG_LEVEL`` is ``DEBUG``), MCP
     subprocess ``--log-level``, and verbosity for in-process MCP client loggers. Allowed values:
@@ -64,7 +63,7 @@ class Settings(BaseSettings):
         default=None, description="Timeout for compute_fn in seconds (None = library default)"
     )
 
-    # LLM settings → LogSageExecutionConfig when set (see AttributionService)
+    # LLM settings -> AttributionControllerConfig when set (see AttributionHttpAdapter)
     LLM_MODEL: str | None = Field(default=DEFAULT_LLM_MODEL, description="LLM model identifier")
     LLM_BASE_URL: str | None = Field(default=DEFAULT_LLM_BASE_URL, description="LLM base url")
     LLM_TEMPERATURE: float | None = Field(
@@ -91,8 +90,9 @@ class Settings(BaseSettings):
     # Slack integration (optional; env vars have no NVRX_ATTRSVC_ prefix)
     SLACK_BOT_TOKEN: str = Field(
         default="",
-        description="Slack bot token; if empty, setup() falls back to load_slack_bot_token() "
-        "(SLACK_BOT_TOKEN_FILE, ~/.slack_bot_token, ~/.slack_token, ~/.config/nvrx/slack_bot_token)",
+        description="Slack bot token; if empty, AttributionController falls back to "
+        "load_slack_bot_token() (SLACK_BOT_TOKEN_FILE, ~/.slack_bot_token, "
+        "~/.slack_token, ~/.config/nvrx/slack_bot_token)",
         validation_alias="SLACK_BOT_TOKEN",
     )
     SLACK_CHANNEL: str = Field(
@@ -237,7 +237,7 @@ def setup() -> Settings:
     """
     Group environment configuration and logging setup for nvrx_attrsvc.
     Returns a configured Settings instance.
-    Also wires postprocessing config (poster, dataflow, Slack) from cfg.
+    Attribution-specific dependency wiring happens in AttributionController.
 
     Field validators handle validation of PORT, LOG_LEVEL, COMPUTE_TIMEOUT,
     ALLOWED_ROOT, CACHE_FILE (when set), and rate limits. See Settings class for details.
@@ -259,32 +259,5 @@ def setup() -> Settings:
     logging.getLogger("mcp").setLevel(_root_lvl)
     logging.getLogger("nvidia_resiliency_ext.attribution.mcp_integration").setLevel(_root_lvl)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-
-    from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key, load_slack_bot_token
-
-    llm_key = load_llm_api_key()
-    if not llm_key:
-        logger.error(
-            "LLM API key not found or empty. Attribution requires a key. Set LLM_API_KEY or "
-            "LLM_API_KEY_FILE, or create ~/.llm_api_key. "
-            "Slack notifications remain optional (SLACK_BOT_TOKEN)."
-        )
-        raise SystemExit(1)
-
-    # Wire postprocessing config (lib singleton)
-    from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster, configure
-    from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
-
-    slack_token = (cfg.SLACK_BOT_TOKEN or "").strip() or load_slack_bot_token()
-
-    configure(
-        default_poster=ResultPoster(post_fn=post),
-        cluster_name=cfg.CLUSTER_NAME or "",
-        dataflow_index=cfg.DATAFLOW_INDEX or "",
-        slack_bot_token=slack_token,
-        slack_channel=cfg.SLACK_CHANNEL or "",
-    )
-    if slack_token:
-        logger.info(f"Slack notifications enabled for channel: {cfg.SLACK_CHANNEL}")
 
     return cfg
