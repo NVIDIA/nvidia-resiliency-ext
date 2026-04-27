@@ -101,8 +101,9 @@ cp scripts/user.env.example scripts/user.env
 ```
 
 Then edit `scripts/user.env` with cluster-specific settings. This file is
-sourced by `run_session.sh`, `prepare_node_alloc.sh`, `watch_and_analyze.sh`, and
-`l4_gb200_reduced.sh`, and it is intended to stay local and untracked.
+sourced by `run_session.sh`, `prepare_node_alloc.sh`, `watch_and_analyze.sh`,
+`l4_gb200_reduced.sh`, and `n3_super_gb200_fi.sh`. It is required for this skill
+to run and is intended to stay local and untracked.
 
 Recommended contents:
 
