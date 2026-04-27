@@ -25,7 +25,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKLOADS_CONF="${SCRIPT_DIR}/workloads.conf"
-SLURM_DEFAULTS_CONF="${SCRIPT_DIR}/slurm.conf"
 USER_ENV_FILE="${SCRIPT_DIR}/user.env"
 ACCOUNT_FROM_ENV="${ACCOUNT-}"
 PARTITION_FROM_ENV="${PARTITION-}"
@@ -35,10 +34,6 @@ CONTAINER_IMAGE_FROM_ENV="${CONTAINER_IMAGE-}"
 SHARED_TMP_BASE_DIR_FROM_ENV="${SHARED_TMP_BASE_DIR-}"
 WORKSPACE_HOST_PATH_FROM_ENV="${WORKSPACE_HOST_PATH-}"
 
-if [[ -f "${SLURM_DEFAULTS_CONF}" ]]; then
-    # shellcheck disable=SC1090
-    source "${SLURM_DEFAULTS_CONF}"
-fi
 if [[ -f "${USER_ENV_FILE}" ]]; then
     # shellcheck disable=SC1090
     source "${USER_ENV_FILE}"

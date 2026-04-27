@@ -138,8 +138,8 @@ Environment variables:
 | Variable | Default | Description |
 |---|---|---|
 | `WORKLOAD` | `llama4_scout` | Select a registered workload by name (see `scripts/workloads.conf`) |
-| `ACCOUNT` | _(cluster default or `scripts/slurm.conf`)_ | SLURM account |
-| `PARTITION` | _(cluster default or `scripts/slurm.conf`)_ | SLURM partition |
+| `ACCOUNT` | _(cluster default or `scripts/user.env`)_ | SLURM account |
+| `PARTITION` | _(cluster default or `scripts/user.env`)_ | SLURM partition |
 | `GPUS_PER_NODE` | `4` | GPUs per node |
 | `TIME` | `00:30:00` | Per-job wall-clock limit |
 | `BATCH_SIZE` | `2` | Jobs submitted per round |
