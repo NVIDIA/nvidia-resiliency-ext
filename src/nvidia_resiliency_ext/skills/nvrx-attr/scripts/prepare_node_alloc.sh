@@ -34,10 +34,13 @@ CONTAINER_IMAGE_FROM_ENV="${CONTAINER_IMAGE-}"
 SHARED_TMP_BASE_DIR_FROM_ENV="${SHARED_TMP_BASE_DIR-}"
 WORKSPACE_HOST_PATH_FROM_ENV="${WORKSPACE_HOST_PATH-}"
 
-if [[ -f "${USER_ENV_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${USER_ENV_FILE}"
+if [[ ! -f "${USER_ENV_FILE}" ]]; then
+    echo "ERROR: required local config not found: ${USER_ENV_FILE}" >&2
+    echo "Create it from ${SCRIPT_DIR}/user.env.example and fill in your local settings." >&2
+    exit 1
 fi
+# shellcheck disable=SC1090
+source "${USER_ENV_FILE}"
 if [[ -n "${ACCOUNT_FROM_ENV}" ]]; then
     ACCOUNT="${ACCOUNT_FROM_ENV}"
 fi

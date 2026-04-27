@@ -12,10 +12,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 USER_ENV_FILE="${SCRIPT_DIR}/user.env"
-if [[ -f "${USER_ENV_FILE}" ]]; then
-    # shellcheck disable=SC1090
-    source "${USER_ENV_FILE}"
+if [[ ! -f "${USER_ENV_FILE}" ]]; then
+    echo "ERROR: required local config not found: ${USER_ENV_FILE}" >&2
+    echo "Create it from ${SCRIPT_DIR}/user.env.example and fill in your local settings." >&2
+    exit 1
 fi
+# shellcheck disable=SC1090
+source "${USER_ENV_FILE}"
 WORKLOAD="${WORKLOAD:-llama4_scout}"
 
 # ---- Phase 1: submit and wait for all experiments ----
