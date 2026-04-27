@@ -194,14 +194,6 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
 
         backoff = _sleep_with_backoff(attempt, retries, backoff, max_backoff, jitter)
 
-    return (
-        ATTR_LLM_FAILURE,
-        ATTR_LLM_FAILURE,
-        ATTR_LLM_FAILURE,
-        ATTR_LLM_FAILURE,
-        str(checkpoint_saved),
-    )
-
 
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
