@@ -1,7 +1,9 @@
 import argparse
 import logging
 import os
+import random
 import re
+import time
 from typing import Any, Dict, Mapping, Union
 
 from langchain_openai import ChatOpenAI
@@ -37,6 +39,7 @@ ATTR_APPLICATION_DONE = "APPLICATION DONE"
 ATTR_ERRORS_NOT_FOUND = "ERRORS NOT FOUND"
 ATTR_NO_LOGS = "NO LOGS"
 ATTR_SLURM_CANCELLED_DUE_TO_PREEMPTION = "SLURM CANCELLED DUE TO PREEMPTION"
+LOGSAGE_LLM_ENDPOINT_FAILED = "LLM ENDPOINT FAILED"
 
 
 MARKER_NEW_RUN_DIR_ADDED = "[sbatch_script]: New run dir added:"
@@ -106,6 +109,90 @@ def chunk_logs_strict(lines):
         final_chunks[curr_cycle] = clean_chunk
 
     return final_chunks
+
+
+def _log_analysis_retry_config() -> tuple[int, float, float, float]:
+    retries = int(os.getenv("NVRX_LOG_ANALYSIS_LLM_RETRIES", "3"))
+    initial_backoff = float(os.getenv("NVRX_LOG_ANALYSIS_LLM_INITIAL_BACKOFF_SEC", "1.0"))
+    max_backoff = float(os.getenv("NVRX_LOG_ANALYSIS_LLM_MAX_BACKOFF_SEC", "8.0"))
+    jitter = float(os.getenv("NVRX_LOG_ANALYSIS_LLM_JITTER_SEC", "0.25"))
+    return retries, initial_backoff, max_backoff, jitter
+
+
+def _finished_status_name(status: Any) -> str:
+    return getattr(status, "name", status)
+
+
+def _sleep_with_backoff(
+    attempt: int, retries: int, backoff: float, max_backoff: float, jitter: float
+) -> float:
+    sleep_for = min(backoff, max_backoff) + random.uniform(0.0, jitter)
+    logger.info(
+        "Retrying log-analysis LLM in %.2fs after attempt %d/%d",
+        sleep_for,
+        attempt,
+        retries,
+    )
+    time.sleep(sleep_for)
+    return min(backoff * 2, max_backoff)
+
+
+def _retry_return_application_errors(
+    llm: ChatOpenAI, lines: list[str], cache_dict: LRUCache
+) -> ApplicationData:
+    retries, initial_backoff, max_backoff, jitter = _log_analysis_retry_config()
+    backoff = initial_backoff
+    last_status = None
+
+    for attempt in range(1, retries + 1):
+        app_data = return_application_errors(llm, lines, cache_dict)
+        status_name = _finished_status_name(app_data.finished)
+        if status_name != FINISHED_STATUS_LLM_FAILURE:
+            return app_data
+
+        last_status = status_name
+        if attempt == retries:
+            logger.error(
+                "Log-analysis extraction failed after %d attempts; last status: %s",
+                retries,
+                last_status,
+            )
+            return app_data
+
+        backoff = _sleep_with_backoff(attempt, retries, backoff, max_backoff, jitter)
+
+    return app_data
+
+
+def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, str, str, str, str]:
+    retries, initial_backoff, max_backoff, jitter = _log_analysis_retry_config()
+    backoff = initial_backoff
+
+    for attempt in range(1, retries + 1):
+        try:
+            result = llm_call()
+            if result and not any(field == LOGSAGE_LLM_ENDPOINT_FAILED for field in result[:4]):
+                return result
+            last_error = LOGSAGE_LLM_ENDPOINT_FAILED
+        except Exception as exc:
+            last_error = str(exc)
+            logger.warning("Log-analysis LLM attempt %d/%d failed: %s", attempt, retries, exc)
+
+        if attempt == retries:
+            logger.error(
+                "Log-analysis LLM failed after %d attempts; last error: %s",
+                retries,
+                last_error,
+            )
+            return (
+                ATTR_LLM_FAILURE,
+                ATTR_LLM_FAILURE,
+                ATTR_LLM_FAILURE,
+                ATTR_LLM_FAILURE,
+                str(checkpoint_saved),
+            )
+
+        backoff = _sleep_with_backoff(attempt, retries, backoff, max_backoff, jitter)
 
 
 class NVRxLogAnalyzer(NVRxAttribution):
@@ -213,7 +300,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     current_chunk.append(line)
 
         output_list = [
-            return_application_errors(self.llm, lines, self.lru_cache)
+            _retry_return_application_errors(self.llm, lines, self.lru_cache)
             for cycle, lines in chunks.items()
         ]
         return output_list
@@ -248,7 +335,12 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 )
             else:
                 if len(output.application_errors_list_full):
-                    result.append(get_proposed_solution_cat(self.llm, output))
+                    result.append(
+                        _with_exponential_backoff(
+                            lambda: get_proposed_solution_cat(self.llm, output),
+                            checkpoint_saved=output.checkpoint_saved,
+                        )
+                    )
                 else:
                     if output.finished == FINISHED_STATUS_LLM_FAILURE:
                         result.append(
@@ -361,11 +453,24 @@ def main():
         action='store_true',
         help='Input is already per-cycle data (skip filtering and chunking)',
     )
+    parser.add_argument(
+        '--emit-stdout',
+        action='store_true',
+        help='Print final attribution payload to stdout for machine consumers',
+    )
 
     args = parser.parse_args()
 
     analyzer = NVRxLogAnalyzer(args)
-    analyzer.run_sync(args)
+    results = analyzer.run_sync(args)
+
+    if args.emit_stdout:
+        for result in results:
+            if not result:
+                continue
+            payload = result[0] if isinstance(result, tuple) else result
+            if payload:
+                print(payload)
 
 
 if __name__ == "__main__":
