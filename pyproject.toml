@@ -66,12 +66,12 @@ attribution = ["langchain-openai", "logsage", "mcp", "setproctitle"]
 [tool.poetry-dynamic-versioning]
 enable = true
 vcs = "git"
-pattern = "^v?(?P<base>\\d+\\.\\d+\\.\\d+)(?:-main)?$"
+pattern = "^v?(?P<base>\\d+\\.\\d+\\.\\d+)(?:(?:-(?P<stage>rc)(?P<revision>\\d+))|-main)?$"
 format-jinja = """
 {%- if distance == 0 -%}
-{{ base }}
+{{ base }}{% if stage == "rc" %}rc{{ revision }}{% endif %}
 {%- else -%}
-{{ base }}.dev{{ distance }}+{{ commit }}
+{{ base }}{% if stage == "rc" %}rc{{ revision }}{% endif %}.dev{{ distance }}+{{ commit }}
 {%- endif -%}
 """
 
