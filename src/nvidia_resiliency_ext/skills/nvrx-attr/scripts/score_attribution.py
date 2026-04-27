@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 
 from langchain_openai import ChatOpenAI
@@ -40,7 +41,7 @@ INJECTION_MARKERS = (
 # Default judge model — override with --model
 DEFAULT_JUDGE_MODEL = "qwen/qwen3.5-397b-a17b"
 DEFAULT_GPUS_PER_NODE = int(os.getenv("GPUS_PER_NODE", "4"))
-DEFAULT_FR_RACK_SIZE = int(os.getenv("FR_RACK_SIZE", "32"))
+DEFAULT_FR_SEGMENT_SIZE = int(os.getenv("FR_SEGMENT_SIZE", os.getenv("FR_RACK_SIZE", "32")))
 
 # Expected restart decision and rationale per fault type
 _RESTART_TABLE = {
@@ -95,6 +96,64 @@ def load_log_excerpt(log_path, max_lines=400):
         return f"(could not read log file: {exc})"
 
 
+def parse_fr_missing_ranks(fr_output: str) -> set[int]:
+    if not fr_output or fr_output.strip() in ("", "no_dumps", "no results", "run_invalid"):
+        return set()
+
+    ranks: set[int] = set()
+    for line in fr_output.splitlines():
+        if "|" not in line or "Missing Ranks" in line:
+            continue
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) < 6:
+            continue
+        last_col = parts[-1]
+        for match in re.finditer(r"\d+", last_col):
+            ranks.add(int(match.group(0)))
+    return ranks
+
+
+def normalize_fr_rank_correct(
+    raw_label: str,
+    fr_output: str,
+    rank: int,
+    total_ranks: int,
+    gpus_per_node: int,
+    segment_size: int,
+) -> str:
+    label = (raw_label or "").strip().lower()
+    if label in {"n/a", ""}:
+        return raw_label
+    if label == "rack":
+        label = "segment"
+    if label == "no_dumps":
+        return "no_dumps"
+
+    fr_ranks = parse_fr_missing_ranks(fr_output)
+    if not fr_ranks:
+        return "no_dumps"
+
+    node_start = (rank // gpus_per_node) * gpus_per_node
+    node_end = min(node_start + gpus_per_node - 1, total_ranks - 1)
+    segment_start = (rank // segment_size) * segment_size
+    segment_end = min(segment_start + segment_size - 1, total_ranks - 1)
+
+    in_node = all(node_start <= fr_rank <= node_end for fr_rank in fr_ranks)
+    in_segment = all(segment_start <= fr_rank <= segment_end for fr_rank in fr_ranks)
+
+    if label == "node":
+        if in_node:
+            return "node"
+        if in_segment:
+            return "segment"
+        return "false"
+
+    if label == "segment":
+        return "segment" if in_segment else "false"
+
+    return label
+
+
 def build_judge_prompt(
     fault_type,
     rank,
@@ -105,12 +164,12 @@ def build_judge_prompt(
     fr_output,
     log_excerpt,
     gpus_per_node,
-    rack_size,
+    segment_size,
 ):
     total_ranks = nodes * gpus_per_node
     node_index = rank // gpus_per_node
-    rack_start = (rank // rack_size) * rack_size
-    rack_end = min(rack_start + rack_size - 1, total_ranks - 1)
+    segment_start = (rank // segment_size) * segment_size
+    segment_end = min(segment_start + segment_size - 1, total_ranks - 1)
     expected_restart, restart_rationale = _RESTART_TABLE.get(
         fault_type, ("unknown", "unknown fault type")
     )
@@ -141,7 +200,7 @@ distributed ML training.
 - Fault type : {fault_type}
 - Injected rank : {rank}  (global rank index, 0-based; total ranks = {total_ranks})
 - Injected node : {node_index}  (using {gpus_per_node} GPUs per node)
-- Injected rack : ranks {rack_start}-{rack_end}  (using rack size {rack_size})
+- Injected segment : ranks {segment_start}-{segment_end}  (using segment size {segment_size})
 - Injected at iteration : {iter_}
 - Cluster : {nodes} nodes × {gpus_per_node} GPUs = {total_ranks} total ranks
 
@@ -152,7 +211,7 @@ distributed ML training.
 - FR scope scoring:
   - "rank" if FR points directly to rank {rank}
   - "node" if FR does not isolate rank {rank} but correctly narrows to node {node_index}
-  - "rack" if FR does not isolate rank {rank} or node {node_index} but correctly narrows to rack ranks {rack_start}-{rack_end}
+  - "segment" if FR does not isolate rank {rank} or node {node_index} but correctly narrows to segment ranks {segment_start}-{segment_end}
   - "false" if FR points elsewhere or is not useful
   - "no_dumps" if there is no actionable FR output
 
@@ -182,10 +241,10 @@ Score each dimension below. Use only the values listed for each.
    Values: "true" | "false" | "partial" (category right but specifics wrong)
 
 5. **fr_rank_correct** — How precise is the FR analysis output?
-   Values: "rank" | "node" | "rack" | "false" | "no_dumps"
+   Values: "rank" | "node" | "segment" | "false" | "no_dumps"
    Use "rank" only if rank {rank} is explicitly implicated.
    Use "node" only if the FR output narrows correctly to node {node_index} but not the exact rank.
-   Use "rack" only if the FR output narrows correctly to rack ranks {rack_start}-{rack_end} but not the exact node or rank.
+   Use "segment" only if the FR output narrows correctly to segment ranks {segment_start}-{segment_end} but not the exact node or rank.
    Use "false" if the FR output points somewhere else, is misleading, or does not narrow correctly.
    Use "no_dumps" if there is no actionable FR output.
 
@@ -243,7 +302,7 @@ def score(args):
         fr_output=args.fr_output,
         log_excerpt=log_excerpt,
         gpus_per_node=args.gpus_per_node,
-        rack_size=args.rack_size,
+        segment_size=args.segment_size,
     )
 
     # build_judge_prompt returns a dict directly for invalid runs (no LLM call needed)
@@ -259,6 +318,15 @@ def score(args):
         text = "\n".join(line for line in lines if not line.startswith("```")).strip()
 
     result = json.loads(text)
+    total_ranks = args.nodes * args.gpus_per_node
+    result["fr_rank_correct"] = normalize_fr_rank_correct(
+        raw_label=result.get("fr_rank_correct", ""),
+        fr_output=args.fr_output,
+        rank=args.rank,
+        total_ranks=total_ranks,
+        gpus_per_node=args.gpus_per_node,
+        segment_size=args.segment_size,
+    )
     return result
 
 
@@ -285,12 +353,20 @@ def main():
         help="GPUs per node for rank-to-node mapping",
     )
     parser.add_argument(
+        "--segment-size",
+        type=int,
+        default=DEFAULT_FR_SEGMENT_SIZE,
+        help="Ranks per segment for coarse FR scope scoring",
+    )
+    parser.add_argument(
         "--rack-size",
         type=int,
-        default=DEFAULT_FR_RACK_SIZE,
-        help="Ranks per rack for coarse FR scope scoring",
+        default=None,
+        help="Deprecated alias for --segment-size",
     )
     args = parser.parse_args()
+    if args.rack_size is not None:
+        args.segment_size = args.rack_size
 
     try:
         result = score(args)

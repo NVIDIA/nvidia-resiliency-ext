@@ -120,7 +120,7 @@ NVRX_LLM_MODEL="nvidia/nemotron-3-super-120b-a12b"
 NVRX_LLM_BASE_URL="https://integrate.api.nvidia.com/v1"
 JUDGE_MODEL="qwen/qwen3.5-397b-a17b"
 JUDGE_BASE_URL="https://integrate.api.nvidia.com/v1"
-FR_RACK_SIZE=32
+FR_SEGMENT_SIZE=32
 ```
 
 Use `user.env` for stable site defaults such as partition, container image, and
@@ -156,7 +156,7 @@ Environment variables:
 | `NVRX_LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for log-analysis |
 | `JUDGE_MODEL` | `qwen/qwen3.5-397b-a17b` | Model for judge scoring |
 | `JUDGE_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for judge scoring |
-| `FR_RACK_SIZE` | `32` | Ranks per rack for coarse FR scoring |
+| `FR_SEGMENT_SIZE` | `32` | Ranks per segment for coarse FR scoring |
 | `SBATCH_SCRIPT` | `scripts/l4_gb200_reduced.sh` | Job script to submit |
 | `POOL` | _(default pool above)_ | Space-separated experiment triplets |
 
@@ -255,7 +255,7 @@ analysis output, then returns structured JSON scores with a reasoning note.
 | **rank_primary** | `true` / `false` / `partial` | Injected rank is the primary root-cause in attribution |
 | **rank_any** | `true` / `false` | Injected rank mentioned anywhere in attribution |
 | **fault_described** | `true` / `false` / `partial` | Fault nature (hang/crash/signal/exception) correctly described |
-| **fr_rank_correct** | `rank` / `node` / `rack` / `false` / `no_dumps` | FR analysis narrows correctly to the injected rank, node, rack, or fails to narrow usefully |
+| **fr_rank_correct** | `rank` / `node` / `segment` / `false` / `no_dumps` | FR analysis narrows correctly to the injected rank, exactly one `GPUS_PER_NODE` rank block containing that rank, the configured `FR_SEGMENT_SIZE` rank block containing the injected rank, or fails to narrow usefully |
 | **judge_notes** | string | One-sentence summary of the main gap or confirmation |
 
 The judge is given:
@@ -264,10 +264,10 @@ The judge is given:
 3. Filtered raw log (last 400 lines, same `exclude_nvrx_logs` filtering as logsage)
 4. Raw logsage stdout (5-field text format)
 5. Raw FR analysis table output from `fr_attribution.py --fr-path ... -p "_dump_*"`
-6. `GPUS_PER_NODE` and `FR_RACK_SIZE` to map the injected rank to node and rack scopes for FR scoring
+6. `GPUS_PER_NODE` and `FR_SEGMENT_SIZE` to map the injected rank to exact node-sized and segment-sized scopes for FR scoring
 
 Default judge model: `qwen/qwen3.5-397b-a17b`. Override with `--model` in `score_attribution.py`.
-Default rack size for FR scope scoring: `32` ranks. Override with `FR_RACK_SIZE`.
+Default segment size for FR scope scoring: `32` ranks. Override with `FR_SEGMENT_SIZE`.
 
 ---
 
@@ -298,8 +298,8 @@ Common failure mode patterns and their meaning:
 | `fault_described=partial` for crash types | Crash keywords present but fault type not specifically named |
 | `restart_correct=false` for GPU_ERROR | LLM conflating hardware error with recoverable hang |
 | `fr_rank_correct=no_dumps` | NCCL watchdog did not fire before job ended — adjust `TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC` |
-| `fr_rank_correct=node` | FR isolated the correct node but not the exact rank |
-| `fr_rank_correct=rack` | FR isolated the correct rack-sized rank group but not the exact node/rank |
+| `fr_rank_correct=node` | FR isolated exactly one `GPUS_PER_NODE` rank block containing the injected rank, but not the exact rank |
+| `fr_rank_correct=segment` | FR isolated the configured `FR_SEGMENT_SIZE` rank block containing the injected rank, but not the exact node/rank |
 
 ---
 

@@ -50,3 +50,15 @@ full coalescing stack.
 - `logsage` package installed (required by `log_analysis`)
 - Package installed: `pip install nvidia-resiliency-ext` or `pip install -e .` from repo root
 - The fault-injection loop has only been validated with Megatron-LM training scripts
+
+## Fault-Loop Local Setup
+
+Before using `fault-injection-loop/`, create the local config file from the tracked
+template and fill in your site-specific values:
+
+```bash
+cp scripts/user.env.example scripts/user.env
+```
+
+The feedback-loop scripts require `src/nvidia_resiliency_ext/skills/nvrx-attr/scripts/user.env`
+to exist at runtime. Keep `user.env` local and untracked.
