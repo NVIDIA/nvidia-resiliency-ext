@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""FastAPI HTTP wrapper for AttributionService."""
+"""FastAPI HTTP wrapper for AttributionHttpAdapter."""
 
 import asyncio
 import json
@@ -22,7 +22,7 @@ from slowapi.util import get_remote_address
 from .config import ErrorCode, Settings, setup
 from .routes import PARAM_LOG_PATH, ROUTE_LOGS
 from .service import (
-    AttributionService,
+    AttributionHttpAdapter,
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
@@ -111,24 +111,20 @@ def create_app(cfg: Settings) -> FastAPI:
     """
     Construct and return the FastAPI app for the NVRX Attribution Service.
 
-    This is a thin HTTP wrapper around AttributionService.
+    This is a thin HTTP wrapper around AttributionHttpAdapter.
     """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """Startup: set event loop, connect MCP (if used), load cache. Shutdown: save cache and stop service."""
+        """Startup and shutdown for controller-owned runtime dependencies."""
         # Startup
-        app.state.service.set_event_loop(asyncio.get_running_loop())
-        await app.state.service.connect_mcp()
-        if app.state.cache_file:
-            loaded = await app.state.service.load_cache(app.state.cache_file)
-            if loaded > 0:
-                logger.info(f"Restored {loaded} cached results from {app.state.cache_file}")
+        started = await app.state.attribution.start(asyncio.get_running_loop())
+        loaded = started.get("cache_entries_loaded", 0)
+        if loaded > 0:
+            logger.info(f"Restored {loaded} cached results from {cfg.CACHE_FILE}")
         yield
         # Shutdown
-        if app.state.cache_file:
-            await app.state.service.save_cache(app.state.cache_file)
-        await app.state.service.shutdown_async()
+        await app.state.attribution.shutdown_async()
 
     app = FastAPI(
         title="NVRX Attribution Service",
@@ -147,8 +143,7 @@ def create_app(cfg: Settings) -> FastAPI:
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     # Initialize service in app state (lifespan uses these on startup/shutdown)
-    app.state.service = AttributionService(cfg)
-    app.state.cache_file = cfg.CACHE_FILE
+    app.state.attribution = AttributionHttpAdapter(cfg)
 
     # Global exception handlers to standardize error bodies
     @app.exception_handler(HTTPException)
@@ -198,8 +193,8 @@ def create_app(cfg: Settings) -> FastAPI:
         - "degraded": Some issues but service is functional (20-50% error rate)
         - "fail": Critical issues (>50% error rate)
         """
-        service: AttributionService = request.app.state.service
-        health = await service.get_health()
+        adapter: AttributionHttpAdapter = request.app.state.attribution
+        health = await adapter.get_health()
         return json_response(health, pretty=pretty, indent=indent)
 
     @app.get("/stats")
@@ -211,8 +206,8 @@ def create_app(cfg: Settings) -> FastAPI:
         ),
     ) -> Response:
         """Get cache and request coalescing statistics. See spec Section 20."""
-        service: AttributionService = request.app.state.service
-        stats = await service.get_stats()
+        adapter: AttributionHttpAdapter = request.app.state.attribution
+        stats = await adapter.get_stats()
         return json_response(stats, pretty=pretty, indent=indent)
 
     @app.get("/inflight")
@@ -224,8 +219,8 @@ def create_app(cfg: Settings) -> FastAPI:
         ),
     ) -> Response:
         """Get currently in-flight requests. See spec Section 22."""
-        service: AttributionService = request.app.state.service
-        inflight = await service.get_inflight()
+        adapter: AttributionHttpAdapter = request.app.state.attribution
+        inflight = await adapter.get_inflight()
         return json_response(inflight, pretty=pretty, indent=indent)
 
     @app.get("/jobs")
@@ -237,8 +232,8 @@ def create_app(cfg: Settings) -> FastAPI:
         ),
     ) -> Response:
         """Get all tracked jobs (pending, single-file, and splitlog modes)."""
-        service: AttributionService = request.app.state.service
-        jobs = service.get_all_jobs()
+        adapter: AttributionHttpAdapter = request.app.state.attribution
+        jobs = adapter.get_all_jobs()
         return json_response(jobs, pretty=pretty, indent=indent)
 
     @app.post(
@@ -255,8 +250,8 @@ def create_app(cfg: Settings) -> FastAPI:
         split logging mode is enabled. In split logging mode, the service tracks multiple
         cycles and analyzes log files from the LOGS_DIR folder.
         """
-        service: AttributionService = request.app.state.service
-        result = await service.submit_log(req.log_path, req.user, req.job_id)
+        adapter: AttributionHttpAdapter = request.app.state.attribution
+        result = await adapter.submit_log(req.log_path, req.user, req.job_id)
         if isinstance(result, LogAnalyzerError):
             _raise_error(result)
         return result
@@ -277,8 +272,8 @@ def create_app(cfg: Settings) -> FastAPI:
         log_path: str = Query(..., description="Absolute path to a file under allowed root"),
     ) -> str:
         """Return the first 4KB of a file for preview."""
-        service: AttributionService = request.app.state.service
-        result = service.read_file_preview(log_path)
+        adapter: AttributionHttpAdapter = request.app.state.attribution
+        result = adapter.read_file_preview(log_path)
         if isinstance(result, LogAnalyzerError):
             _raise_error(result)
         return result.content
@@ -325,8 +320,8 @@ def create_app(cfg: Settings) -> FastAPI:
 
         See spec Section 10 and 17 for GET flow details.
         """
-        service: AttributionService = request.app.state.service
-        result = await service.analyze_log(log_path, file, wl_restart)
+        adapter: AttributionHttpAdapter = request.app.state.attribution
+        result = await adapter.analyze_log(log_path, file, wl_restart)
         if isinstance(result, LogAnalyzerError):
             _raise_error(result)
         return result

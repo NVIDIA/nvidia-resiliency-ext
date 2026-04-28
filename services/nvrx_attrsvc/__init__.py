@@ -13,7 +13,7 @@ from nvidia_resiliency_ext.attribution.coalescing import (
 from .app import create_app
 from .config import Settings, setup
 from .service import (
-    AttributionService,
+    AttributionHttpAdapter,
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
@@ -27,8 +27,8 @@ __all__ = [
     # Configuration
     "Settings",
     "setup",
-    # Core service (for direct Python usage)
-    "AttributionService",
+    # HTTP adapter (for direct Python usage)
+    "AttributionHttpAdapter",
     "LogAnalysisCycleResult",
     "LogAnalysisSplitlogResult",
     "LogAnalyzerError",

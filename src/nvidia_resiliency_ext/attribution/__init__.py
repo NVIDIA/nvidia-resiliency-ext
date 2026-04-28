@@ -56,6 +56,14 @@ if TYPE_CHECKING:
         SubmittedResult,
         coalesced_from_cache,
     )
+    from .controller import (
+        AttributionAnalysisConfig,
+        AttributionCacheConfig,
+        AttributionController,
+        AttributionControllerConfig,
+        AttributionCredentialsConfig,
+        AttributionPostprocessingConfig,
+    )
     from .svc.config import (
         MAX_JOBS,
         MIN_FILE_SIZE_KB,
@@ -107,6 +115,12 @@ _EXPORTS = {
     "StatsResult": ".coalescing",
     "SubmittedResult": ".coalescing",
     "coalesced_from_cache": ".coalescing",
+    "AttributionController": ".controller",
+    "AttributionControllerConfig": ".controller",
+    "AttributionAnalysisConfig": ".controller",
+    "AttributionCacheConfig": ".controller",
+    "AttributionCredentialsConfig": ".controller",
+    "AttributionPostprocessingConfig": ".controller",
     "MAX_JOBS": ".svc.config",
     "MIN_FILE_SIZE_KB": ".svc.config",
     "POLL_INTERVAL_SECONDS": ".svc.config",
@@ -184,6 +198,12 @@ __all__ = [
     "LogAnalyzerSubmitResult",
     "LogAnalysisSplitlogResult",
     "LogAnalyzerFilePreview",
+    "AttributionController",
+    "AttributionControllerConfig",
+    "AttributionAnalysisConfig",
+    "AttributionCacheConfig",
+    "AttributionCredentialsConfig",
+    "AttributionPostprocessingConfig",
     # Configuration and error codes
     "ErrorCode",
     "TTL_PENDING_SECONDS",
