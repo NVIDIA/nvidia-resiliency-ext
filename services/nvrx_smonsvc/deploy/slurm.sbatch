@@ -18,13 +18,13 @@
 #   Attribution service must be running and accessible
 #
 # Configuration via environment variables:
-#   NVRX_ATTRSVC_URL - Attribution service URL (default: http://localhost:8000)
+#   NVRX_ATTRSVC_ENDPOINT - Attribution service endpoint (default: http://localhost:8000)
 #   NVRX_SMONSVC_PARTITIONS - SLURM partitions to monitor (default: "batch batch_long")
 #   NVRX_SMONSVC_PORT - HTTP status server port (default: 8100)
 #   NVRX_SMONSVC_INTERVAL - Poll interval in seconds (default: 180)
 #
 # Example:
-#   NVRX_ATTRSVC_URL=http://cpu-0011:8000 \
+#   NVRX_ATTRSVC_ENDPOINT=http://cpu-0011:8000 \
 #   NVRX_SMONSVC_PARTITIONS="gpu gpu_long" \
 #   sbatch --account=myaccount slurm.sbatch
 #
@@ -41,7 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../scripts/common.sh"
 
 # Configuration (can be overridden via env vars)
-export NVRX_ATTRSVC_URL="${NVRX_ATTRSVC_URL:-http://localhost:8000}"
+export NVRX_ATTRSVC_ENDPOINT="${NVRX_ATTRSVC_ENDPOINT:-http://localhost:8000}"
 export NVRX_SMONSVC_PORT="${NVRX_SMONSVC_PORT:-8100}"
 export NVRX_SMONSVC_PARTITIONS="${NVRX_SMONSVC_PARTITIONS:-batch batch_long}"
 export NVRX_SMONSVC_INTERVAL="${NVRX_SMONSVC_INTERVAL:-180}"
@@ -61,13 +61,13 @@ echo "============================================================"
 echo "  Hostname:    ${HOSTNAME}"
 echo "  Port:        ${NVRX_SMONSVC_PORT}"
 echo "  URL:         http://${HOSTNAME}:${NVRX_SMONSVC_PORT}"
-echo "  Attrsvc URL: ${NVRX_ATTRSVC_URL}"
+echo "  Attrsvc:     ${NVRX_ATTRSVC_ENDPOINT}"
 echo "  Partitions:  ${NVRX_SMONSVC_PARTITIONS}"
 echo "  Interval:    ${NVRX_SMONSVC_INTERVAL}s"
 echo "============================================================"
 
 # Check if attribution service is reachable (warning only)
-check_attrsvc_reachable "${NVRX_ATTRSVC_URL}" || true
+check_attrsvc_reachable "${NVRX_ATTRSVC_ENDPOINT}" || true
 
 # Cleanup on exit
 cleanup() {

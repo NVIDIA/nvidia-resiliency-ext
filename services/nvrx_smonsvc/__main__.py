@@ -6,7 +6,8 @@
 CLI entry point for nvrx_smonsvc.
 
 Usage:
-    python -m nvrx_smonsvc --attrsvc-url http://localhost:8000 --port 8100
+    python -m nvrx_smonsvc --attrsvc-endpoint http://localhost:8000 --port 8100
+    python -m nvrx_smonsvc --attrsvc-endpoint unix:///tmp/nvrx-attrsvc.sock --port 8100
 """
 
 import argparse
@@ -37,16 +38,19 @@ def main():
         epilog="""
 Examples:
   # Monitor jobs in default partitions (batch, batch_long)
-  %(prog)s --attrsvc-url http://localhost:8000 --port 8100
+  %(prog)s --attrsvc-endpoint http://localhost:8000 --port 8100
+
+  # Monitor through attrsvc HTTP-over-UDS
+  %(prog)s --attrsvc-endpoint unix:///tmp/nvrx-attrsvc.sock --port 8100
 
   # Monitor specific partitions
-  %(prog)s --partitions gpu interactive --attrsvc-url http://localhost:8000 --port 8100
+  %(prog)s --partitions gpu interactive --attrsvc-endpoint http://localhost:8000 --port 8100
 
   # Monitor specific user's jobs
-  %(prog)s --user foo_bar --attrsvc-url http://attrsvc.cluster.local:8000 --port 8100
+  %(prog)s --user foo_bar --attrsvc-endpoint http://attrsvc.cluster.local:8000 --port 8100
 
   # Monitor jobs matching a pattern
-  %(prog)s --job-pattern "train_.*" --attrsvc-url http://localhost:8000 --port 8100
+  %(prog)s --job-pattern "train_.*" --attrsvc-endpoint http://localhost:8000 --port 8100
 
   # Run both services via SLURM
   sbatch scripts/nvrx_services.sbatch
@@ -54,10 +58,16 @@ Examples:
     )
 
     # Environment variable prefix: NVRX_SMONSVC_
+    default_attrsvc_endpoint = os.environ.get("NVRX_ATTRSVC_ENDPOINT", "http://localhost:8000")
+
     parser.add_argument(
-        "--attrsvc-url",
-        default=os.environ.get("NVRX_ATTRSVC_URL", "http://localhost:8000"),
-        help="Attribution service URL (env: NVRX_ATTRSVC_URL, default: http://localhost:8000)",
+        "--attrsvc-endpoint",
+        default=default_attrsvc_endpoint,
+        dest="attrsvc_url",
+        help=(
+            "Attribution service URL or UDS endpoint "
+            "(env: NVRX_ATTRSVC_ENDPOINT, default: http://localhost:8000)"
+        ),
     )
 
     parser.add_argument(

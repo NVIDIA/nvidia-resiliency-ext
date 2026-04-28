@@ -6,7 +6,8 @@
 #
 # Environment variables:
 #   NVRX_HOST - Common host for both services (default: localhost)
-#   NVRX_ATTRSVC_PORT - Attribution service port (default: 8000)
+#   NVRX_ATTRSVC_ENDPOINT - Unified attrsvc endpoint: http://host:port or unix:///path.sock
+#   NVRX_ATTRSVC_PORT - TCP port fallback when endpoint is unset (default: 8000)
 #   NVRX_SMONSVC_PORT - Monitor service port (default: 8100)
 #   SNAPSHOT_INTERVAL - Interval in seconds (default: 600)
 #   SNAPSHOT_OUTPUT_DIR - Output directory (default: ~/nvrx_snapshots)
@@ -27,6 +28,11 @@ ATTRSVC_PORT="${NVRX_ATTRSVC_PORT:-8000}"
 SMONSVC_PORT="${NVRX_SMONSVC_PORT:-8100}"
 INTERVAL="${SNAPSHOT_INTERVAL:-600}"
 OUTPUT_DIR="${SNAPSHOT_OUTPUT_DIR:-${HOME}/nvrx_snapshots}"
+if [[ -n "${NVRX_ATTRSVC_ENDPOINT:-}" ]]; then
+    ATTRSVC_ENDPOINT="${NVRX_ATTRSVC_ENDPOINT}"
+else
+    ATTRSVC_ENDPOINT="http://${HOST}:${ATTRSVC_PORT}"
+fi
 
 # Use timestamp for log files (consistent with run_services.sh)
 SNAPSHOT_TIMESTAMP="${SNAPSHOT_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
@@ -36,7 +42,7 @@ SMONSVC_LOG="${OUTPUT_DIR}/${SNAPSHOT_TIMESTAMP}_snapshot_smonsvc.log"
 mkdir -p "${OUTPUT_DIR}"
 
 echo "=== NVRX Services Snapshot ==="
-echo "attrsvc: http://${HOST}:${ATTRSVC_PORT} -> ${ATTRSVC_LOG}"
+echo "attrsvc: ${ATTRSVC_ENDPOINT} -> ${ATTRSVC_LOG}"
 echo "smonsvc: http://${HOST}:${SMONSVC_PORT} -> ${SMONSVC_LOG}"
 echo "Interval: ${INTERVAL}s"
 echo "Press Ctrl+C to stop"

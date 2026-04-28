@@ -12,6 +12,8 @@ This module contains HTTP/service-specific settings only.
 import logging
 import os
 import re
+from dataclasses import dataclass
+from urllib.parse import unquote, urlparse
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +35,78 @@ DEFAULT_PORT = 8000
 PRINT_PREVIEW_MAX_BYTES = 4096  # Max bytes to return for /print endpoint
 
 
+@dataclass(frozen=True)
+class ServiceEndpoint:
+    """Resolved attrsvc bind endpoint."""
+
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    uds_path: str = ""
+
+    @property
+    def is_uds(self) -> bool:
+        return bool(self.uds_path)
+
+    @property
+    def display_url(self) -> str:
+        if self.uds_path:
+            return f"unix://{self.uds_path}"
+        return f"http://{self.host}:{self.port}"
+
+
+def _normalize_uds_path(value: str) -> str:
+    path = os.path.abspath(os.path.expanduser(value.strip()))
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        raise ValueError(f"UDS path parent directory does not exist: {parent}")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise ValueError(f"UDS path parent directory is not writable/searchable: {parent}")
+    return path
+
+
+def parse_service_endpoint(
+    endpoint: str,
+    *,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+) -> ServiceEndpoint:
+    """Resolve the bind endpoint from unified endpoint or HOST/PORT."""
+    value = (endpoint or "").strip()
+    if value:
+        if value.startswith("unix://"):
+            parsed = urlparse(value)
+            if parsed.netloc and parsed.path:
+                path = f"/{parsed.netloc}{parsed.path}"
+            else:
+                path = parsed.path or parsed.netloc
+            path = _normalize_uds_path(unquote(path))
+            return ServiceEndpoint(uds_path=path)
+
+        if value.startswith("/"):
+            path = _normalize_uds_path(value)
+            return ServiceEndpoint(uds_path=path)
+
+        if "://" not in value:
+            value = f"http://{value}"
+        parsed = urlparse(value)
+        if parsed.scheme != "http":
+            raise ValueError(
+                "ENDPOINT must use http://, unix://, or an absolute socket path; " f"got {endpoint}"
+            )
+        if parsed.path not in ("", "/"):
+            raise ValueError(f"ENDPOINT must not include a path component: {endpoint}")
+        bind_host = parsed.hostname or host
+        bind_port = parsed.port if parsed.port is not None else port
+        if not 1 <= int(bind_port) <= 65535:
+            raise ValueError(f"ENDPOINT port must be between 1 and 65535, got {bind_port}")
+        return ServiceEndpoint(
+            host=bind_host,
+            port=int(bind_port),
+        )
+
+    return ServiceEndpoint(host=host, port=port)
+
+
 class Settings(BaseSettings):
     """Typed configuration loaded from environment/.env (pydantic-settings v2).
 
@@ -48,6 +122,13 @@ class Settings(BaseSettings):
     FAST_API_ROOT_PATH: str = Field(default="", description="FastAPI root path")
     ALLOWED_ROOT: str = Field(
         ..., description="Absolute base directory allowed for input paths (required)"
+    )
+    ENDPOINT: str = Field(
+        default="",
+        description=(
+            "Unified attrsvc bind endpoint. Supports http://host:port, host:port, "
+            "unix:///absolute/path.sock, or an absolute UDS path. Overrides HOST/PORT."
+        ),
     )
     HOST: str = Field(default=DEFAULT_HOST)
     PORT: int = Field(default=DEFAULT_PORT)
@@ -152,6 +233,15 @@ class Settings(BaseSettings):
             raise ValueError(f"PORT must be between 1 and 65535, got {v}")
         return v
 
+    @property
+    def SERVICE_ENDPOINT(self) -> ServiceEndpoint:
+        """Resolved service bind endpoint. ENDPOINT wins over HOST/PORT."""
+        return parse_service_endpoint(
+            self.ENDPOINT,
+            host=self.HOST,
+            port=self.PORT,
+        )
+
     @field_validator("LOG_LEVEL")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -244,6 +334,7 @@ def setup() -> Settings:
     """
     try:
         cfg = Settings()  # type: ignore[call-arg]
+        _ = cfg.SERVICE_ENDPOINT
     except Exception as e:
         # Fail fast if required settings are missing or invalid
         raise SystemExit(f"nvrx_attrsvc configuration error: {e}") from e
