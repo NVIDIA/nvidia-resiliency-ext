@@ -17,7 +17,26 @@
 #SBATCH --exclusive
 #SBATCH --mem=0
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+resolve_script_dir() {
+    local candidate
+
+    for candidate in \
+        "${NVRX_ATTR_SCRIPT_DIR:-}" \
+        "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" \
+        "${SLURM_SUBMIT_DIR:-}" \
+        "${SLURM_SUBMIT_DIR:-}/scripts" \
+        "${SLURM_SUBMIT_DIR:-}/src/nvidia_resiliency_ext/skills/nvrx-attr/scripts"
+    do
+        if [[ -n "${candidate}" && -f "${candidate}/user.env" ]]; then
+            cd "${candidate}" && pwd
+            return
+        fi
+    done
+
+    cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd
+}
+
+SCRIPT_DIR="$(resolve_script_dir)"
 USER_ENV_FILE="${SCRIPT_DIR}/user.env"
 NVRX_SRC_ROOT_DEFAULT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 NVRX_REPO_ROOT_DEFAULT="$(cd "${SCRIPT_DIR}/../../../../.." && pwd)"
