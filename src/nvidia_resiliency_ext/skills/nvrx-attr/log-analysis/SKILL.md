@@ -5,7 +5,7 @@ description: >
   NVRxLogAnalyzer. Use when you have a SLURM training job log and need to determine why the
   job failed and whether it should be restarted. Performs per-cycle chunking, fast-path pattern
   matching, and LLM-based classification.
-compatibility: Requires NVIDIA_API_KEY, langchain-openai, and logsage packages installed. nvidia-resiliency-ext must be installed.
+compatibility: Requires LLM_API_KEY, langchain-openai, and logsage packages installed. nvidia-resiliency-ext must be installed.
 metadata:
   entry-point: NVRxLogAnalyzer
   script: scripts/nvrx_logsage.py
@@ -108,5 +108,5 @@ fields joined by `\n`:
 
 ## Prerequisites
 
-- `NVIDIA_API_KEY` set (env var, `NVIDIA_API_KEY_FILE`, or `~/.nvidia_api_key`)
+- `LLM_API_KEY` set (env var, `LLM_API_KEY_FILE`, or `~/.llm_api_key`)
 - `langchain-openai` and `logsage` packages installed

@@ -5,7 +5,7 @@ description: >
   isolate the responsible ranks using CollectiveAnalyzer. Use when a distributed training job
   hangs due to an NCCL collective timeout and FR dump files are available. Detects the wavefront
   process group where collectives diverge and returns the root-cause suspect ranks.
-compatibility: Requires PyTorch NCCL FR dumps (TORCH_NCCL_TRACE_BUFFER_SIZE > 0 must be set during training). NVIDIA_API_KEY and langchain-openai are required only when using --llm-analyze.
+compatibility: Requires PyTorch NCCL FR dumps (TORCH_NCCL_TRACE_BUFFER_SIZE > 0 must be set during training). LLM_API_KEY and langchain-openai are required only when using --llm-analyze.
 metadata:
   entry-point: CollectiveAnalyzer
   script: scripts/fr_attribution.py
@@ -108,6 +108,6 @@ or triggered automatically on NCCL timeout.
 ## Prerequisites
 
 - FR dump files produced by PyTorch NCCL (set `TORCH_NCCL_TRACE_BUFFER_SIZE` > 0)
-- `NVIDIA_API_KEY` required only when using `--llm-analyze`
+- `LLM_API_KEY` required only when using `--llm-analyze`
 - `langchain-openai` required only when using `--llm-analyze`
 - `FR_DEBUG=1` env var enables verbose debug logging in the script

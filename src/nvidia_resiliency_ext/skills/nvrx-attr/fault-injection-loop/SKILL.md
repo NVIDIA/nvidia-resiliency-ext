@@ -8,7 +8,7 @@ description: >
   After all jobs complete, runs /log-analysis and /fr-analysis on every experiment,
   scores attribution vs. ground truth, aggregates gaps, and iterates on attribution
   modules to close them.
-compatibility: Requires SLURM cluster access, sbatch, NVIDIA_API_KEY, langchain-openai, logsage, and nvidia-resiliency-ext installed. This workflow has only been validated with Megatron-LM workloads.
+compatibility: Requires SLURM cluster access, sbatch, LLM_API_KEY, langchain-openai, logsage, and nvidia-resiliency-ext installed. This workflow has only been validated with Megatron-LM workloads.
 metadata:
   author: nvidia
   sub-skills: [log-analysis, fr-analysis]
@@ -114,8 +114,8 @@ MEGATRON_REPO_HOST_PATH="${HOME}/megatron-lm-main"
 SHARED_TMP_BASE_DIR="${HOME}/tmp"
 WORKSPACE_HOST_PATH="${HOME}/tmp"
 CONTAINER_IMAGE="nvcr.io/nvidia/nemo:26.04"
-NVIDIA_API_KEY_FILE="${HOME}/.nvidia_api_key"
-JUDGE_API_KEY_FILE="${HOME}/.nvidia_api_key"
+LLM_API_KEY_FILE="${HOME}/.llm_api_key"
+JUDGE_API_KEY_FILE="${HOME}/.llm_api_key"
 NVRX_LLM_MODEL="nvidia/nemotron-3-super-120b-a12b"
 NVRX_LLM_BASE_URL="https://integrate.api.nvidia.com/v1"
 JUDGE_MODEL="qwen/qwen3.5-397b-a17b"
@@ -150,7 +150,7 @@ Environment variables:
 | `SHARED_TMP_BASE_DIR` | `${HOME}/tmp` | Shared filesystem path used for cross-step coordination |
 | `WORKSPACE_HOST_PATH` | `${HOME}/tmp` | Host path mounted at `/workspace` inside the container |
 | `CONTAINER_IMAGE` | `nvcr.io/nvidia/nemo:26.04` | Container image used by the workload script |
-| `NVIDIA_API_KEY_FILE` | _unset_ | File containing the log-analysis API key |
+| `LLM_API_KEY_FILE` | _unset_ | File containing the log-analysis API key |
 | `JUDGE_API_KEY_FILE` | _unset_ | File containing the judge API key |
 | `NVRX_LLM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Model for log-analysis |
 | `NVRX_LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for log-analysis |

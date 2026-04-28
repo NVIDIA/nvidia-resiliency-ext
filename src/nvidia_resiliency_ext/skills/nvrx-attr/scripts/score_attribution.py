@@ -28,7 +28,7 @@ import sys
 from langchain_openai import ChatOpenAI
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[4]))
-from nvidia_resiliency_ext.attribution.api_keys import load_nvidia_api_key
+from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
 from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -273,11 +273,11 @@ def score(args):
             except OSError:
                 api_key = ""
     if not api_key:
-        api_key = load_nvidia_api_key()
+        api_key = load_llm_api_key()
     if not api_key:
         raise ValueError(
             "Judge API key not found. Set JUDGE_API_KEY/JUDGE_API_KEY_FILE, "
-            "or NVIDIA_API_KEY/NVIDIA_API_KEY_FILE, or create ~/.nvidia_api_key"
+            "or LLM_API_KEY/LLM_API_KEY_FILE, or create ~/.llm_api_key"
         )
 
     base_url = os.getenv("JUDGE_BASE_URL", "").strip() or args.base_url
