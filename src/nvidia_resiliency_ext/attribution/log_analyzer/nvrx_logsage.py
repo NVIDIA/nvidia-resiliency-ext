@@ -167,6 +167,14 @@ def _retry_return_application_errors(
 def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, str, str, str, str]:
     retries, initial_backoff, max_backoff, jitter = _log_analysis_retry_config()
     backoff = initial_backoff
+    last_error = "no attempts made (retries=0)"
+    fallback = (
+        ATTR_LLM_FAILURE,
+        ATTR_LLM_FAILURE,
+        ATTR_LLM_FAILURE,
+        ATTR_LLM_FAILURE,
+        str(checkpoint_saved),
+    )
 
     for attempt in range(1, retries + 1):
         try:
@@ -184,15 +192,16 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
                 retries,
                 last_error,
             )
-            return (
-                ATTR_LLM_FAILURE,
-                ATTR_LLM_FAILURE,
-                ATTR_LLM_FAILURE,
-                ATTR_LLM_FAILURE,
-                str(checkpoint_saved),
-            )
+            return fallback
 
         backoff = _sleep_with_backoff(attempt, retries, backoff, max_backoff, jitter)
+
+    logger.error(
+        "Log-analysis LLM failed after %d attempts; last error: %s",
+        retries,
+        last_error,
+    )
+    return fallback
 
 
 class NVRxLogAnalyzer(NVRxAttribution):
