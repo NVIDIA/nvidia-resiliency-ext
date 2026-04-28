@@ -3,7 +3,6 @@ import os
 import unittest
 from unittest.mock import patch
 
-
 try:
     nvrx_logsage = importlib.import_module(
         "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
