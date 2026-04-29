@@ -111,7 +111,8 @@ Snapshot service endpoints periodically for debugging:
 
 # Environment variables:
 #   NVRX_HOST              - Common host (default: localhost)
-#   NVRX_ATTRSVC_PORT      - Attribution service port (default: 8000)
+#   NVRX_ATTRSVC_ENDPOINT  - Attribution endpoint (default: http://<host>:8000)
+#   NVRX_ATTRSVC_PORT      - TCP port fallback when endpoint is unset (default: 8000)
 #   NVRX_SMONSVC_PORT      - Monitor service port (default: 8100)
 #   SNAPSHOT_INTERVAL      - Interval in seconds (default: 600)
 #   SNAPSHOT_OUTPUT_DIR    - Output directory (default: ~/nvrx_snapshots)

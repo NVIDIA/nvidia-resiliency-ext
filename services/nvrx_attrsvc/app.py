@@ -6,6 +6,9 @@
 import asyncio
 import json
 import logging
+import os
+import socket
+import stat
 import sys
 import threading
 from contextlib import asynccontextmanager
@@ -363,6 +366,34 @@ def _install_exception_logging() -> None:
         threading.excepthook = _thread_excepthook
 
 
+def _prepare_uds_path(path: str) -> None:
+    """Remove a stale socket before binding, but never replace a regular file."""
+    if not os.path.exists(path):
+        return
+    mode = os.stat(path).st_mode
+    if not stat.S_ISSOCK(mode):
+        raise SystemExit(f"nvrx_attrsvc endpoint exists and is not a socket: {path}")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        try:
+            sock.connect(path)
+        except FileNotFoundError:
+            return
+        except ConnectionRefusedError:
+            try:
+                os.unlink(path)
+            except OSError as e:
+                raise SystemExit(
+                    f"nvrx_attrsvc stale endpoint could not be removed: {path}: {e}"
+                ) from e
+            return
+        except OSError as e:
+            raise SystemExit(
+                f"nvrx_attrsvc endpoint could not be probed safely: {path}: {e}"
+            ) from e
+    raise SystemExit(f"nvrx_attrsvc endpoint already has a listener: {path}")
+
+
 def main() -> None:
     """Entry point for the NVRX Attribution Service."""
     cfg = setup()
@@ -370,12 +401,19 @@ def main() -> None:
     # Log unhandled exceptions (main and background threads) so crashes are visible in log
     _install_exception_logging()
 
-    logger.info(f"Starting NVRX Attribution Service (nvrx_attrsvc) on {cfg.HOST}:{cfg.PORT}")
-    logger.info(f"nvrx_attrsvc API Documentation: http://{cfg.HOST}:{cfg.PORT}/docs")
-    uvicorn.run(
-        create_app(cfg),
-        host=cfg.HOST,
-        port=cfg.PORT,
-        access_log=False,
-        timeout_graceful_shutdown=30,  # Wait up to 30s for in-flight requests on shutdown
-    )
+    run_kwargs: dict[str, Any] = {
+        "access_log": False,
+        "timeout_graceful_shutdown": 30,  # Wait up to 30s for in-flight requests on shutdown
+    }
+    endpoint = cfg.SERVICE_ENDPOINT
+    if endpoint.uds_path:
+        _prepare_uds_path(endpoint.uds_path)
+        logger.info("Starting NVRX Attribution Service (nvrx_attrsvc) on %s", endpoint.display_url)
+        run_kwargs["uds"] = endpoint.uds_path
+    else:
+        logger.info("Starting NVRX Attribution Service (nvrx_attrsvc) on %s", endpoint.display_url)
+        logger.info(f"nvrx_attrsvc API Documentation: {endpoint.display_url}/docs")
+        run_kwargs["host"] = endpoint.host
+        run_kwargs["port"] = endpoint.port
+
+    uvicorn.run(create_app(cfg), **run_kwargs)

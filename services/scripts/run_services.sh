@@ -21,7 +21,8 @@
 #   NVRX_LOGS_DIR             - Output directory for logs (default: ~/nvrx_logs)
 #   NVRX_ATTRSVC_ANALYSIS_BACKEND - Log + FR: mcp (default) or lib
 #   NVRX_SMONSVC_PARTITIONS   - SLURM partitions to monitor (default: "batch batch_long")
-#   NVRX_ATTRSVC_PORT         - Attribution service port (default: 8000)
+#   NVRX_ATTRSVC_ENDPOINT     - Unified attrsvc endpoint: http://host:port or unix:///path.sock
+#   NVRX_ATTRSVC_PORT         - TCP port fallback when endpoint is unset (default: 8000)
 #   NVRX_SMONSVC_PORT         - Monitor service port (default: 8100)
 #   NVRX_ATTRSVC_CLUSTER_NAME - Cluster name for dataflow (auto-detected from SLURM)
 #   SNAPSHOT_INTERVAL         - Snapshot interval in seconds (default: 600)
@@ -49,6 +50,17 @@ export NVRX_LOGS_DIR="${NVRX_LOGS_DIR:-${HOME}/nvrx_logs}"
 ATTRSVC_PORT="${NVRX_ATTRSVC_PORT:-8000}"
 SMONSVC_PORT="${NVRX_SMONSVC_PORT:-8100}"
 SNAPSHOT_INTERVAL="${SNAPSHOT_INTERVAL:-600}"
+if [[ -n "${NVRX_ATTRSVC_ENDPOINT:-}" ]]; then
+    ATTRSVC_ENDPOINT="${NVRX_ATTRSVC_ENDPOINT}"
+else
+    ATTRSVC_ENDPOINT="http://localhost:${ATTRSVC_PORT}"
+fi
+ATTRSVC_ENDPOINT_SOCKET_PATH=""
+if [[ "${ATTRSVC_ENDPOINT}" == unix://* ]]; then
+    ATTRSVC_ENDPOINT_SOCKET_PATH="${ATTRSVC_ENDPOINT#unix://}"
+elif [[ "${ATTRSVC_ENDPOINT}" == /* ]]; then
+    ATTRSVC_ENDPOINT_SOCKET_PATH="${ATTRSVC_ENDPOINT}"
+fi
 # Cluster name for dataflow (auto-detect from SLURM if not set)
 if [[ -z "${NVRX_ATTRSVC_CLUSTER_NAME:-}" ]]; then
     # Try SLURM env var, then scontrol, then hostname
@@ -126,7 +138,7 @@ cmd_start() {
     echo "=== Starting NVRX Services ==="
     echo "Logs directory:    ${NVRX_LOGS_DIR}"
     echo "Allowed root:      ${NVRX_ATTRSVC_ALLOWED_ROOT}"
-    echo "Attrsvc port:      ${ATTRSVC_PORT}"
+    echo "Attrsvc endpoint:  ${ATTRSVC_ENDPOINT}"
     echo "Smonsvc port:      ${SMONSVC_PORT}"
     echo ""
     
@@ -141,7 +153,7 @@ cmd_start() {
     
     # Start SLURM Monitor
     echo "Starting SLURM Monitor..."
-    export NVRX_ATTRSVC_URL="http://localhost:${ATTRSVC_PORT}"
+    export NVRX_ATTRSVC_ENDPOINT="${ATTRSVC_ENDPOINT}"
     export NVRX_SMONSVC_PORT="${SMONSVC_PORT}"
     nohup nvrx-smonsvc > "${SMONSVC_LOG}" 2>&1 &
     echo $! > "${SMONSVC_PID_FILE}"
@@ -222,7 +234,11 @@ cmd_status() {
         local pid=$(cat "${ATTRSVC_PID_FILE}")
         echo -e "Attribution Service: ${GREEN}running${NC} (PID: $pid)"
         # Try to get health
-        local health=$(curl -s "http://localhost:${ATTRSVC_PORT}/healthz" 2>/dev/null || echo "unreachable")
+        if [[ -n "${ATTRSVC_ENDPOINT_SOCKET_PATH}" ]]; then
+            local health=$(curl -s --unix-socket "${ATTRSVC_ENDPOINT_SOCKET_PATH}" "http://localhost/healthz" 2>/dev/null || echo "unreachable")
+        else
+            local health=$(curl -s "${ATTRSVC_ENDPOINT%/}/healthz" 2>/dev/null || echo "unreachable")
+        fi
         echo "  Health: $health"
     else
         echo -e "Attribution Service: ${RED}stopped${NC}"
@@ -297,7 +313,7 @@ cmd_run() {
     echo "=== NVRX Attribution Services (Foreground) ==="
     echo "Logs directory:    ${NVRX_LOGS_DIR}"
     echo "Allowed root:      ${NVRX_ATTRSVC_ALLOWED_ROOT}"
-    echo "Attrsvc port:      ${ATTRSVC_PORT}"
+    echo "Attrsvc endpoint:  ${ATTRSVC_ENDPOINT}"
     echo "Smonsvc port:      ${SMONSVC_PORT}"
     echo ""
     
@@ -311,7 +327,7 @@ cmd_run() {
     
     # Start SLURM Monitor
     echo "Starting SLURM Monitor..."
-    export NVRX_ATTRSVC_URL="http://localhost:${ATTRSVC_PORT}"
+    export NVRX_ATTRSVC_ENDPOINT="${ATTRSVC_ENDPOINT}"
     export NVRX_SMONSVC_PORT="${SMONSVC_PORT}"
     nvrx-smonsvc > "${SMONSVC_LOG}" 2>&1 &
     SMONSVC_PID=$!

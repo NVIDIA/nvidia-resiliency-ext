@@ -8,7 +8,7 @@
 #   Attribution service must be running and accessible
 #
 # Optional environment variables:
-#   NVRX_ATTRSVC_URL        - Attribution service URL (default: http://localhost:8000)
+#   NVRX_ATTRSVC_ENDPOINT   - Attribution service endpoint (default: http://localhost:8000)
 #   NVRX_SMONSVC_PORT       - Listen port (default: 8100)
 #   NVRX_SMONSVC_PARTITIONS - SLURM partitions (default: "batch batch_long")
 #
@@ -27,7 +27,7 @@ source "${SCRIPT_DIR}/../../scripts/common.sh"
 
 # Configuration
 OUTPUT_DIR="${1:-${NVRX_LOGS_DIR:-${HOME}/nvrx_logs}}"
-ATTRSVC_URL="${NVRX_ATTRSVC_URL:-http://localhost:8000}"
+ATTRSVC_ENDPOINT="${NVRX_ATTRSVC_ENDPOINT:-http://localhost:8000}"
 PORT="${NVRX_SMONSVC_PORT:-8100}"
 
 # Use timestamp prefix if set (from run_services.sh), otherwise generate one
@@ -39,15 +39,15 @@ PID_FILE="${OUTPUT_DIR}/${PREFIX}_smonsvc.pid"
 ensure_directory "${OUTPUT_DIR}" "logs directory" || exit 1
 
 # Check if attrsvc is reachable (warning only, doesn't exit)
-check_attrsvc_reachable "${ATTRSVC_URL}" || true
+check_attrsvc_reachable "${ATTRSVC_ENDPOINT}" || true
 
 # Start service
 echo "Starting SLURM Monitor..."
 echo "  Port:     ${PORT}"
-echo "  Attrsvc:  ${ATTRSVC_URL}"
+echo "  Attrsvc:  ${ATTRSVC_ENDPOINT}"
 echo "  Log:      ${LOG_FILE}"
 
-export NVRX_ATTRSVC_URL="${ATTRSVC_URL}"
+export NVRX_ATTRSVC_ENDPOINT="${ATTRSVC_ENDPOINT}"
 export NVRX_SMONSVC_PORT="${PORT}"
 nvrx-smonsvc >> "${LOG_FILE}" 2>&1 &
 PID=$!
