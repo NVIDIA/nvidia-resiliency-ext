@@ -147,19 +147,3 @@ cd docs && make html
 ```
 
 Output lands in `public/` or `docs/build/html/`. The build must complete without warnings or errors.
-
-## InJob Slash Commands
-
-This repo ships Claude slash commands for running and validating InJob fault tolerance on SLURM
-clusters. Type `/nvrx` to see the full list. Quick reference:
-
-| Command | Purpose |
-|---------|---------|
-| `/nvrx-quickstart` | Try InJob on 1–2 nodes using a built-in example (no script needed) |
-| `/nvrx-create` | Transform your sbatch script to be InJob-enabled |
-| `/nvrx-submit` | Upload + submit an InJob sbatch to a cluster via SSH |
-| `/nvrx-watch` | Poll a running job and collect artifacts |
-| `/nvrx-validate` | Validate artifacts: fault detection, timing, throughput, membership |
-| `/nvrx-run` | Full pipeline: create → submit → watch → validate |
-
-New to InJob? Start with `/nvrx-quickstart`. Have your own script? Use `/nvrx-run`.
