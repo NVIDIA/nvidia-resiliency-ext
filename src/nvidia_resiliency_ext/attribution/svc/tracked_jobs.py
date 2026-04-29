@@ -35,7 +35,7 @@ from .types import LogAnalyzerError, LogAnalyzerSubmitResult
 logger = logging.getLogger(__name__)
 
 # Fire-and-forget: (log_path, user, job_id)
-FireAndForgetAnalyze = Callable[[str, str, str], None]
+FireAndForgetAnalyze = Callable[[str, str, Optional[str]], None]
 
 
 class TrackedJobs:

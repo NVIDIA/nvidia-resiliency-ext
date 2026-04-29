@@ -320,7 +320,7 @@ class Analyzer:
 
         try:
             user = job.user if job else "unknown"
-            job_id = job.job_id if job else ""
+            job_id = job.job_id if job else None
             if not job_id:
                 logger.debug(
                     f"No job_id for path {validated}: job_found={job is not None}, "
@@ -423,7 +423,7 @@ class Analyzer:
     # ─── Internal methods ───
 
     async def _run_llm_analysis(
-        self, path: str, user: str = "unknown", job_id: str = ""
+        self, path: str, user: str = "unknown", job_id: Optional[str] = None
     ) -> LogAnalysisCoalesced:
         """On cache miss: delegate to :meth:`LogAnalyzer.run_attribution_for_path`."""
         return await self._log.run_attribution_for_path(path, user=user, job_id=job_id)
@@ -502,7 +502,7 @@ class Analyzer:
         )
 
     def _sync_analyze_via_coalescer(
-        self, log_path: str, user: str, job_id: str = ""
+        self, log_path: str, user: str, job_id: Optional[str] = None
     ) -> Dict[str, Any] | None:
         """Synchronous wrapper for background thread analysis.
 
@@ -530,7 +530,9 @@ class Analyzer:
         # Block until complete (same behavior as before)
         return future.result(timeout=self._compute_timeout)
 
-    def _fire_and_forget_analyze(self, log_path: str, user: str = "", job_id: str = "") -> None:
+    def _fire_and_forget_analyze(
+        self, log_path: str, user: str = "unknown", job_id: Optional[str] = None
+    ) -> None:
         """
         Schedule analysis without waiting for completion.
 

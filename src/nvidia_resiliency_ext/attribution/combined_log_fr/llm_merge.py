@@ -111,7 +111,7 @@ async def merge_log_fr_llm(
     from langchain_core.prompts import PromptTemplate
     from langchain_openai import ChatOpenAI
 
-    if not llm_api_key.strip():
+    if not (llm_api_key and llm_api_key.strip()):
         raise ValueError(
             "LLM API key is empty. Load it once via load_llm_api_key() and pass llm_api_key=... "
             "Required for log+FR LLM merge."

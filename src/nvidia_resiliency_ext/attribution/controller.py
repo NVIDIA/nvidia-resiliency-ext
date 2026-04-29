@@ -19,7 +19,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nvidia_resiliency_ext.attribution.analyzer import Analyzer
-from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key, load_slack_bot_token
+from nvidia_resiliency_ext.attribution.api_keys import (
+    llm_api_key_missing_message,
+    load_llm_api_key,
+    load_slack_bot_token,
+)
 from nvidia_resiliency_ext.attribution.coalescing import (
     CacheResult,
     InflightResult,
@@ -455,8 +459,11 @@ class AttributionController:
         if llm_key:
             return True
         logger.error(
-            "LLM API key not found or empty. Attribution requires a key. Set LLM_API_KEY or "
-            "LLM_API_KEY_FILE, or create ~/.llm_api_key. Slack notifications remain optional."
+            llm_api_key_missing_message(
+                include_empty=True,
+                context="Attribution requires a key.",
+                suffix="Slack notifications remain optional.",
+            )
         )
         raise RuntimeError("LLM API key not found or empty")
 
