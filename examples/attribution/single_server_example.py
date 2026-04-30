@@ -84,7 +84,6 @@ async def main(args: argparse.Namespace):
             top_p=0.7,
             max_tokens=8192,
             verbose=True,
-            scheduling_order_file="TP->PP->DP",
             health_check=True,
             llm_analyze=False,
             pattern="_dump_*",

@@ -107,7 +107,6 @@ class TestFRAttribution(unittest.TestCase):
             "verbose": False,
             "health_check": False,
             "llm_analyze": False,
-            "scheduling_order_file": None,
             "model": DEFAULT_LLM_MODEL,
             "base_url": DEFAULT_LLM_BASE_URL,
             "debug": False,
@@ -123,25 +122,17 @@ class TestFRAttribution(unittest.TestCase):
             test_name: Name of the test case
         """
         try:
-            # For test environment, focus on key metrics rather than exact matches
-            # The actual_output is just the summary, while reference includes full details
+            # For test environment, focus on key metrics rather than exact text formatting.
             actual_missing_ranks = self.parser.extract_missing_ranks_set(actual_output)
-
-            # Expected missing ranks based on test specification
-            expected_ranks = {
-                'gpu_error_1st': {12, 14},
-                'gpu_error_2nd': {9, 14},
-                'lock_gil_1st': {9, 14},
-                'lock_gil_2nd': {10, 15},
-            }
-
-            if test_name in expected_ranks:
-                self.assertEqual(
-                    actual_missing_ranks,
-                    expected_ranks[test_name],
-                    f"Missing ranks {actual_missing_ranks} do not match expected "
-                    f"{expected_ranks[test_name]} for {test_name}",
-                )
+            reference_file = self.reference_dir / f"{test_name}_reference.txt"
+            reference_output = reference_file.read_text()
+            expected_ranks = self.parser.extract_missing_ranks_set(reference_output)
+            self.assertEqual(
+                actual_missing_ranks,
+                expected_ranks,
+                f"Missing ranks {actual_missing_ranks} do not match expected "
+                f"{expected_ranks} for {test_name}",
+            )
 
             # Validate that we have some missing ranks (not empty)
             self.assertGreater(
@@ -333,17 +324,7 @@ class TestFRAttributionReferenceValidation(unittest.TestCase):
                 # Parse reference output
                 parsed = self.parser.parse_output(reference_output)
 
-                # Validate that reference contains expected information
-                self.assertGreater(
-                    parsed['processed_files'],
-                    0,
-                    f"Reference for {trace_dir_name} shows no processed files",
-                )
-                self.assertGreater(
-                    len(parsed['group_types']),
-                    0,
-                    f"Reference for {trace_dir_name} shows no group types",
-                )
+                # Validate that the current summary table still contains actionable missing ranks.
                 self.assertGreater(
                     len(parsed['missing_ranks_by_pg']),
                     0,

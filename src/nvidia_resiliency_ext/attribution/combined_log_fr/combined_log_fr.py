@@ -78,7 +78,7 @@ class CombinedLogFR(NVRxAttribution):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Analyze collective operations across JSON dump files.'
+        description='Analyze application logs with PyTorch Flight Recorder dumps.'
     )
     parser.add_argument('--log-path', type=str, required=True, help='Path to application log file')
 
@@ -105,7 +105,7 @@ def main():
     parser.add_argument('-p', '--top_p', type=float, default=0.7, help='Top P for LLM')
     parser.add_argument('--max_tokens', type=int, default=8192, help='Max tokens for LLM')
     parser.add_argument(
-        '--pattern', default="*.json", help='File pattern to match (default: *.json)'
+        '--pattern', default="_dump_*", help='File pattern to match (default: _dump_*)'
     )
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose output')
     parser.add_argument(
@@ -114,10 +114,6 @@ def main():
     parser.add_argument(
         '-l', '--llm-analyze', action='store_true', help='Use LLM to analyze the output'
     )
-    parser.add_argument(
-        '-s', '--scheduling-order-file', default="TP->PP->DP", help='Scheduling order of TP->PP->DP'
-    )
-    parser.add_argument('--time-spread', action='store_true', help='Show time spread analysis')
     parser.add_argument(
         '--exclude_nvrx_logs', action='store_true', help='Exclude nvrx logs from the input data'
     )

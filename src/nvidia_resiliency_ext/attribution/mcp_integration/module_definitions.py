@@ -103,11 +103,6 @@ def register_all_modules():
                     "description": "LLM base url",
                     "default": DEFAULT_LLM_BASE_URL,
                 },
-                "scheduling_order_file": {
-                    "type": "string",
-                    "description": "Process group scheduling order (e.g., 'TP->PP->DP')",
-                    "default": "TP->PP->DP",
-                },
                 "verbose": {
                     "type": "boolean",
                     "description": "Enable verbose output",
