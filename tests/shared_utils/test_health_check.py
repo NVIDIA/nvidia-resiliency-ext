@@ -20,6 +20,7 @@ import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
 from nvidia_resiliency_ext.shared_utils.health_check import (
+    AttributionService,
     NicHealthCheck,
     NVLHealthCheck,
     PciMixin,
@@ -547,6 +548,30 @@ class TestNVLHealthCheck(unittest.TestCase):
                 result = checker._perform_health_check()
                 self.assertTrue(result)
                 mock_check.assert_called_once_with(0)
+
+
+class TestAttributionService(unittest.TestCase):
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_http_endpoint_posts_to_logs_route(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        service._do_submit_log("/tmp/train.log")
+
+        client.post.assert_called_once_with(
+            "http://attr.example:8000/logs",
+            json={"log_path": "/tmp/train.log"},
+            headers={"accept": "application/json"},
+        )
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_non_http_endpoint_does_not_create_http_client(self, mock_client):
+        service = AttributionService(endpoint="grpc://attr.example:50050")
+
+        service._do_submit_log("/tmp/train.log")
+
+        mock_client.assert_not_called()
 
 
 if __name__ == "__main__":

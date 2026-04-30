@@ -1361,11 +1361,10 @@ class AttributionService:
 
     def __init__(
         self,
-        host: str,
-        port: int,
+        endpoint: str,
     ):
-        self.host = host
-        self.port = port
+        self.endpoint = endpoint.rstrip("/")
+        self._unsupported_transport_warned = False
         # Track the most recent log_path we submitted
         self._last_submitted: Optional[str] = None
 
@@ -1398,9 +1397,12 @@ class AttributionService:
 
     def _do_submit_log(self, log_path: str) -> None:
         """Perform the actual POST request (runs in background thread)."""
+        base_url = self._http_base_url()
+        if base_url is None:
+            return
         try:
             with httpx.Client(timeout=10.0) as client:
-                url = f"http://{self.host}:{self.port}/logs"
+                url = f"{base_url}/logs"
                 logger.debug("AttributionService POST: %s (log_path=%s)", url, log_path)
                 client.post(
                     url,
@@ -1416,10 +1418,13 @@ class AttributionService:
         """
         Get analysis results for a previously submitted log file via GET.
         """
+        base_url = self._http_base_url()
+        if base_url is None:
+            return
         try:
             with httpx.Client(timeout=60.0) as client:
                 q_path = quote_plus(log_path)
-                url = f"http://{self.host}:{self.port}/logs?log_path={q_path}"
+                url = f"{base_url}/logs?log_path={q_path}"
                 logger.debug("AttributionService GET: %s (log_path=%s)", url, log_path)
                 resp = client.get(url, headers={"accept": "application/json"})
                 if resp.status_code == 200:
@@ -1441,3 +1446,15 @@ class AttributionService:
             logger.warning(
                 "AttributionService GET %s failed: %s: %s", log_path, type(e).__name__, e
             )
+
+    def _http_base_url(self) -> Optional[str]:
+        if self.endpoint.startswith(("http://", "https://")):
+            return self.endpoint
+        if not self._unsupported_transport_warned:
+            logger.warning(
+                "AttributionService endpoint uses a non-HTTP transport that is not "
+                "implemented by the in-job client: %s",
+                self.endpoint,
+            )
+            self._unsupported_transport_warned = True
+        return None
