@@ -4,8 +4,11 @@
 """Attribution service client for nvrx_smonsvc."""
 
 import logging
+import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from urllib.parse import unquote, urlparse
 
 try:
     import httpx
@@ -21,6 +24,54 @@ from nvrx_attrsvc.routes import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _AttrsvcEndpoint:
+    base_url: str
+    display_url: str
+    uds_path: str | None = None
+
+
+def _parse_attrsvc_endpoint(endpoint: str) -> _AttrsvcEndpoint:
+    value = endpoint.strip()
+    if not value:
+        raise ValueError("attrsvc endpoint must not be empty")
+
+    if value.startswith("unix://"):
+        parsed = urlparse(value)
+        if parsed.netloc and parsed.path:
+            path = f"/{parsed.netloc}{parsed.path}"
+        else:
+            path = parsed.path or parsed.netloc
+        path = unquote(path)
+        if not os.path.isabs(path):
+            raise ValueError(
+                f"attrsvc unix endpoint must contain an absolute socket path: {endpoint}"
+            )
+        return _AttrsvcEndpoint(
+            base_url="http://nvrx-attrsvc",
+            display_url=f"unix://{path}",
+            uds_path=path,
+        )
+
+    if value.startswith("/"):
+        path = os.path.abspath(value)
+        return _AttrsvcEndpoint(
+            base_url="http://nvrx-attrsvc",
+            display_url=f"unix://{path}",
+            uds_path=path,
+        )
+
+    if "://" not in value:
+        value = f"http://{value}"
+    parsed = urlparse(value)
+    if parsed.scheme != "http":
+        raise ValueError(
+            "attrsvc endpoint must use http://, unix://, or an absolute "
+            f"socket path; got {endpoint}"
+        )
+    return _AttrsvcEndpoint(base_url=value.rstrip("/"), display_url=value.rstrip("/"))
 
 
 class AttrsvcClient:
@@ -54,6 +105,7 @@ class AttrsvcClient:
 
         Args:
             base_url: Base URL of the attribution service (e.g., http://localhost:8000)
+                or HTTP-over-UDS endpoint (e.g., unix:///tmp/nvrx-attrsvc.sock)
             timeout: HTTP request timeout in seconds
             max_attempts: Maximum number of retry attempts
             retry_delay: Delay between retries for server errors
@@ -65,7 +117,8 @@ class AttrsvcClient:
         if httpx is None:
             raise ImportError("httpx is required. Install with: pip install httpx")
 
-        self._base_url = base_url.rstrip("/")
+        self._endpoint = _parse_attrsvc_endpoint(base_url)
+        self._base_url = self._endpoint.base_url
         self._timeout = timeout
         self._max_attempts = max_attempts
         self._retry_delay = retry_delay
@@ -73,7 +126,15 @@ class AttrsvcClient:
         self._rate_limit_max_delay = rate_limit_max_delay
         self._request_throttle = request_throttle
         self._on_rate_limited = on_rate_limited
-        self._client = httpx.Client(timeout=timeout)
+        if self._endpoint.uds_path:
+            transport = httpx.HTTPTransport(uds=self._endpoint.uds_path)
+            self._client = httpx.Client(
+                transport=transport,
+                base_url=self._endpoint.base_url,
+                timeout=timeout,
+            )
+        else:
+            self._client = httpx.Client(base_url=self._endpoint.base_url, timeout=timeout)
 
         # Health check cache to avoid blocking HTTP calls on every /healthz request
         self._health_cache: tuple[bool, float] | None = None
@@ -114,7 +175,7 @@ class AttrsvcClient:
         if self._client is not None:
             response = None
             try:
-                response = self._client.get(self._base_url, timeout=5.0)
+                response = self._client.get("/healthz", timeout=5.0)
                 is_healthy = response.status_code < 500
             except Exception:
                 pass
@@ -148,14 +209,12 @@ class AttrsvcClient:
             user: SLURM job user (for POST requests)
             cycle: Cycle number for GET requests in splitlog mode (None = latest)
         """
-        url = f"{self._base_url}{ROUTE_LOGS}"
-
         for attempt in range(self._max_attempts):
             response = None
             try:
                 if method == "POST":
                     response = self._client.post(
-                        url,
+                        ROUTE_LOGS,
                         json={
                             PARAM_LOG_PATH: log_path,
                             PARAM_USER: user,
@@ -168,7 +227,7 @@ class AttrsvcClient:
                     if cycle is not None:
                         params[PARAM_WL_RESTART] = cycle
                     response = self._client.get(
-                        url,
+                        ROUTE_LOGS,
                         params=params,
                     )
 

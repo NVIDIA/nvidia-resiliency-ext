@@ -28,6 +28,7 @@ These tests focus on:
 
 import multiprocessing
 import os
+import queue
 import signal
 import socket
 import threading
@@ -124,10 +125,10 @@ def _run_rendezvous_processes(
     join_timeout_seconds=15.0,
     process_timeout=PROCESS_JOIN_TIMEOUT_SECS,
 ):
-    """Run min_nodes participants in separate (fork) processes; return (store, results, errors).
+    """Run min_nodes participants in separate processes; return (store, results, errors).
 
     Main process holds the master TCPStore so callers can inspect keys after (e.g. for
-    test_barrier_keys_cleared_after_acknowledgment). Uses fork for faster process start.
+    test_barrier_keys_cleared_after_acknowledgment).
     """
     from .utils import find_free_port
 
@@ -139,9 +140,12 @@ def _run_rendezvous_processes(
         is_master=True,
         wait_for_workers=False,
     )
-    result_queue = multiprocessing.Queue()
-    ctx = multiprocessing.get_context("fork")
+    # Avoid forking after the master TCPStore is created. TCPStore owns native
+    # background state, and inheriting it into children can leave CI workers hung.
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
     procs = []
+    proc_participant_ids = {}
     for i in range(min_nodes):
         p = ctx.Process(
             target=_run_participant_process,
@@ -160,14 +164,69 @@ def _run_rendezvous_processes(
         )
         p.start()
         procs.append(p)
-    for p in procs:
-        p.join(timeout=process_timeout)
+        proc_participant_ids[p.pid] = i
     results = []
     errors = []
-    for _ in range(min_nodes):
+
+    def drain_results():
+        while len(results) + len(errors) < min_nodes:
+            try:
+                item = result_queue.get_nowait()
+            except queue.Empty:
+                break
+            participant_id, rank, total, exc = item
+            if exc is None:
+                results.append((participant_id, rank, total))
+            else:
+                errors.append((participant_id, exc))
+
+    deadline = time.monotonic() + process_timeout
+    while time.monotonic() < deadline:
+        drain_results()
+        alive = [p for p in procs if p.is_alive()]
+        if not alive:
+            break
+        for p in alive:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            p.join(timeout=min(0.1, remaining))
+
+    drain_results()
+    for p in procs:
+        if p.is_alive():
+            participant_id = proc_participant_ids.get(p.pid, "unknown")
+            p.terminate()
+            p.join(timeout=5)
+            if p.is_alive():
+                p.kill()
+                p.join(timeout=5)
+            errors.append(
+                (
+                    participant_id,
+                    TimeoutError(
+                        f"participant process {p.pid} did not exit within " f"{process_timeout}s"
+                    ),
+                )
+            )
+        elif p.exitcode not in (0, None):
+            participant_id = proc_participant_ids.get(p.pid, "unknown")
+            reported = {item[0] for item in results} | {item[0] for item in errors}
+            if participant_id not in reported:
+                errors.append(
+                    (
+                        participant_id,
+                        RuntimeError(
+                            f"participant process {p.pid} exited with code "
+                            f"{p.exitcode} without reporting a result"
+                        ),
+                    )
+                )
+
+    while len(results) + len(errors) < min_nodes:
         try:
             item = result_queue.get(timeout=1)
-        except Exception:
+        except queue.Empty:
             break
         participant_id, rank, total, exc = item
         if exc is None:
@@ -611,7 +670,7 @@ class Step2CompletionTest(BaseRendezvousTest):
     def test_step2_completion_on_max_nodes(self):
         """Test that Step 2 completes immediately when max_nodes is reached.
 
-        Runs participants in separate processes (fork) to avoid shared-store contention.
+        Runs participants in separate processes to avoid shared-store contention.
         """
         min_nodes = 2
         max_nodes = 3
@@ -635,7 +694,7 @@ class Step2CompletionTest(BaseRendezvousTest):
     def test_step2_completion_on_min_nodes_with_segment_check(self):
         """Test that Step 2 completes when min_nodes is reached and segment constraint is satisfied.
 
-        Runs participants in separate processes (fork) to avoid shared-store contention.
+        Runs participants in separate processes to avoid shared-store contention.
         """
         min_nodes = 2
         max_nodes = 4
@@ -661,7 +720,7 @@ class Step2CompletionTest(BaseRendezvousTest):
     def test_step2_late_arrival_sees_completion_key(self):
         """Test that rendezvous completes correctly when all participants arrive quickly.
 
-        Runs participants in separate processes (fork) to avoid shared-store contention.
+        Runs participants in separate processes to avoid shared-store contention.
         Each must see the completion key and get a rank.
         """
         min_nodes = 3
@@ -937,7 +996,7 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
     def test_rank_assignment_with_arrival_order(self):
         """Test that store host assigns ranks to all participants.
 
-        Runs participants in separate processes (fork) to avoid shared-store contention.
+        Runs participants in separate processes to avoid shared-store contention.
         """
         min_nodes = 3
         max_nodes = 3
@@ -965,7 +1024,7 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
     def test_non_store_host_waits_for_ranks(self):
         """Test that non-store host participants wait for rank assignment.
 
-        Runs participants in separate processes (fork) so each has its own store
+        Runs participants in separate processes so each has its own store
         connection; avoids shared-store contention that can hang with threads.
         """
         min_nodes = 2
@@ -1969,7 +2028,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
     def test_all_participants_acknowledge(self):
         """Test that all participants acknowledge completion.
 
-        Runs participants in separate processes (fork) so each has its own store
+        Runs participants in separate processes so each has its own store
         connection; avoids shared-store contention that can hang with threads.
         """
         min_nodes = 3
@@ -2004,7 +2063,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
         join_count_{N+1} does not exist during training, so num_nodes_waiting() returns 0.
         Round N keys persist with correct values — the per-round naming makes them harmless.
 
-        Runs participants in separate processes (fork) so each has its own store
+        Runs participants in separate processes so each has its own store
         connection; avoids shared-store contention that can hang with threads.
         """
         min_nodes = 2

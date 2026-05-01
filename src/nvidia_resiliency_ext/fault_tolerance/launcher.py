@@ -69,6 +69,12 @@ from torch.distributed.elastic.rendezvous.utils import (
 )
 from torch.distributed.elastic.utils import macros
 
+from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
+    DEFAULT_ATTRIBUTION_PORT,
+    DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT,
+    AttributionConfig,
+    AttributionManager,
+)
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoWriter, utc_iso_now
 from nvidia_resiliency_ext.fault_tolerance.data import (
@@ -119,6 +125,7 @@ _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
 # Populated on TCP store host when gRPC log aggregation is enabled: root-only [Popen] or
 # [root, leaf0, ..., leaf_{N-1}] when ft_log_aggregator_count > 1.
 _GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
+_ATTRIBUTION_MANAGER: Optional[AttributionManager] = None
 
 def init_node_health_check(endpoint: Optional[str]) -> None:
     global _NODE_HEALTH_CHECK_INSTANCE
@@ -1021,11 +1028,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Submit current cycle's log to attribution service (master node only, before workers start)
         if (
             self._is_store_host
-            and self._rdzv_handler._attr_service is not None
+            and self._rdzv_handler._attribution_service is not None
             and hasattr(self._logs_specs, 'get_cycle_log_file')
         ):
             cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
-            self._rdzv_handler._attr_service._submit_log(cycle_log_file)
+            self._rdzv_handler._attribution_service._submit_log(cycle_log_file)
 
         # Write NVRx cycle info and set env for workload
         current_cycle_info_path = self._write_cycle_start_info(current_cycle)
@@ -1666,8 +1673,8 @@ def launch_agent(
         # permanent-close signaling; it cannot keep the store alive after process exit.
         if is_store_host:
             # Trigger attribution service analysis for final cycle
-            if agent._rdzv_handler._attr_service is not None:
-                agent._rdzv_handler._attr_service()
+            if agent._rdzv_handler._attribution_service is not None:
+                agent._rdzv_handler._attribution_service()
 
             # No ordering required between cycle_info_writer and rendezvous: the writer
             # is independent I/O. Run grace-period wait and writer shutdown in parallel
@@ -2069,7 +2076,10 @@ utility
 
 def get_args_parser() -> ArgumentParser:
     """Parse the command line options."""
-    parser = ArgumentParser(description="Torch Distributed Elastic Training Launcher")
+    parser = ArgumentParser(
+        description="Torch Distributed Elastic Training Launcher",
+        allow_abbrev=False,
+    )
 
     #
     # Worker/node size related arguments.
@@ -2732,22 +2742,85 @@ def get_args_parser() -> ArgumentParser:
         "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
     )
 
-    # Attribution service configuration (optional)
+    # Attribution service configuration. Disabled by default. The literal
+    # endpoint "localhost" means ft_launcher manages the attribution service on
+    # the TCPStore host; other endpoints are treated as external services.
     parser.add_argument(
-        "--ft-attrsvc-host",
-        "--ft_attrsvc_host",
+        "--ft-attribution-endpoint",
+        "--ft_attribution_endpoint",
         type=str,
         default=None,
-        dest="ft_attrsvc_host",
-        help="Hostname or IP for the attribution service (e.g., 127.0.0.1).",
+        dest="ft_attribution_endpoint",
+        help=(
+            "Endpoint for the attribution service. Default: disabled. "
+            "Set to localhost to let ft_launcher manage nvrx-attrsvc on the TCPStore host. "
+            "Use an explicit endpoint such as http://host:port, grpc://host:port, "
+            "or unix:///path/to/socket for an externally managed attribution service."
+        ),
     )
     parser.add_argument(
-        "--ft-attrsvc-port",
-        "--ft_attrsvc_port",
-        type=int,
+        "--ft-attribution-startup-timeout",
+        "--ft_attribution_startup_timeout",
+        type=float,
+        default=DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT,
+        dest="ft_attribution_startup_timeout",
+        help=(
+            "Seconds to wait for launcher-managed attribution service /healthz readiness. "
+            f"Default: {DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT}."
+        ),
+    )
+    parser.add_argument(
+        "--ft-attribution-llm-api-key-file",
+        "--ft_attribution_llm_api_key_file",
+        type=str,
         default=None,
-        dest="ft_attrsvc_port",
-        help="Port for the attribution service (e.g., 8000).",
+        dest="ft_attribution_llm_api_key_file",
+        help=(
+            "Path to the LLM API key file for launcher-managed attribution service. "
+            "If unset, LLM_API_KEY_FILE from the launcher environment is used."
+        ),
+    )
+    parser.add_argument(
+        "--ft-attribution-llm-base-url",
+        "--ft_attribution_llm_base_url",
+        type=str,
+        default=None,
+        dest="ft_attribution_llm_base_url",
+        help="LLM base URL for launcher-managed attribution service.",
+    )
+    parser.add_argument(
+        "--ft-attribution-llm-model",
+        "--ft_attribution_llm_model",
+        type=str,
+        default=None,
+        dest="ft_attribution_llm_model",
+        help="LLM model identifier for launcher-managed attribution service.",
+    )
+    parser.add_argument(
+        "--ft-attribution-analysis-backend",
+        "--ft_attribution_analysis_backend",
+        type=str,
+        default=None,
+        dest="ft_attribution_analysis_backend",
+        choices=("mcp", "lib"),
+        help="Analysis backend for launcher-managed attribution service: mcp or lib.",
+    )
+    parser.add_argument(
+        "--ft-attribution-compute-timeout",
+        "--ft_attribution_compute_timeout",
+        type=float,
+        default=None,
+        dest="ft_attribution_compute_timeout",
+        help="Analysis compute timeout in seconds for launcher-managed attribution service.",
+    )
+    parser.add_argument(
+        "--ft-attribution-log-level",
+        "--ft_attribution_log_level",
+        type=str.upper,
+        default=None,
+        dest="ft_attribution_log_level",
+        choices=("DEBUG", "INFO", "WARNING"),
+        help="Log level for launcher-managed attribution service.",
     )
 
     parser.add_argument(
@@ -3002,6 +3075,28 @@ def _validate_args(args: Any) -> None:
             "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
         )
 
+
+def _resolve_attribution_endpoint(args: Any, fault_tol_cfg: FaultToleranceConfig) -> Optional[str]:
+    endpoint = getattr(args, "ft_attribution_endpoint", None)
+    if endpoint is None:
+        endpoint = fault_tol_cfg.attribution_endpoint
+    if endpoint is not None:
+        endpoint = str(endpoint).strip() or None
+    return endpoint
+
+
+def _validate_attribution_requires_per_cycle_applog(
+    args: Any, fault_tol_cfg: FaultToleranceConfig
+) -> None:
+    if _resolve_attribution_endpoint(args, fault_tol_cfg) and not getattr(
+        args, "ft_per_cycle_applog_prefix", None
+    ):
+        raise ValueError(
+            "--ft-attribution-endpoint requires --ft-per-cycle-applog-prefix to be specified. "
+            "Attribution service needs per-cycle application logs as analysis input."
+        )
+
+
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
     _validate_args(args)
@@ -3070,6 +3165,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
+    _validate_attribution_requires_per_cycle_applog(args, fault_tol_cfg)
 
     # Pass segment-related configs to rendezvous config
     rdzv_configs['segment'] = fault_tol_cfg.segment
@@ -3081,11 +3177,6 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
-    # Pass attribution service configuration if provided
-    if getattr(fault_tol_cfg, 'attrsvc_host', None):
-        rdzv_configs['attrsvc_host'] = fault_tol_cfg.attrsvc_host
-    if getattr(fault_tol_cfg, 'attrsvc_port', None) is not None:
-        rdzv_configs['attrsvc_port'] = int(fault_tol_cfg.attrsvc_port)
     # Pass distributed storage health check configuration
     cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)
     if cli_dist_storage is not None:
@@ -3158,13 +3249,36 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
                 "Using PipeBasedLogsSpecs automatically."
             )
 
+        rdzv_endpoint_host = parse_rendezvous_endpoint(rdzv_endpoint, default_port=-1)[0]
+        host, _ = parse_rendezvous_endpoint(rdzv_endpoint, default_port=0)
+        is_tcp_store_host = _matches_machine_hostname(host)
+
         # Configure gRPC if enabled
         grpc_server_address = None
         node_id = None
+        log_funnel_ports = None
 
         if getattr(args, 'ft_enable_log_server', False):
-            rdzv_endpoint_host = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=-1)[0]
             log_funnel_ports = LogFunnelPorts.from_launcher_args(args)
+
+        attribution_cfg = AttributionConfig.from_args(args, base_log_file, fault_tol_cfg)
+        if log_funnel_ports is not None and attribution_cfg.is_managed:
+            _validate_managed_attribution_listen_port_not_in_log_funnel(
+                DEFAULT_ATTRIBUTION_PORT, log_funnel_ports
+            )
+
+        attribution_manager = AttributionManager(
+            attribution_cfg,
+            is_store_host=is_tcp_store_host,
+        )
+        global _ATTRIBUTION_MANAGER
+        _ATTRIBUTION_MANAGER = attribution_manager
+        attribution_endpoint = attribution_manager.start_if_needed()
+        if attribution_endpoint is not None:
+            rdzv_configs['attribution_endpoint'] = attribution_endpoint.endpoint
+
+        if getattr(args, 'ft_enable_log_server', False):
+            assert log_funnel_ports is not None
             grpc_port = log_funnel_ports.client_connect_port()
 
             # Node ID: hostname + PID for uniqueness in simulated multi-launcher environments
@@ -3175,9 +3289,6 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
             # CRITICAL: Start gRPC server BEFORE creating PipeBasedLogsSpecs
             # If we're the TCP store host and server fails to start, we need to know
             # NOW before we configure logging to use gRPC (chicken-and-egg problem)
-            host, _ = parse_rendezvous_endpoint(args.rdzv_endpoint, default_port=0)
-            is_tcp_store_host = _matches_machine_hostname(host)
-
             if is_tcp_store_host:
                 grpc_server_address = f"localhost:{grpc_port}"
 
@@ -3373,6 +3484,26 @@ class LogFunnelPorts:
             return self.base_port
         shard = get_log_aggregator_shard_index(self.first_level_count)
         return self.leaf_listen_port(shard)
+
+    def listen_ports(self) -> Set[int]:
+        """All TCP ports bound by the log funnel on the TCPStore host."""
+        if not self.uses_two_level:
+            return {self.base_port}
+        return set(range(self.base_port, self.base_port + self.first_level_count + 1))
+
+
+def _validate_managed_attribution_listen_port_not_in_log_funnel(
+    managed_port: int, funnel_ports: LogFunnelPorts
+) -> None:
+    log_ports = funnel_ports.listen_ports()
+    if managed_port in log_ports:
+        sorted_ports = sorted(log_ports)
+        raise ValueError(
+            "launcher-managed attribution service port overlaps the gRPC log funnel port range: "
+            f"managed_attrsvc_listen_port={managed_port}, log_funnel_ports={sorted_ports}. "
+            "Use --ft-attribution-endpoint with an external service or use "
+            "--ft-log-server-port to choose a non-overlapping log funnel port."
+        )
 
 
 # Listen on all interfaces so peer training nodes can reach the log funnel on the TCP store host.
@@ -3648,7 +3779,7 @@ def main(args=None):
     finally:
         # Clean up gRPC server AFTER all logging is done
         # (logging cleanup already happened in run()'s finally block)
-        global _GRPC_SERVER_PROCESSES
+        global _GRPC_SERVER_PROCESSES, _ATTRIBUTION_MANAGER
         if _GRPC_SERVER_PROCESSES:
             grpc_graceful_shutdown_timeout = float(
                 getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
@@ -3699,6 +3830,10 @@ def main(args=None):
                 rc = getattr(p, "returncode", None)
                 logger.info(f"gRPC log subprocess PID={p.pid} finished with returncode={rc}")
             _GRPC_SERVER_PROCESSES.clear()
+
+        if _ATTRIBUTION_MANAGER is not None:
+            _ATTRIBUTION_MANAGER.stop()
+            _ATTRIBUTION_MANAGER = None
 
     sys.exit(exit_code)
 

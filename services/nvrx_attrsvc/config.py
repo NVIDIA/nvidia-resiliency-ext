@@ -12,6 +12,8 @@ This module contains HTTP/service-specific settings only.
 import logging
 import os
 import re
+from dataclasses import dataclass
+from urllib.parse import unquote, urlparse
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,13 +35,84 @@ DEFAULT_PORT = 8000
 PRINT_PREVIEW_MAX_BYTES = 4096  # Max bytes to return for /print endpoint
 
 
+@dataclass(frozen=True)
+class ServiceEndpoint:
+    """Resolved attrsvc bind endpoint."""
+
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    uds_path: str = ""
+
+    @property
+    def is_uds(self) -> bool:
+        return bool(self.uds_path)
+
+    @property
+    def display_url(self) -> str:
+        if self.uds_path:
+            return f"unix://{self.uds_path}"
+        return f"http://{self.host}:{self.port}"
+
+
+def _normalize_uds_path(value: str) -> str:
+    path = os.path.abspath(os.path.expanduser(value.strip()))
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        raise ValueError(f"UDS path parent directory does not exist: {parent}")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise ValueError(f"UDS path parent directory is not writable/searchable: {parent}")
+    return path
+
+
+def parse_service_endpoint(
+    endpoint: str,
+    *,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+) -> ServiceEndpoint:
+    """Resolve the bind endpoint from unified endpoint or HOST/PORT."""
+    value = (endpoint or "").strip()
+    if value:
+        if value.startswith("unix://"):
+            parsed = urlparse(value)
+            if parsed.netloc and parsed.path:
+                path = f"/{parsed.netloc}{parsed.path}"
+            else:
+                path = parsed.path or parsed.netloc
+            path = _normalize_uds_path(unquote(path))
+            return ServiceEndpoint(uds_path=path)
+
+        if value.startswith("/"):
+            path = _normalize_uds_path(value)
+            return ServiceEndpoint(uds_path=path)
+
+        if "://" not in value:
+            value = f"http://{value}"
+        parsed = urlparse(value)
+        if parsed.scheme != "http":
+            raise ValueError(
+                "ENDPOINT must use http://, unix://, or an absolute socket path; " f"got {endpoint}"
+            )
+        if parsed.path not in ("", "/"):
+            raise ValueError(f"ENDPOINT must not include a path component: {endpoint}")
+        bind_host = parsed.hostname or host
+        bind_port = parsed.port if parsed.port is not None else port
+        if not 1 <= int(bind_port) <= 65535:
+            raise ValueError(f"ENDPOINT port must be between 1 and 65535, got {bind_port}")
+        return ServiceEndpoint(
+            host=bind_host,
+            port=int(bind_port),
+        )
+
+    return ServiceEndpoint(host=host, port=port)
+
+
 class Settings(BaseSettings):
     """Typed configuration loaded from environment/.env (pydantic-settings v2).
 
-    LLM fields (``NVRX_ATTRSVC_LLM_*``) are passed into
-    :class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig` when set,
-    then into the library :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` via
-    :class:`~nvrx_attrsvc.service.AttributionService`; unset fields keep library defaults.
+    Attribution fields are translated into
+    :class:`~nvidia_resiliency_ext.attribution.controller.AttributionControllerConfig` by
+    :class:`~nvrx_attrsvc.service.AttributionHttpAdapter`; unset fields keep library defaults.
 
     ``LOG_LEVEL`` sets the root log level, FastAPI ``debug`` (when ``LOG_LEVEL`` is ``DEBUG``), MCP
     subprocess ``--log-level``, and verbosity for in-process MCP client loggers. Allowed values:
@@ -49,6 +122,13 @@ class Settings(BaseSettings):
     FAST_API_ROOT_PATH: str = Field(default="", description="FastAPI root path")
     ALLOWED_ROOT: str = Field(
         ..., description="Absolute base directory allowed for input paths (required)"
+    )
+    ENDPOINT: str = Field(
+        default="",
+        description=(
+            "Unified attrsvc bind endpoint. Supports http://host:port, host:port, "
+            "unix:///absolute/path.sock, or an absolute UDS path. Overrides HOST/PORT."
+        ),
     )
     HOST: str = Field(default=DEFAULT_HOST)
     PORT: int = Field(default=DEFAULT_PORT)
@@ -64,7 +144,7 @@ class Settings(BaseSettings):
         default=None, description="Timeout for compute_fn in seconds (None = library default)"
     )
 
-    # LLM settings → LogSageExecutionConfig when set (see AttributionService)
+    # LLM settings -> AttributionControllerConfig when set (see AttributionHttpAdapter)
     LLM_MODEL: str | None = Field(default=DEFAULT_LLM_MODEL, description="LLM model identifier")
     LLM_BASE_URL: str | None = Field(default=DEFAULT_LLM_BASE_URL, description="LLM base url")
     LLM_TEMPERATURE: float | None = Field(
@@ -91,8 +171,9 @@ class Settings(BaseSettings):
     # Slack integration (optional; env vars have no NVRX_ATTRSVC_ prefix)
     SLACK_BOT_TOKEN: str = Field(
         default="",
-        description="Slack bot token; if empty, setup() falls back to load_slack_bot_token() "
-        "(SLACK_BOT_TOKEN_FILE, ~/.slack_bot_token, ~/.slack_token, ~/.config/nvrx/slack_bot_token)",
+        description="Slack bot token; if empty, AttributionController falls back to "
+        "load_slack_bot_token() (SLACK_BOT_TOKEN_FILE, ~/.slack_bot_token, "
+        "~/.slack_token, ~/.config/nvrx/slack_bot_token)",
         validation_alias="SLACK_BOT_TOKEN",
     )
     SLACK_CHANNEL: str = Field(
@@ -151,6 +232,15 @@ class Settings(BaseSettings):
         if not 1 <= v <= 65535:
             raise ValueError(f"PORT must be between 1 and 65535, got {v}")
         return v
+
+    @property
+    def SERVICE_ENDPOINT(self) -> ServiceEndpoint:
+        """Resolved service bind endpoint. ENDPOINT wins over HOST/PORT."""
+        return parse_service_endpoint(
+            self.ENDPOINT,
+            host=self.HOST,
+            port=self.PORT,
+        )
 
     @field_validator("LOG_LEVEL")
     @classmethod
@@ -237,13 +327,14 @@ def setup() -> Settings:
     """
     Group environment configuration and logging setup for nvrx_attrsvc.
     Returns a configured Settings instance.
-    Also wires postprocessing config (poster, dataflow, Slack) from cfg.
+    Attribution-specific dependency wiring happens in AttributionController.
 
     Field validators handle validation of PORT, LOG_LEVEL, COMPUTE_TIMEOUT,
     ALLOWED_ROOT, CACHE_FILE (when set), and rate limits. See Settings class for details.
     """
     try:
         cfg = Settings()  # type: ignore[call-arg]
+        _ = cfg.SERVICE_ENDPOINT
     except Exception as e:
         # Fail fast if required settings are missing or invalid
         raise SystemExit(f"nvrx_attrsvc configuration error: {e}") from e
@@ -259,32 +350,5 @@ def setup() -> Settings:
     logging.getLogger("mcp").setLevel(_root_lvl)
     logging.getLogger("nvidia_resiliency_ext.attribution.mcp_integration").setLevel(_root_lvl)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-
-    from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key, load_slack_bot_token
-
-    llm_key = load_llm_api_key()
-    if not llm_key:
-        logger.error(
-            "LLM API key not found or empty. Attribution requires a key. Set LLM_API_KEY or "
-            "LLM_API_KEY_FILE, or create ~/.llm_api_key. "
-            "Slack notifications remain optional (SLACK_BOT_TOKEN)."
-        )
-        raise SystemExit(1)
-
-    # Wire postprocessing config (lib singleton)
-    from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster, configure
-    from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
-
-    slack_token = (cfg.SLACK_BOT_TOKEN or "").strip() or load_slack_bot_token()
-
-    configure(
-        default_poster=ResultPoster(post_fn=post),
-        cluster_name=cfg.CLUSTER_NAME or "",
-        dataflow_index=cfg.DATAFLOW_INDEX or "",
-        slack_bot_token=slack_token,
-        slack_channel=cfg.SLACK_CHANNEL or "",
-    )
-    if slack_token:
-        logger.info(f"Slack notifications enabled for channel: {cfg.SLACK_CHANNEL}")
 
     return cfg

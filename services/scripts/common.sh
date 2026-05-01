@@ -104,17 +104,27 @@ validate_commands() {
     done
 }
 
-# Wait for a service to be ready on a given port
+# Wait for a service to be ready on a port or endpoint
 # Args:
 #   $1 - service name (for messages)
 #   $2 - PID of the service process
-#   $3 - port number
+#   $3 - port number or endpoint
 #   $4 - max attempts (default: 10)
 wait_for_service() {
     local name="$1"
     local pid="$2"
-    local port="$3"
+    local target="$3"
     local max_attempts="${4:-10}"
+    local -a curl_args
+    if [[ "${target}" == unix://* ]]; then
+        curl_args=(--unix-socket "${target#unix://}" "http://localhost/healthz")
+    elif [[ "${target}" == /* ]]; then
+        curl_args=(--unix-socket "${target}" "http://localhost/healthz")
+    elif [[ "${target}" == http* ]]; then
+        curl_args=("${target%/}/healthz")
+    else
+        curl_args=("http://localhost:${target}/healthz")
+    fi
     
     echo "  Waiting for ${name} to be ready..."
     for i in $(seq 1 $max_attempts); do
@@ -122,12 +132,12 @@ wait_for_service() {
             echo "ERROR: ${name} process died"
             return 1
         fi
-        if curl -sf "http://localhost:${port}/healthz" >/dev/null 2>&1; then
-            echo "  ${name} is responding on port ${port}"
+        if curl -sf "${curl_args[@]}" >/dev/null 2>&1; then
+            echo "  ${name} is responding at ${target}"
             return 0
         fi
         if [[ $i -eq $max_attempts ]]; then
-            echo "ERROR: ${name} not responding on port ${port}"
+            echo "ERROR: ${name} not responding at ${target}"
             return 1
         fi
         sleep 1
@@ -153,9 +163,24 @@ snapshot_endpoint() {
     local endpoint="$4"
     local outfile="$5"
     local timestamp="$6"
+    local -a curl_args
+    local attrsvc_endpoint="${NVRX_ATTRSVC_ENDPOINT:-}"
+    local attrsvc_uds_path=""
+    if [[ "${attrsvc_endpoint}" == unix://* ]]; then
+        attrsvc_uds_path="${attrsvc_endpoint#unix://}"
+    elif [[ "${attrsvc_endpoint}" == /* ]]; then
+        attrsvc_uds_path="${attrsvc_endpoint}"
+    fi
     
     echo "--- ${endpoint} @ ${timestamp} ---" >> "${outfile}"
-    if curl -s --max-time 10 "http://${host}:${port}${endpoint}" >> "${outfile}" 2>/dev/null; then
+    if [[ "${service}" == "attrsvc" && -n "${attrsvc_uds_path}" ]]; then
+        curl_args=(--unix-socket "${attrsvc_uds_path}" "http://localhost${endpoint}")
+    elif [[ "${service}" == "attrsvc" && "${attrsvc_endpoint}" == http* ]]; then
+        curl_args=("${attrsvc_endpoint%/}${endpoint}")
+    else
+        curl_args=("http://${host}:${port}${endpoint}")
+    fi
+    if curl -s --max-time 10 "${curl_args[@]}" >> "${outfile}" 2>/dev/null; then
         echo "" >> "${outfile}"  # newline after JSON
         echo "  ${service} ${endpoint}: OK"
     else
@@ -233,16 +258,24 @@ validate_attrsvc_allowed_root() {
 
 # Check if attribution service is reachable
 # Args:
-#   $1 - attrsvc URL (default: http://localhost:8000)
+#   $1 - attrsvc endpoint (default: http://localhost:8000)
 # Returns 0 if reachable, 1 if not (with warning)
 check_attrsvc_reachable() {
-    local url="${1:-http://localhost:8000}"
-    echo "Checking attribution service at ${url}..."
-    if curl -sf "${url}/healthz" >/dev/null 2>&1; then
+    local endpoint="${1:-http://localhost:8000}"
+    local -a curl_args
+    if [[ "${endpoint}" == unix://* ]]; then
+        curl_args=(--unix-socket "${endpoint#unix://}" "http://localhost/healthz")
+    elif [[ "${endpoint}" == /* ]]; then
+        curl_args=(--unix-socket "${endpoint}" "http://localhost/healthz")
+    else
+        curl_args=("${endpoint%/}/healthz")
+    fi
+    echo "Checking attribution service at ${endpoint}..."
+    if curl -sf "${curl_args[@]}" >/dev/null 2>&1; then
         echo "  Attribution service is reachable"
         return 0
     else
-        echo "WARNING: Attribution service not reachable at ${url}"
+        echo "WARNING: Attribution service not reachable at ${endpoint}"
         echo "  Monitor will retry on each poll cycle"
         return 1
     fi

@@ -95,9 +95,8 @@ class FaultToleranceConfig:
       out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
       timeout monitoring as they can be significantly slower than steady-state iterations.
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
-    * Attribution service (optional):
-      - `attrsvc_host` [str] hostname/IP of the attribution service
-      - `attrsvc_port` [int] port of the attribution service
+    * Attribution service (optional, disabled unless `attribution_endpoint` is set):
+      - `attribution_endpoint` [str] endpoint of the attribution service
 
     * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.
       <base>/nvrx/). If set, the TCPStore host writes cycle info JSON files and the
@@ -145,8 +144,7 @@ class FaultToleranceConfig:
         5  # Number of warmup iterations before monitoring step section and out-of-section timeouts
     )
     # Attribution service configuration (optional)
-    attrsvc_host: Optional[str] = None
-    attrsvc_port: Optional[int] = None
+    attribution_endpoint: Optional[str] = None
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None

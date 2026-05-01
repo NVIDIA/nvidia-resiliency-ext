@@ -20,7 +20,7 @@
 #
 #   # Run SLURM monitor (requires attrsvc running elsewhere)
 #   srun --container-image=/path/to/nvrx-services.sqsh \
-#        --container-env=NVRX_ATTRSVC_URL=http://attrsvc-host:8000 \
+#        --container-env=NVRX_ATTRSVC_ENDPOINT=http://attrsvc-host:8000 \
 #        --container-env=NVRX_SMONSVC_PARTITIONS="batch gpu" \
 #        nvrx-smonsvc
 
@@ -129,7 +129,7 @@ NVRX_ATTRSVC_ALLOWED_ROOT=/data
 NVRX_SMONSVC_PORT=8100
 NVRX_SMONSVC_INTERVAL=180
 NVRX_SMONSVC_VERBOSE=false
-NVRX_ATTRSVC_URL=http://localhost:8000
+NVRX_ATTRSVC_ENDPOINT=http://localhost:8000
 EOF
 '
 
@@ -156,7 +156,7 @@ echo "       nvrx-attrsvc"
 echo ""
 echo "  # SLURM monitor"
 echo "  srun --container-image=${OUTPUT_PATH} \\"
-echo "       --container-env=NVRX_ATTRSVC_URL=http://attrsvc-host:8000 \\"
+echo "       --container-env=NVRX_ATTRSVC_ENDPOINT=http://attrsvc-host:8000 \\"
 echo "       --container-env=NVRX_SMONSVC_PARTITIONS=\"batch gpu\" \\"
 echo "       nvrx-smonsvc"
 echo ""

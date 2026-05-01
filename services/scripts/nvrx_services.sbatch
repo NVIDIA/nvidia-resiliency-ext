@@ -59,7 +59,7 @@ echo "Logs directory: ${NVRX_LOGS_DIR}"
 
 # Configuration - Attribution Service (can be overridden via env vars)
 export NVRX_ATTRSVC_PORT="${NVRX_ATTRSVC_PORT:-8000}"
-export NVRX_ATTRSVC_URL="http://localhost:${NVRX_ATTRSVC_PORT}"
+ATTRSVC_ENDPOINT="${NVRX_ATTRSVC_ENDPOINT:-http://localhost:${NVRX_ATTRSVC_PORT}}"
 
 # Validate required environment
 validate_attrsvc_allowed_root || exit 1
@@ -94,7 +94,7 @@ echo "  Attribution port: ${NVRX_ATTRSVC_PORT}"
 echo "  Monitor port:     ${NVRX_SMONSVC_PORT}"
 echo "  Partitions:       ${NVRX_SMONSVC_PARTITIONS}"
 echo ""
-echo "  Attribution URL:  http://${HOSTNAME}:${NVRX_ATTRSVC_PORT}"
+echo "  Attribution:      ${ATTRSVC_ENDPOINT}"
 echo "  Monitor URL:      http://${HOSTNAME}:${NVRX_SMONSVC_PORT}"
 echo "============================================================"
 
@@ -122,11 +122,12 @@ ATTRSVC_PID=$!
 echo "  PID: ${ATTRSVC_PID}"
 
 # Wait for service to be ready
-wait_for_service "Attribution service" "$ATTRSVC_PID" "$NVRX_ATTRSVC_PORT" || exit 1
+wait_for_service "Attribution service" "$ATTRSVC_PID" "$ATTRSVC_ENDPOINT" || exit 1
 
 # Start SLURM Job Monitor
 echo ""
 echo "Starting SLURM Job Monitor..."
+export NVRX_ATTRSVC_ENDPOINT="${ATTRSVC_ENDPOINT}"
 nvrx-smonsvc &
 MONITOR_PID=$!
 echo "  PID: ${MONITOR_PID}"
@@ -158,8 +159,8 @@ while true; do
         exit 1
     fi
     # Check if services are responding (lightweight health check)
-    if ! curl -sf "http://localhost:${NVRX_ATTRSVC_PORT}/healthz" >/dev/null 2>&1; then
-        echo "WARNING: Attribution service not responding on port ${NVRX_ATTRSVC_PORT}"
+    if ! check_attrsvc_reachable "${ATTRSVC_ENDPOINT}" >/dev/null 2>&1; then
+        echo "WARNING: Attribution service not responding at ${ATTRSVC_ENDPOINT}"
     fi
     if ! curl -sf "http://localhost:${NVRX_SMONSVC_PORT}/healthz" >/dev/null 2>&1; then
         echo "WARNING: SLURM Job Monitor not responding on port ${NVRX_SMONSVC_PORT}"

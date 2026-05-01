@@ -116,12 +116,98 @@ flowchart TB
     AP --> CLF
 ```
 
+### 2.4 Proposed attribution controller boundary
+
+The long-term boundary should separate **frontends**, an **AttributionController**, and
+**analysis engines**. Both `ft_launcher` and `nvrx_attrsvc` need attribution, but neither
+should own the full set of attribution internals.
+
+```text
+[ft_launcher | nvrx_attrsvc | future callers]
+        <>
+AttributionController
+        <>
+[MCP tools | in-process analyzers | third-party services]
+```
+
+The **frontend** layer owns caller-specific lifecycle and transport:
+
+- `ft_launcher`: worker monitoring, restart timing, restart budget, and applying the final restart/stop decision.
+- `nvrx_attrsvc`: HTTP routing, FastAPI lifecycle, request/response models, service auth/rate limits, and service health endpoints.
+- Future callers: CLI tools, batch jobs, notebook/debug workflows, or other control planes.
+
+The **AttributionController** owns attribution semantics and state:
+
+- request submission and job tracking
+- path policy / allowed-root enforcement for the deployment
+- request coalescing and cache lifecycle
+- log analysis orchestration
+- FR discovery and FR analysis orchestration
+- result normalization into a caller-stable shape
+- Slack and Elasticsearch/dataflow posting, with idempotency for side effects
+- dry-run behavior and attribution-level status
+
+The controller should have one contract with two deployment modes:
+
+```text
+Embedded mode:
+external client <> nvrx_attrsvc process
+                    └── AttributionController object <> MCP
+
+Hosted mode:
+ft_launcher <> AttributionController process <> MCP
+```
+
+For `nvrx_attrsvc`, the controller can be embedded because the service process already provides
+the process boundary, HTTP lifecycle, and health surface. For `ft_launcher`, the controller should
+be hosted as a separate long-lived process so launcher code does not own attribution state,
+side-effect idempotency, cache, or MCP lifecycle.
+
+Configuration belongs at controller construction or process startup, not as ordinary per-request
+state. The concrete boundary is `AttributionControllerConfig`: path policy plus nested analysis,
+cache, credentials, and postprocessing config. The analysis section uses
+`analysis.engine_backend` (`lib` or `mcp`) for the LogSage/FR execution backend; that is separate
+from whether the controller itself is embedded or hosted as a process. Controller config also
+includes LLM knobs, cache persistence, timeouts, LLM API key policy, Slack,
+Elasticsearch/dataflow, dry-run behavior, and non-secret deployment metadata. Avoid a mutable
+public `configure(...)` API unless dynamic reconfiguration becomes a real requirement.
+
+The controller contract should stay small:
+
+```text
+AttributionController(config)
+  start(...)
+  submit_log(...)
+  analyze_log(...)
+  get_result(...)
+  status(...)
+  shutdown(...)
+```
+
+`status(...)` is operational state, not attribution output. It should report readiness and
+dependency health: `ready` / lifecycle state, sanitized config summary, cache and in-flight counts,
+tracked-job summary, MCP health, Slack/dataflow configured-or-error state, and recent errors.
+
+The **analysis engine** layer owns compute:
+
+- MCP module tools such as `log_analyzer`, `fr_analyzer`, and `log_fr_analyzer`
+- in-process equivalents loaded by the controller when a subprocess boundary is unnecessary
+- future external attribution services or adapters
+
+The key rule is that low-level MCP module tools should not become the owner of the whole
+attribution product surface. MCP is a good process boundary for analysis engines; the controller
+above it should own cache, orchestration, side effects, and policy. If the controller itself is
+implemented using MCP transport, it should expose service-grade methods such as
+`submit_log`, `analyze_log`, `get_result`, and `status` rather than overloading the existing
+`log_analyzer` module tool.
+
 ---
 
 ## 3. Major subsystems
 
 | Area | Responsibility |
 |------|------------------|
+| **`controller.py`** | **`AttributionController`** and nested config dataclasses: frontend-facing attribution boundary; owns startup config, LLM API key validation, cache persistence, health/status policy, postprocessing wiring, dataflow/Slack stats, and delegates analysis to **`Analyzer`**. |
 | **`analyzer/`** | **`Analyzer`** (`engine.py`): path policy, `RequestCoalescer`, `submit` / `analyze`, splitlog branches; delegates heavy lifting to **`LogAnalyzer`**. Re-exports pipeline symbols from `svc.analysis_pipeline` for convenience. |
 | **`log_analyzer/`** | LogSage package surface only: `NVRxLogAnalyzer` implementation plus its minimal `__init__.py` export. It no longer owns orchestration, parsing, splitlog, or config/types modules. |
 | **`svc/`** | Log-side service/orchestration subsystem: **`LogAnalyzer`**, `Job` / `FileInfo`, SLURM parsing, splitlog polling, **`run_attribution_pipeline`** / **`AnalysisPipelineMode`**, `LogAnalyzerConfig` and result dataclasses, path validation, wire keys (`RESP_*`), and LogSage execution config/runtime helpers. |
@@ -267,6 +353,7 @@ attribution/
 ├── base.py
 ├── combined_log_fr/         # CombinedLogFR + merge_log_fr_llm
 ├── coalescing/              # RequestCoalescer, LogAnalysisCoalesced, coalesced_cache
+├── controller.py            # AttributionController boundary and config
 ├── log_analyzer/            # LogAnalyzer, analysis_pipeline, job, splitlog, slurm_parser, nvrx_logsage, types, …
 ├── mcp_integration/         # MCP client/server (see mcp_integration/README.md)
 ├── postprocessing/          # Dataflow record, poster, Slack

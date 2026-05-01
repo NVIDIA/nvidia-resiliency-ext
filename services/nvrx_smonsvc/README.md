@@ -10,7 +10,7 @@ cd services
 pip install -e .
 
 # Run (requires nvrx-attrsvc running)
-export NVRX_ATTRSVC_URL=http://localhost:8000
+export NVRX_ATTRSVC_ENDPOINT=http://localhost:8000
 export NVRX_SMONSVC_PARTITIONS="batch batch_long"
 nvrx-smonsvc
 ```
@@ -21,7 +21,7 @@ Environment variables (prefix: `NVRX_SMONSVC_`) or command-line arguments:
 
 | Variable / Argument | Default | Description |
 |---------------------|---------|-------------|
-| `ATTRSVC_URL` / `--attrsvc-url` | `http://localhost:8000` | Attribution service URL |
+| `NVRX_ATTRSVC_ENDPOINT` / `--attrsvc-endpoint` | `http://localhost:8000` | Attribution service endpoint (`http://host:port` or `unix:///path.sock`) |
 | `PORT` / `--port` | `None` | Port for HTTP server (stats, health, jobs) |
 | `INTERVAL` / `--interval` | `180` | Poll interval in seconds |
 | `PARTITIONS` / `--partitions` | `batch batch_long` | SLURM partitions (space-separated) |
