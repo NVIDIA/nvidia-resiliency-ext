@@ -727,6 +727,92 @@ def test_ft_log_aggregator_count_rejects_negative():
         _validate_args(args)
 
 
+def test_cli_attribution_endpoint_requires_per_cycle_applog():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import (
+        _validate_attribution_requires_per_cycle_applog,
+        get_args_parser,
+    )
+
+    parser = get_args_parser()
+    args = parser.parse_args(['--ft-attribution-endpoint', 'localhost', 'train.py'])
+
+    with pytest.raises(ValueError, match='--ft-attribution-endpoint requires'):
+        _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig())
+
+
+def test_yaml_attribution_endpoint_requires_per_cycle_applog():
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance.launcher import (
+        _validate_attribution_requires_per_cycle_applog,
+    )
+
+    args = SimpleNamespace(ft_attribution_endpoint=None, ft_per_cycle_applog_prefix=None)
+    cfg = FaultToleranceConfig(attribution_endpoint='localhost')
+
+    with pytest.raises(ValueError, match='--ft-attribution-endpoint requires'):
+        _validate_attribution_requires_per_cycle_applog(args, cfg)
+
+
+def test_per_cycle_applog_without_attribution_is_valid():
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance.launcher import (
+        _validate_attribution_requires_per_cycle_applog,
+    )
+
+    args = SimpleNamespace(
+        ft_attribution_endpoint=None,
+        ft_per_cycle_applog_prefix='/tmp/train.log',
+    )
+
+    _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig())
+
+
+def test_attribution_endpoint_with_per_cycle_applog_is_valid():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import (
+        _validate_attribution_requires_per_cycle_applog,
+        get_args_parser,
+    )
+
+    parser = get_args_parser()
+    args = parser.parse_args(
+        [
+            '--ft-per-cycle-applog-prefix',
+            '/tmp/train.log',
+            '--ft-attribution-endpoint',
+            'localhost',
+            'train.py',
+        ]
+    )
+
+    _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig())
+
+
+@pytest.mark.parametrize(
+    "removed_option",
+    [
+        "--ft-attribution-applog-dir",
+        "--ft_attribution_applog_dir",
+        "--ft-attribution-log",
+        "--ft_attribution_log",
+        "--ft-attribution-cache-file",
+        "--ft_attribution_cache_file",
+        "--ft-attribution-host",
+        "--ft_attribution_host",
+        "--ft-attribution-port",
+        "--ft_attribution_port",
+    ],
+)
+def test_removed_attribution_options_are_rejected(removed_option):
+    from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
+
+    parser = get_args_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args([removed_option, "DEBUG", "train.py"])
+
+
 def test_log_funnel_ports_from_launcher_args_auto():
     from types import SimpleNamespace
 
@@ -759,3 +845,17 @@ def test_log_funnel_ports_from_launcher_args_rejects_negative():
         LogFunnelPorts.from_launcher_args(
             SimpleNamespace(ft_log_server_port=50051, ft_log_aggregator_count=-1, nnodes="100")
         )
+
+
+def test_managed_attribution_listen_port_rejects_log_funnel_overlap():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import (
+        LogFunnelPorts,
+        _validate_managed_attribution_listen_port_not_in_log_funnel,
+    )
+
+    funnel_ports = LogFunnelPorts(base_port=50051, first_level_count=3)
+
+    with pytest.raises(ValueError, match="overlaps"):
+        _validate_managed_attribution_listen_port_not_in_log_funnel(50053, funnel_ports)
+
+    _validate_managed_attribution_listen_port_not_in_log_funnel(50050, funnel_ports)

@@ -112,30 +112,64 @@ Validation behavior:
 Attribution service integration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Enable artifact analysis (e.g., logs) during rendezvous health checks by pointing to a running attribution service.
-The feature is enabled by specifying both host and port.
+Per-cycle application logs do not enable attribution by themselves. To enable attribution, set
+``--ft-attribution-endpoint``. The endpoint value ``localhost`` makes ``ft_launcher`` run the
+attribution service on the TCPStore host; other endpoints are treated as externally managed
+attribution services.
+External endpoints may use schemes such as ``http://``, ``grpc://``, or ``unix://``. The current
+in-job attribution client submits logs over HTTP(S); non-HTTP endpoint strings are preserved but do
+not add a new transport implementation.
+If ``--ft-attribution-endpoint`` is set, ``--ft-per-cycle-applog-prefix`` is required because the
+attribution service analyzes the per-cycle application logs.
+
+The service code is included in the NVRx wheel, but the service dependencies are optional.
+Install the wheel with the ``attribution`` extra before running a launcher-managed attribution
+service:
+
+.. code-block:: bash
+
+   python -m pip install 'nvidia_resiliency_ext-<version>-<tags>.whl[attribution]'
+
+Plain ``python -m pip install nvidia_resiliency_ext-*.whl`` does not install the attribution
+service dependencies.
 
 * CLI:
 
-  - ``--ft-attrsvc-host <HOST>`` (alias: ``--ft_attrsvc_host``)
-  - ``--ft-attrsvc-port <PORT>`` (alias: ``--ft_attrsvc_port``)
+  - ``--ft-attribution-endpoint <ENDPOINT>`` (alias: ``--ft_attribution_endpoint``), default disabled
+  - ``--ft-attribution-llm-api-key-file <PATH>`` (alias: ``--ft_attribution_llm_api_key_file``)
+  - ``--ft-attribution-llm-base-url <URL>`` (alias: ``--ft_attribution_llm_base_url``)
+  - ``--ft-attribution-llm-model <MODEL>`` (alias: ``--ft_attribution_llm_model``)
+  - ``--ft-attribution-startup-timeout <SECONDS>`` (alias: ``--ft_attribution_startup_timeout``), default ``20``
+
+  The managed attribution app-log directory is derived from
+  ``dirname(realpath(--ft-per-cycle-applog-prefix))``. Its stdout/stderr log is derived
+  from ``--ft-per-cycle-applog-prefix`` as ``*_attribution.log``. The managed service listens on
+  ``127.0.0.1:50050`` and is exposed to the in-job client as ``http://localhost:50050``.
+
+  The managed attribution API key must come from ``--ft-attribution-llm-api-key-file`` or inherited
+  ``LLM_API_KEY_FILE``. If neither points to a readable file, the TCPStore-host launcher fails
+  before starting the attribution service.
 
   Example:
 
   .. code-block:: bash
 
      ft_launcher \
-       --ft-attrsvc-host 127.0.0.1 \
-       --ft-attrsvc-port 8000 \
+       --ft-per-cycle-applog-prefix /lustre/job123/train.log \
+       --ft-attribution-endpoint localhost \
+       --ft-attribution-llm-api-key-file /secure/llm_api_key \
+       --ft-attribution-llm-base-url https://integrate.api.nvidia.com/v1 \
+       --ft-attribution-llm-model nvidia/nemotron-3-super-120b-a12b \
        train.py
 
-* YAML: under the ``fault_tolerance`` section
+  To use an externally managed attribution service instead, specify an explicit endpoint:
 
-  .. code-block:: yaml
+  .. code-block:: bash
 
-     fault_tolerance:
-       attrsvc_host: "127.0.0.1"
-       attrsvc_port: 8000
+     ft_launcher \
+       --ft-per-cycle-applog-prefix /lustre/job123/train.log \
+       --ft-attribution-endpoint http://attribution.service.internal:8000 \
+       train.py
 
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^
