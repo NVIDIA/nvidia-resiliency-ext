@@ -270,7 +270,7 @@ class LogSageRunner:
 
 
 TrackSubmission = Callable[[str], Awaitable[None]]
-FireAndForgetAnalyze = Callable[[str, str, str], None]
+FireAndForgetAnalyze = Callable[[str, str, Optional[str]], None]
 
 
 class LogAnalyzer:
@@ -379,7 +379,7 @@ class LogAnalyzer:
         processing_time: float,
         path: str,
         user: str,
-        job_id: str,
+        job_id: Optional[str],
         fr_dump_path: Optional[str] = None,
         fr_analysis: Optional[FRAnalysisResult] = None,
     ) -> None:
@@ -395,7 +395,7 @@ class LogAnalyzer:
         )
 
     async def run_attribution_for_path(
-        self, path: str, user: str = "unknown", job_id: str = ""
+        self, path: str, user: str = "unknown", job_id: Optional[str] = None
     ) -> LogAnalysisCoalesced:
         """Run LogSage and optional FR pipeline for ``path``; post results; return coalescer payload."""
         if not os.access(path, os.R_OK):

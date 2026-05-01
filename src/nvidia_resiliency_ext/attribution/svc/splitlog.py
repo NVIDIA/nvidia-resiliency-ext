@@ -127,7 +127,7 @@ class SplitlogTracker:
         self._max_job_age = max_job_age
         self._poll_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-        self._analyze_callback: Optional[Callable[[str, str, str], None]] = None
+        self._analyze_callback: Optional[Callable[[str, str, Optional[str]], None]] = None
         self._pending_check_callback: Optional[Callable[[], None]] = None
         self._get_splitlog_jobs_callback: Optional[Callable[[], List[Job]]] = None
         self._cleanup_job_callback: Optional[Callable[[str], None]] = None
@@ -135,7 +135,7 @@ class SplitlogTracker:
         # Thread pool for non-blocking analysis (avoids blocking async event loop)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="splitlog-analyze")
 
-    def set_analyze_callback(self, callback: Callable[[str, str, str], None]) -> None:
+    def set_analyze_callback(self, callback: Callable[[str, str, Optional[str]], None]) -> None:
         """
         Set the callback function for analyzing log files.
 

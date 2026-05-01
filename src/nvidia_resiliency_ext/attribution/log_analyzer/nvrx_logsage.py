@@ -206,15 +206,15 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
 
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
-        from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
+        from nvidia_resiliency_ext.attribution.api_keys import (
+            llm_api_key_missing_message,
+            load_llm_api_key,
+        )
 
         self._init_config = normalize_attribution_args(args)
         self.api_key = load_llm_api_key()
         if not self.api_key:
-            raise ValueError(
-                "LLM_API_KEY not found. Set LLM_API_KEY env var, "
-                "LLM_API_KEY_FILE env var, or create ~/.llm_api_key"
-            )
+            raise ValueError(llm_api_key_missing_message())
         logger.debug("API key loaded (length=%d)", len(self.api_key))
         logger.debug(
             "Using model: %s",

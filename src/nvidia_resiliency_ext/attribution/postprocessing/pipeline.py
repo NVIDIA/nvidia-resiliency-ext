@@ -199,7 +199,7 @@ def post_analysis_items(
     processing_time: float,
     path: str,
     user: str,
-    job_id: str,
+    job_id: Optional[str],
     fr_dump_path: Optional[str] = None,
     fr_analysis: Optional[FRAnalysisResult] = None,
 ) -> None:
