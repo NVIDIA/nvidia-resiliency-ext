@@ -29,7 +29,6 @@ class FRAttributionOutputParser:
             'group_types': [],
             'missing_ranks_by_pg': {},
             'process_groups': [],
-            'scheduling_order': {},
             'raw_output': output,
         }
 
@@ -84,13 +83,6 @@ class FRAttributionOutputParser:
                             'missing_ranks': missing_ranks,
                         }
                     )
-
-        # Extract scheduling order
-        scheduling_order_match = re.search(r'Using scheduling order: ({[^}]+})', output)
-        if scheduling_order_match:
-            import ast
-
-            result['scheduling_order'] = ast.literal_eval(scheduling_order_match.group(1))
 
         return result
 

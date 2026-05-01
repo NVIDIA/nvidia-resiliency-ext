@@ -1141,10 +1141,10 @@ class CollectiveAnalyzer(NVRxAttribution):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Analyze collective operations across JSON dump files.'
+        description='Analyze collective operations across PyTorch Flight Recorder dump files.'
     )
     parser.add_argument(
-        '--fr-path', type=str, help='Path to JSON files or directories containing JSON files'
+        '--fr-path', type=str, help='Path to FR dump files or directories containing FR dump files'
     )
     parser.add_argument(
         '-p', '--pattern', default="_dump_*", help='File pattern to match (default: _dump_*)'
