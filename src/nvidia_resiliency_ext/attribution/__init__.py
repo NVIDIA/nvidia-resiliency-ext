@@ -64,7 +64,7 @@ if TYPE_CHECKING:
         AttributionCredentialsConfig,
         AttributionPostprocessingConfig,
     )
-    from .svc.config import (
+    from .orchestration.config import (
         MAX_JOBS,
         MIN_FILE_SIZE_KB,
         POLL_INTERVAL_SECONDS,
@@ -87,9 +87,9 @@ if TYPE_CHECKING:
         TTL_TERMINATED_SECONDS,
         ErrorCode,
     )
-    from .svc.job import FileInfo, Job, JobMode
-    from .svc.splitlog import SplitlogTracker
-    from .svc.types import (
+    from .orchestration.job import FileInfo, Job, JobMode
+    from .orchestration.splitlog import SplitlogTracker
+    from .orchestration.types import (
         LogAnalysisCycleResult,
         LogAnalysisSplitlogResult,
         LogAnalyzerConfig,
@@ -121,38 +121,38 @@ _EXPORTS = {
     "AttributionCacheConfig": ".controller",
     "AttributionCredentialsConfig": ".controller",
     "AttributionPostprocessingConfig": ".controller",
-    "MAX_JOBS": ".svc.config",
-    "MIN_FILE_SIZE_KB": ".svc.config",
-    "POLL_INTERVAL_SECONDS": ".svc.config",
-    "RESP_ERROR": ".svc.config",
-    "RESP_FILES_ANALYZED": ".svc.config",
-    "RESP_LOG_FILE": ".svc.config",
-    "RESP_LOGS_DIR": ".svc.config",
-    "RESP_MODE": ".svc.config",
-    "RESP_MODULE": ".svc.config",
-    "RESP_RESULT": ".svc.config",
-    "RESP_RESULT_ID": ".svc.config",
-    "RESP_SCHED_RESTARTS": ".svc.config",
-    "RESP_STATE": ".svc.config",
-    "RESP_STATUS": ".svc.config",
-    "RESP_WL_RESTART": ".svc.config",
-    "RESP_WL_RESTART_COUNT": ".svc.config",
-    "STATE_TIMEOUT": ".svc.config",
-    "TTL_MAX_JOB_AGE_SECONDS": ".svc.config",
-    "TTL_PENDING_SECONDS": ".svc.config",
-    "TTL_TERMINATED_SECONDS": ".svc.config",
-    "ErrorCode": ".svc.config",
-    "FileInfo": ".svc.job",
-    "Job": ".svc.job",
-    "JobMode": ".svc.job",
-    "SplitlogTracker": ".svc.splitlog",
-    "LogAnalysisCycleResult": ".svc.types",
-    "LogAnalysisSplitlogResult": ".svc.types",
-    "LogAnalyzerConfig": ".svc.types",
-    "LogAnalyzerError": ".svc.types",
-    "LogAnalyzerFilePreview": ".svc.types",
-    "LogAnalyzerOutcome": ".svc.types",
-    "LogAnalyzerSubmitResult": ".svc.types",
+    "MAX_JOBS": ".orchestration.config",
+    "MIN_FILE_SIZE_KB": ".orchestration.config",
+    "POLL_INTERVAL_SECONDS": ".orchestration.config",
+    "RESP_ERROR": ".orchestration.config",
+    "RESP_FILES_ANALYZED": ".orchestration.config",
+    "RESP_LOG_FILE": ".orchestration.config",
+    "RESP_LOGS_DIR": ".orchestration.config",
+    "RESP_MODE": ".orchestration.config",
+    "RESP_MODULE": ".orchestration.config",
+    "RESP_RESULT": ".orchestration.config",
+    "RESP_RESULT_ID": ".orchestration.config",
+    "RESP_SCHED_RESTARTS": ".orchestration.config",
+    "RESP_STATE": ".orchestration.config",
+    "RESP_STATUS": ".orchestration.config",
+    "RESP_WL_RESTART": ".orchestration.config",
+    "RESP_WL_RESTART_COUNT": ".orchestration.config",
+    "STATE_TIMEOUT": ".orchestration.config",
+    "TTL_MAX_JOB_AGE_SECONDS": ".orchestration.config",
+    "TTL_PENDING_SECONDS": ".orchestration.config",
+    "TTL_TERMINATED_SECONDS": ".orchestration.config",
+    "ErrorCode": ".orchestration.config",
+    "FileInfo": ".orchestration.job",
+    "Job": ".orchestration.job",
+    "JobMode": ".orchestration.job",
+    "SplitlogTracker": ".orchestration.splitlog",
+    "LogAnalysisCycleResult": ".orchestration.types",
+    "LogAnalysisSplitlogResult": ".orchestration.types",
+    "LogAnalyzerConfig": ".orchestration.types",
+    "LogAnalyzerError": ".orchestration.types",
+    "LogAnalyzerFilePreview": ".orchestration.types",
+    "LogAnalyzerOutcome": ".orchestration.types",
+    "LogAnalyzerSubmitResult": ".orchestration.types",
 }
 
 
@@ -176,7 +176,7 @@ def __getattr__(name: str):
 
 
 def __dir__() -> list[str]:
-    return sorted(list(globals().keys()) + list(__all__))
+    return sorted(set(globals().keys()) | set(__all__))
 
 
 __all__ = [

@@ -27,7 +27,10 @@ from nvidia_resiliency_ext.attribution.base import (
     effective_run_or_init_config,
     normalize_attribution_args,
 )
-from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 
 from .capture import capture_logs
 

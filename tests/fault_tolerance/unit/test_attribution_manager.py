@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +10,7 @@ from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     DEFAULT_ATTRIBUTION_PORT,
     AttributionConfig,
     AttributionManager,
-    _repo_services_dir,
+    _attribution_command,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 
@@ -166,8 +166,8 @@ def test_attribution_config_maps_launcher_args(tmp_path):
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
     assert env["LLM_API_KEY_FILE"] == str(api_key_file)
+    assert env["NVRX_ATTRSVC_ENDPOINT"] == f"http://localhost:{DEFAULT_ATTRIBUTION_PORT}"
     assert env["NVRX_ATTRSVC_ALLOWED_ROOT"] == str(applog_dir)
-    assert env["NVRX_ATTRSVC_PORT"] == str(DEFAULT_ATTRIBUTION_PORT)
     assert env["NVRX_ATTRSVC_LLM_BASE_URL"] == "https://llm.example/v1"
     assert env["NVRX_ATTRSVC_LLM_MODEL"] == "model-a"
     assert env["NVRX_ATTRSVC_ANALYSIS_BACKEND"] == "lib"
@@ -175,7 +175,23 @@ def test_attribution_config_maps_launcher_args(tmp_path):
     assert env["NVRX_ATTRSVC_LOG_LEVEL"] == "DEBUG"
 
 
-def test_child_env_prepends_repo_services_to_pythonpath(tmp_path, monkeypatch):
+def test_child_env_overrides_inherited_attrsvc_endpoint(tmp_path, monkeypatch):
+    api_key_file = tmp_path / "key"
+    api_key_file.write_text("secret")
+    base_log = tmp_path / "train.log"
+    monkeypatch.setenv("NVRX_ATTRSVC_ENDPOINT", "/tmp/nvrx-attrsvc.sock")
+    cfg = AttributionConfig.from_args(
+        _args(ft_attribution_endpoint="localhost"),
+        str(base_log),
+        FaultToleranceConfig(),
+    )
+
+    env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
+
+    assert env["NVRX_ATTRSVC_ENDPOINT"] == f"http://localhost:{DEFAULT_ATTRIBUTION_PORT}"
+
+
+def test_child_env_preserves_existing_pythonpath(tmp_path, monkeypatch):
     api_key_file = tmp_path / "key"
     api_key_file.write_text("secret")
     base_log = tmp_path / "train.log"
@@ -188,14 +204,29 @@ def test_child_env_prepends_repo_services_to_pythonpath(tmp_path, monkeypatch):
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
 
-    pythonpath = env["PYTHONPATH"].split(os.pathsep)
-    services_dir = _repo_services_dir()
-    if services_dir is not None:
-        assert pythonpath[0] == str(services_dir)
-        assert os.path.isfile(os.path.join(pythonpath[0], "nvrx_attrsvc", "app.py"))
-        assert pythonpath[1] == "/existing"
-    else:
-        assert pythonpath == ["/existing"]
+    assert env["PYTHONPATH"] == "/existing"
+
+
+def test_attribution_command_prefers_console_script(monkeypatch):
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.attribution_manager.shutil.which",
+        lambda _name: "/opt/conda/bin/nvrx-attrsvc",
+    )
+
+    assert _attribution_command() == ["/opt/conda/bin/nvrx-attrsvc"]
+
+
+def test_attribution_command_falls_back_to_service_module(monkeypatch):
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.attribution_manager.shutil.which",
+        lambda _name: None,
+    )
+
+    assert _attribution_command() == [
+        sys.executable,
+        "-m",
+        "nvidia_resiliency_ext.services.attrsvc",
+    ]
 
 
 def test_managed_attribution_requires_api_key_file_before_popen(tmp_path, monkeypatch):

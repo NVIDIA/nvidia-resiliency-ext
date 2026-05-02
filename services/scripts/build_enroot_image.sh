@@ -47,7 +47,7 @@ fi
 if [[ ! -f "pyproject.toml" ]]; then
     echo "ERROR: Run this script from the repo root directory"
     echo "  cd /path/to/nvidia-resiliency-ext"
-    echo "  ./services/build_enroot_image.sh"
+    echo "  ./services/scripts/build_enroot_image.sh"
     exit 1
 fi
 
@@ -90,7 +90,6 @@ enroot start --rw --root "${CONTAINER_NAME}" bash -c '
 '
 
 # Step 4: Copy source code and install packages
-# Note: This mirrors install_nvrx_packages() from common.sh but runs inside container
 echo "=== Step 4: Installing nvidia_resiliency_ext and nvrx services ==="
 REPO_ROOT="$(pwd)"
 
@@ -98,13 +97,10 @@ enroot start --rw --root --mount "${REPO_ROOT}:/tmp/repo" "${CONTAINER_NAME}" ba
     set -e
     cd /tmp/repo
     
-    # Install main library without CUDA extensions (skip CUPTI build)
-    echo "  Installing nvidia-resiliency-ext..."
-    STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install --no-cache-dir --no-deps .
-    
-    # Install attribution service (installs fastapi, uvicorn, mcp, logsage, etc.)
-    echo "  Installing nvrx-attrsvc..."
-    pip install --no-cache-dir ./services
+    # Install root package with attribution extras. The root wheel owns both
+    # nvrx-attrsvc and nvrx-smonsvc entry points.
+    echo "  Installing nvidia-resiliency-ext[attribution]..."
+    STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install --no-cache-dir ".[attribution]"
     
     # Verify commands are available
     echo "  Verifying installed commands..."

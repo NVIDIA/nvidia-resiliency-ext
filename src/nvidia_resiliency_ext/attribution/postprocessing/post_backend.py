@@ -14,7 +14,7 @@ Each attempt uses the first available backend:
 
 If neither applies, :func:`post` returns ``False`` and :func:`get_retrying_post_fn` returns ``None``.
 
-``nvrx_attrsvc`` imports :func:`post` through a small local shim for :class:`~.pipeline.ResultPoster`.
+``nvidia_resiliency_ext.services.attrsvc`` imports :func:`post` through a small local shim for :class:`~.pipeline.ResultPoster`.
 """
 
 import logging

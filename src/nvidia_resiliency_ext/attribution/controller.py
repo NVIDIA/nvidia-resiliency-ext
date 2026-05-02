@@ -29,18 +29,18 @@ from nvidia_resiliency_ext.attribution.coalescing import (
     InflightResult,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster
-from nvidia_resiliency_ext.attribution.postprocessing import configure as configure_postprocessing
-from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
-from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
-from nvidia_resiliency_ext.attribution.svc.config import LogSageExecutionConfig
-from nvidia_resiliency_ext.attribution.svc.types import (
+from nvidia_resiliency_ext.attribution.orchestration.config import LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
     LogAnalyzerFilePreview,
     LogAnalyzerSubmitResult,
 )
+from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster
+from nvidia_resiliency_ext.attribution.postprocessing import configure as configure_postprocessing
+from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
+from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
 
 logger = logging.getLogger(__name__)
 

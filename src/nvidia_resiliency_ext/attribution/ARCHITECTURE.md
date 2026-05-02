@@ -119,11 +119,11 @@ flowchart TB
 ### 2.4 Proposed attribution controller boundary
 
 The long-term boundary should separate **frontends**, an **AttributionController**, and
-**analysis engines**. Both `ft_launcher` and `nvrx_attrsvc` need attribution, but neither
+**analysis engines**. Both `ft_launcher` and `nvrx-attrsvc` need attribution, but neither
 should own the full set of attribution internals.
 
 ```text
-[ft_launcher | nvrx_attrsvc | future callers]
+[ft_launcher | nvrx-attrsvc | future callers]
         <>
 AttributionController
         <>
@@ -133,7 +133,7 @@ AttributionController
 The **frontend** layer owns caller-specific lifecycle and transport:
 
 - `ft_launcher`: worker monitoring, restart timing, restart budget, and applying the final restart/stop decision.
-- `nvrx_attrsvc`: HTTP routing, FastAPI lifecycle, request/response models, service auth/rate limits, and service health endpoints.
+- `nvrx-attrsvc`: HTTP routing, FastAPI lifecycle, request/response models, service auth/rate limits, and service health endpoints.
 - Future callers: CLI tools, batch jobs, notebook/debug workflows, or other control planes.
 
 The **AttributionController** owns attribution semantics and state:
@@ -151,14 +151,14 @@ The controller should have one contract with two deployment modes:
 
 ```text
 Embedded mode:
-external client <> nvrx_attrsvc process
+external client <> nvrx-attrsvc process
                     └── AttributionController object <> MCP
 
 Hosted mode:
 ft_launcher <> AttributionController process <> MCP
 ```
 
-For `nvrx_attrsvc`, the controller can be embedded because the service process already provides
+For `nvrx-attrsvc`, the controller can be embedded because the service process already provides
 the process boundary, HTTP lifecycle, and health surface. For `ft_launcher`, the controller should
 be hosted as a separate long-lived process so launcher code does not own attribution state,
 side-effect idempotency, cache, or MCP lifecycle.
@@ -208,9 +208,9 @@ implemented using MCP transport, it should expose service-grade methods such as
 | Area | Responsibility |
 |------|------------------|
 | **`controller.py`** | **`AttributionController`** and nested config dataclasses: frontend-facing attribution boundary; owns startup config, LLM API key validation, cache persistence, health/status policy, postprocessing wiring, dataflow/Slack stats, and delegates analysis to **`Analyzer`**. |
-| **`analyzer/`** | **`Analyzer`** (`engine.py`): path policy, `RequestCoalescer`, `submit` / `analyze`, splitlog branches; delegates heavy lifting to **`LogAnalyzer`**. Re-exports pipeline symbols from `svc.analysis_pipeline` for convenience. |
+| **`analyzer/`** | **`Analyzer`** (`engine.py`): path policy, `RequestCoalescer`, `submit` / `analyze`, splitlog branches; delegates heavy lifting to **`LogAnalyzer`**. Re-exports pipeline symbols from `orchestration.analysis_pipeline` for convenience. |
 | **`log_analyzer/`** | LogSage package surface only: `NVRxLogAnalyzer` implementation plus its minimal `__init__.py` export. It no longer owns orchestration, parsing, splitlog, or config/types modules. |
-| **`svc/`** | Log-side service/orchestration subsystem: **`LogAnalyzer`**, `Job` / `FileInfo`, SLURM parsing, splitlog polling, **`run_attribution_pipeline`** / **`AnalysisPipelineMode`**, `LogAnalyzerConfig` and result dataclasses, path validation, wire keys (`RESP_*`), and LogSage execution config/runtime helpers. |
+| **`orchestration/`** | Log-side orchestration subsystem: **`LogAnalyzer`**, `Job` / `FileInfo`, SLURM parsing, splitlog polling, **`run_attribution_pipeline`** / **`AnalysisPipelineMode`**, `LogAnalyzerConfig` and result dataclasses, path validation, wire keys (`RESP_*`), and LogSage execution config/runtime helpers. |
 | **`coalescing/`** | `RequestCoalescer`: dedupe concurrent analysis for the same path; cache entries as `LogAnalysisCoalesced` (LogSage dict + optional FR fields + optional LLM merge summary) |
 | **`trace_analyzer/`** | Flight-recorder dump discovery/analysis (`extract_fr_dump_path`, `analyze_fr_dump`, `CollectiveAnalyzer`, etc.) |
 | **`combined_log_fr/`** | **log + FR LLM fusion** (`CombinedLogFR`); MCP tool **`log_fr_analyzer`**; shared `merge_log_fr_llm()` for `LOG_AND_TRACE_WITH_LLM` |
