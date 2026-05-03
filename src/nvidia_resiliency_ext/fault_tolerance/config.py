@@ -99,9 +99,10 @@ class FaultToleranceConfig:
       - `attribution_endpoint` [str] endpoint of the attribution service
 
     * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.
-      <base>/nvrx/). If set, the TCPStore host writes cycle info JSON files and the
-      cycle_info.<job_id>.current symlink there. The workload receives the path to
-      the current cycle file via NVRX_CURRENT_CYCLE_INFO. Default: None (disabled).
+      <base>/nvrx/). If set, the rendezvous host writes cycle info JSON files and
+      the cycle_info.<job_id>.current symlink there. The workload receives the path
+      to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
+      Default: None (disabled).
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.

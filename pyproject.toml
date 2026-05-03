@@ -66,6 +66,7 @@ protobuf = ">=4.22.0"
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
+nvrx-control = "nvidia_resiliency_ext.fault_tolerance.control_plane:main"
 nvrx-mcp-analysis = "nvidia_resiliency_ext.attribution.mcp_integration.server_launcher:main"
 nvrx-attrsvc = "nvidia_resiliency_ext.attribution.nvrx_attrsvc.app:main"
 
