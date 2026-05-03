@@ -982,10 +982,16 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
 
     Counter reading uses three tiers (first that works wins per port):
 
-    Tier 1 — GB200 / newer drivers (preferred):
-      ``nvmlDeviceGetFieldValues`` with per-port field IDs and scopeId = port:
-        NVML_FI_DEV_NVLINK_ERROR_DL_REPLAY   = 161
-        NVML_FI_DEV_NVLINK_ERROR_DL_RECOVERY = 162
+    Tier 1 — NVLink5 / GB200 / newer drivers (preferred):
+      ``nvmlDeviceGetFieldValues`` with per-port field IDs and scopeId = port.
+      Three issue indicators, summed into a single per-port total; any delta > 0
+      across the sum flags the window:
+        NVML_FI_DEV_NVLINK_COUNT_LINK_RECOVERY_EVENTS = 215
+            Up -> recovery transitions (any outcome)
+        NVML_FI_DEV_NVLINK_PLR_XMIT_RETRY_BLOCKS      = 295
+            PHY-layer retry blocks transmitted (NVLink5 retry pressure)
+        NVML_FI_DEV_NVLINK_COUNT_RCV_ERRORS           = 208
+            Rx packets with errors
 
     Tier 2 — older hardware (ports 0-5 only):
       ``nvmlDeviceGetFieldValues`` with per-lane field IDs L0..L5:
@@ -997,8 +1003,8 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
       NVML_NVLINK_ERROR_DL_RECOVERY. Marked LEGACY for drivers > 450; may return
       NVML_ERROR_NOT_SUPPORTED on GB200.
 
-    A one-time warning is logged if GB200 tier-1 field IDs exist in pynvml but the
-    driver returns not-supported, and again if all APIs fail on a port.
+    A one-time warning is logged if tier-1 field IDs are not supported by the
+    driver, and again if all APIs fail on a port.
     """
 
     def __init__(
@@ -1137,30 +1143,34 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
         """
         nvml_success = getattr(self.pynvml, "NVML_SUCCESS", 0)
 
-        # Tier 1: GB200 per-port (scopeId = port number).
-        # Field IDs 161/162 with scopeId are supported on newer drivers (GB200+).
+        # Tier 1: NVLink5 / GB200 per-port (scopeId = port number).
+        # Three issue indicators are summed; any delta > 0 in the sum flags
+        # the window. Field IDs 215, 295, 208 are documented in the public
+        # NVML field-value enums and verified working on GB200 setups.
+        TIER1_FIDS = (
+            getattr(self.pynvml, "NVML_FI_DEV_NVLINK_COUNT_LINK_RECOVERY_EVENTS", 215),
+            getattr(self.pynvml, "NVML_FI_DEV_NVLINK_PLR_XMIT_RETRY_BLOCKS", 295),
+            getattr(self.pynvml, "NVML_FI_DEV_NVLINK_COUNT_RCV_ERRORS", 208),
+        )
         if self._tier1_api_supported is not False:
-            replay_fid = getattr(self.pynvml, "NVML_FI_DEV_NVLINK_ERROR_DL_REPLAY", None)
-            recovery_fid = getattr(self.pynvml, "NVML_FI_DEV_NVLINK_ERROR_DL_RECOVERY", None)
-            if replay_fid is not None or recovery_fid is not None:
-                queries = [(fid, port) for fid in (replay_fid, recovery_fid) if fid is not None]
-                try:
-                    results = self.pynvml.nvmlDeviceGetFieldValues(handle, queries)
-                    successful = [r for r in results if r.nvmlReturn == nvml_success]
-                    if successful:
-                        self._tier1_api_supported = True
-                        return sum(r.value.uiVal for r in successful)
-                    # Constants exist in pynvml but driver returned not-supported.
-                    if not self._tier1_not_supported_warned:
-                        logger.warning(
-                            f"NVLinkWindowHealthCheck: GB200 field IDs (161/162) not supported "
-                            f"on device {device_id} port {port}. "
-                            f"Falling back to tier-2 / legacy API."
-                        )
-                        self._tier1_not_supported_warned = True
-                    self._tier1_api_supported = False
-                except self.pynvml.NVMLError:
-                    pass  # fall through to tier 2
+            queries = [(fid, port) for fid in TIER1_FIDS]
+            try:
+                results = self.pynvml.nvmlDeviceGetFieldValues(handle, queries)
+                successful = [r for r in results if r.nvmlReturn == nvml_success]
+                if successful:
+                    self._tier1_api_supported = True
+                    return sum(r.value.uiVal for r in successful)
+                # Driver returned not-supported for all three FIDs.
+                if not self._tier1_not_supported_warned:
+                    logger.warning(
+                        f"NVLinkWindowHealthCheck: tier-1 field IDs (215/295/208) not supported "
+                        f"on device {device_id} port {port}. "
+                        f"Falling back to tier-2 / legacy API."
+                    )
+                    self._tier1_not_supported_warned = True
+                self._tier1_api_supported = False
+            except self.pynvml.NVMLError:
+                pass  # fall through to tier 2
 
         # Tier 2: per-lane field IDs L0-L5 (older hardware, ports 0-5 only).
         if self._tier2_api_supported is not False and port < 6:
