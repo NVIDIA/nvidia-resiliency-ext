@@ -180,9 +180,10 @@
 <span class="sd">      - `attribution_endpoint` [str] endpoint of the attribution service</span>
 
 <span class="sd">    * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.</span>
-<span class="sd">      &lt;base&gt;/nvrx/). If set, the TCPStore host writes cycle info JSON files and the</span>
-<span class="sd">      cycle_info.&lt;job_id&gt;.current symlink there. The workload receives the path to</span>
-<span class="sd">      the current cycle file via NVRX_CURRENT_CYCLE_INFO. Default: None (disabled).</span>
+<span class="sd">      &lt;base&gt;/nvrx/). If set, the rendezvous host writes cycle info JSON files and</span>
+<span class="sd">      the cycle_info.&lt;job_id&gt;.current symlink there. The workload receives the path</span>
+<span class="sd">      to the current cycle file via NVRX_CURRENT_CYCLE_INFO.</span>
+<span class="sd">      Default: None (disabled).</span>
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>

@@ -178,9 +178,10 @@ Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_m
 <li><p>Attribution service (optional, disabled unless <cite>attribution_endpoint</cite> is set):
 - <cite>attribution_endpoint</cite> [str] endpoint of the attribution service</p></li>
 <li><p><cite>cycle_info_dir</cite> [str|None] Full path to the NVRx cycle info directory (e.g.
-&lt;base&gt;/nvrx/). If set, the TCPStore host writes cycle info JSON files and the
-cycle_info.&lt;job_id&gt;.current symlink there. The workload receives the path to
-the current cycle file via NVRX_CURRENT_CYCLE_INFO. Default: None (disabled).</p></li>
+&lt;base&gt;/nvrx/). If set, the rendezvous host writes cycle info JSON files and
+the cycle_info.&lt;job_id&gt;.current symlink there. The workload receives the path
+to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
+Default: None (disabled).</p></li>
 </ul>
 <p>If any timeout is None, it has no effect (as if it was +INF).
 All timeouts can be deduced and set during runtime.</p>
