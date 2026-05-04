@@ -48,6 +48,7 @@ from nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline import (
 )
 from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode, LogSageExecutionConfig
 from nvidia_resiliency_ext.attribution.orchestration.job import Job, JobMode
+from nvidia_resiliency_ext.attribution.orchestration.llm_output import attribution_recommendation
 from nvidia_resiliency_ext.attribution.orchestration.log_analyzer import LogAnalyzer
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalysisCycleResult,
@@ -357,6 +358,13 @@ class Analyzer:
                     fr_dump_path=fr_dump,
                     fr_analysis=fr_analysis,
                     llm_merged_summary=llm_merged,
+                    recommendation=attribution_recommendation(
+                        {
+                            "state": "no_log",
+                            "result": [],
+                            "module": "fr_only",
+                        }
+                    ),
                 )
             # LLM returns multiple results per file (one per workload cycle); support wl_restart to select one
             results_list = (
@@ -380,6 +388,7 @@ class Analyzer:
                     fr_dump_path=fr_dump,
                     fr_analysis=fr_analysis,
                     llm_merged_summary=llm_merged,
+                    recommendation=attribution_recommendation(single_result),
                 )
             # No wl_restart: return full result (all cycles) with count so client can iterate
             return LogAnalysisCycleResult(
@@ -390,6 +399,7 @@ class Analyzer:
                 fr_dump_path=fr_dump,
                 fr_analysis=fr_analysis,
                 llm_merged_summary=llm_merged,
+                recommendation=attribution_recommendation(log_result),
             )
         except FrDumpPathNotFoundError as e:
             return LogAnalyzerError(
@@ -499,6 +509,7 @@ class Analyzer:
             fr_dump_path=fr_dump,
             fr_analysis=fr_analysis,
             llm_merged_summary=bundle.llm_merged_summary,
+            recommendation=attribution_recommendation(result),
         )
 
     def _sync_analyze_via_coalescer(

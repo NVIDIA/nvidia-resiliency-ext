@@ -7,20 +7,16 @@ import logging
 from typing import TYPE_CHECKING
 
 from nvidia_resiliency_ext.attribution import (
-    RESP_ERROR,
     RESP_FILES_ANALYZED,
-    RESP_LOG_FILE,
     RESP_LOGS_DIR,
     RESP_MODE,
     RESP_MODULE,
     RESP_RESULT,
-    RESP_RESULT_ID,
     RESP_SCHED_RESTARTS,
-    RESP_STATE,
-    RESP_WL_RESTART,
-    STATE_TIMEOUT,
     JobMode,
+    parse_attrsvc_response,
 )
+from nvidia_resiliency_ext.attribution.orchestration.types import RECOMMENDATION_TIMEOUT
 
 if TYPE_CHECKING:
     from .attrsvc_client import AttrsvcClient
@@ -162,12 +158,6 @@ def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> No
     try:
         logger.debug(f"[{job.job_id}] Raw response: {response}")
 
-        # Check for splitlog mode response
-        mode = response.get(RESP_MODE, JobMode.SINGLE.value)
-        wl_restart = response.get(RESP_WL_RESTART)
-        sched_restarts = response.get(RESP_SCHED_RESTARTS)
-        analyzed_log_file = response.get(RESP_LOG_FILE, "")
-
         inner = response.get(RESP_RESULT, response)
 
         if not inner or not inner.get(RESP_MODULE):
@@ -176,49 +166,16 @@ def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> No
             )
             return
 
-        module = inner.get(RESP_MODULE)
-        state = inner.get(RESP_STATE, "")
+        parsed = parse_attrsvc_response(response, log_path=log_path)
+        action = parsed.recommendation.action
 
-        # Handle timeout results specially
-        if state == STATE_TIMEOUT:
-            error_msg = inner.get(RESP_ERROR, "LLM analysis timed out")
-            logger.warning(f"[{job.job_id}] Attribution timeout: {error_msg}")
-            print(
-                f"[{job.job_id}] Attribution timeout:\n"
-                f"  Log: {log_path}\n"
-                f"  Error: {error_msg}",
-                flush=True,
-            )
+        if action == RECOMMENDATION_TIMEOUT:
+            timeout_reason = parsed.recommendation_reason or "Attribution analysis timed out"
+            logger.warning(f"[{job.job_id}] Attribution timeout: {timeout_reason}")
+            print(parsed.format_summary(prefix=f"[{job.job_id}] "), flush=True)
             return
 
-        raw_result_id = inner.get(RESP_RESULT_ID, "")
-        result_id = raw_result_id[:16] + "..." if len(raw_result_id) > 16 else raw_result_id
-
-        attribution_result = inner.get(RESP_RESULT, "")
-        if isinstance(attribution_result, list):
-            attribution_text = " | ".join(str(item) for item in attribution_result)
-        else:
-            attribution_text = str(attribution_result) if attribution_result else ""
-
-        if len(attribution_text) > 200:
-            attribution_text = attribution_text[:200] + "..."
-
-        # Build output message
-        lines = [f"[{job.job_id}] Attribution result:"]
-        if mode == JobMode.SPLITLOG.value:
-            lines.append(
-                f"  Mode: {JobMode.SPLITLOG.value} (wl_restart {wl_restart}/{sched_restarts})"
-            )
-            lines.append(f"  Slurm output: {log_path}")
-            lines.append(f"  Analyzed log: {analyzed_log_file}")
-        else:
-            lines.append(f"  Log: {log_path}")
-        lines.append(f"  Module: {module}")
-        lines.append(f"  Result ID: {result_id}")
-        lines.append(f"  State: {state}")
-        lines.append(f"  Attribution: {attribution_text}")
-
-        print("\n".join(lines), flush=True)
+        print(parsed.format_summary(prefix=f"[{job.job_id}] "), flush=True)
 
     except Exception as e:
         logger.warning(f"[{job.job_id}] Could not parse attribution result: {e}")

@@ -9,7 +9,7 @@ validation and MCP/lib result shaping) because LLM output handling is a distinct
 Path-derived job/cycle ids live in :mod:`nvidia_resiliency_ext.attribution.orchestration.log_path_metadata`.
 
 - :func:`parse_llm_response` / :class:`ParsedLLMResponse` — structured fields from raw LLM text
-- :func:`attribution_no_restart` — decision helper on attribution dicts
+- :func:`attribution_recommendation` — decision helper
 - :func:`log_fields_for_dataflow_record` — keys merged in :mod:`~nvidia_resiliency_ext.attribution.postprocessing.pipeline`
 """
 
@@ -20,51 +20,139 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from .config import RESP_ERROR, RESP_MODULE, RESP_RESULT, RESP_STATE, STATE_TIMEOUT
 from .log_path_metadata import JobMetadata
+from .types import (
+    RECOMMENDATION_CONTINUE,
+    RECOMMENDATION_RESTART,
+    RECOMMENDATION_STOP,
+    RECOMMENDATION_TIMEOUT,
+    RECOMMENDATION_UNKNOWN,
+    AttributionRecommendation,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def attribution_no_restart(attr_result: Optional[Dict[str, Any]]) -> bool:
-    """Whether attribution recommends do not restart (stop).
+def attribution_recommendation(attr_result: Optional[Dict[str, Any]]) -> AttributionRecommendation:
+    """Normalize backend-specific log-analysis output.
 
-    Call on the raw result from log analysis or an attribution service (or None if unavailable).
-    True = stop; False = restart or no usable result (skip).
-
-    Handles result shapes: state STOP/CONTINUE/RESTART, or strings containing
-    ``STOP - DONT RESTART`` / ``RESTART IMMEDIATE``.
+    This function expects the inner analysis result, e.g. ``{"state": ..., "result": ...}``.
+    Full attrsvc HTTP response bodies are parsed by ``parse_attrsvc_response``.
     """
     if attr_result is None or not isinstance(attr_result, dict):
-        return False
-    state = attr_result.get("state")
-    if state == "STOP":
-        return True
-    if state in ("CONTINUE", "RESTART"):
-        return False
-    nested = attr_result.get("result")
-    if isinstance(nested, dict):
-        nested_state = nested.get("state")
-        if nested_state == "STOP":
-            return True
-        if nested_state in ("CONTINUE", "RESTART"):
-            return False
-    if isinstance(nested, (list, tuple)) and nested:
-        first = nested[0]
-        s = first if isinstance(first, str) else str(first)
-        if "STOP" in s and "RESTART" not in s.split("STOP")[0]:
-            return True
-        if "RESTART" in s:
-            return False
-    s = str(attr_result)
-    logger.warning(
-        "attribution_no_restart: falling through to string matching on result: %s",
-        s[:200] + ("..." if len(s) > 200 else ""),
+        return AttributionRecommendation(reason="missing attribution result")
+
+    state = _extract_state(attr_result)
+    source = _extract_source(attr_result)
+    reason = _extract_reason(attr_result)
+    state_action = _action_from_state(state)
+    known_unknown_reason = _known_unknown_reason(state, source)
+
+    if reason:
+        text_action = _action_from_text(reason)
+        action = text_action if text_action != RECOMMENDATION_UNKNOWN else state_action
+    elif state_action != RECOMMENDATION_UNKNOWN:
+        action = state_action
+    elif known_unknown_reason:
+        action = RECOMMENDATION_UNKNOWN
+        reason = known_unknown_reason
+    else:
+        result_text = str(attr_result)
+        logger.warning(
+            "attribution_recommendation: falling through to string matching on result: %s",
+            result_text[:200] + ("..." if len(result_text) > 200 else ""),
+        )
+        action = _action_from_text(result_text)
+
+    if not reason and state:
+        reason = f"state={state}"
+
+    return AttributionRecommendation(
+        action=action,
+        reason=reason,
+        source=source,
     )
-    if "STOP" in s and "DONT RESTART" in s:
-        return True
-    if "RESTART" in s and "IMMEDIATE" in s:
-        return False
-    return False
+
+
+def _known_unknown_reason(state: Optional[str], source: str) -> str:
+    if source == "fr_only" and state == "no_log":
+        return "no_log"
+    return ""
+
+
+def _extract_state(attr_result: Dict[str, Any]) -> Optional[str]:
+    for candidate in (attr_result, attr_result.get(RESP_RESULT)):
+        if isinstance(candidate, dict):
+            state = candidate.get(RESP_STATE)
+            if isinstance(state, str) and state.strip():
+                return state.strip()
+    return None
+
+
+def _extract_source(attr_result: Dict[str, Any]) -> str:
+    for candidate in (attr_result, attr_result.get(RESP_RESULT)):
+        if isinstance(candidate, dict):
+            module = candidate.get(RESP_MODULE)
+            if isinstance(module, str) and module.strip():
+                return module.strip()
+    return ""
+
+
+def _extract_reason(attr_result: Dict[str, Any]) -> str:
+    error = attr_result.get(RESP_ERROR)
+    if isinstance(error, str) and error:
+        return error
+
+    nested = attr_result.get(RESP_RESULT)
+    if isinstance(nested, dict):
+        nested_error = nested.get(RESP_ERROR)
+        if isinstance(nested_error, str) and nested_error:
+            return nested_error
+        nested = nested.get(RESP_RESULT)
+
+    return _reason_text(nested)
+
+
+def _reason_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            text = _reason_text(item)
+            if text:
+                return text
+    return ""
+
+
+def _action_from_state(state: Optional[str]) -> str:
+    if not isinstance(state, str):
+        return RECOMMENDATION_UNKNOWN
+    normalized = _normalize_action(state)
+    if normalized == RECOMMENDATION_STOP:
+        return RECOMMENDATION_STOP
+    if normalized == RECOMMENDATION_RESTART:
+        return RECOMMENDATION_RESTART
+    if normalized == RECOMMENDATION_CONTINUE:
+        return RECOMMENDATION_CONTINUE
+    if normalized == STATE_TIMEOUT.upper():
+        return RECOMMENDATION_TIMEOUT
+    return RECOMMENDATION_UNKNOWN
+
+
+def _normalize_action(action: Any) -> str:
+    return action.strip().upper() if isinstance(action, str) and action.strip() else ""
+
+
+def _action_from_text(text: str) -> str:
+    normalized = text.upper()
+    if "STOP" in normalized and "RESTART" not in normalized.split("STOP", 1)[0]:
+        return RECOMMENDATION_STOP
+    if "RESTART" in normalized and "IMMEDIATE" in normalized:
+        return RECOMMENDATION_RESTART
+    if "ERRORS NOT FOUND" in normalized or "NO LOGS" in normalized:
+        return RECOMMENDATION_CONTINUE
+    return RECOMMENDATION_UNKNOWN
 
 
 @dataclass

@@ -559,8 +559,9 @@ class TestAttributionService(unittest.TestCase):
 
         service._do_submit_log("/tmp/train.log")
 
+        mock_client.assert_called_once_with(base_url="http://attr.example:8000", timeout=10.0)
         client.post.assert_called_once_with(
-            "http://attr.example:8000/logs",
+            "/logs",
             json={"log_path": "/tmp/train.log"},
             headers={"accept": "application/json"},
         )
@@ -572,6 +573,85 @@ class TestAttributionService(unittest.TestCase):
         service._do_submit_log("/tmp/train.log")
 
         mock_client.assert_not_called()
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_get_results_returns_stop_decision(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "recommendation": {
+                "action": "STOP",
+                "reason": "STOP - DONT RESTART",
+                "source": "log_analyzer",
+            },
+            "result": {
+                "module": "log_analyzer",
+                "result_id": "abc123",
+                "resource_uri": "attribution://log_analyzer/abc123",
+                "result": ["raw attribution item"],
+            },
+            "status": "completed",
+        }
+        client.get.return_value = response
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        should_stop = service._get_results("/tmp/train.log")
+
+        self.assertTrue(should_stop)
+        mock_client.assert_called_once_with(base_url="http://attr.example:8000", timeout=60.0)
+        client.get.assert_called_once_with(
+            "/logs",
+            params={"log_path": "/tmp/train.log"},
+            headers={"accept": "application/json"},
+        )
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_get_results_maps_restart_recommendation_to_no_stop(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "result": {
+                "module": "log_analyzer",
+                "state": "CONTINUE",
+                "result": ["RESTART IMMEDIATE"],
+            },
+            "status": "completed",
+        }
+        client.get.return_value = response
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        should_stop = service._get_results("/tmp/train.log")
+
+        self.assertFalse(should_stop)
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_get_results_maps_continue_recommendation_to_no_stop(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "recommendation": {
+                "action": "CONTINUE",
+                "reason": "training cycle still running",
+                "source": "log_analyzer",
+            },
+            "result": {
+                "module": "log_analyzer",
+                "result": ["ERRORS NOT FOUND"],
+            },
+            "status": "completed",
+        }
+        client.get.return_value = response
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        should_stop = service._get_results("/tmp/train.log")
+
+        self.assertFalse(should_stop)
 
 
 if __name__ == "__main__":

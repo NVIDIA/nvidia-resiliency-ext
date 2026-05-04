@@ -177,7 +177,7 @@ def ensure_analyzer_ready(
 
 
 def _raw_to_result_dict(raw: Any) -> Optional[Dict[str, Any]]:
-    """Convert controller result to the dict shape used by attribution_no_restart."""
+    """Convert controller result to the inner attribution result dict."""
     if hasattr(raw, "result"):
         r = getattr(raw, "result", None)
         return r if isinstance(r, dict) else None

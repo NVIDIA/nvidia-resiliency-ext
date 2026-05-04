@@ -171,30 +171,44 @@ All success responses use HTTP 200. Interpret outcome from the response body onl
 |-------|------|-------------|
 | `result` | object | **Inner result** from the analysis pipeline (see below). |
 | `status` | string | Always `"completed"` (request completed). |
+| `recommendation` | object | Normalized client contract for restart/stop decisions. |
 | `wl_restart` | int | Which workload cycle this result is for (0 when returning all). |
 | `wl_restart_count` | int \| null | Total workload cycles in the file (single-file; null if N/A). |
 | `mode` | string | Only for splitlog: `"splitlog"`. |
 | `sched_restarts` | int | Only for splitlog. |
 | `log_file` | string | Only for splitlog: path to the analyzed log file. |
 
-**Inner `result` object** — client should branch on `result.state`:
+**`recommendation` object** — clients should branch on this field:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | One of `"STOP"` \| `"RESTART"` \| `"CONTINUE"` \| `"UNKNOWN"` \| `"TIMEOUT"`. |
+| `reason` | string | Human-readable summary or backend reason. |
+| `source` | string | Backend/module that produced the recommendation, e.g. `"log_analyzer"`. |
+
+`"STOP"` means the client should not restart immediately. `"RESTART"` means
+the client may restart a failed run. `"CONTINUE"` means no stop/restart
+intervention is recommended. `"UNKNOWN"` and `"TIMEOUT"` are not actionable stop
+signals.
+
+**Inner `result` object** — raw backend result, retained for debugging:
 
 | Field | Type | When | Description |
 |-------|------|------|-------------|
 | `module` | string | Always | e.g. `"log_analyzer"`. |
-| `state` | string | Always | **Drives client decision: continue or stop.** One of `"timeout"` \| `"CONTINUE"` \| `"STOP"`. See below. |
+| `state` | string | Always | Raw backend state, e.g. `"timeout"` \| `"CONTINUE"` \| `"STOP"`. |
 | `result` | array | Always | Attribution items (one per cycle). Empty when `state === "timeout"`. |
 | `error` | string | When `state === "timeout"` | Human-readable timeout message. |
 
 Other fields (e.g. `result_id`, `resource_uri`) may be present.
 
-**`result.state` — how the client should use it:**
+**Raw `result.state`:**
 
 1. **`"timeout"`** — Analysis did not complete. Use `result.error` for the message; do not treat as a successful attribution. Do not use `result.state` for a continue/stop decision.
-2. **`"CONTINUE"`** — Analysis succeeded; attribution suggests it is safe to continue (e.g. resume/restart the job).
+2. **`"CONTINUE"`** — Backend state for non-stop output. Use `recommendation.action`, which may be `"RESTART"` or `"CONTINUE"` depending on the raw backend text.
 3. **`"STOP"`** — Analysis succeeded; attribution suggests **do not** continue (e.g. do not restart immediately; user intervention or different action required).
 
-The client should branch on `result.state` to decide whether to continue or stop the workflow, and to choose between `result.error` (timeout) and `result.result` (attribution text).
+Clients should use `recommendation.action` for restart/stop decisions.
 
 **Type note:** `state` is a string in JSON for compatibility. The set of values is fixed; clients may treat it as an enum (e.g. in OpenAPI schema or client code: `"timeout" | "CONTINUE" | "STOP"`).
 

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import stat
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -138,5 +139,153 @@ def test_request_with_retry_uses_relative_logs_route(mock_httpx):
         on_client_error=MagicMock(),
     )
 
-    client.get.assert_called_once_with("/logs", params={"log_path": "/tmp/job.log"})
+    client.get.assert_called_once_with(
+        "/logs",
+        params={"log_path": "/tmp/job.log"},
+        headers={"accept": "application/json"},
+    )
     on_success.assert_called_once_with(response)
+
+
+@patch("nvidia_resiliency_ext.services.smonsvc.attrsvc_client.httpx")
+def test_not_readable_403_warns_by_default(mock_httpx, caplog):
+    response = MagicMock()
+    response.status_code = 403
+    response.json.return_value = {
+        "error_code": "errorcode.not_readable",
+        "message": "permission denied",
+        "details": None,
+    }
+    client = MagicMock()
+    client.post.return_value = response
+    mock_httpx.Client.return_value = client
+    on_client_error = MagicMock()
+
+    attrsvc = AttrsvcClient("unix:///tmp/nvrx-attrsvc.sock", request_throttle=0)
+    with caplog.at_level(
+        logging.WARNING,
+        logger="nvidia_resiliency_ext.services.smonsvc.attrsvc_client",
+    ):
+        attrsvc.request_with_retry(
+            "POST",
+            job_id="123",
+            log_path="/tmp/job.log",
+            on_success=MagicMock(),
+            on_client_error=on_client_error,
+        )
+
+    assert "[123] POST failed (403)" in caplog.text
+    on_client_error.assert_called_once()
+
+
+@patch("nvidia_resiliency_ext.services.smonsvc.attrsvc_client.httpx")
+def test_not_readable_403_logs_at_debug_when_expected(mock_httpx, caplog):
+    response = MagicMock()
+    response.status_code = 403
+    response.json.return_value = {
+        "error_code": "errorcode.not_readable",
+        "message": "permission denied",
+        "details": None,
+    }
+    client = MagicMock()
+    client.post.return_value = response
+    mock_httpx.Client.return_value = client
+    on_client_error = MagicMock()
+
+    attrsvc = AttrsvcClient(
+        "unix:///tmp/nvrx-attrsvc.sock",
+        request_throttle=0,
+        permission_denied_is_expected=True,
+    )
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="nvidia_resiliency_ext.services.smonsvc.attrsvc_client",
+    ):
+        attrsvc.request_with_retry(
+            "POST",
+            job_id="123",
+            log_path="/tmp/job.log",
+            on_success=MagicMock(),
+            on_client_error=on_client_error,
+        )
+
+    matching_records = [
+        record for record in caplog.records if "[123] POST failed (403)" in record.message
+    ]
+    assert matching_records
+    assert {record.levelno for record in matching_records} == {logging.DEBUG}
+    on_client_error.assert_called_once()
+
+
+@patch("nvidia_resiliency_ext.services.smonsvc.attrsvc_client.httpx")
+def test_non_json_client_error_still_calls_error_callback(mock_httpx, caplog):
+    response = MagicMock()
+    response.status_code = 403
+    response.json.side_effect = ValueError("not json")
+    response.text = "<html>forbidden</html>"
+    client = MagicMock()
+    client.post.return_value = response
+    mock_httpx.Client.return_value = client
+    on_client_error = MagicMock()
+
+    attrsvc = AttrsvcClient(
+        "unix:///tmp/nvrx-attrsvc.sock",
+        request_throttle=0,
+        permission_denied_is_expected=True,
+    )
+    with caplog.at_level(
+        logging.WARNING,
+        logger="nvidia_resiliency_ext.services.smonsvc.attrsvc_client",
+    ):
+        attrsvc.request_with_retry(
+            "POST",
+            job_id="123",
+            log_path="/tmp/job.log",
+            on_success=MagicMock(),
+            on_client_error=on_client_error,
+        )
+
+    assert "[123] POST failed (403): <html>forbidden</html>" in caplog.text
+    on_client_error.assert_called_once_with("<html>forbidden</html>")
+
+
+@patch("nvidia_resiliency_ext.services.smonsvc.attrsvc_client.httpx")
+def test_expected_client_errors_are_sampled(mock_httpx, caplog):
+    response = MagicMock()
+    response.status_code = 403
+    response.json.return_value = {
+        "error_code": "errorcode.not_readable",
+        "message": "permission denied",
+        "details": None,
+    }
+    client = MagicMock()
+    client.post.return_value = response
+    mock_httpx.Client.return_value = client
+    on_client_error = MagicMock()
+
+    attrsvc = AttrsvcClient(
+        "unix:///tmp/nvrx-attrsvc.sock",
+        request_throttle=0,
+        permission_denied_is_expected=True,
+    )
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="nvidia_resiliency_ext.services.smonsvc.attrsvc_client",
+    ):
+        for idx in range(6):
+            attrsvc.request_with_retry(
+                "POST",
+                job_id=str(123 + idx),
+                log_path="/tmp/job.log",
+                on_success=MagicMock(),
+                on_client_error=on_client_error,
+            )
+
+    matching_records = [
+        record
+        for record in caplog.records
+        if "POST failed (403)" in record.message
+        and "expected client error count=" in record.message
+    ]
+    assert len(matching_records) == 5
+    assert on_client_error.call_count == 6

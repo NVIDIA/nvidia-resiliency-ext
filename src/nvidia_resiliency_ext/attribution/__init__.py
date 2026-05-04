@@ -64,6 +64,11 @@ if TYPE_CHECKING:
         AttributionCredentialsConfig,
         AttributionPostprocessingConfig,
     )
+    from .orchestration.client_response import (
+        AttrSvcResult,
+        parse_attrsvc_response,
+        recommendation_should_stop,
+    )
     from .orchestration.config import (
         MAX_JOBS,
         MIN_FILE_SIZE_KB,
@@ -90,6 +95,7 @@ if TYPE_CHECKING:
     from .orchestration.job import FileInfo, Job, JobMode
     from .orchestration.splitlog import SplitlogTracker
     from .orchestration.types import (
+        AttributionRecommendation,
         LogAnalysisCycleResult,
         LogAnalysisSplitlogResult,
         LogAnalyzerConfig,
@@ -142,10 +148,14 @@ _EXPORTS = {
     "TTL_PENDING_SECONDS": ".orchestration.config",
     "TTL_TERMINATED_SECONDS": ".orchestration.config",
     "ErrorCode": ".orchestration.config",
+    "AttrSvcResult": ".orchestration.client_response",
+    "parse_attrsvc_response": ".orchestration.client_response",
+    "recommendation_should_stop": ".orchestration.client_response",
     "FileInfo": ".orchestration.job",
     "Job": ".orchestration.job",
     "JobMode": ".orchestration.job",
     "SplitlogTracker": ".orchestration.splitlog",
+    "AttributionRecommendation": ".orchestration.types",
     "LogAnalysisCycleResult": ".orchestration.types",
     "LogAnalysisSplitlogResult": ".orchestration.types",
     "LogAnalyzerConfig": ".orchestration.types",
@@ -192,6 +202,10 @@ __all__ = [
     "Analyzer",
     "TraceAnalyzer",
     "LogAnalyzerConfig",
+    "AttributionRecommendation",
+    "AttrSvcResult",
+    "parse_attrsvc_response",
+    "recommendation_should_stop",
     "LogAnalyzerError",
     "LogAnalyzerOutcome",
     "LogAnalysisCycleResult",
