@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .config import Settings, setup
     from .service import (
         AttributionHttpAdapter,
+        AttributionRecommendation,
         LogAnalysisCycleResult,
         LogAnalysisSplitlogResult,
         LogAnalyzerError,
@@ -39,6 +40,7 @@ _EXPORTS = {
     "Settings": ".config",
     "setup": ".config",
     "AttributionHttpAdapter": ".service",
+    "AttributionRecommendation": ".service",
     "LogAnalysisCycleResult": ".service",
     "LogAnalysisSplitlogResult": ".service",
     "LogAnalyzerError": ".service",
@@ -82,6 +84,7 @@ __all__ = [
     "setup",
     # HTTP adapter (for direct Python usage)
     "AttributionHttpAdapter",
+    "AttributionRecommendation",
     "LogAnalysisCycleResult",
     "LogAnalysisSplitlogResult",
     "LogAnalyzerError",

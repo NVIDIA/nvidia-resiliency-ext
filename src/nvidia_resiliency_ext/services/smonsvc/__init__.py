@@ -8,8 +8,14 @@ A standalone program that monitors SLURM jobs and integrates with the
 nvrx-attrsvc attribution service for log analysis.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from .models import JobState, MonitorState, SlurmJob
-from .monitor import SlurmJobMonitor
+
+if TYPE_CHECKING:
+    from .monitor import SlurmJobMonitor
 
 __all__ = [
     "SlurmJobMonitor",
@@ -17,3 +23,11 @@ __all__ = [
     "JobState",
     "MonitorState",
 ]
+
+
+def __getattr__(name: str):
+    if name == "SlurmJobMonitor":
+        from .monitor import SlurmJobMonitor
+
+        return SlurmJobMonitor
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

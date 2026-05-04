@@ -11,7 +11,7 @@ is configured on :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Anal
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 from .analysis_pipeline import AnalysisPipelineMode
@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 from nvidia_resiliency_ext.attribution.trace_analyzer import FRAnalysisResult
 
 from .job import JobMode
+
+RECOMMENDATION_STOP = "STOP"
+RECOMMENDATION_RESTART = "RESTART"
+RECOMMENDATION_CONTINUE = "CONTINUE"
+RECOMMENDATION_UNKNOWN = "UNKNOWN"
+RECOMMENDATION_TIMEOUT = "TIMEOUT"
 
 
 @dataclass
@@ -77,6 +83,20 @@ class LogAnalyzerError:
 
 
 @dataclass
+class AttributionRecommendation:
+    """Normalized client-facing restart/stop recommendation.
+
+    ``UNKNOWN`` means attribution completed without a usable action, for example
+    missing results, FR-only ``no_log`` output, invalid recommendation payloads,
+    or an unrecognized backend result shape.
+    """
+
+    action: str = RECOMMENDATION_UNKNOWN
+    reason: str = ""
+    source: str = ""
+
+
+@dataclass
 class LogAnalysisCycleResult:
     """Single-file mode: one row per workload cycle (``wl_restart``) after orchestrated analysis."""
 
@@ -87,6 +107,7 @@ class LogAnalysisCycleResult:
     fr_dump_path: Optional[str] = None
     fr_analysis: Optional[FRAnalysisResult] = None
     llm_merged_summary: Optional[str] = None
+    recommendation: AttributionRecommendation = field(default_factory=AttributionRecommendation)
 
 
 @dataclass
@@ -114,6 +135,7 @@ class LogAnalysisSplitlogResult:
     fr_dump_path: Optional[str] = None
     fr_analysis: Optional[FRAnalysisResult] = None
     llm_merged_summary: Optional[str] = None
+    recommendation: AttributionRecommendation = field(default_factory=AttributionRecommendation)
 
 
 @dataclass

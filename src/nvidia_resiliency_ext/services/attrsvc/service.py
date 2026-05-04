@@ -25,6 +25,7 @@ from nvidia_resiliency_ext.attribution.controller import (
     AttributionPostprocessingConfig,
 )
 from nvidia_resiliency_ext.attribution.orchestration.types import (
+    AttributionRecommendation,
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 # Re-export result types for convenience
 __all__ = [
     "AttributionHttpAdapter",
+    "AttributionRecommendation",
     "LogAnalyzerError",
     "LogAnalysisCycleResult",
     "LogAnalyzerSubmitResult",

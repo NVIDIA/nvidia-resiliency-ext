@@ -89,8 +89,8 @@ When `PORT` is set, the monitor exposes an HTTP server:
 
 - **SlurmJobMonitor**: Main loop; every `INTERVAL` seconds polls SLURM, updates in-memory job state, submits new logs to attrsvc via **AttrsvcClient**, and fetches results for completed submissions.
 - **SlurmClient**: Runs `squeue` (running/completing jobs), `scontrol` (output paths), `sacct` (batch path lookup); handles array and het job IDs.
-- **AttrsvcClient**: HTTP client with retries and rate limiting; POST `/logs` to submit, GET `/logs/result` to fetch attribution results, GET `/stats` for status.
-- **job_handlers**: Layer that interacts with nvrx-attrsvc: `submit_log()` and `fetch_results()` use **AttrsvcClient** (POST/GET), then update **MonitorState** and per-job flags from responses.
+- **AttrsvcClient**: HTTP client with retries and rate limiting; POST `/logs` to submit, GET `/logs` to fetch attribution results, GET `/stats` for status.
+- **job_handlers**: Layer that interacts with nvrx-attrsvc: `submit_log()` and `fetch_results()` use **AttrsvcClient** (POST/GET), then update **MonitorState** and summarize `recommendation` from responses.
 - **StatusServer**: Optional HTTP server (when `PORT` is set) serving `/healthz`, `/stats`, `/jobs` from **MonitorState**; can optionally proxy attrsvc `/stats`.
 
 ### SLURM Job ID Handling

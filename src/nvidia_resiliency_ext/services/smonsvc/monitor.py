@@ -90,6 +90,7 @@ class SlurmJobMonitor:
             rate_limit_max_delay=self.HTTP_RATE_LIMIT_MAX_DELAY,
             request_throttle=self.HTTP_REQUEST_THROTTLE,
             on_rate_limited=self._on_rate_limited,
+            permission_denied_is_expected=all_users,
         )
 
         # SLURM client for subprocess calls

@@ -223,6 +223,10 @@ Response: `{ "mode": "pending" | "single" | "splitlog" }`.
 Returns single-file or splitlog-shaped JSON; optional `file` selects a file in
 splitlog mode; `wl_restart` selects a chunk; `all_files` returns completed files.
 Exact fields match library serializers — see **`types.py`** and OpenAPI **`/docs`**.
+Responses include a normalized `recommendation` object:
+`{ "action": "STOP" | "RESTART" | "CONTINUE" | "UNKNOWN" | "TIMEOUT", "reason": str,
+"source": str }`. Clients should branch on `recommendation.action`; raw backend
+output remains under `result` for debugging and backward compatibility.
 
 **6.1 GET /logs — processing flow (implementation)**
 

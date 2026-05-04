@@ -25,14 +25,18 @@ import sys
 import threading
 import traceback
 from collections import defaultdict
-from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, Union
-from urllib.parse import quote_plus
+from typing import Callable, Dict, Optional, Union
 
 import defusedxml.ElementTree as ET
 import httpx
 
+from nvidia_resiliency_ext.attribution import parse_attrsvc_response
+from nvidia_resiliency_ext.attribution.orchestration.http_api import (
+    ROUTE_LOGS,
+    get_log_response,
+    post_log,
+)
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 # Get the nvrx logger
@@ -1345,12 +1349,6 @@ class StoragePathHealthCheck:
         return True
 
 
-@dataclass
-class AttrSvcResult:
-    result: Any
-    status: str = "completed"
-
-
 class AttributionService:
     """
     Client that queries an external attribution service to analyze artifacts (e.g., logs).
@@ -1383,6 +1381,14 @@ class AttributionService:
                 daemon=True,
             ).start()
 
+    def get_last_result(self) -> Optional[bool]:
+        """Synchronously fetch whether attribution recommends stopping the last log."""
+        log_path = self._last_submitted
+        if not log_path:
+            logger.debug("AttributionService GET skipped: no submitted log path")
+            return None
+        return self._get_results(log_path)
+
     def _submit_log(self, log_path: str) -> None:
         """
         Submit a log file for analysis via POST.
@@ -1401,51 +1407,42 @@ class AttributionService:
         if base_url is None:
             return
         try:
-            with httpx.Client(timeout=10.0) as client:
-                url = f"{base_url}/logs"
+            with httpx.Client(base_url=base_url, timeout=10.0) as client:
+                url = f"{base_url}{ROUTE_LOGS}"
                 logger.debug("AttributionService POST: %s (log_path=%s)", url, log_path)
-                client.post(
-                    url,
-                    json={"log_path": log_path},
-                    headers={"accept": "application/json"},
-                )
+                post_log(client, log_path)
         except Exception as e:
             logger.warning(
                 "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e
             )
 
-    def _get_results(self, log_path: str) -> None:
+    def _get_results(self, log_path: str) -> Optional[bool]:
         """
-        Get analysis results for a previously submitted log file via GET.
+        Get the stop decision for a previously submitted log file via GET.
         """
         base_url = self._http_base_url()
         if base_url is None:
-            return
+            return None
         try:
-            with httpx.Client(timeout=60.0) as client:
-                q_path = quote_plus(log_path)
-                url = f"{base_url}/logs?log_path={q_path}"
+            with httpx.Client(base_url=base_url, timeout=60.0) as client:
+                url = f"{base_url}{ROUTE_LOGS}"
                 logger.debug("AttributionService GET: %s (log_path=%s)", url, log_path)
-                resp = client.get(url, headers={"accept": "application/json"})
+                resp = get_log_response(client, log_path)
                 if resp.status_code == 200:
                     payload = resp.json() if resp.text else {}
-                    result = payload.get("result", payload)
-                    status = payload.get("status", "completed")
-                    attrsvc_result = AttrSvcResult(result=result, status=status)
-                    logger.info("AttrSvcResult for %s: status=%s", log_path, attrsvc_result.status)
-                    logger.info(
-                        "AttrSvcResult for %s: result preview: %s",
-                        log_path,
-                        str(attrsvc_result.result)[:200],
-                    )
+                    attrsvc_result = parse_attrsvc_response(payload, log_path=log_path)
+                    logger.info(attrsvc_result.format_log_message())
+                    return attrsvc_result.should_stop
                 else:
                     logger.warning(
                         "AttributionService GET for %s returned %d", log_path, resp.status_code
                     )
+                    return None
         except Exception as e:
             logger.warning(
                 "AttributionService GET %s failed: %s: %s", log_path, type(e).__name__, e
             )
+            return None
 
     def _http_base_url(self) -> Optional[str]:
         if self.endpoint.startswith(("http://", "https://")):

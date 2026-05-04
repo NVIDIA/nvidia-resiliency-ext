@@ -15,15 +15,20 @@ try:
 except ImportError:
     httpx = None  # type: ignore
 
-from nvidia_resiliency_ext.services.attrsvc.routes import (
-    PARAM_JOB_ID,
-    PARAM_LOG_PATH,
-    PARAM_USER,
-    PARAM_WL_RESTART,
-    ROUTE_LOGS,
+from nvidia_resiliency_ext.attribution.orchestration.http_api import (
+    ROUTE_HEALTHZ,
+    get_log_response,
+    post_log,
 )
 
 logger = logging.getLogger(__name__)
+
+_EXPECTED_CLIENT_ERROR_CODES = {
+    "errorcode.not_readable",
+    "not_readable",
+    "errorcode.logs_dir_not_readable",
+    "logs_dir_not_readable",
+}
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,29 @@ def _parse_attrsvc_endpoint(endpoint: str) -> _AttrsvcEndpoint:
     return _AttrsvcEndpoint(base_url=value.rstrip("/"), display_url=value.rstrip("/"))
 
 
+def _is_expected_client_error(
+    status_code: int,
+    error_detail: object,
+    *,
+    permission_denied_is_expected: bool = False,
+) -> bool:
+    if status_code == 400:
+        return True
+    if (
+        not permission_denied_is_expected
+        or status_code != 403
+        or not isinstance(error_detail, dict)
+    ):
+        return False
+    return _client_error_code(error_detail) in _EXPECTED_CLIENT_ERROR_CODES
+
+
+def _client_error_code(error_detail: object) -> str:
+    if not isinstance(error_detail, dict):
+        return ""
+    return str(error_detail.get("error_code", "")).lower()
+
+
 class AttrsvcClient:
     """
     HTTP client for interacting with the attribution service (attrsvc).
@@ -99,6 +127,7 @@ class AttrsvcClient:
         rate_limit_max_delay: float = DEFAULT_RATE_LIMIT_MAX_DELAY,
         request_throttle: float = DEFAULT_REQUEST_THROTTLE,
         on_rate_limited: Callable[[], None] | None = None,
+        permission_denied_is_expected: bool = False,
     ):
         """
         Initialize the attribution service client.
@@ -113,6 +142,10 @@ class AttrsvcClient:
             rate_limit_max_delay: Maximum delay for rate limiting
             request_throttle: Delay between successful requests to prevent rate limiting
             on_rate_limited: Optional callback when rate limited (for stats tracking)
+            permission_denied_is_expected: Treat attrsvc not_readable/logs_dir_not_readable 403s
+                as expected. This is useful for standalone all-users smonsvc deployments where
+                attrsvc may not be able to read every user's logs. Keep False for co-deployed
+                same-user paths where ft_launcher creates the log and attrsvc should have access.
         """
         if httpx is None:
             raise ImportError("httpx is required. Install with: pip install httpx")
@@ -126,6 +159,7 @@ class AttrsvcClient:
         self._rate_limit_max_delay = rate_limit_max_delay
         self._request_throttle = request_throttle
         self._on_rate_limited = on_rate_limited
+        self._permission_denied_is_expected = permission_denied_is_expected
         if self._endpoint.uds_path:
             transport = httpx.HTTPTransport(uds=self._endpoint.uds_path)
             self._client = httpx.Client(
@@ -139,6 +173,7 @@ class AttrsvcClient:
         # Health check cache to avoid blocking HTTP calls on every /healthz request
         self._health_cache: tuple[bool, float] | None = None
         self._health_cache_ttl = 60.0  # seconds
+        self._expected_client_error_counts: dict[tuple[str, int, str], int] = {}
 
     def close(self) -> None:
         """Close the HTTP client."""
@@ -175,7 +210,7 @@ class AttrsvcClient:
         if self._client is not None:
             response = None
             try:
-                response = self._client.get("/healthz", timeout=5.0)
+                response = self._client.get(ROUTE_HEALTHZ, timeout=5.0)
                 is_healthy = response.status_code < 500
             except Exception:
                 pass
@@ -184,6 +219,24 @@ class AttrsvcClient:
                     response.close()
         self._health_cache = (is_healthy, now)
         return is_healthy
+
+    def _log_expected_client_error(
+        self,
+        method: str,
+        job_id: str,
+        status_code: int,
+        error_detail: object,
+        error_msg: object,
+    ) -> None:
+        error_code = _client_error_code(error_detail)
+        key = (method, status_code, error_code)
+        count = self._expected_client_error_counts.get(key, 0) + 1
+        self._expected_client_error_counts[key] = count
+        if count <= 5 or count % 100 == 0:
+            logger.debug(
+                f"[{job_id}] {method} failed ({status_code}): {error_msg} "
+                f"(expected client error count={count})"
+            )
 
     def request_with_retry(
         self,
@@ -213,22 +266,17 @@ class AttrsvcClient:
             response = None
             try:
                 if method == "POST":
-                    response = self._client.post(
-                        ROUTE_LOGS,
-                        json={
-                            PARAM_LOG_PATH: log_path,
-                            PARAM_USER: user,
-                            PARAM_JOB_ID: job_id,
-                        },
-                        headers={"accept": "application/json"},
+                    response = post_log(
+                        self._client,
+                        log_path,
+                        user=user,
+                        job_id=job_id,
                     )
                 else:  # GET
-                    params = {PARAM_LOG_PATH: log_path}
-                    if cycle is not None:
-                        params[PARAM_WL_RESTART] = cycle
-                    response = self._client.get(
-                        ROUTE_LOGS,
-                        params=params,
+                    response = get_log_response(
+                        self._client,
+                        log_path,
+                        wl_restart=cycle,
                     )
 
                 if response.status_code == 200:
@@ -276,6 +324,7 @@ class AttrsvcClient:
                     return
                 else:
                     # Client error - permanent failure
+                    error_detail: object = {}
                     try:
                         error_detail = response.json()
                         if isinstance(error_detail, dict):
@@ -289,10 +338,20 @@ class AttrsvcClient:
                     # - NOT_REGULAR: path is symlink or directory
                     # - EMPTY_FILE: file just created, not yet written
                     # These resolve on the next poll cycle, so log at debug.
-                    # Other 4xx errors (401, 403, 422) indicate real problems.
-                    if response.status_code == 400:
-                        logger.debug(
-                            f"[{job_id}] {method} failed ({response.status_code}): {error_msg}"
+                    # Permission-denied 403s are expected only for standalone
+                    # all-users monitor deployments; co-deployed same-user
+                    # attrsvc paths should be able to read ft_launcher logs.
+                    if _is_expected_client_error(
+                        response.status_code,
+                        error_detail,
+                        permission_denied_is_expected=self._permission_denied_is_expected,
+                    ):
+                        self._log_expected_client_error(
+                            method,
+                            job_id,
+                            response.status_code,
+                            error_detail,
+                            error_msg,
                         )
                     else:
                         logger.warning(
