@@ -71,12 +71,18 @@ from torch.distributed.elastic.utils import macros
 
 from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     DEFAULT_ATTRIBUTION_PORT,
-    DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT,
     AttributionConfig,
     AttributionManager,
 )
+from nvidia_resiliency_ext.fault_tolerance.cli_args import (
+    add_attribution_args,
+    add_cycle_info_args,
+    add_ft_config_file_args,
+    add_log_funnel_args,
+    add_rendezvous_args,
+)
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoWriter, utc_iso_now
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -85,13 +91,12 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
+from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import rdzv_config_get_as_bool
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_log_aggregator_shard_index,
     get_processes_by_pgids,
-    hostnames_to_slurm_nodelist,
     is_slurm_job_array,
     patched_method,
-    ranks_to_range_str,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
@@ -150,6 +155,14 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
+    from .c10d_monkey_patch import apply_c10d_patch
+
+    # Apply NVRx TCPStore creation behavior for all c10d-based FT rendezvous
+    # implementations. The patch consumes generic rdzv config such as
+    # store_connect_wait_seconds and use_libuv before either rendezvous protocol
+    # sees the store.
+    apply_c10d_patch()
+
     if impl_type == "barrier":
         from .ft_rendezvous_barrier import create_handler as create_barrier_handler
 
@@ -168,10 +181,6 @@ def _register_ft_rdzv_handler(impl_type: str = "barrier"):
             )
             _legacy_ft_rdzv_deprecation_warned = True
         from ._ft_rendezvous import create_handler as create_legacy_handler
-        from .c10d_monkey_patch import apply_c10d_patch
-
-        # Apply monkey patch to add use_libuv support to c10d backend
-        apply_c10d_patch()
 
         def _create_ft_rdzv_handler(params: RendezvousParameters):
             backend, store = create_backend(params)
@@ -368,7 +377,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
         rank_monitors: Optional[Dict[int, RankMonitorState]] = None,
-        cycle_info_writer: Optional[CycleInfoWriter] = None,
     ):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
@@ -380,7 +388,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._term_timeout = term_timeout
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
-        self._cycle_info_writer = cycle_info_writer
         # Rank monitor state (process, IPC connections, listener tasks) per local rank
         # Pre-created rank monitors passed from config (created before gRPC)
         self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
@@ -468,54 +475,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         return self._rdzv_handler.round()
 
 
-    def _on_cycle_end(self, cycle_number: Optional[int] = None) -> None:
-        """Record cycle end time in cycle info file.
-
-        Args:
-            cycle_number: Cycle to record. Defaults to current cycle (_get_global_cycle_number()).
-                Standby nodes must pass round()-1 since their _round was already advanced
-                to N+1 by the time shutdown is detected.
-        """
-        if self._cycle_info_writer is None:
-            return
-        current_cycle = cycle_number if cycle_number is not None else self._get_global_cycle_number()
-        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
-        attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
-        self._cycle_info_writer.update_cycle_end(
-            job_id=job_id,
-            attempt_index=attempt_index,
-            cycle_number=current_cycle,
-            cycle_end_time=utc_iso_now(),
-        )
-
-    def _write_cycle_start_info(self, current_cycle: int) -> Optional[str]:
-        """Write NVRx cycle info at cycle start. Returns path to current cycle info file, or None."""
-        if self._cycle_info_writer is None:
+    def _current_cycle_info_path(self) -> Optional[str]:
+        if not self._ft_cfg.cycle_info_dir:
             return None
         job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
-        attempt_index = int(os.environ.get("SLURM_RESTART_CNT", "0"))
-        cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
-        # Legacy FtRendezvousHandler does not define these; barrier handler does.
-        get_active = getattr(self._rdzv_handler, "get_active_node_addrs", None)
-        get_standby = getattr(self._rdzv_handler, "get_standby_node_addrs", None)
-        get_active_ranks = getattr(self._rdzv_handler, "get_active_ranks", None)
-        active_addrs = get_active() if callable(get_active) else None
-        standby_addrs = get_standby() if callable(get_standby) else None
-        active_rank_list = get_active_ranks() if callable(get_active_ranks) else None
-        active_nodes = hostnames_to_slurm_nodelist(active_addrs) if active_addrs else ""
-        standby_nodes = hostnames_to_slurm_nodelist(standby_addrs) if standby_addrs else ""
-        active_ranks = ranks_to_range_str(active_rank_list) if active_rank_list is not None else ""
-        self._cycle_info_writer.write_cycle_start(
-            job_id=job_id,
-            attempt_index=attempt_index,
-            cycle_number=current_cycle,
-            cycle_start_time=utc_iso_now(),
-            cycle_log_file=cycle_log_file,
-            active_nodes=active_nodes,
-            standby_nodes=standby_nodes,
-            active_ranks=active_ranks,
-        )
-        return self._cycle_info_writer.get_current_cycle_info_path(job_id)
+        return CycleInfoReporter.current_cycle_info_path(self._ft_cfg.cycle_info_dir, job_id)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -536,9 +500,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             return result
         except RendezvousGracefulExitError as e:
             logger.info("Rendezvous gracefully exited: %s", e)
-            # Standby nodes: _round was advanced to N+1 when round N closed before shutdown
-            # was detected. Record end of cycle N (the last completed cycle).
-            self._on_cycle_end(cycle_number=self._rdzv_handler.round() - 1)
             return None
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
@@ -633,7 +594,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
-                self._on_cycle_end()
                 logger.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
@@ -971,9 +931,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             # that would cause cycle N+1 data to be written to cycle N log files.
             self._logs_specs.clear_all_pipes_from_reader()
 
-        # Record cycle end time in cycle info file
-        self._on_cycle_end()
-
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
@@ -1034,8 +991,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
             self._rdzv_handler._attribution_service._submit_log(cycle_log_file)
 
-        # Write NVRx cycle info and set env for workload
-        current_cycle_info_path = self._write_cycle_start_info(current_cycle)
+        current_cycle_info_path = self._current_cycle_info_path()
 
         for worker in worker_group.workers:
             local_rank = worker.local_rank
@@ -1490,13 +1446,17 @@ def _get_addr_and_port(
     return (master_addr, master_port)
 
 
-def _is_store_host(params: RendezvousParameters) -> bool:
-    """Returns true if this agent is hosting the TCP store"""
-    host, _ = parse_rendezvous_endpoint(params.endpoint, default_port=0)
-    cfg_is_host = params.get_as_bool("is_host")
+def _is_store_host_from_config(host: str, configs: Dict[str, Any]) -> bool:
+    cfg_is_host = rdzv_config_get_as_bool(configs, "is_host")
     if cfg_is_host is not None:
         return bool(cfg_is_host)
     return _matches_machine_hostname(host)
+
+
+def _is_store_host(params: RendezvousParameters) -> bool:
+    """Returns true if this agent is hosting the TCP store"""
+    host, _ = parse_rendezvous_endpoint(params.endpoint, default_port=0)
+    return _is_store_host_from_config(host, params.config)
 
 
 def launch_agent(
@@ -1561,6 +1521,8 @@ def launch_agent(
     rdzv_parameters.config["is_store_host"] = is_store_host
     # Add nproc_per_node so the rendezvous handler can restore local_world_size for standby->active transitions
     rdzv_parameters.config["nproc_per_node"] = config.nproc_per_node
+    if config.fault_tol_cfg.cycle_info_dir:
+        rdzv_parameters.config["cycle_info_dir"] = config.fault_tol_cfg.cycle_info_dir
 
     spec = WorkerSpec(
         role=config.role,
@@ -1575,10 +1537,6 @@ def launch_agent(
         local_addr=config.local_addr,
     )
 
-    cycle_info_writer = None
-    if is_store_host and config.fault_tol_cfg.cycle_info_dir:
-        cycle_info_writer = CycleInfoWriter(config.fault_tol_cfg.cycle_info_dir)
-
     agent = LocalElasticAgent(
         spec=spec,
         fault_tol_cfg=config.fault_tol_cfg,
@@ -1590,7 +1548,6 @@ def launch_agent(
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
         rank_monitors=config.rank_monitors,  # Pass pre-created rank monitors
-        cycle_info_writer=cycle_info_writer,
     )
 
     # Set agent reference in rendezvous handler for callbacks
@@ -1676,9 +1633,12 @@ def launch_agent(
             if agent._rdzv_handler._attribution_service is not None:
                 agent._rdzv_handler._attribution_service()
 
-            # No ordering required between cycle_info_writer and rendezvous: the writer
-            # is independent I/O. Run grace-period wait and writer shutdown in parallel
-            # so total time is max(grace_period, writer drain) instead of sum.
+            shutdown_cycle_info_reporter = getattr(
+                agent._rdzv_handler, "shutdown_cycle_info_reporter", None
+            )
+            if callable(shutdown_cycle_info_reporter):
+                shutdown_cycle_info_reporter()
+
             grace_period = 3.0  # seconds
             logger.info(
                 f"Store host waiting {grace_period} seconds before exit "
@@ -1690,8 +1650,6 @@ def launch_agent(
 
             t = threading.Thread(target=_wait_grace, daemon=True)
             t.start()
-            if cycle_info_writer is not None:
-                cycle_info_writer.shutdown()
             t.join()
 
         with contextlib.suppress(Exception):
@@ -2082,60 +2040,16 @@ def get_args_parser() -> ArgumentParser:
     )
 
     #
-    # Worker/node size related arguments.
+    # Rendezvous related arguments.
     #
 
-    parser.add_argument(
-        "--nnodes",
+    add_rendezvous_args(
+        parser,
         action=env,
-        type=str,
-        default="1:1",
-        help="Number of nodes, or the range of nodes in form <minimum_nodes>:<maximum_nodes>.",
-    )
-    parser.add_argument(
-        "--nproc-per-node",
-        "--nproc_per_node",
-        action=env,
-        type=str,
-        default="1",
-        help="Number of workers per node; supported values: [auto, cpu, gpu, int].",
-    )
-
-    #
-    # Rendezvous related arguments
-    #
-
-    parser.add_argument(
-        "--rdzv-backend",
-        "--rdzv_backend",
-        action=env,
-        type=str,
-        default="c10d",
-        help="Rendezvous backend. Currently only c10d is supported.",
-    )
-    parser.add_argument(
-        "--rdzv-endpoint",
-        "--rdzv_endpoint",
-        action=env,
-        type=str,
-        default="",
-        help="Rendezvous backend endpoint; usually in form <host>:<port>.",
-    )
-    parser.add_argument(
-        "--rdzv-id",
-        "--rdzv_id",
-        action=env,
-        type=str,
-        default="none",
-        help="User-defined group id.",
-    )
-    parser.add_argument(
-        "--rdzv-conf",
-        "--rdzv_conf",
-        action=env,
-        type=str,
-        default="",
-        help="Additional rendezvous configuration (<key1>=<value1>,<key2>=<value2>,...).",
+        nnodes_default="1:1",
+        endpoint_default="",
+        include_local_addr=True,
+        include_ft_segment=True,
     )
     parser.add_argument(
         "--standalone",
@@ -2144,6 +2058,19 @@ def get_args_parser() -> ArgumentParser:
         "on a free port. Useful when launching single-node, multi-worker job. If specified "
         "--rdzv-backend, --rdzv-endpoint, --rdzv-id are auto-assigned and any explicitly set values "
         "are ignored.",
+    )
+
+    #
+    # Worker/node size related arguments.
+    #
+
+    parser.add_argument(
+        "--nproc-per-node",
+        "--nproc_per_node",
+        action=env,
+        type=str,
+        default="1",
+        help="Number of workers per node; supported values: [auto, cpu, gpu, int].",
     )
 
     #
@@ -2232,119 +2159,11 @@ def get_args_parser() -> ArgumentParser:
         "rdzv_id as the prefix).",
     )
 
-    parser.add_argument(
-        "--ft-per-cycle-applog-prefix",
-        "--ft_per_cycle_applog_prefix",
+    add_log_funnel_args(
+        parser,
         action=env,
-        type=str,
-        default=None,
-        dest="ft_per_cycle_applog_prefix",
-        help="Prefix for per-cycle application log files (must be absolute path, e.g. /lustre/logs/job_12345.log). "
-        "Creates training worker logs per cycle: /lustre/logs/job_12345_cycle0.log, job_12345_cycle1.log, etc. "
-        "All ranks/nodes capture logs with automatic rank prefixes (like 'srun -l'). "
-        "Without --ft-enable-log-server: Each node writes directly to Lustre with O_APPEND (safe concurrent writes). "
-        "With --ft-enable-log-server (recommended): All nodes stream logs to gRPC server on rank 0, which becomes the single Lustre writer. "
-        "gRPC mode eliminates Lustre lock contention and scales to 1000+ nodes. "
-        "Note: NVRx launcher logs go to stdout/stderr by default unless --ft-nvrx-logfile is specified.",
-    )
-
-    parser.add_argument(
-        "--ft-nvrx-logfile",
-        "--ft_nvrx_logfile",
-        action=env,
-        type=str,
-        default=None,
-        dest="ft_nvrx_logfile",
-        help="Optional: Path for NVRx launcher's own logs (must be absolute path if specified). "
-        "If not specified, launcher logs go to stdout/stderr (default, captured by orchestrator). "
-        "If specified, launcher logs are redirected via pipe → gRPC → server writes to this file. "
-        "This routes launcher logs through the same infrastructure as worker logs. "
-        "Example: --ft-nvrx-logfile /lustre/logs/launcher.log",
-    )
-
-    parser.add_argument(
-        "--ft-enable-log-server",
-        "--ft_enable_log_server",
-        action=env,
-        type=lambda x: x.lower() == 'true',
-        default=None,
-        dest="ft_enable_log_server",
-        help="Enable gRPC-based log funneling to a single Lustre file. "
-        "When enabled with --ft-per-cycle-applog-prefix, the launcher automatically: "
-        "(1) Starts gRPC log server(s) on TCP store host, "
-        "(2) Configures all nodes as gRPC clients to a first-level aggregator port, "
-        "(3) Root server writes to Lustre (single writer). "
-        "With --ft-log-aggregator-count=N>1, N leaf processes plus one root use ports P..P+N (see --ft-log-server-port). "
-        "Use --ft-log-aggregator-count=1 for a single server on P only. "
-        "Benefits: No Lustre lock contention, scales to 1500+ nodes. "
-        "Requires: grpcio. Default: False.",
-    )
-
-    parser.add_argument(
-        "--ft-log-server-port",
-        "--ft_log_server_port",
-        action=env,
-        type=int,
-        default=50051,
-        dest="ft_log_server_port",
-        help="Port for gRPC log funnel server (only used if --ft-enable-log-server is enabled). "
-        "Default: 50051",
-    )
-
-    parser.add_argument(
-        "--ft-log-aggregator-count",
-        "--ft_log_aggregator_count",
-        action=env,
-        type=int,
-        default=0,
-        dest="ft_log_aggregator_count",
-        help="Number of first-level gRPC log aggregators. "
-        "0 (default): auto — single root server for up to 1536 nodes, "
-        "adds leaf servers beyond that (one per 1536 nodes). "
-        "1: single root server (legacy). "
-        "N>1: N leaf servers on ports [P, P+1, ..., P+N-1] and one root on P+N "
-        "(P = --ft-log-server-port). "
-        "Open TCP ports P through P+N on the TCP store host. "
-        "Each node picks a leaf from SLURM array/procid when set, else from hostname.",
-    )
-
-    parser.add_argument(
-        "--ft-log-leaf-max-queue-chunks",
-        "--ft_log_leaf_max_queue_chunks",
-        action=env,
-        type=int,
-        default=-1,
-        dest="ft_log_leaf_max_queue_chunks",
-        help="Max queued log chunks per leaf (only when N>1). "
-        "Default -1: auto scale with fan-in, max(16384, min(1000000, per_leaf*256)).",
-    )
-
-    parser.add_argument(
-        "--ft-log-server-log",
-        "--ft_log_server_log",
-        action=env,
-        type=str,
-        default=None,
-        dest="ft_log_server_log",
-        help="Path to gRPC root log server's own log file (only used if --ft-enable-log-server is enabled). "
-        "If not specified, derives from --ft-per-cycle-applog-prefix by replacing the trailing '.log' with "
-        "'_grpc_root.log' (same default basename as the two-level root writer). "
-        "Example: If --ft-per-cycle-applog-prefix=/path/to/app.log, defaults to /path/to/app_grpc_root.log",
-    )
-
-    parser.add_argument(
-        "--ft-log-server-graceful-shutdown-timeout",
-        "--ft_log_server_graceful_shutdown_timeout",
-        action=env,
-        type=float,
-        default=60.0,
-        dest="ft_log_server_graceful_shutdown_timeout",
-        help="Maximum seconds to wait for clients during gRPC server graceful shutdown (only used if --ft-enable-log-server is enabled). "
-        "When store host exits, server will continue accepting logs from other ranks for up to this timeout "
-        "or until all clients disconnect, whichever comes first. This ensures other nodes can flush their final logs. "
-        "When --ft-log-aggregator-count>1, each leaf uses this timeout; the root log server uses 2× so leaves can finish "
-        "waiting for downstream clients and drain to root first. "
-        "Default: 60.0",
+        enable_default=None,
+        enable_type=lambda x: x.lower() == 'true',
     )
 
     parser.add_argument(
@@ -2410,17 +2229,6 @@ def get_args_parser() -> ArgumentParser:
         "training. It is used for static and c10d rendezvous backends when rdzv_endpoint is not specified.",
     )
     parser.add_argument(
-        "--local-addr",
-        "--local_addr",
-        default=None,
-        type=str,
-        action=env,
-        help="Address of the local node. If specified, will use the given address for connection. "
-        "Else, will look up the local node address instead. Else, it will be default to local "
-        "machine's FQDN.",
-    )
-
-    parser.add_argument(
         "--logs-specs",
         "--logs_specs",
         default=None,
@@ -2435,16 +2243,7 @@ def get_args_parser() -> ArgumentParser:
     # Fault tolerance related items
     #
 
-    parser.add_argument(
-        "--ft-cfg-path",
-        "--ft-cfg_path",
-        default=None,
-        type=str,
-        action=env,
-        dest="ft_cfg_path",
-        help="Path to a YAML file that contains Fault Tolerance pkg config (`fault_tolerance` section)."
-        " NOTE: config items from the file can be overwritten by `--ft-param-*` args.",
-    )
+    add_ft_config_file_args(parser, aliases=("--ft-cfg-path", "--ft-cfg_path"), action=env)
 
     parser.add_argument(
         "--ft-workload-check-interval",
@@ -2661,21 +2460,6 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
-        "--ft-segment",
-        "--ft_segment",
-        type=int,
-        default=None,
-        dest="ft_segment",
-        help="Controls hot spare node behavior and segment-aware rank assignment. "
-        "Default: None (simple hot spare mode for H100 and non-NVSwitch systems, no ClusterUUID required). "
-        "When set to N: Enables segment-aware mode for NVSwitch systems (DGX H200, HGX B200). "
-        "Specifies minimum nodes per NVLink domain (identified by GPU ClusterUUID via nvidia-smi). "
-        "Domains with fewer than N nodes are excluded. From valid domains, complete segments are selected. "
-        "min_nodes must be divisible by segment. "
-        "Note: segment=None (default) is suitable for H100; segment=1 is similar but requires ClusterUUID.",
-    )
-
-    parser.add_argument(
         "--ft-numa-bind-strict",
         "--ft-numa_bind_strict",
         type=lambda x: str(x).lower() not in ["false", "0", "no"],
@@ -2742,97 +2526,8 @@ def get_args_parser() -> ArgumentParser:
         "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
     )
 
-    # Attribution service configuration. Disabled by default. The literal
-    # endpoint "localhost" means ft_launcher manages the attribution service on
-    # the TCPStore host; other endpoints are treated as external services.
-    parser.add_argument(
-        "--ft-attribution-endpoint",
-        "--ft_attribution_endpoint",
-        type=str,
-        default=None,
-        dest="ft_attribution_endpoint",
-        help=(
-            "Endpoint for the attribution service. Default: disabled. "
-            "Set to localhost to let ft_launcher manage nvrx-attrsvc on the TCPStore host. "
-            "Use an explicit endpoint such as http://host:port, grpc://host:port, "
-            "or unix:///path/to/socket for an externally managed attribution service."
-        ),
-    )
-    parser.add_argument(
-        "--ft-attribution-startup-timeout",
-        "--ft_attribution_startup_timeout",
-        type=float,
-        default=DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT,
-        dest="ft_attribution_startup_timeout",
-        help=(
-            "Seconds to wait for launcher-managed attribution service /healthz readiness. "
-            f"Default: {DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT}."
-        ),
-    )
-    parser.add_argument(
-        "--ft-attribution-llm-api-key-file",
-        "--ft_attribution_llm_api_key_file",
-        type=str,
-        default=None,
-        dest="ft_attribution_llm_api_key_file",
-        help=(
-            "Path to the LLM API key file for launcher-managed attribution service. "
-            "If unset, LLM_API_KEY_FILE from the launcher environment is used."
-        ),
-    )
-    parser.add_argument(
-        "--ft-attribution-llm-base-url",
-        "--ft_attribution_llm_base_url",
-        type=str,
-        default=None,
-        dest="ft_attribution_llm_base_url",
-        help="LLM base URL for launcher-managed attribution service.",
-    )
-    parser.add_argument(
-        "--ft-attribution-llm-model",
-        "--ft_attribution_llm_model",
-        type=str,
-        default=None,
-        dest="ft_attribution_llm_model",
-        help="LLM model identifier for launcher-managed attribution service.",
-    )
-    parser.add_argument(
-        "--ft-attribution-analysis-backend",
-        "--ft_attribution_analysis_backend",
-        type=str,
-        default=None,
-        dest="ft_attribution_analysis_backend",
-        choices=("mcp", "lib"),
-        help="Analysis backend for launcher-managed attribution service: mcp or lib.",
-    )
-    parser.add_argument(
-        "--ft-attribution-compute-timeout",
-        "--ft_attribution_compute_timeout",
-        type=float,
-        default=None,
-        dest="ft_attribution_compute_timeout",
-        help="Analysis compute timeout in seconds for launcher-managed attribution service.",
-    )
-    parser.add_argument(
-        "--ft-attribution-log-level",
-        "--ft_attribution_log_level",
-        type=str.upper,
-        default=None,
-        dest="ft_attribution_log_level",
-        choices=("DEBUG", "INFO", "WARNING"),
-        help="Log level for launcher-managed attribution service.",
-    )
-
-    parser.add_argument(
-        "--ft-cycle-info-dir",
-        "--ft_cycle_info_dir",
-        type=str,
-        default=None,
-        dest="ft_cycle_info_dir",
-        help="Full path to NVRx cycle info directory (e.g. <base>/nvrx/). TCPStore host only. "
-        "If set, writes cycle_info.<job_id>.<attempt>.<cycle> and symlink cycle_info.<job_id>.current "
-        "there. Workload receives current cycle file path via NVRX_CURRENT_CYCLE_INFO env.",
-    )
+    add_attribution_args(parser)
+    add_cycle_info_args(parser)
 
     parser.add_argument(
         action='store_true',
@@ -3061,11 +2756,6 @@ def _validate_args(args: Any) -> None:
             f"--ft-log-aggregator-count must be >= 0 (0 = auto), got {n_log_agg}"
         )
     _validate_slurm_single_launcher_per_node()
-    if getattr(args, "ft_cycle_info_dir", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
-        raise ValueError(
-            "--ft-cycle-info-dir requires --ft-per-cycle-applog-prefix to be specified. "
-            "Cycle info needs per-cycle log file path from the applog prefix."
-        )
     if getattr(args, "ft_nvrx_logfile", None) and not getattr(args, "ft_per_cycle_applog_prefix", None):
         raise ValueError(
             "--ft-nvrx-logfile requires --ft-per-cycle-applog-prefix to be specified."
@@ -3232,6 +2922,8 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
     # Determine logs_specs based on ft_per_cycle_applog_prefix or logs_specs argument
     base_log_file = getattr(args, 'ft_per_cycle_applog_prefix', None)
+    if base_log_file:
+        rdzv_configs['cycle_log_prefix'] = base_log_file
 
     if base_log_file:
         # Validate that the path is absolute (not relative)
@@ -3251,7 +2943,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
         rdzv_endpoint_host = parse_rendezvous_endpoint(rdzv_endpoint, default_port=-1)[0]
         host, _ = parse_rendezvous_endpoint(rdzv_endpoint, default_port=0)
-        is_tcp_store_host = _matches_machine_hostname(host)
+        is_tcp_store_host = _is_store_host_from_config(host, rdzv_configs)
 
         # Configure gRPC if enabled
         grpc_server_address = None
@@ -3293,7 +2985,11 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
                 grpc_server_address = f"localhost:{grpc_port}"
 
                 global _GRPC_SERVER_PROCESSES
-                _GRPC_SERVER_PROCESSES = _start_grpc_log_servers(args, base_log_file, log_funnel_ports)
+                grpc_log_prefix = _resolve_grpc_log_server_log_prefix(args)
+                assert grpc_log_prefix is not None
+                _GRPC_SERVER_PROCESSES = _start_grpc_log_servers(
+                    args, grpc_log_prefix, log_funnel_ports
+                )
 
                 if not _GRPC_SERVER_PROCESSES:
                     logger.error(
@@ -3401,10 +3097,30 @@ def run_script_path(training_script: str, *training_script_args: str):
     runpy.run_path(sys.argv[0], run_name="__main__")
 
 
-def _grpc_log_path(base_log_file: str, suffix: str) -> str:
-    if base_log_file.endswith('.log'):
-        return base_log_file[:-4] + suffix
-    return base_log_file + suffix
+def _strip_log_suffix(path: str) -> str:
+    if path.endswith('.log'):
+        return path[:-4]
+    return path
+
+
+def _resolve_grpc_log_server_log_prefix(args: Any) -> Optional[str]:
+    explicit_prefix = getattr(args, 'ft_log_server_log_prefix', None)
+    if explicit_prefix:
+        return explicit_prefix
+
+    nvrx_logfile = getattr(args, 'ft_nvrx_logfile', None)
+    if nvrx_logfile:
+        return _strip_log_suffix(nvrx_logfile) + '_grpc'
+
+    app_log_prefix = getattr(args, 'ft_per_cycle_applog_prefix', None)
+    if app_log_prefix:
+        return _strip_log_suffix(app_log_prefix) + '_grpc'
+
+    return None
+
+
+def _grpc_log_path(log_prefix: str, suffix: str) -> str:
+    return log_prefix + suffix
 
 
 _LOG_FUNNEL_NODES_PER_LEAF = 1536  # max nodes per single log server (≈6K GPU at 4 GPUs/node)
@@ -3511,7 +3227,7 @@ _GRPC_LOG_FUNNEL_BIND_HOST = "0.0.0.0"  # nosec B104
 
 
 def _start_grpc_log_servers(
-    args: Any, base_log_file: str, funnel_ports: LogFunnelPorts
+    args: Any, log_prefix: str, funnel_ports: LogFunnelPorts
 ) -> List[subprocess.Popen]:
     """
     On TCP store host: start root log server (Lustre writer), and optionally N leaf
@@ -3525,14 +3241,13 @@ def _start_grpc_log_servers(
     _, max_nodes = parse_min_max_nnodes(args.nnodes)
 
     def _open_log(path: str):
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         return open(path, 'w')
 
     procs: List[subprocess.Popen] = []
     try:
         if not funnel_ports.uses_two_level:
-            grpc_server_log = getattr(args, 'ft_log_server_log', None)
-            if grpc_server_log is None:
-                grpc_server_log = _grpc_log_path(base_log_file, '_grpc_root.log')
+            grpc_server_log = _grpc_log_path(log_prefix, '_root.log')
             max_workers = min(4096, max(100, max_nodes + 10))
             fd = _open_log(grpc_server_log)
             try:
@@ -3572,9 +3287,7 @@ def _start_grpc_log_servers(
             max_queue = min(1_000_000, max(16_384, per_leaf * 256))
         else:
             max_queue = max(64, raw_leaf_chunks)
-        root_log = getattr(args, 'ft_log_server_log', None) or _grpc_log_path(
-            base_log_file, '_grpc_root.log'
-        )
+        root_log = _grpc_log_path(log_prefix, '_root.log')
 
         # Root must outlive leaves: leaves may wait the full leaf grace window for downstream
         # clients before draining their queues to root; root's own grace must still be open then.
@@ -3611,7 +3324,7 @@ def _start_grpc_log_servers(
         upstream = f'localhost:{root_port}'
         for i in range(n):
             leaf_port = funnel_ports.leaf_listen_port(i)
-            leaf_log = _grpc_log_path(base_log_file, f'_grpc_leaf_{i}.log')
+            leaf_log = _grpc_log_path(log_prefix, f'_leaf_{i}.log')
             lf = _open_log(leaf_log)
             try:
                 leaf_cmd = [
@@ -3677,6 +3390,63 @@ def _wait_grpc_subprocess_after_terminate(p: subprocess.Popen, wait_timeout: flo
             p.kill()
         with contextlib.suppress(Exception):
             p.wait()
+
+
+def stop_grpc_log_servers(
+    processes: List[subprocess.Popen],
+    graceful_shutdown_timeout: float,
+) -> None:
+    if not processes:
+        return
+
+    uses_two_level = len(processes) > 1
+    single_wait = _grpc_child_wait_timeout_after_terminate(graceful_shutdown_timeout)
+    if uses_two_level:
+        root_grace = graceful_shutdown_timeout * 2.0
+        leaf_wait = _grpc_child_wait_timeout_after_terminate(graceful_shutdown_timeout)
+        root_wait = _grpc_child_wait_timeout_after_terminate(root_grace)
+        wait_msg = (
+            f"leaf child wait up to {leaf_wait:.0f}s, root child up to {root_wait:.0f}s "
+            f"(ft_log_server_graceful_shutdown_timeout={graceful_shutdown_timeout}s, root uses 2×)"
+        )
+    else:
+        leaf_wait = root_wait = single_wait
+        wait_msg = (
+            f"per-process shutdown wait up to {single_wait:.0f}s "
+            f"(ft_log_server_graceful_shutdown_timeout={graceful_shutdown_timeout}s)"
+        )
+
+    logger.info(
+        "Sending SIGTERM to gRPC log funnel process(es) (root last in wait order). "
+        f"{wait_msg}. "
+        "Check gRPC root and leaf server logs for Shutdown snapshot lines: "
+        "in_memory_pending_bytes, chunk_queue_depth, still_connected_streams, etc."
+    )
+    # Terminate leaves first so they drain to root before root exits.
+    for p in reversed(processes):
+        with contextlib.suppress(Exception):
+            p.terminate()
+
+    # All processes got SIGTERM together; wait in parallel so wall time is roughly one timeout.
+    procs_to_wait = list(reversed(processes))
+    root_proc = processes[0]
+    with ThreadPoolExecutor(max_workers=max(1, len(procs_to_wait))) as pool:
+        pending_futures = [
+            pool.submit(
+                _wait_grpc_subprocess_after_terminate,
+                p,
+                root_wait if p is root_proc else leaf_wait,
+            )
+            for p in procs_to_wait
+        ]
+        for fut in as_completed(pending_futures):
+            with contextlib.suppress(Exception):
+                fut.result()
+
+    for p in processes:
+        rc = getattr(p, "returncode", None)
+        logger.info(f"gRPC log subprocess PID={p.pid} finished with returncode={rc}")
+    processes.clear()
 
 
 def run(args):
@@ -3784,52 +3554,7 @@ def main(args=None):
             grpc_graceful_shutdown_timeout = float(
                 getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
             )
-            n_log_agg = int(getattr(args, 'ft_log_aggregator_count', 2))
-            single_wait = _grpc_child_wait_timeout_after_terminate(grpc_graceful_shutdown_timeout)
-            if n_log_agg > 1:
-                root_grace = grpc_graceful_shutdown_timeout * 2.0
-                leaf_wait = _grpc_child_wait_timeout_after_terminate(grpc_graceful_shutdown_timeout)
-                root_wait = _grpc_child_wait_timeout_after_terminate(root_grace)
-                wait_msg = (
-                    f"leaf child wait up to {leaf_wait:.0f}s, root child up to {root_wait:.0f}s "
-                    f"(ft_log_server_graceful_shutdown_timeout={grpc_graceful_shutdown_timeout}s, root uses 2×)"
-                )
-            else:
-                leaf_wait = root_wait = single_wait
-                wait_msg = (
-                    f"per-process shutdown wait up to {single_wait:.0f}s "
-                    f"(ft_log_server_graceful_shutdown_timeout={grpc_graceful_shutdown_timeout}s)"
-                )
-            logger.info(
-                "Sending SIGTERM to gRPC log funnel process(es) (root last in wait order). "
-                f"{wait_msg}. "
-                "Check *_grpc_root.log and *_grpc_leaf_*.log for Shutdown snapshot lines: "
-                "in_memory_pending_bytes, chunk_queue_depth, still_connected_streams, etc."
-            )
-            # Terminate leaves first so they drain to root before root exits
-            for p in reversed(_GRPC_SERVER_PROCESSES):
-                with contextlib.suppress(Exception):
-                    p.terminate()
-            # All processes got SIGTERM together; wait in parallel so wall time ≈ one timeout,
-            # not (N+1) × wait_timeout.
-            procs_to_wait = list(reversed(_GRPC_SERVER_PROCESSES))
-            root_proc = _GRPC_SERVER_PROCESSES[0]
-            with ThreadPoolExecutor(max_workers=max(1, len(procs_to_wait))) as pool:
-                pending_futures = [
-                    pool.submit(
-                        _wait_grpc_subprocess_after_terminate,
-                        p,
-                        root_wait if p is root_proc else leaf_wait,
-                    )
-                    for p in procs_to_wait
-                ]
-                for fut in as_completed(pending_futures):
-                    with contextlib.suppress(Exception):
-                        fut.result()
-            for p in _GRPC_SERVER_PROCESSES:
-                rc = getattr(p, "returncode", None)
-                logger.info(f"gRPC log subprocess PID={p.pid} finished with returncode={rc}")
-            _GRPC_SERVER_PROCESSES.clear()
+            stop_grpc_log_servers(_GRPC_SERVER_PROCESSES, grpc_graceful_shutdown_timeout)
 
         if _ATTRIBUTION_MANAGER is not None:
             _ATTRIBUTION_MANAGER.stop()

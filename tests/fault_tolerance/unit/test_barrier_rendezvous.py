@@ -36,6 +36,7 @@ import time
 import uuid
 from datetime import timedelta
 from unittest import TestCase
+from unittest.mock import MagicMock
 
 from torch.distributed import TCPStore
 from torch.distributed.elastic.multiprocessing import SignalException
@@ -288,7 +289,9 @@ class BaseRendezvousTest(TestCase):
             'SLURMD_NODENAME',
             'CROSS_SLURM_PROCID',
             'SLURM_ARRAY_TASK_ID',
+            'SLURM_ARRAY_JOB_ID',
             'SLURM_JOB_ID',  # Must clear to avoid validation error when SLURM_PROCID is cleared
+            'SLURM_RESTART_CNT',
             'SLURM_NNODES',
             'SLURM_JOB_NUM_NODES',
         ]
@@ -1122,6 +1125,104 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual(result[participants[0][0]], 0)
         self.assertEqual(result[participants[1][0]], 1)
         self.assertEqual(result[participants[2][0]], 2)
+
+    def test_control_host_closes_round_without_joining(self):
+        """An external control host closes a compute-only round without claiming a slot."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        join_count_key = state.join_count_key
+        prefix = state.prefix
+        train_0 = _NodeDesc("node_a", 100, 0)
+        train_1 = _NodeDesc("node_b", 101, 0)
+
+        self.store.add(join_count_key, 1)
+        self.store.add(join_count_key, 1)
+        self.store.set(
+            f"{prefix}:slot_1",
+            state._pack_participant_value(train_0, 0, "none", 0),
+        )
+        self.store.set(
+            f"{prefix}:slot_2",
+            state._pack_participant_value(train_1, 1, "none", 0),
+        )
+
+        closed_round = state.close_current_round_as_host(
+            _NodeDesc("control", 10, 0),
+            min_nodes=2,
+            max_nodes=2,
+            segment_check_interval=_test_segment_check_interval(),
+        )
+
+        self.assertEqual(closed_round, 0)
+        self.assertEqual(state._round, 0)
+        self.assertEqual(int(self.store.get(join_count_key).decode("utf-8")), 2)
+        self.assertFalse(self.store.check([f"{prefix}:slot_3"]))
+        rank_0, total_0, round_0 = state._unpack_rank_value(self.store.get(f"{prefix}:slot_1_rank"))
+        rank_1, total_1, round_1 = state._unpack_rank_value(self.store.get(f"{prefix}:slot_2_rank"))
+        self.assertEqual((rank_0, rank_1), (0, 1))
+        self.assertEqual((total_0, total_1), (2, 2))
+        self.assertEqual((round_0, round_1), (0, 0))
+
+    def test_control_host_reports_cycle_start_when_round_closes(self):
+        """A colocated store host reports cycle start after rank assignment."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        state._cycle_info_reporter = reporter
+
+        join_count_key = state.join_count_key
+        prefix = state.prefix
+        train_0 = _NodeDesc("node_a", 100, 0)
+        train_1 = _NodeDesc("node_b", 101, 0)
+
+        self.store.add(join_count_key, 1)
+        self.store.add(join_count_key, 1)
+        self.store.set(
+            f"{prefix}:slot_1",
+            state._pack_participant_value(train_0, 0, "none", 0),
+        )
+        self.store.set(
+            f"{prefix}:slot_2",
+            state._pack_participant_value(train_1, 1, "none", 0),
+        )
+
+        state.close_current_round_as_host(
+            _NodeDesc("control", 10, 0),
+            min_nodes=2,
+            max_nodes=2,
+            segment_check_interval=_test_segment_check_interval(),
+        )
+
+        reporter.report_cycle_start.assert_called_once()
+        snapshot = reporter.report_cycle_start.call_args.args[0]
+        self.assertEqual(snapshot.cycle_number, 0)
+        self.assertEqual(snapshot.active_node_addrs, ["node_a", "node_b"])
+        self.assertEqual(snapshot.standby_node_addrs, [])
+        self.assertEqual(snapshot.active_ranks, [0, 1])
+
+    def test_open_rendezvous_does_not_report_cycle_end(self):
+        """Opening the next round only opens rendezvous; cycle end is reporter-owned."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        state._cycle_info_reporter = reporter
+
+        state.open_rendezvous()
+
+        reporter.report_cycle_end.assert_not_called()
 
     def test_rank_assignment_standby_nodes(self):
         """Test rank assignment for standby nodes (beyond min_nodes)."""

@@ -67,6 +67,7 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
+from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
@@ -74,6 +75,7 @@ from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_h
 # Conditionally import failure injector (only active when NVRX_INJECT_GPU_FAILURE is set)
 if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
     from ..testing_utils import health_check_injector
+
 from .utils import get_infrastructure_rank, is_slurm_job_array, slurm_sort_addrs
 
 log = logging.getLogger(LogConfig.name)
@@ -510,6 +512,7 @@ class _RendezvousBarrierState:
         self._standby_node_addrs: Optional[List[str]] = None
         # Group ranks of active nodes, parallel to _active_node_addrs (same slot order)
         self._active_ranks: Optional[List[int]] = None
+        self._cycle_info_reporter: Optional[CycleInfoReporter] = None
 
         # Reference to agent (set via set_agent() method in handler)
         # Will be set by handler via set_agent() method
@@ -1020,7 +1023,9 @@ class _RendezvousBarrierState:
         except Exception as e:
             log.warning("Failed to leave rendezvous: %s", e)
 
-    def _wait_for_rendezvous_open(self, node_desc: _NodeDesc) -> None:
+    def _wait_for_rendezvous_open(
+        self, node_desc: _NodeDesc, stop_event: Optional[threading.Event] = None
+    ) -> None:
         """Step 0: Wait until the current round is open. Hot spares and late arrivals wait here.
 
         This prevents hot spares and late-arriving nodes from disrupting ongoing training.
@@ -1048,6 +1053,9 @@ class _RendezvousBarrierState:
         logged_waiting = False  # Track if we've logged the waiting message
 
         while True:
+            if stop_event is not None and stop_event.is_set():
+                raise RendezvousGracefulExitError("Control rendezvous stop requested")
+
             # Check for permanent shutdown (no further rounds)
             if self.is_shutdown():
                 msg = f"The node '{node_desc}' detected that rendezvous was permanently closed"
@@ -1101,6 +1109,7 @@ class _RendezvousBarrierState:
         min_nodes: int,
         max_nodes: int,
         segment_check_interval: float,
+        stop_event: Optional[threading.Event] = None,
     ) -> None:
         """Step 2 (store host only): Poll until segment constraint is met, assign ranks, close round.
 
@@ -1122,6 +1131,9 @@ class _RendezvousBarrierState:
         mismatch_first_seen: Optional[float] = None
 
         while True:
+            if stop_event is not None and stop_event.is_set():
+                raise RendezvousGracefulExitError("Control rendezvous stop requested")
+
             self._check_timeout_and_closure(node_desc)
 
             # Early termination: if too many nodes are unhealthy it is mathematically
@@ -1136,6 +1148,10 @@ class _RendezvousBarrierState:
                 log.error(msg)
                 self.set_shutdown()
                 # Loop: _check_timeout_and_closure will raise RendezvousClosedError next iteration.
+                continue
+
+            if not self.store.check([self.join_count_key]):
+                time.sleep(0.1)
                 continue
 
             current_joined = int(self.store.get(self.join_count_key).decode('utf-8'))
@@ -1225,8 +1241,30 @@ class _RendezvousBarrierState:
             # Assign ranks BEFORE setting round_done=1 so Step 3 readers can get their rank
             # immediately without any additional waiting.
             self.assign_group_ranks(min_nodes, max_nodes, current_joined, node_desc)
+            self._report_cycle_start_as_host(self._round)
             self.store.set(self.round_done_key, "1".encode('utf-8'))
             return
+
+    def _report_cycle_start_as_host(self, round_id: int) -> None:
+        """Report cycle start from the rendezvous-host rank assignment snapshot."""
+        if self._cycle_info_reporter is None:
+            return
+        try:
+            self._cycle_info_reporter.report_cycle_start(
+                CycleInfoRoundSnapshot(
+                    cycle_number=round_id,
+                    active_node_addrs=self._active_node_addrs,
+                    standby_node_addrs=self._standby_node_addrs,
+                    active_ranks=self._active_ranks,
+                )
+            )
+        except Exception as e:
+            log.warning(
+                "Failed to report cycle info after closing rendezvous round %s: %s",
+                round_id,
+                e,
+                exc_info=True,
+            )
 
     def _wait_for_round_done(self, node_desc: _NodeDesc, rank_key: str) -> Tuple[int, int]:
         """Step 3 (all participants): Wait for round_done_key=1 then read the assigned rank.
@@ -1292,6 +1330,41 @@ class _RendezvousBarrierState:
             return GroupRankStatus.UNASSIGNED.value, 0
 
         return rank, total
+
+    def close_current_round_as_host(
+        self,
+        node_desc: _NodeDesc,
+        min_nodes: int,
+        max_nodes: int,
+        segment_check_interval: float = 5.0,
+        stop_event: Optional[threading.Event] = None,
+    ) -> int:
+        """Close one open rendezvous round without joining as a participant.
+
+        This is used by an external control process that owns TCPStore. The
+        control process is the store host, but it does not increment
+        join_count_key, write a slot, or receive a rank. Participant accounting
+        remains compute-only.
+
+        Returns:
+            The rendezvous round number that was closed.
+        """
+        if not self.is_store_host:
+            raise RuntimeError("host-only rendezvous close must run on the TCPStore host")
+
+        self._slot = None
+        self._last_stale_check_time = 0.0
+
+        self._wait_for_rendezvous_open(node_desc, stop_event=stop_event)
+        self._rendezvous_start_time = time.monotonic()
+        self._host_close_round(
+            node_desc,
+            min_nodes,
+            max_nodes,
+            segment_check_interval,
+            stop_event=stop_event,
+        )
+        return self._round
 
     def perform_rendezvous(
         self,
@@ -1735,6 +1808,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
+        cycle_info_dir: Optional[str] = None,
+        cycle_log_prefix: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -1793,6 +1868,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
+            cycle_info_dir=cycle_info_dir,
+            cycle_log_prefix=cycle_log_prefix,
         )
 
     def __init__(
@@ -1807,6 +1884,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
+        cycle_info_dir: Optional[str] = None,
+        cycle_log_prefix: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -1840,6 +1919,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             settings.segment,
             stale_check_interval=10.0,  # Check for stale rounds every 10 seconds
         )
+        self._cycle_info_reporter: Optional[CycleInfoReporter] = None
+        if is_store_host and cycle_info_dir:
+            self._cycle_info_reporter = CycleInfoReporter(
+                cycle_info_dir,
+                cycle_log_prefix=cycle_log_prefix,
+            )
+            self._barrier_state._cycle_info_reporter = self._cycle_info_reporter
         self._assigned_rank = None
         self._world_size = None
         self._agent = None  # Reference to the agent (set via set_agent())
@@ -2289,9 +2375,14 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             )
             raise
 
+    def shutdown_cycle_info_reporter(self) -> None:
+        if self._cycle_info_reporter is not None:
+            self._cycle_info_reporter.shutdown()
+
     def _close(self) -> None:
         """Permanently shut down the rendezvous (no further rounds)."""
         self._barrier_state.set_shutdown()
+        self.shutdown_cycle_info_reporter()
 
         msg = f"The node '{self._this_node}' has permanently closed the rendezvous '{self._settings.run_id}'."
         self._record(message=msg, node_state=NodeState.SUCCEEDED)
@@ -2377,6 +2468,8 @@ def create_handler(
         storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
         attribution_endpoint = params.config.get('attribution_endpoint', None)
+        cycle_info_dir = params.config.get('cycle_info_dir', None)
+        cycle_log_prefix = params.config.get('cycle_log_prefix', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -2394,6 +2487,8 @@ def create_handler(
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
+            cycle_info_dir=cycle_info_dir,
+            cycle_log_prefix=cycle_log_prefix,
         )
     except Exception as e:
         construct_and_record_rdzv_event(
