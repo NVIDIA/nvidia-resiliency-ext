@@ -119,8 +119,8 @@ Snapshot service endpoints periodically for debugging:
 ```
 
 For individual service snapshots, see:
-- `nvrx_attrsvc/deploy/snapshot_attrsvc.sh`
-- `nvrx_smonsvc/deploy/snapshot_smonsvc.sh`
+- `attrsvc/deploy/snapshot_attrsvc.sh`
+- `smonsvc/deploy/snapshot_smonsvc.sh`
 
 ## Common Functions (common.sh)
 

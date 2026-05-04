@@ -10,7 +10,7 @@ from unittest.mock import patch
 PY310_PLUS = sys.version_info >= (3, 10)
 
 if PY310_PLUS:
-    from nvidia_resiliency_ext.attribution.svc import runner
+    from nvidia_resiliency_ext.attribution.orchestration import runner
 
 
 class _ImmediateFuture:

@@ -13,8 +13,8 @@
 #
 # This is the recommended deployment for most use cases. For running
 # services separately, see:
-#   - nvrx_attrsvc/deploy/slurm.sbatch (attribution only)
-#   - nvrx_smonsvc/deploy/slurm.sbatch (monitor only, requires external attrsvc)
+#   - attrsvc/deploy/slurm.sbatch (attribution only)
+#   - smonsvc/deploy/slurm.sbatch (monitor only, requires external attrsvc)
 #
 # Submit with (account is required):
 #   sbatch --account=myaccount nvrx_services.sbatch

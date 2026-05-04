@@ -165,20 +165,6 @@ def _compile_protos(proto_dir, proto_filenames):
 
 
 def build(setup_kwargs):
-    # ``pyproject.toml`` installs ``services/nvrx_attrsvc`` under the
-    # ``nvidia_resiliency_ext.attribution`` namespace via Poetry's package
-    # ``to`` target. The generated setuptools build path does not understand
-    # that target and would otherwise also emit a top-level ``nvrx_attrsvc``.
-    packages = setup_kwargs.get("packages")
-    if packages:
-        setup_kwargs["packages"] = [
-            pkg for pkg in packages if pkg != "nvrx_attrsvc" and not pkg.startswith("nvrx_attrsvc.")
-        ]
-    for package_data_key in ("package_data", "exclude_package_data"):
-        package_data = setup_kwargs.get(package_data_key)
-        if isinstance(package_data, dict):
-            package_data.pop("nvrx_attrsvc", None)
-
     # Generate gRPC Python files from .proto files
     proto_dir = os.path.join("src", "nvidia_resiliency_ext", "shared_utils", "proto")
     proto_files = [

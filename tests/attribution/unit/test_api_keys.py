@@ -19,7 +19,7 @@ if PY310_PLUS:
         load_llm_api_key,
     )
     from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import merge_log_fr_llm
-    from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL
+    from nvidia_resiliency_ext.attribution.orchestration.config import DEFAULT_LLM_BASE_URL
 
 
 @unittest.skipUnless(
