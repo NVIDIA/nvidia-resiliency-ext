@@ -3,11 +3,11 @@
 
 """Attribution orchestration: :class:`Analyzer` (jobs, coalescing, cache, pipelines).
 
-This layer sits above :mod:`nvidia_resiliency_ext.attribution.svc` (LogSage, SLURM
+This layer sits above :mod:`nvidia_resiliency_ext.attribution.orchestration` (LogSage, SLURM
 parsers, splitlog, optional FR via :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`).
 :class:`Analyzer` adds request coalescing; on cache miss,
-:meth:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer.run_attribution_for_path`
-runs LogSage and optional FR (see :mod:`~nvidia_resiliency_ext.attribution.svc.analysis_pipeline`).
+:meth:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer.run_attribution_for_path`
+runs LogSage and optional FR (see :mod:`~nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline`).
 
 Standalone API (no HTTP):
 
@@ -20,7 +20,7 @@ Standalone API (no HTTP):
 
 Architecture:
 - :class:`Analyzer`: :class:`~nvidia_resiliency_ext.attribution.coalescing.RequestCoalescer` (cache) and
-  :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer` (jobs, LogSage, optional FR pipeline)
+  :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer` (jobs, LogSage, optional FR pipeline)
 
 **Event loop (splitlog / thread callbacks):** :meth:`~Analyzer.set_event_loop` must be called with the
 process main asyncio loop **as soon as it is available** (e.g. FastAPI ``startup``). Splitlog polling
@@ -42,14 +42,14 @@ from nvidia_resiliency_ext.attribution.coalescing import (
     RequestCoalescer,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.svc.analysis_pipeline import (
+from nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline import (
     AnalysisPipelineMode,
     FrDumpPathNotFoundError,
 )
-from nvidia_resiliency_ext.attribution.svc.config import ErrorCode, LogSageExecutionConfig
-from nvidia_resiliency_ext.attribution.svc.job import Job, JobMode
-from nvidia_resiliency_ext.attribution.svc.log_analyzer import LogAnalyzer
-from nvidia_resiliency_ext.attribution.svc.types import (
+from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode, LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.orchestration.job import Job, JobMode
+from nvidia_resiliency_ext.attribution.orchestration.log_analyzer import LogAnalyzer
+from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
@@ -66,11 +66,11 @@ logger = logging.getLogger(__name__)
 
 class Analyzer:
     """
-    Entry point: request coalescing plus :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`.
+    Entry point: request coalescing plus :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`.
 
     On :meth:`analyze`, the coalescer returns a cached :class:`~nvidia_resiliency_ext.attribution.coalescing.LogAnalysisCoalesced`
     when possible; on a miss, :meth:`_run_llm_analysis` delegates to
-    :meth:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer.run_attribution_for_path`.
+    :meth:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer.run_attribution_for_path`.
 
     Call :meth:`set_event_loop` during app startup so splitlog background threads can schedule work on the
     main loop (see module docstring).
@@ -108,12 +108,12 @@ class Analyzer:
             log_analyzer: Optional log-side facade. When omitted, one is built from ``allowed_root``,
                 ``use_lib_log_analysis`` / ``log_sage``, the coalescer, and optional ``trace_analyzer``.
             trace_analyzer: Optional FR :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`
-                passed into the default :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`
+                passed into the default :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`
                 (ignored when ``log_analyzer`` is provided).
-            log_sage: Optional :class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig`
+            log_sage: Optional :class:`~nvidia_resiliency_ext.attribution.orchestration.config.LogSageExecutionConfig`
                 (LLM model, temperature, lib vs MCP). When omitted, defaults are used with
                 ``use_lib_log_analysis`` only.
-            analysis_pipeline_mode: Passed to the default :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`
+            analysis_pipeline_mode: Passed to the default :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`
                 (ignored when ``log_analyzer`` is provided). Default is :attr:`AnalysisPipelineMode.LOG_AND_TRACE`;
                 set :attr:`AnalysisPipelineMode.LOG_ONLY`, :attr:`AnalysisPipelineMode.TRACE_ONLY`, or
                 :attr:`AnalysisPipelineMode.LOG_AND_TRACE_WITH_LLM` without pre-building ``LogAnalyzer``.
@@ -320,7 +320,7 @@ class Analyzer:
 
         try:
             user = job.user if job else "unknown"
-            job_id = job.job_id if job else ""
+            job_id = job.job_id if job else None
             if not job_id:
                 logger.debug(
                     f"No job_id for path {validated}: job_found={job is not None}, "
@@ -423,7 +423,7 @@ class Analyzer:
     # ─── Internal methods ───
 
     async def _run_llm_analysis(
-        self, path: str, user: str = "unknown", job_id: str = ""
+        self, path: str, user: str = "unknown", job_id: Optional[str] = None
     ) -> LogAnalysisCoalesced:
         """On cache miss: delegate to :meth:`LogAnalyzer.run_attribution_for_path`."""
         return await self._log.run_attribution_for_path(path, user=user, job_id=job_id)
@@ -502,7 +502,7 @@ class Analyzer:
         )
 
     def _sync_analyze_via_coalescer(
-        self, log_path: str, user: str, job_id: str = ""
+        self, log_path: str, user: str, job_id: Optional[str] = None
     ) -> Dict[str, Any] | None:
         """Synchronous wrapper for background thread analysis.
 
@@ -530,7 +530,9 @@ class Analyzer:
         # Block until complete (same behavior as before)
         return future.result(timeout=self._compute_timeout)
 
-    def _fire_and_forget_analyze(self, log_path: str, user: str = "", job_id: str = "") -> None:
+    def _fire_and_forget_analyze(
+        self, log_path: str, user: str = "unknown", job_id: Optional[str] = None
+    ) -> None:
         """
         Schedule analysis without waiting for completion.
 

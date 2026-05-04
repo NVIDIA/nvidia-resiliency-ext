@@ -15,7 +15,6 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -253,13 +252,9 @@ class AttributionManager:
     def _child_env(self, api_key_file: str) -> dict[str, str]:
         assert self.cfg.applog_dir is not None
         env = os.environ.copy()
-        services_dir = _repo_services_dir()
-        if services_dir is not None:
-            _prepend_env_path(env, "PYTHONPATH", str(services_dir))
         env["LLM_API_KEY_FILE"] = api_key_file
         # nvrx-attrsvc owns the service-side environment variable contract.
-        env["NVRX_ATTRSVC_HOST"] = "127.0.0.1"
-        env["NVRX_ATTRSVC_PORT"] = str(DEFAULT_ATTRIBUTION_PORT)
+        env["NVRX_ATTRSVC_ENDPOINT"] = _managed_attribution_client_endpoint()
         env["NVRX_ATTRSVC_ALLOWED_ROOT"] = self.cfg.applog_dir
         _set_if_not_none(env, "NVRX_ATTRSVC_LLM_BASE_URL", self.cfg.llm_base_url)
         _set_if_not_none(env, "NVRX_ATTRSVC_LLM_MODEL", self.cfg.llm_model)
@@ -311,11 +306,7 @@ def _attribution_command() -> list[str]:
     exe = shutil.which("nvrx-attrsvc")
     if exe:
         return [exe]
-    return [
-        sys.executable,
-        "-c",
-        "from nvidia_resiliency_ext.attribution.nvrx_attrsvc.app import main; main()",
-    ]
+    return [sys.executable, "-m", "nvidia_resiliency_ext.services.attrsvc"]
 
 
 def _attribution_log_path(base_log_file: str) -> str:
@@ -351,25 +342,6 @@ def _validate_existing_dir(path: str, name: str) -> None:
         raise ValueError(f"{name} must be an existing directory, got {path}")
     if not os.access(path, os.R_OK | os.X_OK):
         raise ValueError(f"{name} must be readable/searchable, got {path}")
-
-
-def _repo_services_dir() -> Optional[Path]:
-    for parent in Path(__file__).resolve().parents:
-        services_dir = parent / "services"
-        if (services_dir / "nvrx_attrsvc" / "app.py").is_file():
-            return services_dir
-    return None
-
-
-def _prepend_env_path(env: dict[str, str], key: str, path: str) -> None:
-    existing = env.get(key)
-    if existing:
-        parts = existing.split(os.pathsep)
-        if path in parts:
-            return
-        env[key] = os.pathsep.join([path, existing])
-    else:
-        env[key] = path
 
 
 def _set_if_not_none(env: dict[str, str], key: str, value: Any) -> None:

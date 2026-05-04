@@ -48,44 +48,35 @@ setup_llm_api_key() {
 #   $1 - "attrsvc" or "smonsvc" or "both" (default: both)
 #   $2 - repo root directory (default: NVRX_REPO_DIR or ~/nvidia-resiliency-ext)
 # Environment:
-#   PIP_EXTRA_INDEX_URL - if set, installs dataflow dependencies for attrsvc
+#   PIP_EXTRA_INDEX_URL - if set, installs root dataflow extra for attrsvc
 install_nvrx_packages() {
     local mode="${1:-both}"
     local repo_dir="${2:-${NVRX_REPO_DIR:-${HOME}/nvidia-resiliency-ext}}"
+    local extras=""
+    local -a pip_extra_args=()
     
     echo "Installing NVRX packages from ${repo_dir}..."
-    
-    # Install main library (skip CUPTI build for CPU-only environments)
-    if [[ "$mode" == "attrsvc" || "$mode" == "both" || "$mode" == "smonsvc" ]]; then
-        # Uninstall any existing copy so the editable install from repo is the one used.
-        # Otherwise a pre-installed wheel/site-packages copy can take precedence.
-        if pip show nvidia-resiliency-ext &>/dev/null; then
-            echo "  Uninstalling existing nvidia-resiliency-ext..."
-            pip uninstall nvidia-resiliency-ext -y --quiet 2>/dev/null || true
-        fi
-        echo "  Installing nvidia-resiliency-ext (editable from repo)..."
-        STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install --no-cache-dir --no-deps -e "${repo_dir}" --quiet
-    fi
-    
-    # Install attribution service
-    if [[ "$mode" == "attrsvc" || "$mode" == "both" ]]; then
-        if [[ -n "${PIP_EXTRA_INDEX_URL}" ]]; then
-            echo "  Installing nvrx-attrsvc with dataflow..."
-            pip install --no-cache-dir \
-                --extra-index-url "${PIP_EXTRA_INDEX_URL}" \
-                -e "${repo_dir}/services[dataflow]" --quiet
-        else
-            echo "  Installing nvrx-attrsvc..."
-            pip install --no-cache-dir -e "${repo_dir}/services" --quiet
-        fi
-    elif [[ "$mode" == "smonsvc" ]]; then
-        echo "  Installing nvrx-attrsvc (for smonsvc)..."
-        pip install --no-cache-dir -e "${repo_dir}/services" --quiet
+
+    # Remove older split-service installs so the root package owns both commands.
+    if pip show nvidia-resiliency-ext &>/dev/null || pip show nvrx-attrsvc &>/dev/null; then
+        echo "  Uninstalling existing NVRX packages..."
+        pip uninstall nvidia-resiliency-ext nvrx-attrsvc -y --quiet 2>/dev/null || true
     fi
 
-    # Always re-apply editable install of the library so it wins over any reinstall from nvrx-attrsvc deps (nvidia-resiliency-ext>=0.5.0).
-    echo "  Ensuring nvidia-resiliency-ext is editable from repo..."
-    STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install --no-cache-dir --no-deps -e "${repo_dir}" --force-reinstall --quiet
+    if [[ "$mode" == "attrsvc" || "$mode" == "both" ]]; then
+        extras="[attribution]"
+        if [[ -n "${PIP_EXTRA_INDEX_URL}" ]]; then
+            extras="[attribution,dataflow]"
+            pip_extra_args=(--extra-index-url "${PIP_EXTRA_INDEX_URL}")
+        fi
+    fi
+
+    echo "  Installing nvidia-resiliency-ext${extras} (editable from repo)..."
+    STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install \
+        --no-cache-dir \
+        "${pip_extra_args[@]}" \
+        -e "${repo_dir}${extras}" \
+        --quiet
 
     echo "  Done."
     

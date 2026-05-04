@@ -14,7 +14,7 @@
 # limitations under the License.
 
 """
-NVRx cycle info writer: writes NVRxCycleInfo as JSON to Lustre (or local) from the TCPStore host.
+NVRx cycle info writer: writes NVRxCycleInfo as JSON to Lustre (or local).
 
 Uses the NVRxCycleInfo protobuf and protobuf JSON serialization. A dedicated background
 thread performs file I/O so the main launcher thread is not blocked. Writes are
@@ -25,13 +25,16 @@ import logging
 import os
 import queue
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from google.protobuf import json_format
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2
+
+from .utils import hostnames_to_slurm_nodelist, ranks_to_range_str, slurm_sort_addrs
 
 logger = logging.getLogger(LogConfig.name)
 
@@ -42,6 +45,43 @@ def _cycle_info_filename(job_id: str, attempt_index: int, cycle_number: int) -> 
 
 def _current_symlink_name(job_id: str) -> str:
     return f"cycle_info.{job_id}.current"
+
+
+def cycle_log_file(base_log_file: str, cycle_index: int) -> str:
+    base_without_ext, ext = os.path.splitext(os.path.abspath(base_log_file))
+    return f"{base_without_ext}_cycle{cycle_index}{ext or '.log'}"
+
+
+def _cycle_info_job_id_from_env() -> str:
+    return os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+
+
+def _cycle_info_attempt_index_from_env() -> int:
+    raw_attempt_index = os.environ.get("SLURM_RESTART_CNT", "0")
+    try:
+        return int(raw_attempt_index)
+    except ValueError:
+        logger.warning(
+            "Invalid SLURM_RESTART_CNT=%r for cycle info; using 0",
+            raw_attempt_index,
+        )
+        return 0
+
+
+@dataclass(frozen=True)
+class CycleInfoRoundSnapshot:
+    cycle_number: int
+    active_node_addrs: Optional[Sequence[str]] = None
+    standby_node_addrs: Optional[Sequence[str]] = None
+    active_ranks: Optional[Sequence[int]] = None
+    cycle_log_file: str = ""
+
+
+@dataclass(frozen=True)
+class _ReportedCycle:
+    job_id: str
+    attempt_index: int
+    cycle_number: int
 
 
 class _CycleInfoTask:
@@ -60,8 +100,8 @@ class CycleInfoWriter:
     """
     Writes NVRx cycle info JSON files under <base_dir>/nvrx/ on a dedicated thread.
 
-    Only the TCPStore host should create and use one instance. Call write_cycle_start()
-    after rendezvous (before workers start) and update_cycle_end() when the cycle ends.
+    The rendezvous host should call write_cycle_start() after rendezvous and
+    update_cycle_end() when the cycle ends.
     """
 
     def __init__(self, cycle_info_dir: str) -> None:
@@ -241,6 +281,7 @@ class CycleInfoWriter:
         if not os.path.isfile(path):
             logger.warning("Cycle info file not found for update: %s", path)
             return
+
         tmp_path = path + ".tmp"
         try:
             with open(path) as f:
@@ -274,6 +315,110 @@ class CycleInfoWriter:
     def get_current_cycle_info_path(self, job_id: str) -> str:
         """Return the full path to the cycle_info.<job_id>.current symlink (for NVRX_CURRENT_CYCLE_INFO env)."""
         return os.path.join(self._nvrx_dir, _current_symlink_name(job_id))
+
+
+class CycleInfoReporter:
+    """Owns cycle-info lifecycle reporting for a rendezvous host."""
+
+    def __init__(
+        self,
+        cycle_info_dir: str,
+        cycle_log_prefix: Optional[str] = None,
+        cycle_info_job_id: Optional[str] = None,
+        attempt_index: Optional[int] = None,
+        writer: Optional[CycleInfoWriter] = None,
+    ) -> None:
+        if cycle_info_job_id is not None and not cycle_info_job_id.strip():
+            raise ValueError("cycle_info_job_id must be non-empty when set")
+        self._writer = writer or CycleInfoWriter(cycle_info_dir)
+        self._cycle_log_prefix = cycle_log_prefix
+        self._cycle_info_job_id = cycle_info_job_id
+        self._attempt_index = attempt_index
+        self._current_cycle: Optional[_ReportedCycle] = None
+        self._started_cycles: set[int] = set()
+        self._shutdown = False
+
+    @staticmethod
+    def current_cycle_info_path(cycle_info_dir: str, job_id: str) -> str:
+        return os.path.join(
+            os.path.abspath(cycle_info_dir.rstrip("/")),
+            _current_symlink_name(job_id),
+        )
+
+    def report_cycle_start(
+        self,
+        snapshot: CycleInfoRoundSnapshot,
+    ) -> bool:
+        if self._shutdown:
+            logger.warning("CycleInfoReporter already shutdown, ignoring cycle start")
+            return False
+        if snapshot.cycle_number in self._started_cycles:
+            return False
+
+        job_id, attempt_index = self._resolve_file_namespace()
+        if self._current_cycle is not None:
+            self.report_cycle_end()
+
+        self._writer.write_cycle_start(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=snapshot.cycle_number,
+            cycle_start_time=utc_iso_now(),
+            cycle_log_file=self._resolve_cycle_log_file(snapshot),
+            active_nodes=self._format_nodes(snapshot.active_node_addrs),
+            standby_nodes=self._format_nodes(snapshot.standby_node_addrs),
+            active_ranks=self._format_active_ranks(snapshot),
+        )
+        self._current_cycle = _ReportedCycle(job_id, attempt_index, snapshot.cycle_number)
+        self._started_cycles.add(snapshot.cycle_number)
+        return True
+
+    def report_cycle_end(self) -> bool:
+        if self._shutdown or self._current_cycle is None:
+            return False
+        current_cycle = self._current_cycle
+        self._current_cycle = None
+        self._writer.update_cycle_end(
+            job_id=current_cycle.job_id,
+            attempt_index=current_cycle.attempt_index,
+            cycle_number=current_cycle.cycle_number,
+            cycle_end_time=utc_iso_now(),
+        )
+        return True
+
+    def shutdown(self) -> None:
+        if self._shutdown:
+            return
+        self.report_cycle_end()
+        self._shutdown = True
+        self._writer.shutdown()
+
+    def _resolve_file_namespace(self) -> Tuple[str, int]:
+        if self._cycle_info_job_id is not None:
+            return self._cycle_info_job_id, self._attempt_index or 0
+        return _cycle_info_job_id_from_env(), _cycle_info_attempt_index_from_env()
+
+    def _resolve_cycle_log_file(self, snapshot: CycleInfoRoundSnapshot) -> str:
+        if snapshot.cycle_log_file:
+            return snapshot.cycle_log_file
+        if self._cycle_log_prefix:
+            return cycle_log_file(self._cycle_log_prefix, snapshot.cycle_number)
+        return ""
+
+    @staticmethod
+    def _format_nodes(addrs: Optional[Sequence[str]]) -> str:
+        return hostnames_to_slurm_nodelist(list(addrs)) if addrs else ""
+
+    @staticmethod
+    def _format_active_ranks(snapshot: CycleInfoRoundSnapshot) -> str:
+        if snapshot.active_ranks is None:
+            return ""
+        active_ranks = list(snapshot.active_ranks)
+        active_addrs = list(snapshot.active_node_addrs or [])
+        if active_addrs and len(active_addrs) == len(active_ranks):
+            addr_to_rank = dict(zip(active_addrs, active_ranks))
+            active_ranks = [addr_to_rank[addr] for addr in slurm_sort_addrs(active_addrs)]
+        return ranks_to_range_str(active_ranks)
 
 
 def utc_iso_now() -> str:

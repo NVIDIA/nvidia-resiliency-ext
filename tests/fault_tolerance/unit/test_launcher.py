@@ -72,6 +72,47 @@ def _get_util_script_path():
     return os.path.join(os.path.dirname(__file__), "_launcher_test_util.py")
 
 
+def test_register_barrier_rdzv_handler_applies_c10d_patch():
+    from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
+
+    from nvidia_resiliency_ext.fault_tolerance import c10d_monkey_patch, launcher
+
+    with (
+        patch.object(c10d_monkey_patch, "apply_c10d_patch") as apply_c10d_patch,
+        patch.object(rendezvous_handler_registry, "_registry", {"c10d": object()}),
+        patch.object(rendezvous_handler_registry, "register") as register,
+    ):
+        launcher._register_ft_rdzv_handler("barrier")
+
+    apply_c10d_patch.assert_called_once()
+    register.assert_called_once()
+    assert register.call_args.args[0] == "c10d"
+
+
+def test_legacy_rdzv_impl_injects_use_libuv_false():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-rdzv-impl",
+            "legacy",
+            "train.py",
+        ]
+    )
+
+    with patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}):
+        config, _, _ = launcher.config_from_args(args)
+
+    assert config.rdzv_configs["use_libuv"] is False
+
+
 def test_rank_not_send_initial_hb(tmp_dir):
     # If one rank does not send initial heartbeat,
     # FT should terminate the rank, and launcher should kill all other ranks
@@ -287,23 +328,24 @@ def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
 
 
 # ==============================================================================
-# Unit tests for launcher cycle_info_writer interaction
+# Unit tests for launcher cycle-info env path interaction
 # ==============================================================================
 
 
 def _make_agent_spec(rdzv_round=1):
-    """Minimal WorkerSpec-like object for testing cycle_info_writer interaction."""
+    """Minimal WorkerSpec-like object for testing launcher cycle-info env interaction."""
     spec = MagicMock()
     spec.rdzv_handler = MagicMock()
     spec.rdzv_handler.round.return_value = rdzv_round
     spec.rdzv_handler.get_active_node_addrs.return_value = ["node001", "node002"]
     spec.rdzv_handler.get_standby_node_addrs.return_value = ["node003"]
+    spec.rdzv_handler.get_active_ranks.return_value = [0, 1]
     spec.max_restarts = 3
     return spec
 
 
-class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
-    """Unit tests for launcher's interaction with CycleInfoWriter."""
+class TestLauncherCycleInfoEnvPath(unittest.TestCase):
+    """Unit tests for launcher's read-only cycle-info worker env plumbing."""
 
     def setUp(self):
         """Set up test fixtures."""
@@ -311,108 +353,6 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         self.fault_tol_cfg = FaultToleranceConfig()
         self.logs_specs = MagicMock()
         self.logs_specs.get_cycle_log_file.return_value = "/path/to/cycle_0.log"
-
-    def test_on_cycle_end_when_writer_is_none(self):
-        """_on_cycle_end does nothing when cycle_info_writer is None."""
-        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
-
-        agent = LocalElasticAgent(
-            spec=self.spec,
-            fault_tol_cfg=self.fault_tol_cfg,
-            logs_specs=self.logs_specs,
-            cycle_info_writer=None,
-        )
-        # Should not raise; no writer to call
-        agent._on_cycle_end()
-
-    def test_on_cycle_end_calls_update_cycle_end_with_env_and_restart_count(self):
-        """_on_cycle_end calls writer.update_cycle_end with job_id, attempt_index, cycle_number, cycle_end_time."""
-        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
-
-        writer = MagicMock()
-        # rdzv_round=1 -> _get_global_cycle_number() = 1 (cycle 1)
-        spec = _make_agent_spec(rdzv_round=1)
-        with patch.dict(
-            os.environ,
-            {
-                "SLURM_JOB_ID": "12345",
-                "SLURM_RESTART_CNT": "0",
-            },
-            clear=False,
-        ):
-            agent = LocalElasticAgent(
-                spec=spec,
-                fault_tol_cfg=self.fault_tol_cfg,
-                logs_specs=self.logs_specs,
-                cycle_info_writer=writer,
-            )
-            with patch(
-                "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
-                return_value="2024-01-01T12:00:00Z",
-            ):
-                agent._on_cycle_end()
-
-        writer.update_cycle_end.assert_called_once()
-        call_kw = writer.update_cycle_end.call_args[1]
-        self.assertEqual(call_kw["job_id"], "12345")
-        self.assertEqual(call_kw["attempt_index"], 0)
-        self.assertEqual(call_kw["cycle_number"], 1)
-        self.assertEqual(call_kw["cycle_end_time"], "2024-01-01T12:00:00Z")
-
-    def test_on_cycle_end_uses_slurm_array_job_id_when_set(self):
-        """_on_cycle_end uses SLURM_ARRAY_JOB_ID over SLURM_JOB_ID when present."""
-        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
-
-        writer = MagicMock()
-        spec = _make_agent_spec(rdzv_round=2)  # restart_count = 2 (cycle 2)
-        with patch.dict(
-            os.environ,
-            {
-                "SLURM_ARRAY_JOB_ID": "array_99",
-                "SLURM_JOB_ID": "12345",
-                "SLURM_RESTART_CNT": "1",
-            },
-            clear=False,
-        ):
-            agent = LocalElasticAgent(
-                spec=spec,
-                fault_tol_cfg=self.fault_tol_cfg,
-                logs_specs=self.logs_specs,
-                cycle_info_writer=writer,
-            )
-            with patch(
-                "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
-                return_value="2024-01-01T12:00:00Z",
-            ):
-                agent._on_cycle_end()
-
-        call_kw = writer.update_cycle_end.call_args[1]
-        self.assertEqual(call_kw["job_id"], "array_99")
-        self.assertEqual(call_kw["attempt_index"], 1)
-        self.assertEqual(call_kw["cycle_number"], 2)
-
-    def test_on_cycle_end_cycle_number_override(self):
-        """_on_cycle_end accepts explicit cycle_number, bypassing _get_global_cycle_number()."""
-        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
-
-        writer = MagicMock()
-        # rdzv_round=3 (standby advanced _round to 3 before shutdown detected);
-        # calling with cycle_number=2 records the last completed cycle.
-        spec = _make_agent_spec(rdzv_round=3)
-        agent = LocalElasticAgent(
-            spec=spec,
-            fault_tol_cfg=self.fault_tol_cfg,
-            logs_specs=self.logs_specs,
-            cycle_info_writer=writer,
-        )
-        with patch(
-            "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
-            return_value="2024-01-01T12:00:00Z",
-        ):
-            agent._on_cycle_end(cycle_number=2)
-
-        call_kw = writer.update_cycle_end.call_args[1]
-        self.assertEqual(call_kw["cycle_number"], 2)
 
     def test_remaining_restarts_corrected_in_run(self):
         """run() re-syncs _remaining_restarts before delegating to _invoke_run.
@@ -428,7 +368,6 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
             spec=spec,
             fault_tol_cfg=self.fault_tol_cfg,
             logs_specs=self.logs_specs,
-            cycle_info_writer=None,
         )
 
         captured = {}
@@ -450,96 +389,50 @@ class TestLauncherCycleInfoWriterInteraction(unittest.TestCase):
         # run() always re-computes so the value is guaranteed correct regardless.
         self.assertEqual(captured['remaining'], 1)  # max_restarts(3) - round()(2) = 1
 
-    def test_write_cycle_start_info_returns_none_when_writer_is_none(self):
-        """_write_cycle_start_info returns None when cycle_info_writer is None."""
+    def test_current_cycle_info_path_returns_none_when_disabled(self):
+        """No cycle-info env path is set when cycle info is disabled."""
         from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
 
         agent = LocalElasticAgent(
             spec=self.spec,
             fault_tol_cfg=self.fault_tol_cfg,
             logs_specs=self.logs_specs,
-            cycle_info_writer=None,
         )
-        result = agent._write_cycle_start_info(current_cycle=0)
+        result = agent._current_cycle_info_path()
         self.assertIsNone(result)
 
-    def test_write_cycle_start_info_calls_write_cycle_start_and_returns_current_path(self):
-        """_write_cycle_start_info calls write_cycle_start and returns get_current_cycle_info_path."""
+    def test_current_cycle_info_path_uses_slurm_job_id(self):
+        """Launchers compute the current symlink path without writing cycle info."""
         from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
 
-        writer = MagicMock()
-        writer.get_current_cycle_info_path.return_value = "/nvrx/cycle_info.job1.current"
-        spec = _make_agent_spec(rdzv_round=1)
-        with patch.dict(
-            os.environ,
-            {"SLURM_JOB_ID": "job1", "SLURM_RESTART_CNT": "0"},
-            clear=False,
-        ):
+        fault_tol_cfg = FaultToleranceConfig(cycle_info_dir="/nvrx")
+        with patch.dict(os.environ, {"SLURM_JOB_ID": "job1"}, clear=False):
             agent = LocalElasticAgent(
-                spec=spec,
-                fault_tol_cfg=self.fault_tol_cfg,
+                spec=self.spec,
+                fault_tol_cfg=fault_tol_cfg,
                 logs_specs=self.logs_specs,
-                cycle_info_writer=writer,
             )
-            with patch(
-                "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
-                return_value="2024-01-01T12:00:00Z",
-            ):
-                with patch(
-                    "nvidia_resiliency_ext.fault_tolerance.launcher.hostnames_to_slurm_nodelist",
-                    side_effect=["node[001-002]", "node003"],  # active_addrs, then standby_addrs
-                ):
-                    result = agent._write_cycle_start_info(current_cycle=0)
+            result = agent._current_cycle_info_path()
 
-        writer.write_cycle_start.assert_called_once()
-        call_kw = writer.write_cycle_start.call_args[1]
-        self.assertEqual(call_kw["job_id"], "job1")
-        self.assertEqual(call_kw["attempt_index"], 0)
-        self.assertEqual(call_kw["cycle_number"], 0)
-        self.assertEqual(call_kw["cycle_start_time"], "2024-01-01T12:00:00Z")
-        self.assertEqual(call_kw["cycle_log_file"], "/path/to/cycle_0.log")
-        self.assertEqual(call_kw["active_nodes"], "node[001-002]")
-        self.assertEqual(call_kw["standby_nodes"], "node003")
-        writer.get_current_cycle_info_path.assert_called_once_with("job1")
         self.assertEqual(result, "/nvrx/cycle_info.job1.current")
 
-    def test_write_cycle_start_info_standby_nodes_from_rdzv(self):
-        """_write_cycle_start_info passes active and standby node lists from rdzv handler."""
+    def test_current_cycle_info_path_prefers_slurm_array_job_id(self):
         from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
 
-        writer = MagicMock()
-        writer.get_current_cycle_info_path.return_value = "/nvrx/current"
-        spec = _make_agent_spec(rdzv_round=1)
-        spec.rdzv_handler.get_active_node_addrs.return_value = ["host1"]
-        spec.rdzv_handler.get_standby_node_addrs.return_value = ["host2"]
+        fault_tol_cfg = FaultToleranceConfig(cycle_info_dir="/nvrx")
         with patch.dict(
             os.environ,
-            {"SLURM_JOB_ID": "j", "SLURM_RESTART_CNT": "0"},
+            {"SLURM_ARRAY_JOB_ID": "array1", "SLURM_JOB_ID": "job1"},
             clear=False,
         ):
             agent = LocalElasticAgent(
-                spec=spec,
-                fault_tol_cfg=self.fault_tol_cfg,
+                spec=self.spec,
+                fault_tol_cfg=fault_tol_cfg,
                 logs_specs=self.logs_specs,
-                cycle_info_writer=writer,
             )
-            with patch(
-                "nvidia_resiliency_ext.fault_tolerance.launcher.utc_iso_now",
-                return_value="2024-01-01T12:00:00Z",
-            ):
-                with patch(
-                    "nvidia_resiliency_ext.fault_tolerance.launcher.hostnames_to_slurm_nodelist",
-                    side_effect=lambda addrs: (
-                        "active"
-                        if addrs == ["host1"]
-                        else ("standby" if addrs == ["host2"] else "")
-                    ),
-                ):
-                    agent._write_cycle_start_info(current_cycle=0)
+            result = agent._current_cycle_info_path()
 
-        call_kw = writer.write_cycle_start.call_args[1]
-        self.assertEqual(call_kw["active_nodes"], "active")
-        self.assertEqual(call_kw["standby_nodes"], "standby")
+        self.assertEqual(result, "/nvrx/cycle_info.array1.current")
 
 
 class TestLauncherRunBehavior(unittest.TestCase):
@@ -551,12 +444,8 @@ class TestLauncherRunBehavior(unittest.TestCase):
         self.logs_specs = MagicMock()
         self.logs_specs.get_cycle_log_file.return_value = "/path/to/cycle_0.log"
 
-    def test_run_graceful_exit_calls_on_cycle_end_with_round_minus_1(self):
-        """run() calls _on_cycle_end(cycle_number=round()-1) on RendezvousGracefulExitError.
-
-        Standby nodes: _round advanced to N+1 when round N closed before shutdown was
-        detected. run() records end of cycle N (the last completed cycle).
-        """
+    def test_run_graceful_exit_returns_none_without_cycle_info_update(self):
+        """RendezvousGracefulExitError is not a launcher-owned cycle-info path."""
         from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
         from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
@@ -566,7 +455,6 @@ class TestLauncherRunBehavior(unittest.TestCase):
             spec=spec,
             fault_tol_cfg=self.fault_tol_cfg,
             logs_specs=self.logs_specs,
-            cycle_info_writer=MagicMock(),
         )
 
         with (
@@ -574,12 +462,9 @@ class TestLauncherRunBehavior(unittest.TestCase):
                 agent, '_invoke_run', side_effect=RendezvousGracefulExitError("round closed")
             ),
             patch.object(agent, '_shutdown'),
-            patch.object(agent, '_on_cycle_end') as mock_end,
         ):
             result = agent.run()
 
-        # round()-1 = 3-1 = 2: record the last completed cycle, not the advanced one
-        mock_end.assert_called_once_with(cycle_number=2)
         self.assertIsNone(result)
 
 
@@ -599,7 +484,6 @@ class TestHandleRestartDecision(unittest.TestCase):
             spec=self.spec,
             fault_tol_cfg=self.fault_tol_cfg,
             logs_specs=self.logs_specs,
-            cycle_info_writer=None,
         )
 
     def test_handle_restart_decision_progress_terminate(self):
@@ -683,7 +567,6 @@ class TestHandleRestartDecision(unittest.TestCase):
             spec=self.spec,
             fault_tol_cfg=self.fault_tol_cfg,
             logs_specs=self.logs_specs,
-            cycle_info_writer=None,
         )
         agent._open_rendezvous_for_restart()
 
@@ -710,7 +593,6 @@ class TestHandleRestartDecision(unittest.TestCase):
             spec=self.spec,
             fault_tol_cfg=self.fault_tol_cfg,
             logs_specs=self.logs_specs,
-            cycle_info_writer=None,
         )
         # Should not raise
         agent._open_rendezvous_for_restart()
@@ -725,6 +607,15 @@ def test_ft_log_aggregator_count_rejects_negative():
     args = parser.parse_args(['--ft-log-aggregator-count', '-1', 'train.py'])
     with pytest.raises(ValueError, match='--ft-log-aggregator-count'):
         _validate_args(args)
+
+
+def test_cli_cycle_info_dir_does_not_require_per_cycle_applog():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import _validate_args, get_args_parser
+
+    parser = get_args_parser()
+    args = parser.parse_args(['--ft-cycle-info-dir', '/nvrx', 'train.py'])
+
+    _validate_args(args)
 
 
 def test_cli_attribution_endpoint_requires_per_cycle_applog():
@@ -802,9 +693,11 @@ def test_attribution_endpoint_with_per_cycle_applog_is_valid():
         "--ft_attribution_host",
         "--ft-attribution-port",
         "--ft_attribution_port",
+        "--ft-log-server-log",
+        "--ft_log_server_log",
     ],
 )
-def test_removed_attribution_options_are_rejected(removed_option):
+def test_removed_options_are_rejected(removed_option):
     from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
 
     parser = get_args_parser()
@@ -847,6 +740,73 @@ def test_log_funnel_ports_from_launcher_args_rejects_negative():
         )
 
 
+def test_grpc_log_server_log_prefix_resolution(tmp_path):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_server_log_prefix
+
+    assert _resolve_grpc_log_server_log_prefix(
+        SimpleNamespace(
+            ft_log_server_log_prefix=str(tmp_path / "explicit"),
+            ft_nvrx_logfile=str(tmp_path / "nvrx.log"),
+            ft_per_cycle_applog_prefix=str(tmp_path / "app.log"),
+        )
+    ) == str(tmp_path / "explicit")
+    assert _resolve_grpc_log_server_log_prefix(
+        SimpleNamespace(
+            ft_log_server_log_prefix=None,
+            ft_nvrx_logfile=str(tmp_path / "nvrx.log"),
+            ft_per_cycle_applog_prefix=str(tmp_path / "app.log"),
+        )
+    ) == str(tmp_path / "nvrx_grpc")
+    assert _resolve_grpc_log_server_log_prefix(
+        SimpleNamespace(
+            ft_log_server_log_prefix=None,
+            ft_nvrx_logfile=None,
+            ft_per_cycle_applog_prefix=str(tmp_path / "app.log"),
+        )
+    ) == str(tmp_path / "app_grpc")
+
+
+def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    class FakePopen:
+        next_pid = 1000
+
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            self.pid = FakePopen.next_pid
+            FakePopen.next_pid += 1
+
+        def kill(self):
+            pass
+
+        def wait(self):
+            pass
+
+    args = SimpleNamespace(
+        nnodes="2",
+        ft_log_server_graceful_shutdown_timeout=60.0,
+        ft_log_leaf_max_queue_chunks=-1,
+    )
+    log_dir = tmp_path / "missing" / "logs"
+    log_prefix = str(log_dir / "grpc_diag")
+    ports = launcher.LogFunnelPorts(base_port=50051, first_level_count=2)
+
+    with patch.object(launcher.subprocess, "Popen", FakePopen):
+        procs = launcher._start_grpc_log_servers(args, log_prefix, ports)
+
+    assert len(procs) == 3
+    assert log_dir.is_dir()
+    assert (log_dir / "grpc_diag_root.log").is_file()
+    assert (log_dir / "grpc_diag_leaf_0.log").is_file()
+    assert (log_dir / "grpc_diag_leaf_1.log").is_file()
+
+
 def test_managed_attribution_listen_port_rejects_log_funnel_overlap():
     from nvidia_resiliency_ext.fault_tolerance.launcher import (
         LogFunnelPorts,
@@ -859,3 +819,216 @@ def test_managed_attribution_listen_port_rejects_log_funnel_overlap():
         _validate_managed_attribution_listen_port_not_in_log_funnel(50053, funnel_ports)
 
     _validate_managed_attribution_listen_port_not_in_log_funnel(50050, funnel_ports)
+
+
+def test_non_host_launcher_routes_logs_to_rendezvous_host_and_skips_host_services(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    class FakePipeBasedLogsSpecs:
+        def __init__(
+            self,
+            base_log_file,
+            launcher_pipe_fd=None,
+            launcher_log_file=None,
+            grpc_server_address=None,
+            node_id=None,
+        ):
+            self.base_log_file = base_log_file
+            self.grpc_server_address = grpc_server_address
+            self.node_id = node_id
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "2",
+            "--rdzv-endpoint",
+            "control.host:29500",
+            "--ft-per-cycle-applog-prefix",
+            str(tmp_path / "train.log"),
+            "--ft-enable-log-server",
+            "true",
+            "--ft-attribution-endpoint",
+            "localhost",
+            "train.py",
+        ]
+    )
+
+    with (
+        patch.object(launcher, "_matches_machine_hostname", return_value=False),
+        patch.object(launcher, "PipeBasedLogsSpecs", FakePipeBasedLogsSpecs),
+        patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}),
+        patch.object(
+            launcher,
+            "_start_grpc_log_servers",
+            side_effect=AssertionError("compute launcher must not start gRPC servers"),
+        ),
+        patch.object(
+            launcher.AttributionManager,
+            "start_if_needed",
+            return_value=None,
+        ),
+    ):
+        config, _, _ = launcher.config_from_args(args)
+
+    assert "is_host" not in config.rdzv_configs
+    assert "attribution_endpoint" not in config.rdzv_configs
+    assert config.logs_specs.grpc_server_address == "control.host:50051"
+
+
+def test_same_node_external_control_honors_is_host_false(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    class FakePipeBasedLogsSpecs:
+        def __init__(
+            self,
+            base_log_file,
+            launcher_pipe_fd=None,
+            launcher_log_file=None,
+            grpc_server_address=None,
+            node_id=None,
+        ):
+            self.grpc_server_address = grpc_server_address
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "2",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--rdzv-conf",
+            "is_host=false",
+            "--ft-per-cycle-applog-prefix",
+            str(tmp_path / "train.log"),
+            "--ft-enable-log-server",
+            "true",
+            "--ft-attribution-endpoint",
+            "localhost",
+            "train.py",
+        ]
+    )
+    attribution_manager = MagicMock()
+    attribution_manager.start_if_needed.return_value = None
+
+    with (
+        patch.object(launcher, "_matches_machine_hostname", return_value=True),
+        patch.object(launcher, "PipeBasedLogsSpecs", FakePipeBasedLogsSpecs),
+        patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}),
+        patch.object(
+            launcher,
+            "_start_grpc_log_servers",
+            side_effect=AssertionError("compute launcher must not start gRPC servers"),
+        ),
+        patch.object(
+            launcher,
+            "AttributionManager",
+            return_value=attribution_manager,
+        ) as attribution_manager_cls,
+    ):
+        config, _, _ = launcher.config_from_args(args)
+
+    attribution_manager_cls.assert_called_once()
+    assert attribution_manager_cls.call_args.kwargs["is_store_host"] is False
+    assert config.rdzv_configs["is_host"] == "false"
+    assert "attribution_endpoint" not in config.rdzv_configs
+    assert config.logs_specs.grpc_server_address == "127.0.0.1:50051"
+
+
+def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    class FakePipeBasedLogsSpecs:
+        def __init__(
+            self,
+            base_log_file,
+            launcher_pipe_fd=None,
+            launcher_log_file=None,
+            grpc_server_address=None,
+            node_id=None,
+        ):
+            self.grpc_server_address = grpc_server_address
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "2",
+            "--rdzv-endpoint",
+            "control.host:29500",
+            "--ft-per-cycle-applog-prefix",
+            str(tmp_path / "train.log"),
+            "--ft-nvrx-logfile",
+            str(tmp_path / "nvrx.log"),
+            "train.py",
+        ]
+    )
+    assert args.ft_enable_log_server is None
+
+    with (
+        patch.object(launcher, "_matches_machine_hostname", return_value=False),
+        patch.object(launcher, "PipeBasedLogsSpecs", FakePipeBasedLogsSpecs),
+        patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}),
+        patch.object(
+            launcher,
+            "_start_grpc_log_servers",
+            side_effect=AssertionError("compute launcher must not start gRPC servers"),
+        ),
+    ):
+        config, _, _ = launcher.config_from_args(args)
+
+    assert args.ft_enable_log_server is True
+    assert config.logs_specs.grpc_server_address == "control.host:50051"
+
+
+def test_launch_agent_store_host_closes_cycle_info_reporter_without_rdzv_shutdown():
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    rdzv_handler = MagicMock()
+    rdzv_handler._attribution_service = None
+    spec = SimpleNamespace(rdzv_handler=rdzv_handler)
+    agent = MagicMock()
+    agent.run.side_effect = launcher.UnhealthyNodeException("node unhealthy")
+    agent._rdzv_handler = rdzv_handler
+
+    config = SimpleNamespace(
+        run_id="run-a",
+        rdzv_configs={},
+        min_nodes=1,
+        max_nodes=1,
+        nproc_per_node=1,
+        rdzv_backend="c10d",
+        rdzv_endpoint="host:29500",
+        local_addr=None,
+        fault_tol_cfg=FaultToleranceConfig(cycle_info_dir="/nvrx"),
+        role="trainer",
+        max_restarts=1,
+        monitor_interval=1,
+        logs_specs=SimpleNamespace(root_log_dir="/tmp/logs"),
+        metrics_cfg={},
+        start_method="spawn",
+        log_line_prefix_template=None,
+        term_timeout=1,
+        workers_stop_timeout=1,
+        restart_policy="any-failed",
+        rank_monitors={},
+    )
+
+    with (
+        patch.object(launcher, "_get_addr_and_port", return_value=("host", 29500)),
+        patch.object(launcher, "_is_store_host", return_value=True),
+        patch.object(launcher, "WorkerSpec", return_value=spec),
+        patch.object(launcher.rdzv_registry, "get_rendezvous_handler", return_value=rdzv_handler),
+        patch.object(launcher, "LocalElasticAgent", return_value=agent),
+        patch.object(launcher.metrics, "initialize_metrics"),
+        patch.object(launcher.events, "record"),
+        patch.object(launcher, "is_slurm_job_array", return_value=False),
+        patch.object(launcher.time, "sleep", return_value=None),
+    ):
+        result = launcher.launch_agent(config, "train.py", [])
+
+    assert result is None
+    rdzv_handler.shutdown.assert_not_called()
+    rdzv_handler.shutdown_cycle_info_reporter.assert_called_once()

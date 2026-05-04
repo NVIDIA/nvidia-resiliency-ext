@@ -4,7 +4,7 @@
 """Fuse LogSage output with NCCL flight-recorder analysis via an LLM (LangChain + ChatOpenAI).
 
 Used by :class:`~nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr.CombinedLogFR` and
-by :func:`~nvidia_resiliency_ext.attribution.svc.analysis_pipeline.run_attribution_pipeline` (``LOG_AND_TRACE_WITH_LLM``).
+by :func:`~nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline.run_attribution_pipeline` (``LOG_AND_TRACE_WITH_LLM``).
 Kept as a standalone function so library code does not need ``NVRxAttribution`` or CLI wiring.
 """
 
@@ -111,7 +111,7 @@ async def merge_log_fr_llm(
     from langchain_core.prompts import PromptTemplate
     from langchain_openai import ChatOpenAI
 
-    if not llm_api_key.strip():
+    if not (llm_api_key and llm_api_key.strip()):
         raise ValueError(
             "LLM API key is empty. Load it once via load_llm_api_key() and pass llm_api_key=... "
             "Required for log+FR LLM merge."

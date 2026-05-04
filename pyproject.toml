@@ -17,7 +17,6 @@ classifiers = [
 ]
 packages = [
     { include = "nvidia_resiliency_ext", from = "src" },
-    { include = "nvrx_attrsvc", from = "services", to = "nvidia_resiliency_ext/attribution" },
 ]
 
 exclude = [
@@ -60,14 +59,17 @@ pydantic-settings = { version = ">=2.0.0", optional = true }
 slowapi = { version = ">=0.1.9", optional = true }
 slack-bolt = { version = ">=1.23.0", optional = true }
 slack-sdk = { version = ">=3.35.0", optional = true }
+nvdataflow = { version = "*", optional = true }
 grpcio = "^1.76.0"
 grpcio-tools = "^1.76.0"
 protobuf = ">=4.22.0"
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
+nvrx-control = "nvidia_resiliency_ext.fault_tolerance.control_plane:main"
 nvrx-mcp-analysis = "nvidia_resiliency_ext.attribution.mcp_integration.server_launcher:main"
-nvrx-attrsvc = "nvidia_resiliency_ext.attribution.nvrx_attrsvc.app:main"
+nvrx-attrsvc = "nvidia_resiliency_ext.services.attrsvc.__main__:main"
+nvrx-smonsvc = "nvidia_resiliency_ext.services.smonsvc.__main__:main"
 
 [tool.poetry.extras]
 attribution = [
@@ -82,6 +84,9 @@ attribution = [
     "slowapi",
     "slack-bolt",
     "slack-sdk",
+]
+dataflow = [
+    "nvdataflow",
 ]
 
 [tool.poetry-dynamic-versioning]

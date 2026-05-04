@@ -16,13 +16,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
+from nvidia_resiliency_ext.attribution.api_keys import (
+    llm_api_key_help_text,
+    llm_api_key_missing_message,
+    load_llm_api_key,
+)
 from nvidia_resiliency_ext.attribution.base import (
     AttributionState,
     NVRxAttribution,
     effective_run_or_init_config,
     normalize_attribution_args,
 )
-from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 
 from .capture import capture_logs
 
@@ -323,7 +331,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             None: Results are printed to standard output
 
         Note:
-            Requires the LLM_API_KEY environment variable to be set
+            Requires an LLM API key resolved by ``load_llm_api_key``.
         """
         result = analysis_output
         cfg = effective_run_or_init_config(self._init_config)
@@ -361,12 +369,9 @@ class CollectiveAnalyzer(NVRxAttribution):
 
                 prompt = PromptTemplate(template=template, input_variables=["analysis_output"])
 
-                # Check for API key
-                from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
-
                 api_key = load_llm_api_key()
                 if not api_key:
-                    eprint("LLM_API_KEY not found. Set env var or create ~/.llm_api_key")
+                    eprint(llm_api_key_missing_message())
                     return
 
                 default_values = {
@@ -389,7 +394,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                 eprint("pip install langchain langchain-nvidia-ai-endpoints")
             except Exception as e:
                 eprint(f"\nError using LangChain: {e}")
-                eprint("Set LLM_API_KEY env var or create ~/.llm_api_key")
+                eprint(llm_api_key_help_text())
         return result
 
     """

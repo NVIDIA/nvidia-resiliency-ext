@@ -19,24 +19,28 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nvidia_resiliency_ext.attribution.analyzer import Analyzer
-from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key, load_slack_bot_token
+from nvidia_resiliency_ext.attribution.api_keys import (
+    llm_api_key_missing_message,
+    load_llm_api_key,
+    load_slack_bot_token,
+)
 from nvidia_resiliency_ext.attribution.coalescing import (
     CacheResult,
     InflightResult,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster
-from nvidia_resiliency_ext.attribution.postprocessing import configure as configure_postprocessing
-from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
-from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
-from nvidia_resiliency_ext.attribution.svc.config import LogSageExecutionConfig
-from nvidia_resiliency_ext.attribution.svc.types import (
+from nvidia_resiliency_ext.attribution.orchestration.config import LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
     LogAnalyzerFilePreview,
     LogAnalyzerSubmitResult,
 )
+from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster
+from nvidia_resiliency_ext.attribution.postprocessing import configure as configure_postprocessing
+from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
+from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
 
 logger = logging.getLogger(__name__)
 
@@ -455,8 +459,11 @@ class AttributionController:
         if llm_key:
             return True
         logger.error(
-            "LLM API key not found or empty. Attribution requires a key. Set LLM_API_KEY or "
-            "LLM_API_KEY_FILE, or create ~/.llm_api_key. Slack notifications remain optional."
+            llm_api_key_missing_message(
+                include_empty=True,
+                context="Attribution requires a key.",
+                suffix="Slack notifications remain optional.",
+            )
         )
         raise RuntimeError("LLM API key not found or empty")
 
