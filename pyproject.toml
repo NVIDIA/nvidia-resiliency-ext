@@ -4,7 +4,7 @@
 [tool.poetry]
 name = "nvidia-resiliency-ext"
 repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
-version = "0.0.0"  # Replaced at build time by poetry-dynamic-versioning
+version = "0.6.0"  # Base version for release/v0.6 (read by ci-release auto-bump). Actual wheel version replaced at build time by poetry-dynamic-versioning from git tag.
 description = "NVIDIA Resiliency Package"
 authors = ["NVIDIA Corporation"]
 readme = "README.md"
