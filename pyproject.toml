@@ -1,42 +1,47 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
+[build-system]
+requires = [ "poetry-core>=1.0.0", "poetry-dynamic-versioning[backend]>=1.0.0", "pybind11", "setuptools", "wheel", "grpcio-tools>=1.76.0,<1.77.0",]
+build-backend = "poetry_dynamic_versioning.backend"
 
 [tool.poetry]
 name = "nvidia-resiliency-ext"
 repository = "https://github.com/NVIDIA/nvidia-resiliency-ext"
-version = "0.6.0"  # Base version for release/v0.6 (read by ci-release auto-bump). Actual wheel version replaced at build time by poetry-dynamic-versioning from git tag.
+version = "0.6.0-rc1"
 description = "NVIDIA Resiliency Package"
-authors = ["NVIDIA Corporation"]
+authors = [ "NVIDIA Corporation",]
 readme = "README.md"
 license = "Apache 2.0"
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Operating System :: OS Independent",
-]
-packages = [
-    { include = "nvidia_resiliency_ext", from = "src" },
-]
+classifiers = [ "Development Status :: 4 - Beta", "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.10", "Operating System :: OS Independent",]
+exclude = [ "src/nvidia_resiliency_ext/attribution/straggler/cupti_src",]
+[[tool.poetry.packages]]
+include = "nvidia_resiliency_ext"
+from = "src"
 
-exclude = [
-    "src/nvidia_resiliency_ext/attribution/straggler/cupti_src"
-]
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "^v?(?P<base>\\d+\\.\\d+\\.\\d+)(?:(?:-(?P<stage>rc)(?P<revision>\\d+))|-main)?$"
+format-jinja = "{%- if distance == 0 -%}\n{{ base }}{% if stage == \"rc\" %}rc{{ revision }}{% endif %}\n{%- else -%}\n{{ base }}{% if stage == \"rc\" %}rc{{ revision }}{% endif %}.dev{{ distance }}+{{ commit }}\n{%- endif -%}\n"
+
+[tool.isort]
+profile = "black"
+line_length = 100
+py_version = 310
+filter_files = true
+extend_skip_glob = [ "setup.py", "build.py", "clean.py", "*_pb2.py", "*_pb2_grpc.py", "*_pb2.pyi",]
+
+[tool.black]
+line_length = 100
+skip_string_normalization = true
+required_version = "24"
+target-version = [ "py310", "py311", "py312",]
+force-exclude = "# Force exclude, as this config is also used by pre-commit\n# https://stackoverflow.com/questions/73247204/black-not-respecting-extend-exclude-in-pyproject-toml\n# A regex preceded with ^/ will apply only to files and directories # in the root of the project.\n(\n  ^\\/setup.py\\/\n  | ^\\/build.py\\/\n  | ^\\/clean.py\\/\n  | src/.*/proto/.*_pb2(_grpc)?\\.py\n)\n"
+
+[tool.ruff]
+extend-exclude = [ "setup.py", "build.py", "clean.py", "**/proto/*_pb2*.py",]
 
 [tool.poetry.build]
 script = "build.py"
 generate-setup-file = true
-
-[build-system]
-requires = [
-    "poetry-core>=1.0.0",
-    "poetry-dynamic-versioning[backend]>=1.0.0",
-    "pybind11",
-    "setuptools",
-    "wheel",
-    "grpcio-tools>=1.76.0,<1.77.0"
-]
-build-backend = "poetry_dynamic_versioning.backend"
 
 [tool.poetry.dependencies]
 torch = ">=2.3.0"
@@ -48,18 +53,6 @@ numpy = ">=1.26"
 nvidia-ml-py = ">=12.570.86"
 defusedxml = "*"
 httpx = ">=0.24.0"
-langchain-openai = { version = ">=0.3.0", optional = true }
-mcp = { version = ">=1.15.0", optional = true }
-setproctitle = { version = ">=1.3.0", optional = true }
-logsage = { version = ">=0.1.7", optional = true }
-fastapi = { version = ">=0.100.0", optional = true }
-uvicorn = { version = ">=0.20.0", extras = ["standard"], optional = true }
-pydantic = { version = ">=2.0.0", optional = true }
-pydantic-settings = { version = ">=2.0.0", optional = true }
-slowapi = { version = ">=0.1.9", optional = true }
-slack-bolt = { version = ">=1.23.0", optional = true }
-slack-sdk = { version = ">=3.35.0", optional = true }
-nvdataflow = { version = "*", optional = true }
 grpcio = "^1.76.0"
 grpcio-tools = "^1.76.0"
 protobuf = ">=4.22.0"
@@ -72,88 +65,64 @@ nvrx-attrsvc = "nvidia_resiliency_ext.services.attrsvc.__main__:main"
 nvrx-smonsvc = "nvidia_resiliency_ext.services.smonsvc.__main__:main"
 
 [tool.poetry.extras]
-attribution = [
-    "langchain-openai",
-    "logsage",
-    "mcp",
-    "setproctitle",
-    "fastapi",
-    "uvicorn",
-    "pydantic",
-    "pydantic-settings",
-    "slowapi",
-    "slack-bolt",
-    "slack-sdk",
-]
-dataflow = [
-    "nvdataflow",
-]
-
-[tool.poetry-dynamic-versioning]
-enable = true
-vcs = "git"
-pattern = "^v?(?P<base>\\d+\\.\\d+\\.\\d+)(?:(?:-(?P<stage>rc)(?P<revision>\\d+))|-main)?$"
-format-jinja = """
-{%- if distance == 0 -%}
-{{ base }}{% if stage == "rc" %}rc{{ revision }}{% endif %}
-{%- else -%}
-{{ base }}{% if stage == "rc" %}rc{{ revision }}{% endif %}.dev{{ distance }}+{{ commit }}
-{%- endif -%}
-"""
-
-[tool.isort]
-profile = "black"  # black-compatible
-line_length = 100  # should match black parameters
-py_version = 310   # python 3.10 as a target version
-# filter_files and extend_skip_glob are needed for pre-commit to filter out the files
-filter_files = true
-extend_skip_glob = [
-    "setup.py",
-    "build.py",
-    "clean.py",
-    "*_pb2.py",
-    "*_pb2_grpc.py",
-    "*_pb2.pyi"
-]
-
-[tool.black]
-line_length = 100
-skip_string_normalization = true
-# major year version is stable, see details in
-# https://black.readthedocs.io/en/stable/the_black_code_style/index.html
-# `required_version` is necessary for consistency (other `black` versions will fail to reformat files)
-required_version = "24"
-target-version = ['py310', 'py311', 'py312']
-force-exclude = '''
-# Force exclude, as this config is also used by pre-commit
-# https://stackoverflow.com/questions/73247204/black-not-respecting-extend-exclude-in-pyproject-toml
-# A regex preceded with ^/ will apply only to files and directories # in the root of the project.
-(
-  ^\/setup.py\/
-  | ^\/build.py\/
-  | ^\/clean.py\/
-  | src/.*/proto/.*_pb2(_grpc)?\.py
-)
-'''
-
-[tool.ruff]
-extend-exclude = [
-    "setup.py",
-    "build.py",
-    "clean.py",
-    "**/proto/*_pb2*.py",
-]
+attribution = [ "langchain-openai", "logsage", "mcp", "setproctitle", "fastapi", "uvicorn", "pydantic", "pydantic-settings", "slowapi", "slack-bolt", "slack-sdk",]
+dataflow = [ "nvdataflow",]
 
 [tool.ruff.lint]
-# F841 Local variable `...` is assigned to but never used
-ignore = ["F841"]
-
-[tool.ruff.lint.per-file-ignores]
-# avoid "unused import" warnings for __init__.py files
-"__init__.py" = ["F401"]
+ignore = [ "F841",]
 
 [tool.pytest.ini_options]
 markers = []
-filterwarnings = [
-    "ignore:.*ptl_resiliency.*ft_launcher.*InJob.*deprecated.*:DeprecationWarning",
-]
+filterwarnings = [ "ignore:.*ptl_resiliency.*ft_launcher.*InJob.*deprecated.*:DeprecationWarning",]
+
+[tool.poetry.dependencies.langchain-openai]
+version = ">=0.3.0"
+optional = true
+
+[tool.poetry.dependencies.mcp]
+version = ">=1.15.0"
+optional = true
+
+[tool.poetry.dependencies.setproctitle]
+version = ">=1.3.0"
+optional = true
+
+[tool.poetry.dependencies.logsage]
+version = ">=0.1.7"
+optional = true
+
+[tool.poetry.dependencies.fastapi]
+version = ">=0.100.0"
+optional = true
+
+[tool.poetry.dependencies.uvicorn]
+version = ">=0.20.0"
+extras = [ "standard",]
+optional = true
+
+[tool.poetry.dependencies.pydantic]
+version = ">=2.0.0"
+optional = true
+
+[tool.poetry.dependencies.pydantic-settings]
+version = ">=2.0.0"
+optional = true
+
+[tool.poetry.dependencies.slowapi]
+version = ">=0.1.9"
+optional = true
+
+[tool.poetry.dependencies.slack-bolt]
+version = ">=1.23.0"
+optional = true
+
+[tool.poetry.dependencies.slack-sdk]
+version = ">=3.35.0"
+optional = true
+
+[tool.poetry.dependencies.nvdataflow]
+version = "*"
+optional = true
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = [ "F401",]
