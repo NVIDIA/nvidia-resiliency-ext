@@ -41,7 +41,7 @@ build-backend = "poetry_dynamic_versioning.backend"
 [tool.poetry.dependencies]
 torch = ">=2.3.0"
 packaging = "*"
-python = ">=3.10"
+python = ">=3.10,<4.0"
 psutil = ">=6.0.0"
 pyyaml = "*"
 numpy = ">=1.26"
@@ -59,7 +59,6 @@ pydantic-settings = { version = ">=2.0.0", optional = true }
 slowapi = { version = ">=0.1.9", optional = true }
 slack-bolt = { version = ">=1.23.0", optional = true }
 slack-sdk = { version = ">=3.35.0", optional = true }
-nvdataflow = { version = "*", optional = true }
 grpcio = "^1.76.0"
 grpcio-tools = "^1.76.0"
 protobuf = ">=4.22.0"
@@ -85,9 +84,7 @@ attribution = [
     "slack-bolt",
     "slack-sdk",
 ]
-dataflow = [
-    "nvdataflow",
-]
+dataflow = []
 
 [tool.poetry-dynamic-versioning]
 enable = true
