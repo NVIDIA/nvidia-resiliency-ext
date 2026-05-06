@@ -990,8 +990,10 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
 
     Tier 1 — NVLink5 / GB200 / newer drivers (preferred):
       ``nvmlDeviceGetFieldValues`` with per-port field IDs and scopeId = port.
-      Three issue indicators, summed into a single per-port total; any delta > 0
-      across the sum flags the window:
+      Three issue indicators tracked per-counter; any individual counter's
+      delta > 0 vs. the previous call flags the window. Per-counter baselines
+      (rather than a summed total) avoid phantom deltas when the set of
+      successful FIDs varies between calls.
         NVML_FI_DEV_NVLINK_COUNT_LINK_RECOVERY_EVENTS = 215
             Up -> recovery transitions (any outcome)
         NVML_FI_DEV_NVLINK_PLR_XMIT_RETRY_BLOCKS      = 295
@@ -1040,8 +1042,23 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
         # Each bool = True if that port had a delta > 0 in that window.
         self._window_history: Dict[Tuple[int, int], deque] = {}
         self._window_count = window_count
-        # Cumulative error total per (device_id, port) from the previous call.
-        self._prev_counters: Dict[Tuple[int, int], int] = {}
+        # Per-counter cumulative error values per (device_id, port) from the
+        # previous call. Outer key: (device_id, port). Inner dict: FID (tier-1/
+        # tier-2) or counter_type (legacy) -> last-seen value. Per-counter
+        # storage lets us compute per-counter diffs even when the set of
+        # successful counters varies between calls.
+        #
+        # Inner-key namespace assumption: a given port stays on a single API
+        # path for the process lifetime — `_tier1_api_supported` /
+        # `_tier2_api_supported` are sticky flags that latch True or False
+        # on first probe and never flip back. So the inner dict only ever
+        # holds one of: tier-1 FIDs (215, 295, 208), tier-2 per-lane FIDs
+        # (46-58), or legacy counter_type enums (NVML_NVLINK_ERROR_DL_REPLAY/
+        # DL_RECOVERY ~ small ints). Current NVML enum values across these
+        # three sets do NOT overlap, so the per-port flat int->int dict is
+        # safe even on the (impossible-today) migration path. Revisit if
+        # NVML ever introduces an FID that collides with a counter_type.
+        self._prev_counters: Dict[Tuple[int, int], Dict[int, int]] = {}
         # Separate probed flags for tier 1 (GB200) and tier 2 (older HW).
         # None = not yet probed; True = supported; False = not supported.
         self._tier1_api_supported: Optional[bool] = None
@@ -1114,7 +1131,25 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
 
     def _sample_nvlink_events(self, devices) -> Dict[Tuple[int, int], bool]:
         """
-        Read replay + recovery counters per port.
+        Read replay + recovery counters per port; flag the window if ANY
+        individual counter's diff > 0 vs. the previous call.
+
+        Per-counter baselines (rather than a summed total) avoid the
+        "set of successful FIDs differs between calls" pitfall: a counter
+        that was unavailable last call doesn't contribute a phantom delta
+        on first sighting; new counters get added to the baseline silently.
+
+        Window cadence — one entry per successful sample per (device, port):
+          - First successful sample for a port emits ``False`` (no diff
+            possible yet, but the window starts filling so the rolling
+            count of last-30 events advances on every call).
+          - Subsequent successful samples emit True/False based on whether
+            any per-counter diff > 0.
+          - Failed reads (counters is None — port doesn't exist on this
+            HW, or transient NVML error) emit nothing and the window does
+            NOT advance for that port. The deque keeps its prior entries
+            and resumes appending on the next successful read.
+
         Returns {(device_id, port): had_events_this_window}.
         """
         port_events: Dict[Tuple[int, int], bool] = {}
@@ -1122,37 +1157,66 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
         for device_id in devices:
             handle = self.pynvml.nvmlDeviceGetHandleByIndex(device_id)
             for port in range(max_links):
-                total = self._read_port_error_total(handle, device_id, port)
-                if total is None:
+                counters = self._read_port_error_counters(handle, device_id, port)
+                if counters is None:
+                    # No data this call — don't advance this port's window.
                     continue
                 key = (device_id, port)
-                prev = self._prev_counters.get(key)
-                self._prev_counters[key] = total
-                if prev is not None:
-                    port_events[key] = total > prev
+                prev = self._prev_counters.setdefault(key, {})
+                if prev:
+                    # Only counters present in BOTH calls contribute a diff.
+                    # Counters new to this call get added to the baseline
+                    # below without flagging the window.
+                    had_event = any(
+                        fid in prev and val > prev[fid] for fid, val in counters.items()
+                    )
+                else:
+                    # First successful read for this port — baseline is
+                    # established below; this window starts at 0 events.
+                    had_event = False
+                port_events[key] = had_event
+                # Update baseline: keep prior FIDs, overwrite current ones,
+                # add new ones. Stale entries from FIDs that disappeared this
+                # call are preserved so deltas across transient failures are
+                # still detected when those counters return.
+                prev.update(counters)
         return port_events
 
-    def _read_port_error_total(self, handle, device_id: int, port: int) -> Optional[int]:
-        """Try field-values API first (per port); fall back to legacy counter."""
-        total = self._read_via_field_values(handle, device_id, port)
-        if total is not None:
-            return total
+    def _read_port_error_counters(
+        self, handle, device_id: int, port: int
+    ) -> Optional[Dict[int, int]]:
+        """
+        Read the set of replay/recovery counters for one port as a dict
+        keyed by FID (tier-1/tier-2) or counter_type (legacy). Tries the
+        field-values API first; falls back to the legacy counter API.
+        Returns None if no API is supported on this port.
+        """
+        counters = self._read_via_field_values(handle, device_id, port)
+        if counters is not None:
+            return counters
         return self._read_via_legacy(handle, device_id, port)
 
-    def _read_via_field_values(self, handle, device_id: int, port: int) -> Optional[int]:
+    def _read_via_field_values(
+        self, handle, device_id: int, port: int
+    ) -> Optional[Dict[int, int]]:
         """
         Read replay + recovery for one port via nvmlDeviceGetFieldValues.
 
-        Tries tier 1 (GB200) then tier 2 (older HW) independently; each tier's
-        supported flag is tracked separately so a tier-2 failure never blocks tier 1.
-        Returns None if both tiers are unsupported.
+        Returns a dict mapping FID -> value for each FID that returned
+        NVML_SUCCESS in this call. The caller computes per-FID diffs against
+        a baseline so partial-success calls don't produce phantom deltas.
+
+        Tries tier 1 (GB200) then tier 2 (older HW) independently; each
+        tier's supported flag is tracked separately so a tier-2 failure
+        never blocks tier 1. Returns None if both tiers are unsupported.
         """
         nvml_success = getattr(self.pynvml, "NVML_SUCCESS", 0)
 
         # Tier 1: NVLink5 / GB200 per-port (scopeId = port number).
-        # Three issue indicators are summed; any delta > 0 in the sum flags
-        # the window. Field IDs 215, 295, 208 are documented in the public
-        # NVML field-value enums and verified working on GB200 setups.
+        # Three issue indicators tracked independently; any per-FID delta > 0
+        # vs. the baseline flags the window. Field IDs 215, 295, 208 are
+        # documented in the public NVML field-value enums and verified working
+        # on GB200 setups.
         TIER1_FIDS = (
             getattr(self.pynvml, "NVML_FI_DEV_NVLINK_COUNT_LINK_RECOVERY_EVENTS", 215),
             getattr(self.pynvml, "NVML_FI_DEV_NVLINK_PLR_XMIT_RETRY_BLOCKS", 295),
@@ -1162,10 +1226,14 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
             queries = [(fid, port) for fid in TIER1_FIDS]
             try:
                 results = self.pynvml.nvmlDeviceGetFieldValues(handle, queries)
-                successful = [r for r in results if r.nvmlReturn == nvml_success]
-                if successful:
+                counters: Dict[int, int] = {
+                    fid: r.value.uiVal
+                    for fid, r in zip(TIER1_FIDS, results)
+                    if r.nvmlReturn == nvml_success
+                }
+                if counters:
                     self._tier1_api_supported = True
-                    return sum(r.value.uiVal for r in successful)
+                    return counters
                 # Driver returned not-supported for all three FIDs.
                 if not self._tier1_not_supported_warned:
                     logger.warning(
@@ -1190,10 +1258,14 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
             if field_ids:
                 try:
                     results = self.pynvml.nvmlDeviceGetFieldValues(handle, field_ids)
-                    successful = [r for r in results if r.nvmlReturn == nvml_success]
-                    if successful:
+                    counters_t2: Dict[int, int] = {
+                        fid: r.value.uiVal
+                        for fid, r in zip(field_ids, results)
+                        if r.nvmlReturn == nvml_success
+                    }
+                    if counters_t2:
                         self._tier2_api_supported = True
-                        return sum(r.value.uiVal for r in successful)
+                        return counters_t2
                 except self.pynvml.NVMLError as e:
                     logger.warning(
                         f"NVLinkWindowHealthCheck: nvmlDeviceGetFieldValues tier-2 not supported "
@@ -1203,30 +1275,36 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
 
         return None
 
-    def _read_via_legacy(self, handle, device_id: int, port: int) -> Optional[int]:
+    def _read_via_legacy(
+        self, handle, device_id: int, port: int
+    ) -> Optional[Dict[int, int]]:
         """
-        Legacy: DL_REPLAY + DL_RECOVERY for one port via nvmlDeviceGetNvLinkErrorCounter.
-        Marked LEGACY for drivers > 450; may return NVML_ERROR_NOT_SUPPORTED on GB200.
+        Legacy: DL_REPLAY + DL_RECOVERY for one port via
+        nvmlDeviceGetNvLinkErrorCounter. Returns a dict keyed by counter_type
+        so per-counter diffs work the same way as the field-values path.
+
+        Marked LEGACY for drivers > 450; may return NVML_ERROR_NOT_SUPPORTED
+        on GB200.
         """
         replay_type = getattr(self.pynvml, "NVML_NVLINK_ERROR_DL_REPLAY", None)
         recovery_type = getattr(self.pynvml, "NVML_NVLINK_ERROR_DL_RECOVERY", None)
         if replay_type is None and recovery_type is None:
             return None
 
-        total = 0
-        any_supported = False
+        counters: Dict[int, int] = {}
         for counter_type in (replay_type, recovery_type):
             if counter_type is None:
                 continue
             try:
-                total += self.pynvml.nvmlDeviceGetNvLinkErrorCounter(handle, port, counter_type)
-                any_supported = True
+                counters[counter_type] = self.pynvml.nvmlDeviceGetNvLinkErrorCounter(
+                    handle, port, counter_type
+                )
             except self.pynvml.NVMLError as e:
                 if "not supported" in str(e).lower() or "invalid argument" in str(e).lower():
                     continue
                 raise
 
-        if not any_supported:
+        if not counters:
             if not self._api_not_supported_warned:
                 logger.warning(
                     f"NVLinkWindowHealthCheck: neither field-values nor legacy "
@@ -1235,7 +1313,7 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
                 )
                 self._api_not_supported_warned = True
             return None
-        return total
+        return counters
 
 
 class NodeHealthCheck:
