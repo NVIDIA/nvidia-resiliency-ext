@@ -1356,7 +1356,7 @@ class LaunchConfig:
         if "join_timeout" not in self.rdzv_configs:
             self.rdzv_configs["join_timeout"] = 300
         if "last_call_timeout" not in self.rdzv_configs:
-            self.rdzv_configs["last_call_timeout"] = 15
+            self.rdzv_configs["last_call_timeout"] = 1
         if "close_timeout" not in self.rdzv_configs:
             self.rdzv_configs["close_timeout"] = 30
         if "read_timeout" not in self.rdzv_configs:
