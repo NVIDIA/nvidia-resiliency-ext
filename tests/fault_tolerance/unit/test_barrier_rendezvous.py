@@ -33,20 +33,20 @@ import time
 import uuid
 from datetime import timedelta
 from unittest import TestCase
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from torch.distributed import TCPStore
 from torch.distributed.elastic.multiprocessing import SignalException
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
     RendezvousGracefulExitError,
+    RendezvousParameters,
 )
 
 from nvidia_resiliency_ext.fault_tolerance import (
     ft_rendezvous_barrier as ft_rendezvous_barrier_module,
 )
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
-    WITHDRAWN,
     FtRendezvousBarrierHandler,
     GroupRankStatus,
     RendezvousParticipantInfo,
@@ -68,10 +68,14 @@ TEST_THREAD_JOIN_TIMEOUT_SECS = 5.0  # seconds - for thread.join() timeout (redu
 BARRIER_WAIT_TIMEOUT_SECS = 10.0
 
 
-def _participant_store_value(round_id, node_desc, infra_rank=-1, domain_id="none"):
+def _participant_store_value(
+    round_id, node_desc, infra_rank=-1, domain_id="none", replacement_group_id=None
+):
     return RendezvousStoreValue.pack(
         round_id,
-        RendezvousParticipantInfo.to_payload(node_desc, infra_rank, domain_id),
+        RendezvousParticipantInfo.to_payload(
+            node_desc, infra_rank, domain_id, replacement_group_id
+        ),
     ).encode("utf-8")
 
 
@@ -81,11 +85,15 @@ def _rank_store_value(round_id, rank, total):
 
 def _seed_joined_participants(store, state, participants, round_id=0):
     """Populate join_count and slot_N keys for deterministic host-close tests."""
-    for slot, (node_desc, infra_rank, domain_id) in enumerate(participants, start=1):
+    for slot, (node_desc, infra_rank, domain_id, replacement_group_id) in enumerate(
+        participants, start=1
+    ):
         store.add(state.join_count_key, 1)
         store.set(
             f"{state.prefix}:slot_{slot}",
-            state._pack_participant_value(node_desc, infra_rank, domain_id, round_id),
+            state._pack_participant_value(
+                node_desc, infra_rank, domain_id, round_id, replacement_group_id
+            ),
         )
 
 
@@ -114,6 +122,7 @@ class BaseRendezvousTest(TestCase):
     - NVRX_INFRA_RANK_FROM_NODENAME
     - SLURMD_NODENAME
     - CROSS_SLURM_PROCID
+    - NVRX_REPLACEMENT_GROUP_ID
     - SLURM_ARRAY_TASK_ID
     - SLURM_JOB_ID (to avoid validation errors when SLURM_PROCID is cleared)
     - SLURM_NNODES
@@ -138,6 +147,7 @@ class BaseRendezvousTest(TestCase):
             'SLURM_PROCID',
             'GROUP_RANK',
             'NVRX_INFRA_RANK_FROM_NODENAME',
+            'NVRX_REPLACEMENT_GROUP_ID',
             'SLURMD_NODENAME',
             'CROSS_SLURM_PROCID',
             'SLURM_ARRAY_TASK_ID',
@@ -160,6 +170,8 @@ class BaseRendezvousTest(TestCase):
         for var, value in self._saved_env_vars.items():
             if value is not None:
                 os.environ[var] = value
+            else:
+                os.environ.pop(var, None)
 
 
 class BarrierStateBasicTest(BaseRendezvousTest):
@@ -314,68 +326,154 @@ class BarrierStateBasicTest(BaseRendezvousTest):
 
         self.assertEqual(self.store.get(rank_key), assigned_value)
 
-    def test_leave_rendezvous_refuses_newer_round_slot(self):
-        """A stale leave must not mark a newer round's slot as WITHDRAWN."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        state._slot = 1
-        state._joined_node_desc = _NodeDesc("stale", 1, 0)
-        slot_key = f"{state.prefix}:slot_1"
-        newer_node = _NodeDesc("newer", 2, 0)
-        newer_value = _participant_store_value(1, newer_node, 2, "none")
-        self.store.set(slot_key, newer_value)
-
-        state._leave_rendezvous()
-
-        self.assertEqual(self.store.get(slot_key), newer_value)
-        self.assertEqual(state._round, 0)
-
-    def test_leave_rendezvous_updates_same_node_slot(self):
-        """A participant may mark its own same-round slot as WITHDRAWN."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
+    def test_participant_payload_requires_replacement_group_id_field(self):
+        """Participant metadata carries an explicit replacement group id field."""
         node = _NodeDesc("node", 1, 0)
-        state._slot = 1
-        state._joined_node_desc = node
-        slot_key = f"{state.prefix}:slot_1"
-        self.store.set(slot_key, _participant_store_value(0, node, 1, "none"))
+        payload = {
+            "addr": node.addr,
+            "pid": node.pid,
+            "local_id": node.local_id,
+            "infra_rank": 4,
+            "domain_id": "domain-a",
+            "replacement_group_id": None,
+        }
 
-        state._leave_rendezvous()
+        decoded_node, infra_rank, domain_id, replacement_group_id = (
+            RendezvousParticipantInfo.from_payload(payload)
+        )
+        self.assertEqual(decoded_node, node)
+        self.assertEqual(infra_rank, 4)
+        self.assertEqual(domain_id, "domain-a")
+        self.assertIsNone(replacement_group_id)
 
-        round_id, payload = RendezvousStoreValue.unpack(self.store.get(slot_key).decode("utf-8"))
-        _, infra_rank, domain_id = RendezvousParticipantInfo.from_payload(payload)
-        self.assertEqual(round_id, 0)
-        self.assertEqual(infra_rank, -1)
-        self.assertEqual(domain_id, WITHDRAWN)
+        new_payload = RendezvousParticipantInfo.to_payload(
+            node, infra_rank=4, domain_id="domain-a", replacement_group_id=7
+        )
+        _, _, _, replacement_group_id = RendezvousParticipantInfo.from_payload(new_payload)
+        self.assertEqual(replacement_group_id, "7")
 
-    def test_leave_rendezvous_rejects_same_round_different_node(self):
-        """A participant must not mark another same-round node's slot as WITHDRAWN."""
+    def test_participant_payload_rejects_legacy_array_task_id_field(self):
+        """Legacy array_task_id metadata is no longer accepted."""
+        node = _NodeDesc("node", 1, 0)
+        payload = {
+            "addr": node.addr,
+            "pid": node.pid,
+            "local_id": node.local_id,
+            "infra_rank": 4,
+            "domain_id": "domain-a",
+            "array_task_id": 7,
+        }
+
+        with self.assertRaises(ValueError):
+            RendezvousParticipantInfo.from_payload(payload)
+
+    def test_current_replacement_group_id_prefers_nvrx_override(self):
+        """External-control deployments can name replacement groups without SLURM."""
+        os.environ["NVRX_REPLACEMENT_GROUP_ID"] = "external-rg"
+        os.environ["SLURM_ARRAY_TASK_ID"] = "7"
+
+        self.assertEqual(_RendezvousBarrierState._current_replacement_group_id(), "external-rg")
+
+    def test_current_replacement_group_id_uses_slurm_array_id(self):
+        """SLURM job arrays use the array task id as the replacement group id."""
+        os.environ["SLURM_ARRAY_TASK_ID"] = "7"
+
+        self.assertEqual(_RendezvousBarrierState._current_replacement_group_id(), "7")
+
+    def test_mark_replacement_group_unhealthy_is_idempotent(self):
+        """Round-scoped unhealthy replacement-group markers are stored as a set."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
-        owner = _NodeDesc("owner", 1, 0)
-        leaving = _NodeDesc("leaving", 2, 0)
-        state._slot = 1
-        state._joined_node_desc = leaving
-        slot_key = f"{state.prefix}:slot_1"
-        original_value = _participant_store_value(0, owner, 1, "none")
-        self.store.set(slot_key, original_value)
 
-        with self.assertRaisesRegex(RuntimeError, "same-round rendezvous write conflict"):
-            state._leave_rendezvous()
+        state._mark_replacement_group_unhealthy(3)
+        state._mark_replacement_group_unhealthy(3)
+        state._mark_replacement_group_unhealthy(5)
 
-        self.assertEqual(self.store.get(slot_key), original_value)
+        self.assertEqual(state._get_unhealthy_replacement_groups(), {"3", "5"})
+
+    def test_mark_replacement_group_unhealthy_retries_cas_conflict(self):
+        """A concurrent marker update is preserved by the CAS retry loop."""
+        conflict_key = f"ft_rendezvous_barrier:{self.run_id}:unhealthy_replacement_groups_0"
+
+        class StoreConflictsOnce:
+            def __init__(self, underlying):
+                self._store = underlying
+                self._conflicted = False
+
+            def compare_set(self, key, expected_value, desired_value):
+                if key == conflict_key and not self._conflicted:
+                    self._conflicted = True
+                    conflict_value = _RendezvousBarrierState._pack_unhealthy_replacement_groups(
+                        {"3"}
+                    )
+                    self._store.set(key, conflict_value)
+                    return conflict_value
+                return self._store.compare_set(key, expected_value, desired_value)
+
+            def check(self, keys):
+                return self._store.check(keys)
+
+            def get(self, key):
+                return self._store.get(key)
+
+            def set(self, key, value):
+                return self._store.set(key, value)
+
+            def add(self, key, value):
+                return self._store.add(key, value)
+
+            def multi_get(self, keys):
+                return self._store.multi_get(keys)
+
+            def multi_set(self, keys, values):
+                return self._store.multi_set(keys, values)
+
+        state = _RendezvousBarrierState(
+            store=StoreConflictsOnce(self.store),
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        state._mark_replacement_group_unhealthy(5)
+
+        self.assertEqual(state._get_unhealthy_replacement_groups(), {"3", "5"})
+
+    def test_pre_join_unhealthy_marks_replacement_group_without_joining(self):
+        """Job-array health failures publish the marker before Step 1 joins."""
+        try:
+            os.environ["SLURM_ARRAY_TASK_ID"] = "4"
+            os.environ["SLURM_PROCID"] = "0"
+            os.environ["SLURM_NNODES"] = "2"
+            os.environ["SLURM_JOB_ID"] = "job-id"
+            state = _RendezvousBarrierState(
+                store=self.store,
+                run_id=self.run_id,
+                is_store_host=True,
+                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            )
+
+            def fail_health_check():
+                raise ft_rendezvous_barrier_module.UnhealthyNodeException("bad node")
+
+            with self.assertRaises(ft_rendezvous_barrier_module.UnhealthyNodeException):
+                state.perform_rendezvous(
+                    _NodeDesc("node", 100, 0),
+                    min_nodes=1,
+                    max_nodes=1,
+                    segment_check_interval=0.0,
+                    pre_join_hook=fail_health_check,
+                )
+
+            self.assertEqual(state._get_unhealthy_replacement_groups(), {"4"})
+            self.assertFalse(self.store.check([state.join_count_key]))
+        finally:
+            for var in ("SLURM_ARRAY_TASK_ID", "SLURM_PROCID", "SLURM_NNODES", "SLURM_JOB_ID"):
+                os.environ.pop(var, None)
 
     def test_get_all_participants_incremental_fetch(self):
         """Test incremental fetching of participants using get_all_participants."""
@@ -388,16 +486,20 @@ class BarrierStateBasicTest(BaseRendezvousTest):
 
         # Add some participants to the store
         participants_data = [
-            (self.node_desc_gen.generate(), 0, "domain1"),
-            (self.node_desc_gen.generate(), 1, "domain1"),
-            (self.node_desc_gen.generate(), 2, "domain2"),
-            (self.node_desc_gen.generate(), 3, "domain2"),
-            (self.node_desc_gen.generate(), 4, "domain3"),
+            (self.node_desc_gen.generate(), 0, "domain1", None),
+            (self.node_desc_gen.generate(), 1, "domain1", None),
+            (self.node_desc_gen.generate(), 2, "domain2", None),
+            (self.node_desc_gen.generate(), 3, "domain2", None),
+            (self.node_desc_gen.generate(), 4, "domain3", None),
         ]
 
-        for i, (node_desc, infra_rank, domain_id) in enumerate(participants_data, start=1):
+        for i, (node_desc, infra_rank, domain_id, replacement_group_id) in enumerate(
+            participants_data, start=1
+        ):
             slot_key = f"{state.prefix}:slot_{i}"
-            participant_data = _participant_store_value(0, node_desc, infra_rank, domain_id)
+            participant_data = _participant_store_value(
+                0, node_desc, infra_rank, domain_id, replacement_group_id
+            )
             self.store.set(slot_key, participant_data)
 
         # Test 1: Fetch all participants at once
@@ -443,7 +545,7 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         )
         self.assertEqual(len(result), 2)  # Should return existing list (first_two_copy3)
 
-        # Test 6: Round filtering - mismatched round should be treated as placeholder
+        # Test 6: Round filtering - mismatched round should be treated as missing
         mismatch_key = f"{state.prefix}:slot_3"
         mismatch_data = _participant_store_value(
             1, participants_data[2][0], participants_data[2][1], participants_data[2][2]
@@ -451,11 +553,7 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         self.store.set(mismatch_key, mismatch_data)
         filtered = state.get_all_participants(total_participants=5, expected_round_id=0)
         self.assertEqual(len(filtered), 5)
-        self.assertEqual(
-            filtered[2][2],
-            WITHDRAWN,
-            "Round mismatch should be converted to placeholder participant",
-        )
+        self.assertIsNone(filtered[2], "Round mismatch should be returned as a missing slot")
 
     def test_store_value_unpack_requires_round_field(self):
         """Test store value unpack requires round-fencing fields."""
@@ -538,9 +636,9 @@ class Step2CompletionTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "none"),
-            (_NodeDesc("node1", 101, 0), 1, "none"),
-            (_NodeDesc("node2", 102, 0), 2, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+            (_NodeDesc("node2", 102, 0), 2, "none", None),
         ]
         _seed_joined_participants(self.store, state, participants)
 
@@ -577,8 +675,8 @@ class Step2CompletionTest(BaseRendezvousTest):
         )
 
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "domain-a"),
-            (_NodeDesc("node1", 101, 0), 1, "domain-a"),
+            (_NodeDesc("node0", 100, 0), 0, "domain-a", None),
+            (_NodeDesc("node1", 101, 0), 1, "domain-a", None),
         ]
         _seed_joined_participants(self.store, state, participants)
 
@@ -597,6 +695,75 @@ class Step2CompletionTest(BaseRendezvousTest):
         ]
         self.assertEqual(ranks, [0, 1])
 
+    def test_step2_waits_for_complete_replacement_group_before_segment_check(self):
+        """Raw participants may satisfy segment while complete replacement groups do not."""
+        min_nodes = 2
+        max_nodes = 4
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=0.3,
+            segment=2,
+            replacement_group_size=2,
+        )
+        state._compute_step2_poll_interval = lambda min_nodes, segment_check_interval: 0.0
+
+        participants = [
+            (_NodeDesc("partial0", 100, 0), 0, "domain-a", "rg-0"),
+            (_NodeDesc("partial1", 101, 0), 1, "domain-a", "rg-1"),
+        ]
+        _seed_joined_participants(self.store, state, participants)
+
+        state._rendezvous_start_time = time.monotonic()
+        with self.assertRaises(RendezvousTimeoutError):
+            state._host_close_round(
+                _NodeDesc("control", 10, 0),
+                min_nodes=min_nodes,
+                max_nodes=max_nodes,
+                segment_check_interval=0.0,
+            )
+
+        self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "0")
+
+    def test_step2_assigns_active_ranks_from_complete_replacement_group(self):
+        """Complete replacement groups are preferred over incomplete lower-infra groups."""
+        min_nodes = 2
+        max_nodes = 4
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            segment=2,
+            replacement_group_size=2,
+        )
+        state._compute_step2_poll_interval = lambda min_nodes, segment_check_interval: 0.0
+
+        participants = [
+            (_NodeDesc("partial0", 100, 0), 0, "domain-old", "rg-old"),
+            (_NodeDesc("spare0", 102, 0), 2, "domain-spare", "rg-spare"),
+            (_NodeDesc("spare1", 103, 0), 3, "domain-spare", "rg-spare"),
+        ]
+        _seed_joined_participants(self.store, state, participants)
+
+        state._rendezvous_start_time = time.monotonic()
+        state._host_close_round(
+            _NodeDesc("control", 10, 0),
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=0.0,
+        )
+
+        self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "1")
+        spare_ranks = [
+            state._unpack_rank_value(self.store.get(f"{state.prefix}:slot_{slot}_rank"))[0]
+            for slot in (2, 3)
+        ]
+        self.assertEqual(spare_ranks, [0, 1])
+        partial_rank = state._unpack_rank_value(self.store.get(f"{state.prefix}:slot_1_rank"))[0]
+        self.assertEqual(partial_rank, 2)
+
     def test_step2_participants_see_completion_key(self):
         """Test that rendezvous completes correctly when all participants arrive quickly.
 
@@ -613,9 +780,9 @@ class Step2CompletionTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "none"),
-            (_NodeDesc("node1", 101, 0), 1, "none"),
-            (_NodeDesc("node2", 102, 0), 2, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+            (_NodeDesc("node2", 102, 0), 2, "none", None),
         ]
         _seed_joined_participants(self.store, state, participants)
 
@@ -714,12 +881,10 @@ class RaceConditionTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
         participants = [
-            (_NodeDesc("host", 100, 0), 0, "none"),
-            (_NodeDesc("regular", 101, 0), 1, "none"),
+            (_NodeDesc("host", 100, 0), 0, "none", None),
+            (_NodeDesc("regular", 101, 0), 1, "none", None),
         ]
         _seed_joined_participants(self.store, state, participants)
-
-        current_joined_snapshot = int(self.store.get(state.join_count_key).decode("utf-8"))
 
         late_slot = self.store.add(state.join_count_key, 1)
         late_rank_key = f"{state.prefix}:slot_{late_slot}_rank"
@@ -735,8 +900,10 @@ class RaceConditionTest(BaseRendezvousTest):
         state.assign_group_ranks(
             world_size=min_nodes,
             max_nodes=max_nodes,
-            total_participants=current_joined_snapshot,
             node_desc=_NodeDesc("control", 10, 0),
+            slot_participants=participants,
+            active_candidate_participants=participants,
+            standby_only_participants=[],
         )
         self.store.set(state.round_done_key, "1".encode("utf-8"))
 
@@ -824,9 +991,9 @@ class StoreHostBehaviorTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "none"),
-            (_NodeDesc("node1", 101, 0), 1, "none"),
-            (_NodeDesc("node2", 102, 0), 2, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+            (_NodeDesc("node2", 102, 0), 2, "none", None),
         ]
         _seed_joined_participants(self.store, state, participants)
 
@@ -947,9 +1114,9 @@ class GroupRankAssignmentTest(TestCase):
 
         # Create participants
         participants = [
-            (_NodeDesc("node_a", 100, 0), -1, None),
-            (_NodeDesc("node_b", 101, 0), -1, None),
-            (_NodeDesc("node_c", 102, 0), -1, None),
+            (_NodeDesc("node_a", 100, 0), -1, "none", None),
+            (_NodeDesc("node_b", 101, 0), -1, "none", None),
+            (_NodeDesc("node_c", 102, 0), -1, "none", None),
         ]
         min_nodes = 3
 
@@ -972,9 +1139,9 @@ class GroupRankAssignmentTest(TestCase):
 
         # Create participants with infra ranks
         participants = [
-            (_NodeDesc("node_a", 100, 0), 0, "none"),
-            (_NodeDesc("node_b", 101, 0), 1, "none"),
-            (_NodeDesc("node_c", 102, 0), 2, "none"),
+            (_NodeDesc("node_a", 100, 0), 0, "none", None),
+            (_NodeDesc("node_b", 101, 0), 1, "none", None),
+            (_NodeDesc("node_c", 102, 0), 2, "none", None),
         ]
         min_nodes = 3
 
@@ -1087,7 +1254,7 @@ class GroupRankAssignmentTest(TestCase):
     def test_previous_active_last_call_gate_waits_for_missing_infra_rank(self):
         """The close gate waits while previous active infra ranks are missing."""
         gate = _PreviousActiveLastCallGate(
-            previous_active_infra_ranks={0, 1},
+            previous_active_by_infra_rank={0: None, 1: None},
             timeout_seconds=15.0,
             enabled=True,
         )
@@ -1095,13 +1262,19 @@ class GroupRankAssignmentTest(TestCase):
         previous_1 = _NodeDesc("node1", 101, 0)
         spare = _NodeDesc("spare", 102, 0)
 
-        decision = gate.evaluate([(previous_0, 0, "none"), (spare, 2, "none")], now=100.0)
+        decision = gate.evaluate(
+            [(previous_0, 0, "none", None), (spare, 2, "none", None)], now=100.0
+        )
         self.assertFalse(decision.should_close)
         self.assertEqual(decision.missing_previous_active, (1,))
         self.assertEqual(decision.last_call_deadline, 115.0)
 
         decision = gate.evaluate(
-            [(previous_0, 0, "none"), (previous_1, 1, "none"), (spare, 2, "none")],
+            [
+                (previous_0, 0, "none", None),
+                (previous_1, 1, "none", None),
+                (spare, 2, "none", None),
+            ],
             now=101.0,
         )
         self.assertTrue(decision.should_close)
@@ -1110,13 +1283,47 @@ class GroupRankAssignmentTest(TestCase):
     def test_previous_active_last_call_gate_is_noop_when_disabled(self):
         """No-hot-spare or no-snapshot paths keep the current immediate close behavior."""
         gate = _PreviousActiveLastCallGate(
-            previous_active_infra_ranks={0, 1},
+            previous_active_by_infra_rank={0: None, 1: None},
             timeout_seconds=15.0,
             enabled=False,
         )
-        decision = gate.evaluate([(_NodeDesc("spare", 102, 0), 2, "none")], now=100.0)
+        decision = gate.evaluate([(_NodeDesc("spare", 102, 0), 2, "none", None)], now=100.0)
 
         self.assertTrue(decision.should_close)
+
+    def test_previous_active_last_call_ignores_unhealthy_replacement_group(self):
+        """Missing previous-active ranks from unhealthy groups do not hold last_call open."""
+        gate = _PreviousActiveLastCallGate(
+            previous_active_by_infra_rank={0: "7"},
+            timeout_seconds=15.0,
+            enabled=True,
+        )
+
+        decision = gate.evaluate(
+            [(_NodeDesc("spare", 102, 0), 2, "none", "8")],
+            now=100.0,
+            unhealthy_replacement_groups={"7"},
+        )
+
+        self.assertTrue(decision.should_close)
+        self.assertEqual(decision.missing_previous_active, ())
+
+    def test_previous_active_last_call_still_waits_for_eligible_missing_rank(self):
+        """Unhealthy group filtering does not hide other missing previous active ranks."""
+        gate = _PreviousActiveLastCallGate(
+            previous_active_by_infra_rank={0: "7", 1: "8"},
+            timeout_seconds=15.0,
+            enabled=True,
+        )
+
+        decision = gate.evaluate(
+            [(_NodeDesc("spare", 102, 0), 2, "none", "9")],
+            now=100.0,
+            unhealthy_replacement_groups={"7"},
+        )
+
+        self.assertFalse(decision.should_close)
+        self.assertEqual(decision.missing_previous_active, (1,))
 
     def test_previous_active_snapshot_is_host_local_by_infra_rank(self):
         """The prior active set is remembered in host-local state by infrastructure rank."""
@@ -1131,25 +1338,31 @@ class GroupRankAssignmentTest(TestCase):
         active_1 = _NodeDesc("node1", 101, 0)
         spare = _NodeDesc("spare", 102, 0)
         participants = [
-            (active_0, 10, "none"),
-            (active_1, 20, "none"),
-            (spare, 30, "none"),
+            (active_0, 10, "none", None),
+            (active_1, 20, "none", None),
+            (spare, 30, "none", None),
         ]
-        for slot, (node_desc, infra_rank, domain_id) in enumerate(participants, start=1):
+        for slot, (node_desc, infra_rank, domain_id, replacement_group_id) in enumerate(
+            participants, start=1
+        ):
             self.store.add(state.join_count_key, 1)
             self.store.set(
                 f"{state.prefix}:slot_{slot}",
-                state._pack_participant_value(node_desc, infra_rank, domain_id, 0),
+                state._pack_participant_value(
+                    node_desc, infra_rank, domain_id, 0, replacement_group_id
+                ),
             )
 
         state.assign_group_ranks(
             world_size=2,
             max_nodes=3,
-            total_participants=3,
             node_desc=active_0,
+            slot_participants=participants,
+            active_candidate_participants=participants,
+            standby_only_participants=[],
         )
 
-        self.assertEqual(state._previous_active_infra_ranks, {10, 20})
+        self.assertEqual(state._previous_active_by_infra_rank, {10: None, 20: None})
 
     def test_host_close_waits_for_previous_active_before_accepting_spare(self):
         """A hot spare that arrives first does not close the round before last_call."""
@@ -1166,8 +1379,8 @@ class GroupRankAssignmentTest(TestCase):
         previous_0 = _NodeDesc("node0", 100, 0)
         previous_1 = _NodeDesc("node1", 101, 0)
         spare = _NodeDesc("spare", 102, 0)
-        state._remember_previous_active_infra_ranks(
-            [(previous_0, 0, "none"), (previous_1, 1, "none")],
+        state._remember_previous_active_membership(
+            [(previous_0, 0, "none", None), (previous_1, 1, "none", None)],
             {previous_0: 0, previous_1: 1},
             world_size=2,
         )
@@ -1191,8 +1404,8 @@ class GroupRankAssignmentTest(TestCase):
                 self._gate = gate
                 self.injected = False
 
-            def evaluate(self, participants, now):
-                decision = self._gate.evaluate(participants, now)
+            def evaluate(self, participants, now, unhealthy_replacement_groups=None):
+                decision = self._gate.evaluate(participants, now, unhealthy_replacement_groups)
                 if not decision.should_close and not self.injected:
                     slot = state.store.add(state.join_count_key, 1)
                     state.store.set(
@@ -1230,11 +1443,11 @@ class GroupRankAssignmentTest(TestCase):
 
         # 5 participants, min_nodes=3
         participants = [
-            (_NodeDesc("node_a", 100, 0), -1, "none"),
-            (_NodeDesc("node_b", 101, 0), -1, "none"),
-            (_NodeDesc("node_c", 102, 0), -1, "none"),
-            (_NodeDesc("node_d", 103, 0), -1, "none"),
-            (_NodeDesc("node_e", 104, 0), -1, "none"),
+            (_NodeDesc("node_a", 100, 0), -1, "none", None),
+            (_NodeDesc("node_b", 101, 0), -1, "none", None),
+            (_NodeDesc("node_c", 102, 0), -1, "none", None),
+            (_NodeDesc("node_d", 103, 0), -1, "none", None),
+            (_NodeDesc("node_e", 104, 0), -1, "none", None),
         ]
         min_nodes = 3
 
@@ -1270,9 +1483,9 @@ class GroupRankAssignmentTest(TestCase):
         # Create participants list with infra ranks in reverse of alphabetical order
         # Simulating they arrived/joined out of order
         participants = [
-            (node_aaa, 102, "none"),  # Largest infra rank
-            (node_bbb, 101, "none"),  # Middle infra rank
-            (node_zzz, 100, "none"),  # Smallest infra rank
+            (node_aaa, 102, "none", None),  # Largest infra rank
+            (node_bbb, 101, "none", None),  # Middle infra rank
+            (node_zzz, 100, "none", None),  # Smallest infra rank
         ]
         min_nodes = 3
 
@@ -1299,11 +1512,11 @@ class GroupRankAssignmentTest(TestCase):
 
         # 5 nodes, world_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "none"),  # Active
-            (_NodeDesc("node1", 101, 0), 1, "none"),  # Active
-            (_NodeDesc("node2", 102, 0), 2, "none"),  # Active
-            (_NodeDesc("node3", 103, 0), 3, "none"),  # Hot spare
-            (_NodeDesc("node4", 104, 0), 4, "none"),  # Hot spare
+            (_NodeDesc("node0", 100, 0), 0, "none", None),  # Active
+            (_NodeDesc("node1", 101, 0), 1, "none", None),  # Active
+            (_NodeDesc("node2", 102, 0), 2, "none", None),  # Active
+            (_NodeDesc("node3", 103, 0), 3, "none", None),  # Hot spare
+            (_NodeDesc("node4", 104, 0), 4, "none", None),  # Hot spare
         ]
         world_size = 3
 
@@ -1333,11 +1546,11 @@ class GroupRankAssignmentTest(TestCase):
         # 5 nodes, world_size=3, segment=1 -> first 3 active, remaining 2 hot spares
         # Each node has its own domain (simulated with node names like "domain0")
         participants = [
-            (_NodeDesc("domain0-node", 100, 0), 0, "domain0"),
-            (_NodeDesc("domain1-node", 101, 0), 1, "domain1"),
-            (_NodeDesc("domain2-node", 102, 0), 2, "domain2"),
-            (_NodeDesc("domain3-node", 103, 0), 3, "domain3"),  # Hot spare
-            (_NodeDesc("domain4-node", 104, 0), 4, "domain4"),  # Hot spare
+            (_NodeDesc("domain0-node", 100, 0), 0, "domain0", None),
+            (_NodeDesc("domain1-node", 101, 0), 1, "domain1", None),
+            (_NodeDesc("domain2-node", 102, 0), 2, "domain2", None),
+            (_NodeDesc("domain3-node", 103, 0), 3, "domain3", None),  # Hot spare
+            (_NodeDesc("domain4-node", 104, 0), 4, "domain4", None),  # Hot spare
         ]
         world_size = 3
 
@@ -1371,19 +1584,19 @@ class GroupRankAssignmentTest(TestCase):
         # Total 12 nodes, world_size=8 (2 segments)
         participants = [
             # Domain 100: 8 nodes
-            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
-            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
-            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100", None),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100", None),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100", None),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100", None),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100", None),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100", None),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100", None),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100", None),
             # Domain 101: 4 nodes
-            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
-            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
-            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
-            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101", None),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101", None),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101", None),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101", None),
         ]
         world_size = 8
 
@@ -1415,9 +1628,12 @@ class GroupRankAssignmentTest(TestCase):
         # Total 20 nodes, world_size=16 (1 segment)
         participants = [
             # Domain 100: 16 nodes
-            *[(_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i, "nvl72100") for i in range(16)],
+            *[(_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i, "nvl72100", None) for i in range(16)],
             # Domain 101: 4 nodes
-            *[(_NodeDesc(f"nvl72101-node{i}", 116 + i, 0), 16 + i, "nvl72101") for i in range(4)],
+            *[
+                (_NodeDesc(f"nvl72101-node{i}", 116 + i, 0), 16 + i, "nvl72101", None)
+                for i in range(4)
+            ],
         ]
         world_size = 16
 
@@ -1449,14 +1665,14 @@ class GroupRankAssignmentTest(TestCase):
         # World_size=4 requires 1 segment
         participants = [
             # Domain 100: 4 nodes
-            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100", None),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100", None),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100", None),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100", None),
             # Domain 101: 3 nodes (incomplete segment)
-            (_NodeDesc("nvl72101-node0", 104, 0), 4, "nvl72101"),
-            (_NodeDesc("nvl72101-node1", 105, 0), 5, "nvl72101"),
-            (_NodeDesc("nvl72101-node2", 106, 0), 6, "nvl72101"),
+            (_NodeDesc("nvl72101-node0", 104, 0), 4, "nvl72101", None),
+            (_NodeDesc("nvl72101-node1", 105, 0), 5, "nvl72101", None),
+            (_NodeDesc("nvl72101-node2", 106, 0), 6, "nvl72101", None),
         ]
         world_size = 4
 
@@ -1487,15 +1703,15 @@ class GroupRankAssignmentTest(TestCase):
         # World_size=8 requires 2 segments, both domains contribute 1 segment
         participants = [
             # Domain 100
-            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100", None),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100", None),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100", None),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100", None),
             # Domain 101
-            (_NodeDesc("nvl72101-node0", 104, 0), 4, "nvl72101"),
-            (_NodeDesc("nvl72101-node1", 105, 0), 5, "nvl72101"),
-            (_NodeDesc("nvl72101-node2", 106, 0), 6, "nvl72101"),
-            (_NodeDesc("nvl72101-node3", 107, 0), 7, "nvl72101"),
+            (_NodeDesc("nvl72101-node0", 104, 0), 4, "nvl72101", None),
+            (_NodeDesc("nvl72101-node1", 105, 0), 5, "nvl72101", None),
+            (_NodeDesc("nvl72101-node2", 106, 0), 6, "nvl72101", None),
+            (_NodeDesc("nvl72101-node3", 107, 0), 7, "nvl72101", None),
         ]
         world_size = 8
 
@@ -1531,7 +1747,7 @@ class GroupRankAssignmentTest(TestCase):
         # World_size=4 requires 1 segment
         # -> First 4 nodes active, remaining 8 standby
         participants = [
-            (_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i, "nvl72100") for i in range(12)
+            (_NodeDesc(f"nvl72100-node{i}", 100 + i, 0), i, "nvl72100", None) for i in range(12)
         ]
         world_size = 4
 
@@ -1563,24 +1779,24 @@ class GroupRankAssignmentTest(TestCase):
 
         participants = [
             # Domain 100: 8 nodes (2 segments) - lower infra_rank comes first
-            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
-            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
-            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
-            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
-            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
-            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
-            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
-            (_NodeDesc("nvl72101-node4", 112, 0), 12, "nvl72101"),
-            (_NodeDesc("nvl72101-node5", 113, 0), 13, "nvl72101"),
-            (_NodeDesc("nvl72102-node0", 114, 0), 14, "nvl72102"),
-            (_NodeDesc("nvl72102-node1", 115, 0), 15, "nvl72102"),
-            (_NodeDesc("nvl72102-node2", 116, 0), 16, "nvl72102"),
-            (_NodeDesc("nvl72102-node3", 117, 0), 17, "nvl72102"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100", None),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100", None),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100", None),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100", None),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100", None),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100", None),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100", None),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100", None),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101", None),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101", None),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101", None),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101", None),
+            (_NodeDesc("nvl72101-node4", 112, 0), 12, "nvl72101", None),
+            (_NodeDesc("nvl72101-node5", 113, 0), 13, "nvl72101", None),
+            (_NodeDesc("nvl72102-node0", 114, 0), 14, "nvl72102", None),
+            (_NodeDesc("nvl72102-node1", 115, 0), 15, "nvl72102", None),
+            (_NodeDesc("nvl72102-node2", 116, 0), 16, "nvl72102", None),
+            (_NodeDesc("nvl72102-node3", 117, 0), 17, "nvl72102", None),
         ]
         world_size = 8  # Need 2 segments
 
@@ -1615,11 +1831,11 @@ class GroupRankAssignmentTest(TestCase):
         # After sorting by infra_rank: 0, 1, 2, 3, 4
         # World_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
         participants = [
-            (_NodeDesc("node4", 104, 0), 4, "none"),
-            (_NodeDesc("node1", 101, 0), 1, "none"),
-            (_NodeDesc("node3", 103, 0), 3, "none"),
-            (_NodeDesc("node0", 100, 0), 0, "none"),
-            (_NodeDesc("node2", 102, 0), 2, "none"),
+            (_NodeDesc("node4", 104, 0), 4, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+            (_NodeDesc("node3", 103, 0), 3, "none", None),
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node2", 102, 0), 2, "none", None),
         ]
         world_size = 3
 
@@ -1660,18 +1876,18 @@ class GroupRankAssignmentTest(TestCase):
         # Listed in reverse order to test sorting
         participants = [
             # Domain 101 nodes (listed first, but have higher infra_ranks)
-            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101"),
-            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101"),
-            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101"),
-            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101"),
-            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
-            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
-            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
+            (_NodeDesc("nvl72101-node3", 111, 0), 11, "nvl72101", None),
+            (_NodeDesc("nvl72101-node2", 110, 0), 10, "nvl72101", None),
+            (_NodeDesc("nvl72101-node1", 109, 0), 9, "nvl72101", None),
+            (_NodeDesc("nvl72101-node0", 108, 0), 8, "nvl72101", None),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100", None),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100", None),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100", None),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100", None),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100", None),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100", None),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100", None),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100", None),
         ]
         world_size = 8  # Need 2 segments
 
@@ -1712,19 +1928,19 @@ class GroupRankAssignmentTest(TestCase):
         # Domain 102: infra_ranks [10-12] (0 complete segments)
         # Listed in completely arbitrary order
         participants = [
-            (_NodeDesc("nvl72102-node2", 112, 0), 12, "nvl72102"),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
-            (_NodeDesc("nvl72101-node1", 107, 0), 7, "nvl72101"),
-            (_NodeDesc("nvl72102-node0", 110, 0), 10, "nvl72102"),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
-            (_NodeDesc("nvl72101-node3", 109, 0), 9, "nvl72101"),
-            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
-            (_NodeDesc("nvl72101-node2", 108, 0), 8, "nvl72101"),
-            (_NodeDesc("nvl72102-node1", 111, 0), 11, "nvl72102"),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
-            (_NodeDesc("nvl72101-node0", 106, 0), 6, "nvl72101"),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
+            (_NodeDesc("nvl72102-node2", 112, 0), 12, "nvl72102", None),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100", None),
+            (_NodeDesc("nvl72101-node1", 107, 0), 7, "nvl72101", None),
+            (_NodeDesc("nvl72102-node0", 110, 0), 10, "nvl72102", None),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100", None),
+            (_NodeDesc("nvl72101-node3", 109, 0), 9, "nvl72101", None),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100", None),
+            (_NodeDesc("nvl72101-node2", 108, 0), 8, "nvl72101", None),
+            (_NodeDesc("nvl72102-node1", 111, 0), 11, "nvl72102", None),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100", None),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100", None),
+            (_NodeDesc("nvl72101-node0", 106, 0), 6, "nvl72101", None),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100", None),
         ]
         world_size = 8  # Need 2 segments
 
@@ -1767,11 +1983,11 @@ class GroupRankAssignmentTest(TestCase):
         # Missing nodes: 2, 4, 5 (failed to join)
         # World_size=3 -> first 3 active [0,1,2], remaining 2 hot spares [3,4]
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "none"),
-            (_NodeDesc("node1", 101, 0), 1, "none"),
-            (_NodeDesc("node3", 103, 0), 3, "none"),
-            (_NodeDesc("node6", 106, 0), 6, "none"),
-            (_NodeDesc("node7", 107, 0), 7, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+            (_NodeDesc("node3", 103, 0), 3, "none", None),
+            (_NodeDesc("node6", 106, 0), 6, "none", None),
+            (_NodeDesc("node7", 107, 0), 7, "none", None),
         ]
         world_size = 3
 
@@ -1799,13 +2015,13 @@ class GroupRankAssignmentTest(TestCase):
 
         # Large gaps in infra_ranks
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "none"),
-            (_NodeDesc("node5", 105, 0), 5, "none"),
-            (_NodeDesc("node10", 110, 0), 10, "none"),
-            (_NodeDesc("node15", 115, 0), 15, "none"),
-            (_NodeDesc("node20", 120, 0), 20, "none"),
-            (_NodeDesc("node22", 122, 0), 22, "none"),
-            (_NodeDesc("node24", 124, 0), 24, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node5", 105, 0), 5, "none", None),
+            (_NodeDesc("node10", 110, 0), 10, "none", None),
+            (_NodeDesc("node15", 115, 0), 15, "none", None),
+            (_NodeDesc("node20", 120, 0), 20, "none", None),
+            (_NodeDesc("node22", 122, 0), 22, "none", None),
+            (_NodeDesc("node24", 124, 0), 24, "none", None),
         ]
         world_size = 4  # Need 4 active nodes
 
@@ -1840,16 +2056,16 @@ class GroupRankAssignmentTest(TestCase):
         # World_size=8 requires 2 segments
         participants = [
             # Domain 100 (with gaps)
-            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100"),
-            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100"),
-            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100"),
-            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100"),
-            (_NodeDesc("nvl72100-node8", 108, 0), 8, "nvl72100"),
-            (_NodeDesc("nvl72100-node10", 110, 0), 10, "nvl72100"),
-            (_NodeDesc("nvl72101-node0", 112, 0), 12, "nvl72101"),
-            (_NodeDesc("nvl72101-node2", 114, 0), 14, "nvl72101"),
-            (_NodeDesc("nvl72101-node5", 117, 0), 17, "nvl72101"),
-            (_NodeDesc("nvl72101-node7", 119, 0), 19, "nvl72101"),
+            (_NodeDesc("nvl72100-node0", 100, 0), 0, "nvl72100", None),
+            (_NodeDesc("nvl72100-node2", 102, 0), 2, "nvl72100", None),
+            (_NodeDesc("nvl72100-node4", 104, 0), 4, "nvl72100", None),
+            (_NodeDesc("nvl72100-node6", 106, 0), 6, "nvl72100", None),
+            (_NodeDesc("nvl72100-node8", 108, 0), 8, "nvl72100", None),
+            (_NodeDesc("nvl72100-node10", 110, 0), 10, "nvl72100", None),
+            (_NodeDesc("nvl72101-node0", 112, 0), 12, "nvl72101", None),
+            (_NodeDesc("nvl72101-node2", 114, 0), 14, "nvl72101", None),
+            (_NodeDesc("nvl72101-node5", 117, 0), 17, "nvl72101", None),
+            (_NodeDesc("nvl72101-node7", 119, 0), 19, "nvl72101", None),
         ]
         world_size = 8
 
@@ -1889,15 +2105,15 @@ class GroupRankAssignmentTest(TestCase):
         # Listed in reverse order to test sorting
         participants = [
             # Domain 101 first, in reverse
-            (_NodeDesc("nvl72101-node7", 117, 0), 17, "nvl72101"),
-            (_NodeDesc("nvl72101-node5", 115, 0), 15, "nvl72101"),
-            (_NodeDesc("nvl72101-node3", 113, 0), 13, "nvl72101"),
-            (_NodeDesc("nvl72101-node1", 111, 0), 11, "nvl72101"),
-            (_NodeDesc("nvl72100-node9", 109, 0), 9, "nvl72100"),
-            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100"),
-            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100"),
-            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100"),
-            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100"),
+            (_NodeDesc("nvl72101-node7", 117, 0), 17, "nvl72101", None),
+            (_NodeDesc("nvl72101-node5", 115, 0), 15, "nvl72101", None),
+            (_NodeDesc("nvl72101-node3", 113, 0), 13, "nvl72101", None),
+            (_NodeDesc("nvl72101-node1", 111, 0), 11, "nvl72101", None),
+            (_NodeDesc("nvl72100-node9", 109, 0), 9, "nvl72100", None),
+            (_NodeDesc("nvl72100-node7", 107, 0), 7, "nvl72100", None),
+            (_NodeDesc("nvl72100-node5", 105, 0), 5, "nvl72100", None),
+            (_NodeDesc("nvl72100-node3", 103, 0), 3, "nvl72100", None),
+            (_NodeDesc("nvl72100-node1", 101, 0), 1, "nvl72100", None),
         ]
         world_size = 8
 
@@ -1969,6 +2185,28 @@ class ErrorCaseTest(BaseRendezvousTest):
                 _test_segment_check_interval(),
             )
 
+    def test_exceed_max_nodes_raises_error_in_slurm_job_array(self):
+        """SLURM job-array mode still treats max_nodes as a hard admission cap."""
+        os.environ["SLURM_ARRAY_TASK_ID"] = "4"
+        min_nodes = 2
+        max_nodes = 2
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=False,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        self.store.add(state.join_count_key, max_nodes)
+
+        with self.assertRaises(RendezvousClosedError):
+            state.perform_rendezvous(
+                self.node_desc_gen.generate(),
+                min_nodes,
+                max_nodes,
+                _test_segment_check_interval(),
+            )
+        self.assertTrue(state.is_shutdown())
+
     def test_timeout_raises_error(self):
         """Test that join timeout raises RendezvousTimeoutError.
 
@@ -2033,8 +2271,8 @@ class ErrorCaseTest(BaseRendezvousTest):
 
         # Create participants with duplicate infra_rank
         participants = [
-            (_NodeDesc("node_a", 100, 0), 0, "none"),
-            (_NodeDesc("node_b", 101, 0), 0, "none"),
+            (_NodeDesc("node_a", 100, 0), 0, "none", None),
+            (_NodeDesc("node_b", 101, 0), 0, "none", None),
         ]
         min_nodes = 2
 
@@ -2087,9 +2325,9 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "none"),
-            (_NodeDesc("node1", 101, 0), 1, "none"),
-            (_NodeDesc("node2", 102, 0), 2, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+            (_NodeDesc("node2", 102, 0), 2, "none", None),
         ]
         _seed_joined_participants(self.store, state, participants)
 
@@ -2102,7 +2340,7 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
         )
 
         observed_ranks = []
-        for slot, (node_desc, _, _) in enumerate(participants, start=1):
+        for slot, (node_desc, _, _, _) in enumerate(participants, start=1):
             rank, total = state._wait_for_round_done(node_desc, f"{state.prefix}:slot_{slot}_rank")
             observed_ranks.append(rank)
             self.assertEqual(total, min_nodes)
@@ -2124,8 +2362,8 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
         participants = [
-            (_NodeDesc("node0", 100, 0), 0, "none"),
-            (_NodeDesc("node1", 101, 0), 1, "none"),
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
         ]
         _seed_joined_participants(self.store, state, participants)
 
@@ -2171,6 +2409,70 @@ class AcknowledgmentPhaseTest(BaseRendezvousTest):
         )
 
 
+class HandlerProfilingTest(TestCase):
+    """Unit tests for handler-level profiling boundaries."""
+
+    def _make_handler_with_pre_join_capture(self):
+        handler = object.__new__(FtRendezvousBarrierHandler)
+        handler._this_node = _NodeDesc("node0", 100, 0)
+
+        settings = MagicMock()
+        settings.min_nodes = 1
+        settings.max_nodes = 1
+        handler._settings = settings
+
+        barrier_state = MagicMock()
+        barrier_state._round = 0
+
+        def perform_rendezvous(node_desc, min_nodes, max_nodes, pre_join_hook=None):
+            self.assertEqual(node_desc, handler._this_node)
+            self.assertEqual(min_nodes, settings.min_nodes)
+            self.assertEqual(max_nodes, settings.max_nodes)
+            self.assertIsNotNone(pre_join_hook)
+            pre_join_hook()
+            return 0, 1
+
+        barrier_state.perform_rendezvous.side_effect = perform_rendezvous
+        handler._barrier_state = barrier_state
+        handler.ensure_node_is_healthy = MagicMock()
+        handler.handle_control_requests_from_rank = MagicMock()
+        return handler, settings
+
+    def test_perform_rendezvous_records_health_check_completed(self):
+        """The post-Step0 health check emits a profiling boundary before Step 1."""
+        handler, settings = self._make_handler_with_pre_join_capture()
+
+        with patch.object(ft_rendezvous_barrier_module, "record_profiling_event") as record_event:
+            handler._perform_rendezvous()
+
+        record_event.assert_called_once_with(
+            ft_rendezvous_barrier_module.ProfilingEvent.HEALTH_CHECK_COMPLETED,
+            node_id=handler._this_node,
+        )
+        handler.ensure_node_is_healthy.assert_called_once_with()
+        handler.handle_control_requests_from_rank.assert_called_once_with()
+        self.assertEqual(handler._assigned_rank, 0)
+        self.assertEqual(handler._world_size, settings.min_nodes)
+
+    def test_perform_rendezvous_records_health_check_completed_on_failure(self):
+        """The health-check boundary is still logged when the check fails."""
+        handler, _ = self._make_handler_with_pre_join_capture()
+        handler.ensure_node_is_healthy.side_effect = (
+            ft_rendezvous_barrier_module.UnhealthyNodeException("bad node")
+        )
+
+        with patch.object(ft_rendezvous_barrier_module, "record_profiling_event") as record_event:
+            with self.assertRaises(ft_rendezvous_barrier_module.UnhealthyNodeException):
+                handler._perform_rendezvous()
+
+        record_event.assert_called_once_with(
+            ft_rendezvous_barrier_module.ProfilingEvent.HEALTH_CHECK_COMPLETED,
+            node_id=handler._this_node,
+        )
+        handler.ensure_node_is_healthy.assert_called_once_with()
+        handler.handle_control_requests_from_rank.assert_not_called()
+
+
 class HandlerIntegrationTest(BaseRendezvousTest):
     """Integration tests for FtRendezvousBarrierHandler."""
 
@@ -2212,6 +2514,90 @@ class HandlerIntegrationTest(BaseRendezvousTest):
         self.assertEqual(handler.settings.run_id, self.run_id)
         self.assertEqual(handler.settings.min_nodes, 2)
         self.assertEqual(handler.settings.max_nodes, 4)
+
+    def test_handler_accepts_replacement_group_size(self):
+        """External control can configure the static replacement-group size."""
+        handler = FtRendezvousBarrierHandler.from_backend(
+            run_id=self.run_id,
+            store=self.store,
+            backend=None,
+            min_nodes=2,
+            max_nodes=4,
+            timeout=RendezvousTimeout(),
+            is_store_host=True,
+            replacement_group_size=2,
+        )
+
+        self.assertEqual(handler.settings.replacement_group_size, 2)
+        self.assertEqual(handler._barrier_state.replacement_group_size, 2)
+
+    def test_create_handler_derives_replacement_group_size_for_slurm_array(self):
+        """SLURM job arrays derive replacement_group_size from the per-array node count."""
+        os.environ["SLURM_ARRAY_TASK_ID"] = "4"
+        os.environ["SLURM_NNODES"] = "2"
+        params = RendezvousParameters(
+            backend="c10d",
+            endpoint="localhost:0",
+            run_id=self.run_id,
+            min_nodes=2,
+            max_nodes=4,
+            is_store_host=True,
+        )
+
+        handler = ft_rendezvous_barrier_module.create_handler(self.store, None, params)
+
+        self.assertEqual(handler.settings.replacement_group_size, 2)
+        self.assertEqual(handler._barrier_state.replacement_group_size, 2)
+
+    def test_create_handler_requires_replacement_group_size_source_for_slurm_array(self):
+        """SLURM job arrays must expose the per-array node count."""
+        os.environ["SLURM_ARRAY_TASK_ID"] = "4"
+        params = RendezvousParameters(
+            backend="c10d",
+            endpoint="localhost:0",
+            run_id=self.run_id,
+            min_nodes=2,
+            max_nodes=4,
+            is_store_host=True,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Cannot derive replacement_group_size"):
+            ft_rendezvous_barrier_module.create_handler(self.store, None, params)
+
+    def test_create_handler_leaves_replacement_group_size_disabled_for_single_slurm_job(self):
+        """Single SLURM jobs do not enable replacement-group selection automatically."""
+        os.environ["SLURM_JOB_ID"] = "job-id"
+        os.environ["SLURM_NNODES"] = "2"
+        params = RendezvousParameters(
+            backend="c10d",
+            endpoint="localhost:0",
+            run_id=self.run_id,
+            min_nodes=2,
+            max_nodes=4,
+            is_store_host=True,
+        )
+
+        handler = ft_rendezvous_barrier_module.create_handler(self.store, None, params)
+
+        self.assertIsNone(handler.settings.replacement_group_size)
+        self.assertIsNone(handler._barrier_state.replacement_group_size)
+
+    def test_create_handler_uses_configured_replacement_group_size_without_slurm(self):
+        """External control can pass replacement_group_size through rendezvous config."""
+        params = RendezvousParameters(
+            backend="c10d",
+            endpoint="localhost:0",
+            run_id=self.run_id,
+            min_nodes=2,
+            max_nodes=4,
+            is_store_host=True,
+            replacement_group_size="3",
+        )
+
+        handler = ft_rendezvous_barrier_module.create_handler(self.store, None, params)
+
+        self.assertEqual(handler.settings.replacement_group_size, 3)
+        self.assertEqual(handler._barrier_state.replacement_group_size, 3)
 
     def test_handler_segment_validation(self):
         """Test that handler validates min_nodes % segment == 0."""
@@ -2317,8 +2703,8 @@ class InfrastructureRankTest(TestCase):
 
         # Create participants with infra ranks
         participants = [
-            (_NodeDesc("node_0", 100, 0), 0, "none"),
-            (_NodeDesc("node_1", 101, 0), 1, "none"),
+            (_NodeDesc("node_0", 100, 0), 0, "none", None),
+            (_NodeDesc("node_1", 101, 0), 1, "none", None),
         ]
         min_nodes = 2
 
@@ -2433,11 +2819,8 @@ class StaleRoundDetectionTest(BaseRendezvousTest):
         self.assertEqual(state._round, 5)
 
 
-class SignalLeaveRendezvousTest(BaseRendezvousTest):
-    """Test that a participant that receives SIGTERM after joining (Step 1) leaves by
-    incrementing leave_count_key and marking its slot with WITHDRAWN domain_id, so the
-    store host can compute active_count = join_count - leave_count for assignment.
-    """
+class SignalRendezvousTest(BaseRendezvousTest):
+    """Test rendezvous signal handling without store-side leave cleanup."""
 
     @classmethod
     def setUpClass(cls):
@@ -2453,290 +2836,45 @@ class SignalLeaveRendezvousTest(BaseRendezvousTest):
         """Set up test fixtures with unique run_id for each test."""
         super().setUp()
         self.store = self.shared_store
-        self.run_id = f"test_signal_leave_{self._testMethodName}_{uuid.uuid4().hex}"
+        self.run_id = f"test_signal_rendezvous_{self._testMethodName}_{uuid.uuid4().hex}"
         self.node_desc_gen = _NodeDescGenerator()
 
-    def tearDown(self):
-        """Clear module-level state so other tests are not affected."""
-        super().tearDown()
-        ft_rendezvous_barrier_module._current_joined_state = None
-
-    def test_leave_rendezvous_increments_once(self):
-        """Test that _leave_rendezvous increments leave_count_key and marks slot; idempotent."""
+    def test_signal_handler_raises_without_mutating_rendezvous_state(self):
+        """SIGTERM/SIGINT only interrupt rendezvous; they do not publish leave metadata."""
+        os.environ["SLURM_ARRAY_TASK_ID"] = "7"
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
-        # Simulate one participant having joined (slot 1)
-        self.store.add(state.join_count_key, 1)
-        state._slot = 1  # Simulate we are that participant
-        self.assertEqual(int(self.store.get(state.join_count_key).decode('utf-8')), 1)
-
-        state._leave_rendezvous()
-        # join_count stays 1; leave_count becomes 1
-        self.assertEqual(
-            int(self.store.get(state.join_count_key).decode('utf-8')),
-            1,
-            "join_count should remain 1 after leave (slot space is monotonic)",
-        )
-        self.assertEqual(
-            int(self.store.get(state.leave_count_key).decode('utf-8')),
-            1,
-            "leave_count should be 1 after leave",
-        )
-
-        # Idempotent: second call must not increment leave_count again
-        state._leave_rendezvous()
-        self.assertEqual(
-            int(self.store.get(state.leave_count_key).decode('utf-8')),
-            1,
-            "leave_count should still be 1 after second leave",
-        )
-
-    def test_signal_after_join_causes_leave(self):
-        """Test that when a participant is interrupted after Step 1 (e.g. SIGTERM), the
-        finally block leaves (increments leave_count_key, marks slot) so the store
-        host can complete Step 2. We simulate the signal by using a store wrapper that
-        raises SignalException on get() once _current_joined_state is set (after join).
-        """
-        # min_nodes=2 so the host waits for both to join before marking complete (host is faster
-        # than participant which runs ensure_node_is_healthy first). Use longer join timeout so
-        # the participant (main thread) has time to pass health check and join.
-        min_nodes = 2
-        max_nodes = 2
-        segment_check_interval = _test_segment_check_interval()
-        # Participant (main thread) runs ensure_node_is_healthy first, so it can be slow to join.
-        # Host runs perform_rendezvous directly and waits for 2 participants.
-        join_timeout_secs = 60.0
-
-        # Event set when participant has joined (add(join_count_key, 1)) so host can wait
-        # and not timeout before the participant reaches perform_rendezvous.
-        participant_joined_event = threading.Event()
-        # Event set when the host has joined (add(join_count_key, 1)). The participant
-        # store must not start counting round_done reads until the host has joined;
-        # otherwise the SignalException can fire before join_count reaches 2.
-        host_joined_event = threading.Event()
-        # Event set when participant has done the first get of round_done_key in Step 3.
-        # Host waits on this before the round closes so the participant sees 0 on first
-        # get, then we raise on the second get (before returning 1).
-        participant_did_first_get_event = threading.Event()
-
-        # Participant store: raise SignalException on 2nd get of round_done_0;
-        # set participant_did_first_get_event on 1st get so host knows to proceed.
-        # Only start counting round_done reads after host_joined_event is set so that
-        # join_count == 2 when the participant reads it after leaving.
-        class StoreThatRaisesSignalAfterJoin:
-            def __init__(self, underlying, joined_event, host_joined_event, did_first_get_event):
-                self._store = underlying
-                self._joined_event = joined_event
-                self._host_joined_event = host_joined_event
-                self._did_first_get_event = did_first_get_event
-                self._step2_get_count = 0
-
-            def get(self, key):
-                if (
-                    ":round_done_" in key
-                    and ft_rendezvous_barrier_module._current_joined_state is not None
-                    and self._host_joined_event.is_set()
-                ):
-                    self._step2_get_count += 1
-                    if self._step2_get_count == 1:
-                        self._did_first_get_event.set()
-                    if self._step2_get_count >= 2:
-                        # Simulate what the real signal handler does: set _leave_on_unwind
-                        # so the handler's finally will call _leave_rendezvous().
-                        state = ft_rendezvous_barrier_module._current_joined_state
-                        if state is not None:
-                            state._leave_on_unwind = True
-                        raise SignalException(
-                            "Simulated signal during rendezvous",
-                            sigval=signal.Signals(signal.SIGTERM),
-                        )
-                return self._store.get(key)
-
-            def add(self, key, value):
-                result = self._store.add(key, value)
-                if ":join_count_" in key and value == 1:
-                    self._joined_event.set()
-                return result
-
-            def set(self, key, value):
-                return self._store.set(key, value)
-
-            def compare_set(self, key, expected_value, desired_value):
-                return self._store.compare_set(key, expected_value, desired_value)
-
-            def check(self, keys):
-                return self._store.check(keys)
-
-            def multi_get(self, keys):
-                return self._store.multi_get(keys)
-
-            def multi_set(self, keys, values):
-                return self._store.multi_set(keys, values)
-
-        # Host store: signal when it has joined; delay set(round_done_0, 1) until participant
-        # has done first get, so participant sees 0 then we raise on second get.
-        class HostStoreWaitsForFirstGet:
-            def __init__(self, underlying, host_joined_event, did_first_get_event):
-                self._store = underlying
-                self._host_joined_event = host_joined_event
-                self._did_first_get_event = did_first_get_event
-
-            def get(self, key):
-                return self._store.get(key)
-
-            def add(self, key, value):
-                result = self._store.add(key, value)
-                if ":join_count_" in key and value == 1:
-                    self._host_joined_event.set()
-                return result
-
-            def set(self, key, value):
-                if ":round_done_" in key and value == "1".encode("utf-8"):
-                    self._did_first_get_event.wait(timeout=30.0)
-                return self._store.set(key, value)
-
-            def compare_set(self, key, expected_value, desired_value):
-                return self._store.compare_set(key, expected_value, desired_value)
-
-            def check(self, keys):
-                return self._store.check(keys)
-
-            def multi_get(self, keys):
-                return self._store.multi_get(keys)
-
-            def multi_set(self, keys, values):
-                return self._store.multi_set(keys, values)
-
-        participant_store = StoreThatRaisesSignalAfterJoin(
-            self.store, participant_joined_event, host_joined_event, participant_did_first_get_event
-        )
-        host_store = HostStoreWaitsForFirstGet(
-            self.store, host_joined_event, participant_did_first_get_event
-        )
-        host_result = []
-        participant_error = []
-        participant_count_after_leave = []
-
-        def host_thread():
-            state = _RendezvousBarrierState(
-                store=host_store,
-                run_id=self.run_id,
-                is_store_host=True,
-                join_timeout_seconds=join_timeout_secs,
-            )
-            try:
-                node = self.node_desc_gen.generate()
-                rank, total = state.perform_rendezvous(
-                    node, min_nodes, max_nodes, segment_check_interval
-                )
-                host_result.append((rank, total))
-            except Exception as e:
-                host_result.append(('error', e))
-
-        # Participant must run in main thread so handler can install signal handlers
-        # (signal.signal() only works in main thread). Host runs in worker thread.
-        # Host waits for participant to join before starting so the host does not timeout
-        # (participant is slow to reach perform_rendezvous due to health check etc.).
-        start_barrier = threading.Barrier(2)
-
-        def host_with_sync():
-            start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
-            participant_joined_event.wait(timeout=60.0)
-            host_thread()
-
-        t_host = threading.Thread(target=host_with_sync)
-        t_host.start()
-        start_barrier.wait(timeout=BARRIER_WAIT_TIMEOUT_SECS)
-        handler = FtRendezvousBarrierHandler.from_backend(
-            run_id=self.run_id,
-            store=participant_store,
-            backend=None,
-            min_nodes=min_nodes,
-            max_nodes=max_nodes,
-            timeout=RendezvousTimeout(join=timedelta(seconds=join_timeout_secs)),
-            is_store_host=False,
-        )
-        try:
-            handler.next_rendezvous()
-        except SignalException:
-            participant_error.append(True)
-            # Simulated signal does not go through the real signal handler, so _leave_on_unwind
-            # is set in the wrapper; ensure leave runs so host can finish Step 2.
-            handler._barrier_state._leave_on_unwind = True
-            handler._barrier_state._maybe_leave_on_unwind()
-            try:
-                joined = int(self.store.get(handler._barrier_state.join_count_key).decode('utf-8'))
-                left = handler._barrier_state._get_leave_count()
-                participant_count_after_leave.append((joined, left))
-            except Exception:
-                pass
-        t_host.join(timeout=70)
-        _assert_threads_finished(self, [t_host], 70)
-
-        self.assertTrue(participant_error, "Participant should have received SignalException")
-        # join_count stays 2 (both joined); leave_count = 1 (participant left)
-        self.assertEqual(
-            participant_count_after_leave,
-            [(2, 1)],
-            "After participant left: join_count=2 (unchanged), leave_count=1",
-        )
-        # Left participant's slot (participant joined first = slot 1) should be marked with WITHDRAWN
-        state = handler._barrier_state
+        node = _NodeDesc("node", 1, 0)
         slot_key = f"{state.prefix}:slot_1"
-        slot_round, payload = RendezvousStoreValue.unpack(self.store.get(slot_key).decode('utf-8'))
-        _, _, domain_id = RendezvousParticipantInfo.from_payload(payload)
-        self.assertEqual(
-            domain_id,
-            WITHDRAWN,
-            "Left participant's slot should have WITHDRAWN domain_id",
-        )
-        self.assertEqual(slot_round, state._round)
-        self.assertEqual(len(host_result), 1, "Host should complete or error (not hang)")
-        # Host either completes with world size 1 or errors (e.g. segment constraint) after
-        # participant withdrew; both are acceptable as long as the host did not hang in Step 2.
-        if host_result[0][0] == 'error':
-            err = host_result[0][1]
-            # RendezvousTimeoutError is a common outcome when the participant withdraws
-            # and active_count drops below min_nodes; it IS a RendezvousError subclass but
-            # type().__name__ only matches the concrete class name, not base classes.
-            self.assertIn(
-                type(err).__name__,
-                ('RuntimeError', 'RendezvousError', 'RendezvousTimeoutError'),
-                f"Host error should be a rendezvous or runtime error: {err}",
-            )
-        else:
-            rank, total = host_result[0]
-            # total_participants in rank value is slot count (join_count=2), not active count
-            self.assertEqual(
-                total, 2, "Host should see total_participants=2 (slot count) in rank value"
-            )
-            # In the new protocol, ranks are assigned BEFORE round_done=1 is set, so
-            # both slots get a rank even if one later leaves. The left participant
-            # (slot 1) overwrites slot data with WITHDRAWN, but its slot_rank was already
-            # written by the host before the signal arrived. Just verify host got a valid rank.
-            self.assertGreaterEqual(rank, 0, "Host should have a valid group rank >= 0")
+        slot_value = _participant_store_value(0, node, 1, "none", 7)
+        self.store.set(slot_key, slot_value)
 
-    def test_signal_after_round_closed_does_not_leave(self):
-        """Test that when _round_closed=True, a signal does NOT trigger withdrawal.
+        with self.assertRaises(SignalException):
+            ft_rendezvous_barrier_module._rdzv_signal_exception_handler(signal.SIGTERM, None)
 
-        After round_done_N=1 is seen, _round_closed=True prevents spurious
-        leave_count increments. Only pre-round-close signals should cause withdrawal.
-        """
-        add_calls = []
+        self.assertEqual(self.store.get(slot_key), slot_value)
+        self.assertFalse(self.store.check([state.unhealthy_replacement_groups_key]))
 
-        class TrackingStore:
+    def test_signal_exception_restores_signal_handlers(self):
+        """next_rendezvous restores process signal handlers while propagating SignalException."""
+
+        class StoreRaisesSignalOnRoundDoneGet:
             def __init__(self, underlying):
                 self._store = underlying
 
             def get(self, key):
+                if ":round_done_" in key:
+                    raise SignalException(
+                        "Simulated signal during rendezvous",
+                        sigval=signal.Signals(signal.SIGTERM),
+                    )
                 return self._store.get(key)
 
             def add(self, key, value):
-                add_calls.append((key, value))
                 return self._store.add(key, value)
 
             def set(self, key, value):
@@ -2754,27 +2892,23 @@ class SignalLeaveRendezvousTest(BaseRendezvousTest):
             def multi_set(self, keys, values):
                 return self._store.multi_set(keys, values)
 
-        state = _RendezvousBarrierState(
-            store=TrackingStore(self.store),
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        previous_sigint = signal.getsignal(signal.SIGINT)
+        handler = FtRendezvousBarrierHandler.from_backend(
             run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            store=StoreRaisesSignalOnRoundDoneGet(self.store),
+            backend=None,
+            min_nodes=1,
+            max_nodes=1,
+            timeout=RendezvousTimeout(join=timedelta(seconds=TEST_JOIN_TIMEOUT_SECS)),
+            is_store_host=False,
         )
-        state._slot = 1  # Simulate having joined (slot 1)
-        state._round_closed = True  # Signal came AFTER round_done_N=1 was seen
-        state._leave_on_unwind = True  # Signal handler set this
 
-        state._maybe_leave_on_unwind()
+        with self.assertRaises(SignalException):
+            handler.next_rendezvous()
 
-        # Verify no leave_count was incremented
-        leave_calls = [(k, v) for k, v in add_calls if ":leave_count_" in k and v == 1]
-        self.assertEqual(
-            len(leave_calls),
-            0,
-            "After _round_closed=True, _leave_rendezvous must NOT be called. "
-            f"Got add calls: {add_calls}",
-        )
-        self.assertFalse(state._leave_on_unwind, "_leave_on_unwind should be reset to False")
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous_sigterm)
+        self.assertEqual(signal.getsignal(signal.SIGINT), previous_sigint)
 
 
 if __name__ == '__main__':

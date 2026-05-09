@@ -220,7 +220,7 @@ def _run_control_rendezvous_loop(
     join_timeout = rdzv_config_get_as_float(
         rdzv_configs, "join_timeout", rdzv_config_get_as_float(rdzv_configs, "timeout", 600.0)
     )
-    last_call_timeout = rdzv_config_get_as_float(rdzv_configs, "last_call_timeout", 15.0)
+    last_call_timeout = rdzv_config_get_as_float(rdzv_configs, "last_call_timeout", 1.0)
     segment_check_interval = rdzv_config_get_as_float(rdzv_configs, "segment_check_interval", 5.0)
     segment = ft_cfg.segment
     if segment is None:
