@@ -17,10 +17,15 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    ANALYSIS_INTENT_TRACK_ONLY,
+    ANALYSIS_INTENTS,
+)
 
 from .config import ErrorCode, Settings, setup
 from .routes import PARAM_LOG_PATH, ROUTE_LOGS
@@ -66,6 +71,7 @@ def json_response(data: Any, *, pretty: bool = False, indent: int | None = None)
 _ERROR_CODE_TO_HTTP_STATUS: dict[ErrorCode, int] = {
     # 400 Bad Request
     ErrorCode.INVALID_PATH: 400,
+    ErrorCode.INVALID_PARAMETER: 400,
     ErrorCode.NOT_REGULAR: 400,
     ErrorCode.EMPTY_FILE: 400,
     # 403 Forbidden
@@ -99,6 +105,17 @@ class SubmitRequest(BaseModel):
     log_path: str
     user: str = "unknown"  # Optional: SLURM job user, for dataflow records
     job_id: str | None = None  # Optional: SLURM job ID, required for split logging mode
+    analysis_intent: str = ANALYSIS_INTENT_TRACK_ONLY  # Optional: progressive early-start hint
+
+    @field_validator("analysis_intent")
+    @classmethod
+    def validate_analysis_intent(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in ANALYSIS_INTENTS:
+            raise ValueError(
+                "analysis_intent must be one of: " + ", ".join(sorted(ANALYSIS_INTENTS))
+            )
+        return normalized
 
 
 def _raise_error(error: LogAnalyzerError) -> None:
@@ -254,7 +271,12 @@ def create_app(cfg: Settings) -> FastAPI:
         cycles and analyzes log files from the LOGS_DIR folder.
         """
         adapter: AttributionHttpAdapter = request.app.state.attribution
-        result = await adapter.submit_log(req.log_path, req.user, req.job_id)
+        result = await adapter.submit_log(
+            req.log_path,
+            req.user,
+            req.job_id,
+            analysis_intent=req.analysis_intent,
+        )
         if isinstance(result, LogAnalyzerError):
             _raise_error(result)
         return result

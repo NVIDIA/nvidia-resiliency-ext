@@ -565,7 +565,7 @@ class TestNVLHealthCheck(unittest.TestCase):
 class TestAttributionService(unittest.TestCase):
 
     @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
-    def test_http_endpoint_posts_to_logs_route(self, mock_client):
+    def test_http_endpoint_posts_progressive_intent_to_logs_route(self, mock_client):
         client = mock_client.return_value.__enter__.return_value
         service = AttributionService(endpoint="http://attr.example:8000/")
 
@@ -574,7 +574,7 @@ class TestAttributionService(unittest.TestCase):
         mock_client.assert_called_once_with(base_url="http://attr.example:8000", timeout=10.0)
         client.post.assert_called_once_with(
             "/logs",
-            json={"log_path": "/tmp/train.log"},
+            json={"log_path": "/tmp/train.log", "analysis_intent": "progressive"},
             headers={"accept": "application/json"},
         )
 

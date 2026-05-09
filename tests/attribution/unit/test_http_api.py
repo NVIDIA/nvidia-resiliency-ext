@@ -6,6 +6,7 @@ from nvidia_resiliency_ext.attribution.orchestration.http_api import (
     log_submit_payload,
     post_log,
 )
+from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_PROGRESSIVE
 
 
 def test_log_submit_payload_omits_empty_optional_fields():
@@ -17,6 +18,16 @@ def test_log_submit_payload_includes_smon_fields():
         "log_path": "/tmp/train.log",
         "user": "alice",
         "job_id": "123",
+    }
+
+
+def test_log_submit_payload_includes_analysis_intent_when_requested():
+    assert log_submit_payload(
+        "/tmp/train.log",
+        analysis_intent=ANALYSIS_INTENT_PROGRESSIVE,
+    ) == {
+        "log_path": "/tmp/train.log",
+        "analysis_intent": "progressive",
     }
 
 
@@ -36,6 +47,18 @@ def test_post_log_uses_shared_logs_route():
     client.post.assert_called_once_with(
         "/logs",
         json={"log_path": "/tmp/train.log", "user": "alice", "job_id": "123"},
+        headers={"accept": "application/json"},
+    )
+
+
+def test_post_log_uses_shared_logs_route_with_intent():
+    client = MagicMock()
+
+    post_log(client, "/tmp/train.log", analysis_intent=ANALYSIS_INTENT_PROGRESSIVE)
+
+    client.post.assert_called_once_with(
+        "/logs",
+        json={"log_path": "/tmp/train.log", "analysis_intent": "progressive"},
         headers={"accept": "application/json"},
     )
 

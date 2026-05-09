@@ -30,6 +30,7 @@ from nvidia_resiliency_ext.attribution.coalescing import (
     SubmittedResult,
 )
 from nvidia_resiliency_ext.attribution.orchestration.config import LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TRACK_ONLY
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
@@ -89,6 +90,24 @@ class AttributionPostprocessingConfig:
 
 
 @dataclass(frozen=True)
+class AttributionProgressiveConfig:
+    """Progressive analysis policy owned by attrsvc/controller."""
+
+    mode: str = "off"
+
+    def __post_init__(self) -> None:
+        mode = (self.mode or "off").strip().lower()
+        allowed = ("off", "all_explicit")
+        if mode not in allowed:
+            raise ValueError(f"progressive mode must be one of {allowed}, got {self.mode!r}")
+        object.__setattr__(self, "mode", mode)
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode == "all_explicit"
+
+
+@dataclass(frozen=True)
 class AttributionCredentialsConfig:
     """Credential policy for attribution engines.
 
@@ -114,6 +133,7 @@ class AttributionControllerConfig:
     postprocessing: AttributionPostprocessingConfig = field(
         default_factory=AttributionPostprocessingConfig
     )
+    progressive: AttributionProgressiveConfig = field(default_factory=AttributionProgressiveConfig)
     credentials: AttributionCredentialsConfig = field(default_factory=AttributionCredentialsConfig)
 
 
@@ -151,6 +171,7 @@ class AttributionController:
         self._analyzer = Analyzer(
             allowed_root=config.allowed_root,
             log_sage=analyzer_engine,
+            progressive_analysis_enabled=config.progressive.enabled,
             **coalescing_kwargs,
         )
 
@@ -295,9 +316,15 @@ class AttributionController:
         log_path: str,
         user: str = "unknown",
         job_id: str | None = None,
+        analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
         """Submit a log file for attribution tracking."""
-        return await self._analyzer.submit(log_path, user=user, job_id=job_id)
+        return await self._analyzer.submit(
+            log_path,
+            user=user,
+            job_id=job_id,
+            analysis_intent=analysis_intent,
+        )
 
     async def analyze_log(
         self,

@@ -52,6 +52,30 @@ def test_attrsvc_analysis_backend_uses_current_env_name_only(tmp_path, monkeypat
     assert cfg.ANALYSIS_BACKEND == "lib"
 
 
+def test_attrsvc_progressive_analysis_defaults_to_all_explicit(tmp_path, monkeypatch):
+    monkeypatch.delenv("NVRX_ATTRSVC_PROGRESSIVE_ANALYSIS", raising=False)
+
+    cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+    assert cfg.PROGRESSIVE_ANALYSIS == "all_explicit"
+
+
+def test_attrsvc_progressive_analysis_accepts_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_PROGRESSIVE_ANALYSIS", "OFF")
+
+    cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+    assert cfg.PROGRESSIVE_ANALYSIS == "off"
+
+
+def test_attrsvc_progressive_analysis_accepts_all_explicit(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_PROGRESSIVE_ANALYSIS", "ALL_EXPLICIT")
+
+    cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+    assert cfg.PROGRESSIVE_ANALYSIS == "all_explicit"
+
+
 def test_attrsvc_log_analysis_backend_env_is_not_supported(tmp_path, monkeypatch):
     monkeypatch.delenv("NVRX_ATTRSVC_ANALYSIS_BACKEND", raising=False)
     monkeypatch.setenv("NVRX_ATTRSVC_LOG_ANALYSIS_BACKEND", "lib")
