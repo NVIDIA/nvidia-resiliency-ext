@@ -143,6 +143,24 @@ def tmp_yaml_file(lines):
         os.remove(temp_file.name)
 
 
+def test_from_args_preserves_progress_tracking_yaml_when_cli_absent():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
+
+    YAML_LINES = [
+        "fault_tolerance:",
+        "    max_no_progress_cycles: 3",
+        "    min_progress_iterations: 7",
+    ]
+
+    parser = get_args_parser()
+    with tmp_yaml_file(YAML_LINES) as temp_file:
+        args = parser.parse_args(["--ft-cfg-path", temp_file, "dummy.py"])
+        ft = fault_tolerance.FaultToleranceConfig.from_args(args)
+
+    assert ft.max_no_progress_cycles == 3
+    assert ft.min_progress_iterations == 7
+
+
 def test_read_from_yaml():
     YAML_LINES = [
         "fault_tolerance:",
