@@ -2543,7 +2543,7 @@ def get_args_parser() -> ArgumentParser:
         "--ft-max-no-progress-cycles",
         "--ft-max_no_progress_cycles",
         type=int,
-        default=2,
+        default=None,
         dest="ft_max_no_progress_cycles",
         help="Maximum consecutive cycles (including initial cycle 0) without progress before early "
         "termination. E.g. 2 = allow cycle 0 and 1 with no progress, then terminate before cycle 2. "
@@ -2554,7 +2554,7 @@ def get_args_parser() -> ArgumentParser:
         "--ft-min-progress-iterations",
         "--ft-min_progress_iterations",
         type=int,
-        default=1,
+        default=None,
         dest="ft_min_progress_iterations",
         help="Minimum iteration increase to consider a restart as making progress (default: 1).",
     )
