@@ -6,7 +6,9 @@
 import logging
 import re
 import shutil
-import subprocess  # nosec B404 - fixed SLURM commands are invoked with shell=False.
+
+# Fixed SLURM commands are invoked with shell=False.
+import subprocess  # nosec B404
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,7 +28,8 @@ def _run_slurm_command(
     *,
     timeout: int | float,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # nosec B603 - fixed SLURM argv, shell=False, bounded timeout.
+    # Fixed SLURM argv is invoked with shell=False and a bounded timeout.
+    return subprocess.run(  # nosec B603
         cmd,
         capture_output=True,
         text=True,

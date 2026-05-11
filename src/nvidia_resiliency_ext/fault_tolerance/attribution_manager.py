@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import logging
 import os
 import shutil
@@ -27,6 +28,8 @@ DEFAULT_ATTRIBUTION_PORT = 50050
 DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT = 20.0
 _ATTRIBUTION_STOP_TIMEOUT = 5.0
 _ATTRIBUTION_READY_POLL_INTERVAL = 0.5
+_MANAGED_ATTRIBUTION_ENDPOINT = "localhost"
+_EXTERNAL_ATTRIBUTION_SCHEMES = {"http", "grpc"}
 
 
 @dataclass(frozen=True)
@@ -295,7 +298,7 @@ class AttributionManager:
 
 
 def is_managed_attribution_endpoint(endpoint: str) -> bool:
-    return endpoint.strip().lower() == "localhost"
+    return endpoint.strip().lower() == _MANAGED_ATTRIBUTION_ENDPOINT
 
 
 def _managed_attribution_client_endpoint() -> str:
@@ -316,9 +319,47 @@ def _attribution_log_path(base_log_file: str) -> str:
 
 
 def _validate_attribution_endpoint(endpoint: str) -> None:
-    hostname = _endpoint_hostname(endpoint)
-    # This checks for and rejects bind-all addresses; it does not bind to them.
-    if (hostname or endpoint).strip().lower() in {"0.0.0.0", "::", "[::]"}:  # nosec B104
+    endpoint = endpoint.strip()
+    if is_managed_attribution_endpoint(endpoint):
+        return
+
+    parsed = urlparse(endpoint)
+    if not parsed.scheme:
+        _validate_attribution_endpoint_host(_unbracket_host(endpoint))
+        raise ValueError(
+            "--ft-attribution-endpoint must be exactly localhost for launcher-managed "
+            "attribution, or an explicit endpoint such as http://host:port, "
+            "grpc://host:port, or unix:///path/to/socket."
+        )
+
+    if parsed.scheme == "unix":
+        if not parsed.path:
+            raise ValueError("--ft-attribution-endpoint unix endpoint must include a socket path")
+        return
+
+    if parsed.scheme not in _EXTERNAL_ATTRIBUTION_SCHEMES:
+        raise ValueError(
+            f"--ft-attribution-endpoint scheme must be one of "
+            f"{sorted(_EXTERNAL_ATTRIBUTION_SCHEMES | {'unix'})}, got {parsed.scheme!r}"
+        )
+
+    if not parsed.hostname:
+        raise ValueError("--ft-attribution-endpoint must include a host")
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("--ft-attribution-endpoint must include a valid port") from exc
+
+    if port is None:
+        raise ValueError("--ft-attribution-endpoint must include a port")
+
+    _validate_attribution_endpoint_host(parsed.hostname)
+
+
+def _validate_attribution_endpoint_host(hostname: str) -> None:
+    endpoint_ip = _parse_ip_literal(hostname)
+    if endpoint_ip is not None and endpoint_ip.is_unspecified:
         raise ValueError(
             "--ft-attribution-endpoint must not be a bind-all address. "
             "Use localhost for launcher-managed attribution, or use a routable "
@@ -326,16 +367,19 @@ def _validate_attribution_endpoint(endpoint: str) -> None:
         )
 
 
-def _endpoint_hostname(endpoint: str) -> Optional[str]:
-    parsed = urlparse(endpoint)
-    if parsed.scheme:
-        return parsed.hostname
-    value = endpoint.strip()
-    if value.startswith("[") and "]" in value:
-        return value[1 : value.index("]")]
-    if value.count(":") == 1:
-        return value.rsplit(":", 1)[0]
-    return value
+def _parse_ip_literal(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    # DNS names are valid external endpoint hosts. They are resolved by the client at connect time,
+    # so a parsing failure here means "not an IP literal" rather than "invalid endpoint".
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        return None
+
+
+def _unbracket_host(hostname: str) -> str:
+    if hostname.startswith("[") and hostname.endswith("]"):
+        return hostname[1:-1]
+    return hostname
 
 
 def _validate_existing_dir(path: str, name: str) -> None:
