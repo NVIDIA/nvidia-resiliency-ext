@@ -1,0 +1,215 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Attribution Feature Requirements Template &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Shared Utilities" href="../../shared_utils/index.html" />
+    <link rel="prev" title="Progressive FT Launcher Attribution" href="progressive-ft-launcher-attribution.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Failure Attribution</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">Attribution Feature Requirements</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="progressive-ft-launcher-attribution.html">Progressive FT Launcher Attribution</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Attribution Feature Requirements Template</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#summary">Summary</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#problem">Problem</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#goals">Goals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#non-goals">Non-Goals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#user-flows">User Flows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#functional-requirements">Functional Requirements</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#api-and-data-contract">API and Data Contract</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#configuration">Configuration</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#observability">Observability</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#compatibility">Compatibility</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#validation">Validation</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#open-questions">Open Questions</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Failure Attribution</a></li>
+          <li class="breadcrumb-item"><a href="index.html">Attribution Feature Requirements</a></li>
+      <li class="breadcrumb-item active">Attribution Feature Requirements Template</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/attribution/features/requirements-template.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="attribution-feature-requirements-template">
+<h1>Attribution Feature Requirements Template<a class="headerlink" href="#attribution-feature-requirements-template" title="Link to this heading"></a></h1>
+<p>Use this template for new attribution product features. Copy it to a
+feature-specific file in this directory, for example
+<code class="docutils literal notranslate"><span class="pre">&lt;feature-slug&gt;.rst</span></code>.</p>
+<section id="summary">
+<h2>Summary<a class="headerlink" href="#summary" title="Link to this heading"></a></h2>
+<p>Describe the feature in one or two paragraphs. Name the user-visible behavior,
+the product surface it changes, and the expected outcome.</p>
+</section>
+<section id="problem">
+<h2>Problem<a class="headerlink" href="#problem" title="Link to this heading"></a></h2>
+<p>Describe the customer or operator problem this feature solves. Include the
+current failure mode, workflow gap, or missing attribution signal.</p>
+</section>
+<section id="goals">
+<h2>Goals<a class="headerlink" href="#goals" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Define the intended behavior.</p></li>
+<li><p>Identify the primary user or caller.</p></li>
+<li><p>State the output contract or decision the feature should support.</p></li>
+</ul>
+</section>
+<section id="non-goals">
+<h2>Non-Goals<a class="headerlink" href="#non-goals" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>List adjacent behavior that is intentionally out of scope.</p></li>
+<li><p>Call out any lifecycle, service, UI, or policy changes this feature will not
+own.</p></li>
+</ul>
+</section>
+<section id="user-flows">
+<h2>User Flows<a class="headerlink" href="#user-flows" title="Link to this heading"></a></h2>
+<p>Describe the expected flows, including input data, trigger points, and how the
+result is consumed by users, services, or automation.</p>
+</section>
+<section id="functional-requirements">
+<h2>Functional Requirements<a class="headerlink" href="#functional-requirements" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Requirement 1.</p></li>
+<li><p>Requirement 2.</p></li>
+<li><p>Requirement 3.</p></li>
+</ul>
+</section>
+<section id="api-and-data-contract">
+<h2>API and Data Contract<a class="headerlink" href="#api-and-data-contract" title="Link to this heading"></a></h2>
+<p>Document any public Python API, service API, result payload, dataflow record,
+Slack notification, or compatibility contract this feature changes.</p>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
+<p>List new config fields, defaults, environment variables, feature gates, and
+deployment assumptions.</p>
+</section>
+<section id="observability">
+<h2>Observability<a class="headerlink" href="#observability" title="Link to this heading"></a></h2>
+<p>Describe logging, metrics, dataflow records, Slack output, status reporting,
+and failure visibility.</p>
+</section>
+<section id="compatibility">
+<h2>Compatibility<a class="headerlink" href="#compatibility" title="Link to this heading"></a></h2>
+<p>Document backward compatibility requirements, migration behavior, and
+interactions with existing attribution modes.</p>
+</section>
+<section id="validation">
+<h2>Validation<a class="headerlink" href="#validation" title="Link to this heading"></a></h2>
+<p>List unit, integration, service, and end-to-end checks required before the
+feature can ship.</p>
+</section>
+<section id="open-questions">
+<h2>Open Questions<a class="headerlink" href="#open-questions" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Question 1.</p></li>
+<li><p>Question 2.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="progressive-ft-launcher-attribution.html" class="btn btn-neutral float-left" title="Progressive FT Launcher Attribution" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../../shared_utils/index.html" class="btn btn-neutral float-right" title="Shared Utilities" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
