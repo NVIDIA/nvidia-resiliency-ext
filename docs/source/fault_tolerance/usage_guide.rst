@@ -83,6 +83,11 @@ To enable the external node health check with BCM:
 * Pass the socket path to ``ft_launcher`` with ``--ft-node-health-check-endpoint``
   (alias: ``--ft-node_health_check_endpoint``).
 
+For protocol details, see the ``nvhcd`` protobuf schema at
+``src/nvidia_resiliency_ext/shared_utils/proto/nvhcd.proto``. The functional test
+server at ``tests/fault_tolerance/func/nodehc_service.py`` is a minimal example
+of a UDS gRPC service that implements this API.
+
 Example:
 
 .. code-block:: bash
@@ -131,7 +136,10 @@ If the training job runs inside a container, bind mount the UDS path into the
 container so that ``ft_launcher`` can reach the daemon.
 
 The wrapper can call the same reusable health check entry point that BCM uses for
-Slurm prolog or epilog validation, then normalize the result for NVRx. For example:
+Slurm prolog or epilog validation, then normalize the result for NVRx. When using
+``nvhcd``, the gRPC request ``args`` are forwarded to the configured
+``healthcheck_path`` as command-line arguments, so NVRx's ``--no-slurm`` argument
+will appear in the wrapper's ``"$@"``. For example:
 
 .. code-block:: bash
 
