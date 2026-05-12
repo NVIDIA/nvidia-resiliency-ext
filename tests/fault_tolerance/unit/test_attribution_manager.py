@@ -111,6 +111,27 @@ def test_attribution_endpoint_rejects_bind_all_addresses(tmp_path, endpoint):
         )
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "locahlost",
+        "localhost:50050",
+        "http://:50050",
+        "http://localhost:not-a-port",
+        "grpc://attribution.external",
+        "ftp://attribution.external:50050",
+        "unix://",
+    ],
+)
+def test_attribution_endpoint_rejects_invalid_endpoint_strings(tmp_path, endpoint):
+    with pytest.raises(ValueError, match="--ft-attribution-endpoint"):
+        AttributionConfig.from_args(
+            _args(ft_attribution_endpoint=endpoint),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(),
+        )
+
+
 def test_attribution_endpoint_localhost_is_managed(tmp_path):
     cfg = AttributionConfig.from_args(
         _args(ft_attribution_endpoint="localhost"),
