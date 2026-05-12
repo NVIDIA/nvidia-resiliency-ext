@@ -21,6 +21,10 @@ from nvidia_resiliency_ext.attribution.mcp_integration.registry import (
     serialize_result,
 )
 from nvidia_resiliency_ext.attribution.orchestration.llm_output import recommendation_payload
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+    PROGRESSIVE_STATUS_FAILED,
+)
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     AttributionRecommendation,
     LogSageAnalysisResult,
@@ -132,7 +136,14 @@ class NVRxMCPServer:
                     logger.warning("Error executing tool '%s': %s", name, e)
                 else:
                     logger.error("Error executing tool '%s': %s", name, e, exc_info=True)
-                if self.registry.get_module_metadata(name):
+                if name == MODULE_LOG_ANALYZER_PROGRESSIVE_START:
+                    error_body = {
+                        "module": name,
+                        "status": PROGRESSIVE_STATUS_FAILED,
+                        "message": str(e),
+                        "handle": None,
+                    }
+                elif self.registry.get_module_metadata(name):
                     error_body = {
                         "module": name,
                         "result": [],
@@ -241,6 +252,11 @@ class NVRxMCPServer:
 
         # Run the attribution with defaults applied
         result = await instance.run(arguments_with_defaults)
+
+        if module_name == MODULE_LOG_ANALYZER_PROGRESSIVE_START:
+            response = dict(result) if isinstance(result, dict) else {"status": str(result)}
+            response.setdefault("module", module_name)
+            return [TextContent(type="text", text=serialize_result(response))]
 
         result_id = self.registry.result_id_for_args(arguments_with_defaults)
 

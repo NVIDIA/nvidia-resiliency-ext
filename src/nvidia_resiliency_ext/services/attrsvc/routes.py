@@ -4,6 +4,7 @@
 """HTTP API route and parameter names for nvidia_resiliency_ext.services.attrsvc."""
 
 from nvidia_resiliency_ext.attribution.orchestration.http_api import (
+    PARAM_ANALYSIS_INTENT,
     PARAM_FILE,
     PARAM_JOB_ID,
     PARAM_LOG_PATH,
@@ -13,6 +14,7 @@ from nvidia_resiliency_ext.attribution.orchestration.http_api import (
 )
 
 __all__ = [
+    "PARAM_ANALYSIS_INTENT",
     "PARAM_FILE",
     "PARAM_JOB_ID",
     "PARAM_LOG_PATH",

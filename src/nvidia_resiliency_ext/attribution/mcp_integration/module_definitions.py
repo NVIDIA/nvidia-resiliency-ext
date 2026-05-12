@@ -18,6 +18,11 @@ from nvidia_resiliency_ext.attribution.orchestration.config import (
     DEFAULT_LLM_TEMPERATURE,
     DEFAULT_LLM_TOP_P,
 )
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+    PROGRESSIVE_STATUS_UNSUPPORTED,
+    ProgressiveLogAnalysisStartTool,
+)
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     RAW_ANALYSIS_RESULT_ITEM_PAYLOAD_FIELDS,
     RECOMMENDATION_ACTIONS,
@@ -103,6 +108,111 @@ def _recommendation_schema() -> dict[str, Any]:
     }
 
 
+def _llm_runtime_properties(*, model_description: str) -> dict[str, dict[str, Any]]:
+    """Input-schema properties shared by LogSage-backed MCP tools."""
+    return {
+        "model": {
+            "type": "string",
+            "description": model_description,
+            "default": DEFAULT_LLM_MODEL,
+        },
+        "base_url": {
+            "type": "string",
+            "description": "LLM base url",
+            "default": DEFAULT_LLM_BASE_URL,
+        },
+        "temperature": {
+            "type": "number",
+            "description": "Temperature for LLM sampling",
+            "default": DEFAULT_LLM_TEMPERATURE,
+        },
+        "top_p": {
+            "type": "number",
+            "description": "Top-p for LLM sampling",
+            "default": DEFAULT_LLM_TOP_P,
+        },
+        "max_tokens": {
+            "type": "integer",
+            "description": "Maximum tokens for LLM response",
+            "default": DEFAULT_LLM_MAX_TOKENS,
+        },
+    }
+
+
+def _log_analyzer_input_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "log_path": {"type": "string", "description": "Path to log files"},
+            **_llm_runtime_properties(model_description="LLM model to use for analysis"),
+            "exclude_nvrx_logs": {
+                "type": "boolean",
+                "description": "Exclude NVRX internal logs",
+                "default": False,
+            },
+            "is_per_cycle": {
+                "type": "boolean",
+                "description": "Input is already per-cycle data (skip filtering and chunking)",
+                "default": False,
+            },
+        },
+        "required": ["log_path"],
+    }
+
+
+def _progressive_start_input_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "log_path": {"type": "string", "description": "Path to the growing log file"},
+            "is_per_cycle": {
+                "type": "boolean",
+                "description": "Input is already a single ft_launcher cycle log",
+                "default": False,
+            },
+            "user": {
+                "type": "string",
+                "description": "Optional submitting user for observability",
+                "default": "unknown",
+            },
+            "job_id": {
+                "type": "string",
+                "description": "Optional scheduler job id for observability",
+            },
+            **_llm_runtime_properties(
+                model_description="LLM model to bind to the progressive session"
+            ),
+        },
+        "required": ["log_path"],
+    }
+
+
+def _progressive_start_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "module": {
+                "type": "string",
+                "description": f"Module name: {MODULE_LOG_ANALYZER_PROGRESSIVE_START}",
+            },
+            "status": {
+                "type": "string",
+                "description": "Progressive start status",
+                "default": PROGRESSIVE_STATUS_UNSUPPORTED,
+            },
+            "message": {
+                "type": "string",
+                "description": "Human-readable status detail",
+            },
+            "handle": {
+                "type": ["string", "null"],
+                "description": "Optional backend session handle",
+            },
+        },
+        "required": ["module", "status", "message", "handle"],
+    }
+
+
 def register_all_modules():
     """Register all NVRX attribution modules with the global registry."""
 
@@ -111,48 +221,7 @@ def register_all_modules():
         name="log_analyzer",
         module_class=NVRxLogAnalyzer,
         description="Analyze application logs using LogSage to identify errors and propose solutions",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "log_path": {"type": "string", "description": "Path to log files"},
-                "model": {
-                    "type": "string",
-                    "description": "LLM model to use for analysis",
-                    "default": DEFAULT_LLM_MODEL,
-                },
-                "base_url": {
-                    "type": "string",
-                    "description": "LLM base url",
-                    "default": DEFAULT_LLM_BASE_URL,
-                },
-                "temperature": {
-                    "type": "number",
-                    "description": "Temperature for LLM sampling",
-                    "default": DEFAULT_LLM_TEMPERATURE,
-                },
-                "top_p": {
-                    "type": "number",
-                    "description": "Top-p for LLM sampling",
-                    "default": DEFAULT_LLM_TOP_P,
-                },
-                "max_tokens": {
-                    "type": "integer",
-                    "description": "Maximum tokens for LLM response",
-                    "default": DEFAULT_LLM_MAX_TOKENS,
-                },
-                "exclude_nvrx_logs": {
-                    "type": "boolean",
-                    "description": "Exclude NVRX internal logs",
-                    "default": False,
-                },
-                "is_per_cycle": {
-                    "type": "boolean",
-                    "description": "Input is already per-cycle data (skip filtering and chunking)",
-                    "default": False,
-                },
-            },
-            "required": ["log_path"],
-        },
+        input_schema=_log_analyzer_input_schema(),
         output_schema={
             "type": "object",
             "properties": {
@@ -170,6 +239,22 @@ def register_all_modules():
             "required": ["module", "result", "recommendation"],
         },
         requires_llm=True,
+        dependencies=[],
+    )
+
+    # Non-result-producing progressive start entry point. This advertises the
+    # NVRx-owned MCP/loganalysis boundary before the LogSage progressive API is
+    # available; the tool returns unsupported status metadata today.
+    global_registry.register(
+        name=MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+        module_class=ProgressiveLogAnalysisStartTool,
+        description=(
+            "Start progressive log analysis for a growing application log. "
+            "Returns status metadata only; it does not produce final attribution."
+        ),
+        input_schema=_progressive_start_input_schema(),
+        output_schema=_progressive_start_output_schema(),
+        requires_llm=False,
         dependencies=[],
     )
 
