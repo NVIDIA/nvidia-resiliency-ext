@@ -54,10 +54,9 @@ using ``--ft-<parameter-name>``.
 
 Details:
 
-* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint used by InJob.
-  Accepts Unix domain socket (UDS): ``/var/run/nodehealth.sock`` or ``unix:///var/run/nodehealth.sock``.
-* The rendezvous implementations call ``NodeHealthCheck`` which will connect to the provided endpoint.
-* Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
+* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the optional node health check service endpoint used by InJob.
+  Accepts Unix domain socket (UDS): ``/var/run/nvhcd.sock`` or ``unix:///var/run/nvhcd.sock``.
+  See `Node health check service`_ for the BCM-backed and compatible-service usage model.
 
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
 The ``--ft-restart-policy`` parameter is deprecated; only ``any-failed`` is supported: all workers
@@ -66,13 +65,96 @@ are restarted if any worker fails (torchrun-style behavior). This option may be 
 Node health check service
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The launcher accepts an optional argument to point to the node health check service endpoint.
-When provided, the launcher exports the socket path to child processes and
-the rendezvous handlers will use it in their node health checks.
+The launcher can query an optional node-local health check service before workers enter
+rendezvous. A practical public deployment model is to reuse NVIDIA Base Command
+Manager (BCM) Slurm prolog or epilog health checks behind an ``nvhcd``-compatible
+daemon. The NVRx integration point is service-compatible: any equivalent daemon
+can be used if it implements the expected gRPC API over a Unix domain socket
+(UDS).
 
-* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint (UDS).
-* The rendezvous implementations call ``NodeHealthCheck`` which will connect to this UDS endpoint.
-* Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
+To enable the external node health check with BCM:
+
+* Build and deploy an ``nvhcd``-compatible daemon on every allocated node.
+* Configure the daemon to invoke a BCM health check script, or a wrapper around
+  an existing BCM prolog or epilog health check.
+* Ensure the wrapper translates the BCM result into JSON with ``fail_count == 0``
+  for a healthy node and a nonzero ``fail_count`` for an unhealthy node.
+* Make the daemon's UDS visible from the job environment or training container.
+* Pass the socket path to ``ft_launcher`` with ``--ft-node-health-check-endpoint``
+  (alias: ``--ft-node_health_check_endpoint``).
+
+Example:
+
+.. code-block:: bash
+
+   ft_launcher \
+     --ft-node-health-check-endpoint unix:///var/run/nvhcd.sock \
+     train.py
+
+Endpoint behavior:
+
+* UDS endpoints are supported. The value can be a path such as ``/var/run/nvhcd.sock``
+  or a ``unix://`` URI such as ``unix:///var/run/nvhcd.sock``.
+* If the endpoint is omitted, NVRx skips the external node health check.
+* If the gRPC client dependencies are unavailable, the UDS socket is missing, or a
+  connectivity error occurs, NVRx treats the external check as unavailable and does
+  not fail the job for that reason.
+* Explicit failures reported by the service mark the node unhealthy.
+
+Compatible service contract:
+
+* The service must implement ``HealthCheckService.RunHealthCheck`` from the NVRx
+  ``nvhcd`` protobuf API and listen on the configured UDS.
+* NVRx calls the service with ``args=["--no-slurm"]``.
+* The response must set ``success`` and return JSON in ``output``. A healthy node
+  is reported with ``success=true`` and ``{"fail_count": 0}``.
+* If ``success`` is false, ``fail_count`` is nonzero, or ``output`` cannot be parsed
+  as JSON with a ``fail_count`` field, NVRx treats the node as unhealthy.
+
+Example ``nvhcd`` configuration for BCM:
+
+.. code-block:: yaml
+
+   socket_path: /var/run/nvhcd.sock
+   healthcheck_path: /usr/local/sbin/nvrx-bcm-healthcheck-wrapper.sh
+   log_level: info
+   timeout: 120
+
+Start the daemon on each node with this configuration, for example as a node-level
+service or directly with:
+
+.. code-block:: bash
+
+   nvhcd -config /etc/nvhcd/config.yaml
+
+If the training job runs inside a container, bind mount the UDS path into the
+container so that ``ft_launcher`` can reach the daemon.
+
+The wrapper can call the same reusable health check entry point that BCM uses for
+Slurm prolog or epilog validation, then normalize the result for NVRx. For example:
+
+.. code-block:: bash
+
+   #!/usr/bin/env bash
+   set -euo pipefail
+
+   if /path/to/bcm-healthcheck "$@"; then
+     printf '{"fail_count": 0, "failed_checks": []}\n'
+     exit 0
+   else
+     printf '{"fail_count": 1, "failed_checks": ["bcm_healthcheck"]}\n'
+     exit 1
+   fi
+
+Because NVRx invokes this check during rendezvous rather than during Slurm's
+actual prolog or epilog phase, the wrapper should also provide any inputs that
+the BCM script expects from the Slurm lifecycle environment, or call a reusable
+health check entry point from the local BCM deployment that does not depend on
+those lifecycle-only variables.
+
+This lets NVRx run the same class of node validation during in-job restart
+rendezvous that cluster administrators may already run at Slurm prolog or epilog
+time.
 
 Distributed storage health check (Lustre + NFS)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
