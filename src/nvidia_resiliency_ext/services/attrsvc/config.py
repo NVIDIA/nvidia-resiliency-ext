@@ -169,6 +169,13 @@ class Settings(BaseSettings):
             "'mcp' (subprocess MCP, default) or 'lib' (in-process)."
         ),
     )
+    PROGRESSIVE_ANALYSIS: str = Field(
+        default="all_explicit",
+        description=(
+            "Progressive log-analysis policy: 'all_explicit' (default) honors explicit "
+            "progressive POST /logs requests; 'off' disables progressive start."
+        ),
+    )
 
     CLUSTER_NAME: str = Field(default="", description="Cluster name for dataflow")
 
@@ -223,6 +230,15 @@ class Settings(BaseSettings):
         v_lower = v.strip().lower()
         if v_lower not in allowed:
             raise ValueError(f"ANALYSIS_BACKEND must be one of {allowed}, got '{v}'")
+        return v_lower
+
+    @field_validator("PROGRESSIVE_ANALYSIS")
+    @classmethod
+    def validate_progressive_analysis(cls, v: str) -> str:
+        allowed = ("off", "all_explicit")
+        v_lower = v.strip().lower()
+        if v_lower not in allowed:
+            raise ValueError(f"PROGRESSIVE_ANALYSIS must be one of {allowed}, got '{v}'")
         return v_lower
 
     @property

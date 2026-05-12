@@ -1391,7 +1391,7 @@ class AttributionService:
 
     def _submit_log(self, log_path: str) -> None:
         """
-        Submit a log file for analysis via POST.
+        Submit a log file for progressive analysis via POST.
         Runs in a background daemon thread (fire-and-forget).
         """
         self._last_submitted = log_path
@@ -1410,7 +1410,7 @@ class AttributionService:
             with httpx.Client(base_url=base_url, timeout=10.0) as client:
                 url = f"{base_url}{ROUTE_LOGS}"
                 logger.debug("AttributionService POST: %s (log_path=%s)", url, log_path)
-                post_log(client, log_path)
+                post_log(client, log_path, analysis_intent="progressive")
         except Exception as e:
             logger.warning(
                 "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e

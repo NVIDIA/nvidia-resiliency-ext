@@ -186,6 +186,7 @@ class ErrorCode(str, Enum):
 
     # Path validation errors (400 in HTTP)
     INVALID_PATH = "invalid_path"  # Path not absolute, null bytes, etc.
+    INVALID_PARAMETER = "invalid_parameter"  # Request field failed validation
     NOT_REGULAR = "not_regular"  # Not a regular file (directory, device, etc.)
     EMPTY_FILE = "empty_file"  # File is empty (GET only)
 

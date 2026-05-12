@@ -54,6 +54,11 @@ from nvidia_resiliency_ext.attribution.orchestration.llm_output import (
     recommendation_payload,
 )
 from nvidia_resiliency_ext.attribution.orchestration.log_analyzer import LogAnalyzer
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    ANALYSIS_INTENT_PROGRESSIVE,
+    ANALYSIS_INTENT_TRACK_ONLY,
+    normalize_analysis_intent,
+)
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
@@ -118,6 +123,7 @@ class Analyzer:
         analysis_pipeline_mode: AnalysisPipelineMode = AnalysisPipelineMode.LOG_AND_TRACE,
         compute_timeout: float | None = None,
         grace_period_seconds: float | None = None,
+        progressive_analysis_enabled: bool = False,
     ):
         """
         Args:
@@ -140,6 +146,8 @@ class Analyzer:
                 :attr:`AnalysisPipelineMode.LOG_AND_TRACE_WITH_LLM` without pre-building ``LogAnalyzer``.
             compute_timeout: Per-compute timeout for the coalescer (seconds). Default: coalescer default.
             grace_period_seconds: Cache grace before stat validation (seconds). Default: coalescer default.
+            progressive_analysis_enabled: If True, explicit progressive submit intent is forwarded
+                to the loganalysis tool boundary. If False, submit remains track-only.
 
         After construction, call :meth:`set_event_loop` when the asyncio loop exists (e.g. HTTP server
         startup) so splitlog fire-and-forget analysis can be scheduled; see module docstring.
@@ -178,6 +186,7 @@ class Analyzer:
             trace_analyzer=trace_analyzer,
             analysis_pipeline_mode=analysis_pipeline_mode,
         )
+        self._progressive_analysis_enabled = progressive_analysis_enabled
         self._main_loop: asyncio.AbstractEventLoop | None = None  # For thread-safe callbacks
 
         self._log.register_callbacks(self._fire_and_forget_analyze)
@@ -264,6 +273,7 @@ class Analyzer:
         log_path: str,
         user: str = "unknown",
         job_id: Optional[str] = None,
+        analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
         """
         Submit a log file for analysis tracking.
@@ -275,11 +285,88 @@ class Analyzer:
             log_path: Path to the log file (or slurm output for splitlog mode)
             user: Job owner (for dataflow records)
             job_id: Job ID (required for split logging mode)
+            analysis_intent: Track-only by default; ``progressive`` starts early
+                analysis when the configured backend supports it.
 
         Returns:
             LogAnalyzerSubmitResult on success, LogAnalyzerError on failure
         """
-        return await self._log.submit(log_path, user=user, job_id=job_id)
+        try:
+            intent = normalize_analysis_intent(analysis_intent)
+        except ValueError as e:
+            return LogAnalyzerError(error_code=ErrorCode.INVALID_PARAMETER, message=str(e))
+
+        result = await self._log.submit(log_path, user=user, job_id=job_id)
+        if isinstance(result, LogAnalyzerError):
+            return result
+
+        if intent == ANALYSIS_INTENT_PROGRESSIVE:
+            self._schedule_progressive_analysis(result.normalized_path, user, job_id)
+
+        return result
+
+    def _schedule_progressive_analysis(
+        self,
+        normalized_path: str,
+        user: str,
+        job_id: Optional[str],
+    ) -> None:
+        """Schedule progressive analysis without delaying submit/POST response."""
+        if not self._progressive_analysis_enabled:
+            logger.debug(
+                "Progressive analysis intent ignored because the feature gate is disabled: %s",
+                normalized_path,
+            )
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._main_loop is None or self._main_loop.is_closed():
+                logger.error(
+                    "Event loop not set — skipping progressive analysis start for %s",
+                    normalized_path,
+                )
+                return
+            asyncio.run_coroutine_threadsafe(
+                self._start_progressive_analysis(normalized_path, user, job_id),
+                self._main_loop,
+            )
+        else:
+            loop.create_task(self._start_progressive_analysis(normalized_path, user, job_id))
+        logger.debug("Scheduled progressive analysis start for %s", normalized_path)
+
+    async def _start_progressive_analysis(
+        self,
+        normalized_path: str,
+        user: str,
+        job_id: Optional[str],
+    ) -> None:
+        """Initiate progressive analysis if the feature gate and loganalysis tool allow it."""
+        if not self._progressive_analysis_enabled:
+            logger.debug(
+                "Progressive analysis intent ignored because the feature gate is disabled: %s",
+                normalized_path,
+            )
+            return
+        try:
+            result = await self._log.start_progressive_analysis(
+                normalized_path,
+                user=user,
+                job_id=job_id,
+            )
+            logger.debug(
+                "Progressive analysis start result for %s: status=%s message=%s",
+                normalized_path,
+                result.status,
+                result.message,
+            )
+        except Exception as e:
+            logger.warning(
+                "Progressive analysis start failed for %s: %s: %s",
+                normalized_path,
+                type(e).__name__,
+                e,
+            )
 
     async def analyze(
         self,

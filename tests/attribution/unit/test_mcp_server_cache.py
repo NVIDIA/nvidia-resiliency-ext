@@ -79,6 +79,11 @@ if PY310_PLUS:
         from nvidia_resiliency_ext.attribution.mcp_integration.registry import (
             AttributionModuleRegistry,
         )
+        from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+            MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            PROGRESSIVE_STATUS_UNSUPPORTED,
+            ProgressiveLogAnalysisStartTool,
+        )
         from nvidia_resiliency_ext.attribution.orchestration.types import (
             AttributionRecommendation,
             LogSageAnalysisResult,
@@ -93,6 +98,11 @@ if PY310_PLUS:
         from nvidia_resiliency_ext.attribution.mcp_integration.mcp_server import NVRxMCPServer
         from nvidia_resiliency_ext.attribution.mcp_integration.registry import (
             AttributionModuleRegistry,
+        )
+        from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+            MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            PROGRESSIVE_STATUS_UNSUPPORTED,
+            ProgressiveLogAnalysisStartTool,
         )
         from nvidia_resiliency_ext.attribution.orchestration.types import (
             AttributionRecommendation,
@@ -178,6 +188,17 @@ class TestMCPServerCache(unittest.IsolatedAsyncioTestCase):
         )
         return NVRxMCPServer(registry=registry)
 
+    def _server_with_progressive_start(self):
+        registry = AttributionModuleRegistry()
+        registry.register(
+            name=MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            module_class=ProgressiveLogAnalysisStartTool,
+            description="progressive start",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            output_schema={"type": "object"},
+        )
+        return NVRxMCPServer(registry=registry)
+
     async def test_cached_resource_matches_normalized_module_response(self):
         server = self._server()
 
@@ -236,6 +257,22 @@ class TestMCPServerCache(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["recommendation"], {"action": "UNKNOWN", "source": "fr_analyzer"})
         self.assertEqual(response["result"]["hanging_ranks"], "hanging ranks: [1, 2]")
         self.assertNotIn("state", response)
+
+    async def test_progressive_start_response_is_not_cached_result(self):
+        server = self._server_with_progressive_start()
+
+        content = await server._handle_module_execution(
+            MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            {"log_path": "/tmp/job_cycle0.log", "is_per_cycle": True},
+        )
+        response = json.loads(content[0].text)
+
+        self.assertEqual(response["module"], MODULE_LOG_ANALYZER_PROGRESSIVE_START)
+        self.assertEqual(response["status"], PROGRESSIVE_STATUS_UNSUPPORTED)
+        self.assertNotIn("result", response)
+        self.assertNotIn("recommendation", response)
+        self.assertNotIn("result_id", response)
+        self.assertEqual(server.registry.count_results_cache_entries(), 0)
 
 
 if __name__ == "__main__":

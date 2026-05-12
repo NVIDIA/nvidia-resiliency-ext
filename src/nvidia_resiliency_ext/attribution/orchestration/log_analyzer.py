@@ -35,6 +35,12 @@ from .analysis_pipeline import AnalysisPipelineMode, run_attribution_pipeline
 from .config import MODULE_LOG_FR_ANALYZER, ErrorCode, LogSageExecutionConfig
 from .job import Job
 from .log_path_metadata import CYCLE_LOG_PATTERN
+from .progressive import (
+    MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+    PROGRESSIVE_STATUS_UNSUPPORTED,
+    ProgressiveStartResult,
+    progressive_start_result_from_mcp_response,
+)
 from .splitlog import SplitlogTracker
 from .tracked_jobs import TrackedJobs
 from .types import LogAnalyzerError, LogAnalyzerFilePreview, LogAnalyzerSubmitResult
@@ -184,6 +190,57 @@ class LogSageRunner:
         if self.config.use_lib_log_analysis:
             return await self._fetch_log_result_lib(path)
         return await self._fetch_log_result_mcp(path)
+
+    async def _start_progressive_analysis_lib(
+        self,
+        path: str,
+        *,
+        user: str = "unknown",
+        job_id: str | None = None,
+    ) -> ProgressiveStartResult:
+        _ = (path, user, job_id)
+        return ProgressiveStartResult(
+            status=PROGRESSIVE_STATUS_UNSUPPORTED,
+            message="LogSage in-process progressive start API is not configured",
+        )
+
+    async def _start_progressive_analysis_mcp(
+        self,
+        path: str,
+        *,
+        user: str = "unknown",
+        job_id: str | None = None,
+    ) -> ProgressiveStartResult:
+        self._ensure_mcp_ready()
+        is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
+        run_kwargs: Dict[str, Any] = {
+            "log_path": path,
+            "is_per_cycle": is_per_cycle,
+            "user": user,
+            **self.config.llm_runtime_overrides(),
+        }
+        if job_id:
+            run_kwargs["job_id"] = job_id
+
+        async with self._log_analysis_lock:
+            response = await self._mcp_client.run_module_resilient(
+                MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+                max_attempts=3,
+                **run_kwargs,
+            )
+        return progressive_start_result_from_mcp_response(response)
+
+    async def start_progressive_analysis(
+        self,
+        path: str,
+        *,
+        user: str = "unknown",
+        job_id: str | None = None,
+    ) -> ProgressiveStartResult:
+        """Start progressive log analysis for ``path`` without producing final attribution."""
+        if self.config.use_lib_log_analysis:
+            return await self._start_progressive_analysis_lib(path, user=user, job_id=job_id)
+        return await self._start_progressive_analysis_mcp(path, user=user, job_id=job_id)
 
     async def _fetch_fr_result_mcp(self, dump_path: str) -> Optional[FRAnalysisResult]:
         self._ensure_mcp_ready()
@@ -376,6 +433,16 @@ class LogAnalyzer:
 
     async def fetch_log_result(self, path: str) -> Dict[str, Any]:
         return await self._runner.fetch_log_result(path)
+
+    async def start_progressive_analysis(
+        self,
+        path: str,
+        *,
+        user: str = "unknown",
+        job_id: str | None = None,
+    ) -> ProgressiveStartResult:
+        """Forward progressive start to the selected loganalysis tool adapter."""
+        return await self._runner.start_progressive_analysis(path, user=user, job_id=job_id)
 
     def _post_analysis_results(
         self,
