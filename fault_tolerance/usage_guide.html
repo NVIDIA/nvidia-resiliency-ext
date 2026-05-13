@@ -150,24 +150,101 @@ via a YAML file using <code class="docutils literal notranslate"><span class="pr
 using <code class="docutils literal notranslate"><span class="pre">--ft-&lt;parameter-name&gt;</span></code>.</p>
 <p>Details:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>) sets the node health check service endpoint used by InJob.
-Accepts Unix domain socket (UDS): <code class="docutils literal notranslate"><span class="pre">/var/run/nodehealth.sock</span></code> or <code class="docutils literal notranslate"><span class="pre">unix:///var/run/nodehealth.sock</span></code>.</p></li>
-<li><p>The rendezvous implementations call <code class="docutils literal notranslate"><span class="pre">NodeHealthCheck</span></code> which will connect to the provided endpoint.</p></li>
-<li><p>Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>) sets the optional node health check service endpoint used by InJob.
+Accepts Unix domain socket (UDS): <code class="docutils literal notranslate"><span class="pre">/var/run/nvhcd.sock</span></code> or <code class="docutils literal notranslate"><span class="pre">unix:///var/run/nvhcd.sock</span></code>.
+See <a class="reference internal" href="#node-health-check-service">Node health check service</a> for the BCM-backed and compatible-service usage model.</p></li>
 </ul>
 <p>If <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, the launcher restarts failed workers.
 The <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> parameter is deprecated; only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> is supported: all workers
 are restarted if any worker fails (torchrun-style behavior). This option may be removed in a future release.</p>
 <section id="node-health-check-service">
 <h4>Node health check service<a class="headerlink" href="#node-health-check-service" title="Link to this heading"></a></h4>
-<p>The launcher accepts an optional argument to point to the node health check service endpoint.
-When provided, the launcher exports the socket path to child processes and
-the rendezvous handlers will use it in their node health checks.</p>
+<p>The launcher can query an optional node-local health check service before workers enter
+rendezvous. A practical public deployment model is to reuse NVIDIA Base Command
+Manager (BCM) Slurm prolog or epilog health checks behind an <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>-compatible
+daemon. The NVRx integration point is service-compatible: any equivalent daemon
+can be used if it implements the expected gRPC API over a Unix domain socket
+(UDS).</p>
+<p>To enable the external node health check with BCM:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>) sets the node health check service endpoint (UDS).</p></li>
-<li><p>The rendezvous implementations call <code class="docutils literal notranslate"><span class="pre">NodeHealthCheck</span></code> which will connect to this UDS endpoint.</p></li>
-<li><p>Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.</p></li>
+<li><p>Build and deploy an <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>-compatible daemon on every allocated node.</p></li>
+<li><p>Configure the daemon to invoke a BCM health check script, or a wrapper around
+an existing BCM prolog or epilog health check.</p></li>
+<li><p>Ensure the wrapper translates the BCM result into JSON with <code class="docutils literal notranslate"><span class="pre">fail_count</span> <span class="pre">==</span> <span class="pre">0</span></code>
+for a healthy node and a nonzero <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> for an unhealthy node.</p></li>
+<li><p>Make the daemon’s UDS visible from the job environment or training container.</p></li>
+<li><p>Pass the socket path to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> with <code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code>
+(alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>).</p></li>
 </ul>
+<p>For protocol details, see the <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> protobuf schema at
+<code class="docutils literal notranslate"><span class="pre">src/nvidia_resiliency_ext/shared_utils/proto/nvhcd.proto</span></code>. The functional test
+server at <code class="docutils literal notranslate"><span class="pre">tests/fault_tolerance/func/nodehc_service.py</span></code> is a minimal example
+of a UDS gRPC service that implements this API.</p>
+<p>Example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ft-node-health-check-endpoint<span class="w"> </span>unix:///var/run/nvhcd.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>train.py
+</pre></div>
+</div>
+<p>Endpoint behavior:</p>
+<ul class="simple">
+<li><p>UDS endpoints are supported. The value can be a path such as <code class="docutils literal notranslate"><span class="pre">/var/run/nvhcd.sock</span></code>
+or a <code class="docutils literal notranslate"><span class="pre">unix://</span></code> URI such as <code class="docutils literal notranslate"><span class="pre">unix:///var/run/nvhcd.sock</span></code>.</p></li>
+<li><p>If the endpoint is omitted, NVRx skips the external node health check.</p></li>
+<li><p>If the gRPC client dependencies are unavailable, the UDS socket is missing, or a
+connectivity error occurs, NVRx treats the external check as unavailable and does
+not fail the job for that reason.</p></li>
+<li><p>Explicit failures reported by the service mark the node unhealthy.</p></li>
+</ul>
+<p>Compatible service contract:</p>
+<ul class="simple">
+<li><p>The service must implement <code class="docutils literal notranslate"><span class="pre">HealthCheckService.RunHealthCheck</span></code> from the NVRx
+<code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> protobuf API and listen on the configured UDS.</p></li>
+<li><p>NVRx calls the service with <code class="docutils literal notranslate"><span class="pre">args=[&quot;--no-slurm&quot;]</span></code>.</p></li>
+<li><p>The response must set <code class="docutils literal notranslate"><span class="pre">success</span></code> and return JSON in <code class="docutils literal notranslate"><span class="pre">output</span></code>. A healthy node
+is reported with <code class="docutils literal notranslate"><span class="pre">success=true</span></code> and <code class="docutils literal notranslate"><span class="pre">{&quot;fail_count&quot;:</span> <span class="pre">0}</span></code>.</p></li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">success</span></code> is false, <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> is nonzero, or <code class="docutils literal notranslate"><span class="pre">output</span></code> cannot be parsed
+as JSON with a <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> field, NVRx treats the node as unhealthy.</p></li>
+</ul>
+<p>Example <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> configuration for BCM:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">socket_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/var/run/nvhcd.sock</span>
+<span class="nt">healthcheck_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/usr/local/sbin/nvrx-bcm-healthcheck-wrapper.sh</span>
+<span class="nt">log_level</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">info</span>
+<span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
+</pre></div>
+</div>
+<p>Start the daemon on each node with this configuration, for example as a node-level
+service or directly with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>nvhcd<span class="w"> </span>-config<span class="w"> </span>/etc/nvhcd/config.yaml
+</pre></div>
+</div>
+<p>If the training job runs inside a container, bind mount the UDS path into the
+container so that <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can reach the daemon.</p>
+<p>The wrapper can call the same reusable health check entry point that BCM uses for
+Slurm prolog or epilog validation, then normalize the result for NVRx. When using
+<code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>, the gRPC request <code class="docutils literal notranslate"><span class="pre">args</span></code> are forwarded to the configured
+<code class="docutils literal notranslate"><span class="pre">healthcheck_path</span></code> as command-line arguments, so NVRx’s <code class="docutils literal notranslate"><span class="pre">--no-slurm</span></code> argument
+will appear in the wrapper’s <code class="docutils literal notranslate"><span class="pre">&quot;$&#64;&quot;</span></code>. For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/usr/bin/env bash</span>
+<span class="nb">set</span><span class="w"> </span>-euo<span class="w"> </span>pipefail
+
+<span class="k">if</span><span class="w"> </span>/path/to/bcm-healthcheck<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$@</span><span class="s2">&quot;</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;{&quot;fail_count&quot;: 0, &quot;failed_checks&quot;: []}\n&#39;</span>
+<span class="w">  </span><span class="nb">exit</span><span class="w"> </span><span class="m">0</span>
+<span class="k">else</span>
+<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;{&quot;fail_count&quot;: 1, &quot;failed_checks&quot;: [&quot;bcm_healthcheck&quot;]}\n&#39;</span>
+<span class="w">  </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span>
+<span class="k">fi</span>
+</pre></div>
+</div>
+<p>Because NVRx invokes this check during rendezvous rather than during Slurm’s
+actual prolog or epilog phase, the wrapper should also provide any inputs that
+the BCM script expects from the Slurm lifecycle environment, or call a reusable
+health check entry point from the local BCM deployment that does not depend on
+those lifecycle-only variables.</p>
+<p>This lets NVRx run the same class of node validation during in-job restart
+rendezvous that cluster administrators may already run at Slurm prolog or epilog
+time.</p>
 </section>
 <section id="distributed-storage-health-check-lustre-nfs">
 <h4>Distributed storage health check (Lustre + NFS)<a class="headerlink" href="#distributed-storage-health-check-lustre-nfs" title="Link to this heading"></a></h4>
