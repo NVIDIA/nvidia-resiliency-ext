@@ -58,10 +58,10 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
 ### Deprecations & Removals
 
 - **Legacy dynamic rendezvous (v1)** is deprecated; barrier-based rendezvous (v2) is the default. Plan to remove v1 in a future release ([#282](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282)).
-- **`--ft-restart-policy` (min-healthy)** is deprecated ([#259](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/259)).
+- **`--ft-restart-policy`** is deprecated ([#259](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/259)). The `min-healthy` value has been removed; only `any-failed` remains (which is also the default), so the flag is effectively a no-op in v0.6. **Migration: remove the flag from your launch scripts.** No replacement is required. The flag itself will be removed in a future release.
 - **`ptl_resiliency` package is deprecated and removed** from the wheel ([#282](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282), [#285](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/285)). PyTorch Lightning users should pin v0.5.x or migrate to the underlying `fault_tolerance` / `checkpointing` / `attribution.straggler` APIs directly.
 - **OneLogger integration** removed ([#257](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/257)).
-- **In-process restart** is no longer the focus of the fast-restart solution and is slated for deprecation in a future release; new deployments should use in-job restart via `ft_launcher`.
+- **In-process restart is deprecated in v0.6** and will be removed in a future release. It is no longer the focus of the fast-restart solution. **Migration: use in-job restart via `ft_launcher`** (see the `fault_tolerance` usage guide). The existing `nvidia_resiliency_ext.inprocess` APIs continue to work in v0.6 but are no longer maintained for new feature development; bug fixes will be considered on a case-by-case basis.
 
 ### Installation
 
