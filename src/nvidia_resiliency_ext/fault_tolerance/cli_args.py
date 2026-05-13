@@ -406,6 +406,14 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         choices=("DEBUG", "INFO", "WARNING"),
         help="Log level for launcher-managed attribution service.",
     )
+    parser.add_argument(
+        "--ft-attribution-export-url",
+        "--ft_attribution_export_url",
+        type=str,
+        default=None,
+        dest="ft_attribution_export_url",
+        help="Complete result export URL for launcher-managed attribution service.",
+    )
 
 
 def add_attribution_args(parser: argparse.ArgumentParser) -> None:

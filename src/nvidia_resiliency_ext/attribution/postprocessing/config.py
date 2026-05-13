@@ -12,17 +12,17 @@ from nvidia_resiliency_ext.attribution.api_keys import load_slack_bot_token
 
 logger = logging.getLogger(__name__)
 
-DATAFLOW_HTTP_URL_ENV = "NVRX_ATTRSVC_DATAFLOW_HTTP_URL"
+EXPORT_URL_ENV = "NVRX_ATTRSVC_EXPORT_URL"
 
 
-def dataflow_http_url_from_env() -> str:
-    """Configured dataflow HTTP endpoint, if any."""
-    return os.getenv(DATAFLOW_HTTP_URL_ENV, "").strip()
+def export_url_from_env() -> str:
+    """Configured export posting endpoint, if any."""
+    return os.getenv(EXPORT_URL_ENV, "").strip()
 
 
 def dataflow_posting_enabled() -> bool:
     """Return whether postprocessing should attempt dataflow posting."""
-    return bool(dataflow_http_url_from_env())
+    return bool(export_url_from_env())
 
 
 def load_slack_from_env() -> Tuple[str, str]:
@@ -100,7 +100,7 @@ def configure_from_env(
             is used as-is (after ``strip``). Token and channel are resolved **independently** so an
             explicit empty token does not cause the channel to be replaced by env (and vice versa).
         cluster_name_env: Env var used when ``cluster_name`` is empty.
-        autoconfigure_poster: If ``True``, dataflow HTTP is configured, and ``default_poster``
+        autoconfigure_poster: If ``True``, dataflow posting is configured, and ``default_poster``
             is ``None``, builds a poster from :func:`~.post_backend.get_retrying_post_fn`.
     """
     # Resolve token and channel independently: None = "not provided, use env", else explicit

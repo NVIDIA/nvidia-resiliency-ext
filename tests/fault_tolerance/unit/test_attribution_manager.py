@@ -25,6 +25,7 @@ def _args(**overrides):
         "ft_attribution_analysis_backend": None,
         "ft_attribution_compute_timeout": None,
         "ft_attribution_log_level": None,
+        "ft_attribution_export_url": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -180,6 +181,9 @@ def test_attribution_config_maps_launcher_args(tmp_path):
             ft_attribution_analysis_backend="lib",
             ft_attribution_compute_timeout=12.5,
             ft_attribution_log_level="DEBUG",
+            ft_attribution_export_url=(
+                "https://dataflow.example.test/dataflow2/example-index/posting"
+            ),
         ),
         str(base_log),
         FaultToleranceConfig(),
@@ -194,6 +198,123 @@ def test_attribution_config_maps_launcher_args(tmp_path):
     assert env["NVRX_ATTRSVC_ANALYSIS_BACKEND"] == "lib"
     assert env["NVRX_ATTRSVC_COMPUTE_TIMEOUT"] == "12.5"
     assert env["NVRX_ATTRSVC_LOG_LEVEL"] == "DEBUG"
+    assert (
+        env["NVRX_ATTRSVC_EXPORT_URL"]
+        == "https://dataflow.example.test/dataflow2/example-index/posting"
+    )
+
+
+def test_attribution_child_env_does_not_inherit_export_url_from_launcher_env(tmp_path, monkeypatch):
+    api_key_file = tmp_path / "key"
+    api_key_file.write_text("secret")
+    base_log = tmp_path / "train.log"
+    monkeypatch.setenv(
+        "NVRX_ATTRSVC_EXPORT_URL",
+        "https://dataflow.example.test/dataflow2/launcher-env/posting",
+    )
+    cfg = AttributionConfig.from_args(
+        _args(ft_attribution_endpoint="localhost"),
+        str(base_log),
+        FaultToleranceConfig(),
+    )
+
+    env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
+
+    assert cfg.export_url is None
+    assert "NVRX_ATTRSVC_EXPORT_URL" not in env
+
+
+def test_cli_export_url_overrides_launcher_env(tmp_path, monkeypatch):
+    api_key_file = tmp_path / "key"
+    api_key_file.write_text("secret")
+    base_log = tmp_path / "train.log"
+    monkeypatch.setenv(
+        "NVRX_ATTRSVC_EXPORT_URL",
+        "https://dataflow.example.test/old/posting",
+    )
+    cfg = AttributionConfig.from_args(
+        _args(
+            ft_attribution_endpoint="localhost",
+            ft_attribution_export_url="https://dataflow.example.test/new/posting",
+        ),
+        str(base_log),
+        FaultToleranceConfig(),
+    )
+
+    env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
+
+    assert cfg.export_url == "https://dataflow.example.test/new/posting"
+    assert env["NVRX_ATTRSVC_EXPORT_URL"] == "https://dataflow.example.test/new/posting"
+
+
+def test_yaml_export_url_overrides_launcher_env(tmp_path, monkeypatch):
+    api_key_file = tmp_path / "key"
+    api_key_file.write_text("secret")
+    base_log = tmp_path / "train.log"
+    monkeypatch.setenv(
+        "NVRX_ATTRSVC_EXPORT_URL",
+        "https://dataflow.example.test/old/posting",
+    )
+    cfg = AttributionConfig.from_args(
+        _args(ft_attribution_endpoint="localhost"),
+        str(base_log),
+        FaultToleranceConfig(attribution_export_url="https://dataflow.example.test/yaml/posting"),
+    )
+
+    env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
+
+    assert cfg.export_url == "https://dataflow.example.test/yaml/posting"
+    assert env["NVRX_ATTRSVC_EXPORT_URL"] == "https://dataflow.example.test/yaml/posting"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "dataflow.example.test/posting",
+        "ftp://dataflow.example.test/posting",
+        "https://dataflow.example.test/posting?queue=fast",
+    ],
+)
+def test_export_url_rejects_invalid_values(tmp_path, url):
+    with pytest.raises(ValueError, match="--ft-attribution-export-url"):
+        AttributionConfig.from_args(
+            _args(
+                ft_attribution_endpoint="localhost",
+                ft_attribution_export_url=url,
+            ),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(),
+        )
+
+
+def test_export_url_rejects_external_attribution_endpoint(tmp_path):
+    with pytest.raises(ValueError, match="launcher-managed attribution"):
+        AttributionConfig.from_args(
+            _args(
+                ft_attribution_endpoint="http://attribution.external:50123",
+                ft_attribution_export_url="https://dataflow.example.test/posting",
+            ),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(),
+        )
+
+
+def test_yaml_export_url_rejects_external_attribution_endpoint(tmp_path):
+    with pytest.raises(ValueError, match="launcher-managed attribution"):
+        AttributionConfig.from_args(
+            _args(ft_attribution_endpoint="http://attribution.external:50123"),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(attribution_export_url="https://dataflow.example.test/posting"),
+        )
+
+
+def test_export_url_rejects_disabled_attribution(tmp_path):
+    with pytest.raises(ValueError, match="--ft-attribution-endpoint localhost"):
+        AttributionConfig.from_args(
+            _args(ft_attribution_export_url="https://dataflow.example.test/posting"),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(),
+        )
 
 
 def test_child_env_overrides_inherited_attrsvc_endpoint(tmp_path, monkeypatch):
@@ -292,6 +413,19 @@ def test_external_attribution_does_not_require_key_or_start_process(tmp_path, mo
 
     assert endpoint is not None
     assert endpoint.endpoint == "http://attribution.external:50123"
+
+
+def test_external_attribution_ignores_launcher_export_env(tmp_path, monkeypatch):
+    base_log = tmp_path / "train.log"
+    monkeypatch.setenv("NVRX_ATTRSVC_EXPORT_URL", "not-a-url")
+
+    cfg = AttributionConfig.from_args(
+        _args(ft_attribution_endpoint="http://attribution.external:50123"),
+        str(base_log),
+        FaultToleranceConfig(),
+    )
+
+    assert cfg.export_url is None
 
 
 def test_wait_until_ready_accepts_2xx_health_response(tmp_path, monkeypatch):

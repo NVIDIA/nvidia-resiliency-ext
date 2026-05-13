@@ -308,7 +308,7 @@ NVRX_ATTRSVC_ALLOWED_ROOT=/
 NVRX_ATTRSVC_PORT=8000
 NVRX_ATTRSVC_HOST=0.0.0.0
 NVRX_ATTRSVC_LOG_LEVEL=DEBUG
-# NVRX_ATTRSVC_DATAFLOW_HTTP_URL=https://example.test/dataflow2/your-index/posting
+# NVRX_ATTRSVC_EXPORT_URL=https://example.test/dataflow2/your-index/posting
 # NVRX_ATTRSVC_CLUSTER_NAME=your-cluster
 
 # ─── SLURM Monitor (nvrx-smonsvc) ───

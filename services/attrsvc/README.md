@@ -42,7 +42,7 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 | `PORT` | `8000` | Listen port |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, or `WARNING` for root logging and MCP; FastAPI `debug` when set to `DEBUG`. |
 | `CLUSTER_NAME` | `""` | Cluster name for dataflow posting |
-| `DATAFLOW_HTTP_URL` | `""` | Complete dataflow HTTP posting URI. Empty disables dataflow posting. |
+| `EXPORT_URL` | `""` | Complete result export URI. Empty disables result export. |
 | `DATAFLOW_QUEUE` | `""` | Optional queue parameter for dataflow HTTP posting |
 | `DATAFLOW_TIMEOUT_SECONDS` | `10.0` | Dataflow HTTP request timeout |
 | `RATE_LIMIT_SUBMIT` | `1200/minute` | Rate limit for POST /logs |

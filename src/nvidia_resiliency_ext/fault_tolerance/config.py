@@ -97,6 +97,8 @@ class FaultToleranceConfig:
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
     * Attribution service (optional, disabled unless `attribution_endpoint` is set):
       - `attribution_endpoint` [str] endpoint of the attribution service
+      - `attribution_export_url` [str] complete export posting URL for
+        launcher-managed attribution service postprocessing.
 
     * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.
       <base>/nvrx/). If set, the rendezvous host writes cycle info JSON files and
@@ -146,6 +148,7 @@ class FaultToleranceConfig:
     )
     # Attribution service configuration (optional)
     attribution_endpoint: Optional[str] = None
+    attribution_export_url: Optional[str] = None
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None

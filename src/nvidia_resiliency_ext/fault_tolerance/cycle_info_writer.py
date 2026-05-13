@@ -31,6 +31,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 from google.protobuf import json_format
 
+from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2
 
@@ -53,7 +54,7 @@ def cycle_log_file(base_log_file: str, cycle_index: int) -> str:
 
 
 def _cycle_info_job_id_from_env() -> str:
-    return os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+    return job_id_from_env() or ""
 
 
 def _cycle_info_attempt_index_from_env() -> int:

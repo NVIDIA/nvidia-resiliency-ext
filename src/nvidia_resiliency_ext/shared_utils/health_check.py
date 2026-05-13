@@ -37,6 +37,7 @@ from nvidia_resiliency_ext.attribution.orchestration.http_api import (
     get_log_response,
     post_log,
 )
+from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env, job_user_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 # Get the nvrx logger
@@ -1410,7 +1411,13 @@ class AttributionService:
             with httpx.Client(base_url=base_url, timeout=10.0) as client:
                 url = f"{base_url}{ROUTE_LOGS}"
                 logger.debug("AttributionService POST: %s (log_path=%s)", url, log_path)
-                post_log(client, log_path, analysis_intent="progressive")
+                post_log(
+                    client,
+                    log_path,
+                    user=job_user_from_env(),
+                    job_id=job_id_from_env(),
+                    analysis_intent="progressive",
+                )
         except Exception as e:
             logger.warning(
                 "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e

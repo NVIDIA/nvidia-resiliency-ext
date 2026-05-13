@@ -64,6 +64,8 @@ def test_from_args():
         "123.0",
         "--ft-rank-section-timeouts",
         "custom1:111.1,custom2:222.2",
+        "--ft-attribution-export-url",
+        "https://dataflow.example.test/dataflow2/example-index/posting",
     ]
 
     # Add a the dummy training script required by the torchrun argparser
@@ -77,6 +79,9 @@ def test_from_args():
     assert ft.log_level == logging.DEBUG
     assert ft.rank_out_of_section_timeout == 123.0
     assert ft.rank_section_timeouts == {'custom1': 111.1, 'custom2': 222.2}
+    assert (
+        ft.attribution_export_url == "https://dataflow.example.test/dataflow2/example-index/posting"
+    )
 
 
 def test_signal_field_with_valid_values():

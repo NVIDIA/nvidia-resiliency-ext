@@ -25,7 +25,7 @@ data:
   NVRX_ATTRSVC_ALLOWED_ROOT: "/data/logs"
   NVRX_ATTRSVC_LOG_LEVEL: "INFO"
   # NVRX_ATTRSVC_CLUSTER_NAME: "my-cluster"
-  # NVRX_ATTRSVC_DATAFLOW_HTTP_URL: ""  # Leave empty to disable dataflow
+  # NVRX_ATTRSVC_EXPORT_URL: ""  # Leave empty to disable result export
 
 ---
 apiVersion: apps/v1

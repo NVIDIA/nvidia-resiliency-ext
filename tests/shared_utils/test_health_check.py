@@ -569,12 +569,43 @@ class TestAttributionService(unittest.TestCase):
         client = mock_client.return_value.__enter__.return_value
         service = AttributionService(endpoint="http://attr.example:8000/")
 
-        service._do_submit_log("/tmp/train.log")
+        with patch.dict(
+            os.environ,
+            {
+                "SLURM_JOB_USER": "alice",
+                "USER": "fallback-user",
+                "SLURM_ARRAY_JOB_ID": "12345",
+                "SLURM_JOB_ID": "67890",
+            },
+        ):
+            service._do_submit_log("/tmp/train.log")
 
         mock_client.assert_called_once_with(base_url="http://attr.example:8000", timeout=10.0)
         client.post.assert_called_once_with(
             "/logs",
-            json={"log_path": "/tmp/train.log", "analysis_intent": "progressive"},
+            json={
+                "log_path": "/tmp/train.log",
+                "user": "alice",
+                "job_id": "12345",
+                "analysis_intent": "progressive",
+            },
+            headers={"accept": "application/json"},
+        )
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_http_endpoint_omits_job_metadata_when_env_unset(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        with patch.dict(os.environ, {}, clear=True):
+            service._do_submit_log("/tmp/train.log")
+
+        client.post.assert_called_once_with(
+            "/logs",
+            json={
+                "log_path": "/tmp/train.log",
+                "analysis_intent": "progressive",
+            },
             headers={"accept": "application/json"},
         )
 

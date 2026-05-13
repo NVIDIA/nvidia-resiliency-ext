@@ -101,6 +101,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     write_obj_to_ipc_stream,
 )
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
+from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
@@ -478,7 +479,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _current_cycle_info_path(self) -> Optional[str]:
         if not self._ft_cfg.cycle_info_dir:
             return None
-        job_id = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID", "")
+        job_id = job_id_from_env() or ""
         return CycleInfoReporter.current_cycle_info_path(self._ft_cfg.cycle_info_dir, job_id)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
