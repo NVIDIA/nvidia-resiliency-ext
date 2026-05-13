@@ -24,6 +24,12 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
         - Automatic health check chaining in `Wrapper` class `ChainedGPUHealthCheck` and `ChainedNVLHealthCheck` for in-process use
         - Single GPU health check API for individual device validation and updated trace collector to use new GPU health check API
 
+- Node health check service integration
+    - `ft_launcher` can query a node-local health check service before rendezvous by passing `--ft-node-health-check-endpoint`.
+    - Users can reuse NVIDIA Base Command Manager (BCM) Slurm prolog or epilog health checks behind the same service interface. For example, customers can deploy an `nvhcd`-compatible daemon that invokes an existing BCM health check script and converts the result to the NVRx health check response format.
+    - The integration is service-compatible: users can provide any equivalent daemon that implements the NVRx `HealthCheckService.RunHealthCheck` gRPC API over a Unix domain socket and returns JSON output with `fail_count == 0` for healthy nodes.
+    - Example: `--ft-node-health-check-endpoint unix:///var/run/nvhcd.sock`. If the endpoint is not configured, or the optional service is unavailable, NVRx skips the external node health check; explicit failures returned by the service mark the node unhealthy.
+
 - Checkpointing
     - PRs ([108](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/108), [138](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/138), [154](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/154), [169](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/169), [170](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/170), [193](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/193), [197](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/197), [199](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/199)) improve the stability of checkpointing by deprecating the use of fork in asynchronous checkpointing, simplifying error propagation and shutdown cleanup logic
         - Introduced the option to use **Multithread File IO Instead of Multiprocess** to simplify error propagation logic, improve shutdown cleanup and enhance overall stability
