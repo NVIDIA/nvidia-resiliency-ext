@@ -928,17 +928,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             else:
                 logger.debug("All worker processes and descendants terminated successfully")
 
-        # Wait for GPU memory to be reclaimed BEFORE returning control
-        # This ensures the node doesn't proceed to the next rendezvous cycle while memory is still tied up
-        if self._ft_cfg.gpu_memory_reclaim_timeout > 0:
-            logger.debug(
-                "Waiting for GPU memory to be reclaimed (timeout: %ds, tolerance: %d MB, poll interval: %ds)...",
-                int(self._ft_cfg.gpu_memory_reclaim_timeout),
-                int(self._ft_cfg.gpu_memory_tolerance_mb),
-                int(self._ft_cfg.gpu_memory_poll_interval),
-            )
-            self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
-
         # Wait for reader thread to drain pipes (polls every 100ms, wait 3 cycles)
         # then close pipe file objects to prevent FD reuse bugs
         if isinstance(self._logs_specs, PipeBasedLogsSpecs):
@@ -965,6 +954,27 @@ class LocalElasticAgent(SimpleElasticAgent):
             node_id=self._rdzv_handler._this_node,
             rank=worker_group.group_rank,
         )
+
+    # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
+    #  `torch.distributed.elastic.metrics.prof`.
+    @prof
+    def _restart_workers(self, worker_group: WorkerGroup) -> None:
+        """Restart workers, waiting for GPU memory only before starting the next cycle."""
+        role = worker_group.spec.role
+        logger.info("[%s] Stopping worker group", role)
+        self._stop_workers(worker_group)
+        worker_group.state = WorkerState.STOPPED
+
+        if self._ft_cfg.gpu_memory_reclaim_timeout > 0:
+            logger.debug(
+                "Waiting for GPU memory to be reclaimed (timeout: %ds, tolerance: %d MB, poll interval: %ds)...",
+                int(self._ft_cfg.gpu_memory_reclaim_timeout),
+                int(self._ft_cfg.gpu_memory_tolerance_mb),
+                int(self._ft_cfg.gpu_memory_poll_interval),
+            )
+            self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
+
+        self._initialize_workers(worker_group)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.

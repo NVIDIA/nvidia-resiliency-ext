@@ -545,6 +545,47 @@ class TestHandleRestartDecision(unittest.TestCase):
         mock_restart.assert_called_once()
         mock_open.assert_not_called()
 
+    def test_restart_workers_waits_for_gpu_memory_between_stop_and_start(self):
+        """GPU memory reclaim is part of restart, after stop and before new workers start."""
+        agent = self._make_agent()
+        worker_group = MagicMock()
+        worker_group.spec.role = "test"
+        worker_group.spec.local_world_size = 4
+        calls = []
+
+        with (
+            patch.object(agent, '_stop_workers', side_effect=lambda _wg: calls.append("stop")),
+            patch.object(
+                agent,
+                '_wait_for_gpu_memory_reclaim',
+                side_effect=lambda num_gpus: calls.append(("wait", num_gpus)),
+            ),
+            patch.object(
+                agent,
+                '_initialize_workers',
+                side_effect=lambda _wg: calls.append("start"),
+            ),
+        ):
+            agent._restart_workers(worker_group)
+
+        self.assertEqual(calls, ["stop", ("wait", 4), "start"])
+        self.assertEqual(worker_group.state.name, "STOPPED")
+
+    def test_stop_workers_does_not_wait_for_gpu_memory_reclaim(self):
+        """Final stop only terminates workers; GPU reclaim wait is restart-only."""
+        agent = self._make_agent()
+        worker_group = MagicMock()
+        worker_group.group_rank = 0
+
+        with (
+            patch.object(agent, '_shutdown'),
+            patch.object(agent, '_wait_for_gpu_memory_reclaim') as wait_for_reclaim,
+            patch("nvidia_resiliency_ext.fault_tolerance.launcher.record_profiling_event"),
+        ):
+            agent._stop_workers(worker_group)
+
+        wait_for_reclaim.assert_not_called()
+
     def test_handle_restart_decision_stops_when_attribution_service_says_stop(self):
         """Returns False before restart when the managed attribution service recommends stop."""
         agent = self._make_agent()
