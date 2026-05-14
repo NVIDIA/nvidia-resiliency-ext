@@ -367,6 +367,25 @@ Example for NVSwitch deployment with segment=4 (12 nodes requested, 8 needed):
    # 8 active nodes = 2 complete segments
    # 4 hot spare nodes available for restart
 
+Hot Spare vs. Cold Spare (SLURM Array Jobs)
+"""""""""""""""""""""""""""""""""""""""""""
+
+The hot-spare mechanism above keeps standby nodes inside the same allocation, ready for
+immediate failover. A complementary pattern — sometimes called **cold spare** — relies on
+SLURM array jobs (``sbatch --array=...``) or ``--requeue`` to acquire fresh nodes only
+after a failure, instead of holding idle nodes in reserve.
+
+* **Hot spare** — extra nodes co-allocated with the job; failover happens within the
+  same allocation and is fast, at the cost of paying for idle standbys.
+* **Cold spare (SLURM array / requeue)** — no idle nodes reserved; on failure the next
+  array task (or requeued job) is scheduled and takes the place of the failed one.
+  Cheaper, but recovery latency includes scheduler queue time. ``ft_launcher`` recognizes
+  ``SLURM_ARRAY_JOB_ID`` / ``SLURM_ARRAY_TASK_ID`` and uses them to keep infrastructure
+  rank assignment consistent across array tasks.
+
+The two are not mutually exclusive: a job can request a small hot-spare pool for fast
+recovery from single-node failures and rely on a SLURM array for catastrophic restarts.
+
 NUMA binding
 ^^^^^^^^^^^^
 

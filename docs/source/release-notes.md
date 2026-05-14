@@ -78,7 +78,8 @@ pip install nvidia-resiliency-ext[dataflow]
 
 ### Known Issues & Limitations
 
-- **CUDA 12 / Ubuntu 22.04** users are advised to build from source — PyPI wheels default to CUDA 13.
+- **Ubuntu 22.04 / glibc < 2.39** users are advised to build from source — PyPI wheels target `manylinux_2_39` and default to CUDA 13.
+- **Python**: wheels are published for 3.10, 3.11, 3.12.
 - **Attribution, Flight Recorder analysis, LogSage, and MCP integration are experimental.** APIs, CLI flags, and service contracts may change in subsequent releases.
 - **External InJob control-plane is experimental** and not yet QA-validated; APIs may change in subsequent releases.
 
