@@ -418,6 +418,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        self._graceful_stop_requested: bool = False
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -474,7 +475,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             cycle_number = number_of_completed_rendezvous
         """
         return self._rdzv_handler.round()
-
 
     def _current_cycle_info_path(self) -> Optional[str]:
         if not self._ft_cfg.cycle_info_dir:
@@ -536,7 +536,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         log_msg: str,
         open_rendezvous: bool = False,
     ) -> bool:
-        """Handle restart decision logic based on progress tracking and remaining restarts.
+        """Handle restart decision logic based on attribution, progress, and restart budget.
 
         Args:
             role: The role name for logging
@@ -548,6 +548,14 @@ class LocalElasticAgent(SimpleElasticAgent):
             True if restart was initiated (caller should continue monitoring loop)
             False if no restart (caller should stop workers and return failure)
         """
+        should_stop = self._run_attribution()
+        if should_stop:
+            logger.error("[%s] Attribution says do not restart; will stop the job.", role)
+            if hasattr(self._rdzv_handler, '_barrier_state'):
+                self._rdzv_handler._barrier_state.set_shutdown()
+            self._graceful_stop_requested = True
+            return False
+
         self._progress_tracker.analyze_previous_cycle()
         should_terminate_early = self._progress_tracker.should_terminate_early()
 
@@ -625,6 +633,11 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                 # No more restarts (either exhausted or early termination)
                 self._stop_workers(self._worker_group)
+                if self._graceful_stop_requested:
+                    self._graceful_stop_requested = False
+                    raise RendezvousGracefulExitError(
+                        "Attribution requested job stop; workers will not restart."
+                    )
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED)
             elif state == WorkerState.HEALTHY:
@@ -649,6 +662,11 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     if not should_restart:
                         self._stop_workers(self._worker_group)
+                        if self._graceful_stop_requested:
+                            self._graceful_stop_requested = False
+                            raise RendezvousGracefulExitError(
+                                "Attribution requested job stop; workers will not restart."
+                            )
                         self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
             else:
@@ -867,6 +885,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         #       The 'name' field of the Event is NOT used in the TorchelasticStatusLogEntry.
         event = events.Event(name=name, source=events.EventSource.AGENT, metadata=metadata)
         events.record(event)
+
+    def _run_attribution(self) -> bool:
+        """Fetch the managed attribution service decision for the last submitted cycle log."""
+        if not self._is_store_host:
+            return False
+        attribution_service = getattr(self._rdzv_handler, "_attribution_service", None)
+        if attribution_service is None:
+            return False
+        return attribution_service.get_last_result() is True
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -2781,14 +2808,14 @@ def _resolve_attribution_endpoint(args: Any, fault_tol_cfg: FaultToleranceConfig
 def _validate_attribution_requires_per_cycle_applog(
     args: Any, fault_tol_cfg: FaultToleranceConfig
 ) -> None:
-    if _resolve_attribution_endpoint(args, fault_tol_cfg) and not getattr(
-        args, "ft_per_cycle_applog_prefix", None
-    ):
+    if getattr(args, "ft_per_cycle_applog_prefix", None):
+        return
+
+    if _resolve_attribution_endpoint(args, fault_tol_cfg):
         raise ValueError(
             "--ft-attribution-endpoint requires --ft-per-cycle-applog-prefix to be specified. "
             "Attribution service needs per-cycle application logs as analysis input."
         )
-
 
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
@@ -2870,6 +2897,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+
     # Pass distributed storage health check configuration
     cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)
     if cli_dist_storage is not None:
