@@ -433,24 +433,33 @@ fresh job only after a failure, instead of holding idle nodes in reserve.
 Hot Spare with SLURM Job Array Deployment
 """""""""""""""""""""""""""""""""""""""""
 
-For large jobs the hot-spare pool can be assembled from **separate SLURM array tasks**
+For large jobs the spare-node pool can be assembled from **separate SLURM array tasks**
 rather than a single oversized allocation. Each array task contributes one block of
-nodes; ``ft_launcher`` joins them into a single rendezvous and treats the surplus block
-as a hot spare. This avoids requesting one giant allocation and lets SLURM schedule the
-spare block independently.
+nodes; ``ft_launcher`` joins all currently-running tasks into a single rendezvous. This
+pattern combines hot- and cold-spare strategies — surplus blocks inside the running pool
+act as hot spares, while queued (not-yet-running) array tasks act as cold spares that
+SLURM dispatches only after a sibling exits.
 
 **Sbatch directives** — per-task allocation plus an array dimension:
 
 .. code-block:: bash
 
    #SBATCH --nodes=16              # nodes per array task
-   #SBATCH --array=0-3%3           # 4 tasks total, at most 3 active at once
+   #SBATCH --array=0-3%3           # 4 tasks total, at most 3 running concurrently
    #SBATCH --ntasks-per-node=1
    #SBATCH --segment=16            # SLURM-level NVLink-domain segment
 
-With ``--array=0-3%3``, SLURM holds one of the four 16-node blocks back at any time. The
-three running tasks together provide ``3 × 16 = 48`` nodes; training proceeds on as few
-as ``2 × 16 = 32`` of them, leaving the rest as the hot-spare pool.
+How the pool behaves with ``--array=0-3%3``:
+
+* SLURM runs **3** of the 4 array tasks concurrently. The 4th sits in the queue with
+  **no allocation reserved** for it (cold spare).
+* The 3 running tasks together provide ``3 × 16 = 48`` allocated nodes, all joined to
+  the same rendezvous.
+* With ``--nnodes=32:48``, ``ft_launcher`` trains on as few as ``2 × 16 = 32`` nodes,
+  leaving up to ``16`` nodes from the running pool as the **hot spare**.
+* When a node failure causes its array task to exit, SLURM dispatches the queued task
+  from the cold-spare slot — it acquires fresh nodes and joins the rendezvous via the
+  shared ``RDZV_HOST`` file.
 
 **Cross-task rendezvous** — array tasks share one rendezvous through ``SLURM_ARRAY_JOB_ID``.
 Task 0 publishes its first hostname to a shared file; other tasks read it and join:
@@ -485,9 +494,10 @@ the array job ID so every task lands in the same rendezvous:
   assignment assumes uniform per-task allocation size.
 * ``--ft-segment`` must match the SLURM ``--segment`` (and the per-task ``--nodes``) so
   each array task maps to one NVLink domain.
-* ``%K`` in ``--array=0-N%K`` controls how many tasks run concurrently — set it so that
-  ``K × nodes_per_task`` covers the active node count and leaves at least one block for
-  the spare.
+* ``%K`` in ``--array=0-N%K`` controls how many tasks run **concurrently** (hot-spare
+  pool size); ``N+1-K`` queued tasks act as **cold spares**. Size both so that the
+  running pool covers ``--nnodes=min:max`` with headroom, and the queue holds enough
+  cold spares for the expected number of failures.
 * ``ft_launcher`` reads ``SLURM_ARRAY_JOB_ID`` / ``SLURM_ARRAY_TASK_ID`` to keep
   infrastructure ranks contiguous across tasks.
 
