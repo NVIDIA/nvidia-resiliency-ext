@@ -68,7 +68,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../attribution/index.html">Failure Attribution</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../shared_utils/index.html">Shared Utilities</a></li>
 </ul>
 
@@ -311,7 +310,6 @@ service dependencies.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-base-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_base_url</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-model</span> <span class="pre">&lt;MODEL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_model</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-startup-timeout</span> <span class="pre">&lt;SECONDS&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_startup_timeout</span></code>), default <code class="docutils literal notranslate"><span class="pre">20</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_export_url</span></code>)</p></li>
 </ul>
 <p>The managed attribution app-log directory is derived from
 <code class="docutils literal notranslate"><span class="pre">dirname(realpath(--ft-per-cycle-applog-prefix))</span></code>. Its stdout/stderr log is derived
@@ -320,12 +318,6 @@ from <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle
 <p>The managed attribution API key must come from <code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span></code> or inherited
 <code class="docutils literal notranslate"><span class="pre">LLM_API_KEY_FILE</span></code>. If neither points to a readable file, the TCPStore-host launcher fails
 before starting the attribution service.</p>
-<p>To export managed attribution results, pass <code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span></code> or
-set <code class="docutils literal notranslate"><span class="pre">attribution_export_url</span></code> in the fault tolerance YAML config.</p>
-<p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> sends job metadata with each attribution submission: <code class="docutils literal notranslate"><span class="pre">user</span></code> is read from
-<code class="docutils literal notranslate"><span class="pre">SLURM_JOB_USER</span></code> or <code class="docutils literal notranslate"><span class="pre">USER</span></code>, and <code class="docutils literal notranslate"><span class="pre">job_id</span></code> is read from <code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_JOB_ID</span></code> or
-<code class="docutils literal notranslate"><span class="pre">SLURM_JOB_ID</span></code>. If no corresponding environment variable is set, that field is omitted from
-the submission payload.</p>
 <p>Example:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--ft-per-cycle-applog-prefix<span class="w"> </span>/lustre/job123/train.log<span class="w"> </span><span class="se">\</span>
@@ -333,7 +325,6 @@ the submission payload.</p>
 <span class="w">  </span>--ft-attribution-llm-api-key-file<span class="w"> </span>/secure/llm_api_key<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--ft-attribution-llm-base-url<span class="w"> </span>https://integrate.api.nvidia.com/v1<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--ft-attribution-llm-model<span class="w"> </span>nvidia/nemotron-3-super-120b-a12b<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-attribution-export-url<span class="w"> </span>https://dataflow.example.test/dataflow2/example-index/posting<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>train.py
 </pre></div>
 </div>
@@ -440,6 +431,135 @@ for most deployments including H100-based systems where NVLink domain segmentati
 <span class="c1"># 4 hot spare nodes available for restart</span>
 </pre></div>
 </div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Single-job hot-spare deployments: pass</strong> <code class="docutils literal notranslate"><span class="pre">srun</span> <span class="pre">--kill-on-bad-exit=0</span></code>.
+Both simple and segment-aware mode rely on the launcher exiting <strong>0</strong> on an
+<code class="docutils literal notranslate"><span class="pre">UnhealthyNodeException</span></code> so srun’s default kill-on-bad-exit does not tear the
+allocation down on the graceful failover path. To stay robust against
+non-graceful exits (segfaults, OOM kills, signals), launch with
+<code class="docutils literal notranslate"><span class="pre">srun</span> <span class="pre">--kill-on-bad-exit=0</span></code> so a single bad node never takes the whole job
+with it.</p>
+</div>
+<section id="block-aware-rank-assignment">
+<h5>Block-Aware Rank Assignment<a class="headerlink" href="#block-aware-rank-assignment" title="Link to this heading"></a></h5>
+<p>On SLURM clusters configured with a topology plugin (<code class="docutils literal notranslate"><span class="pre">topology/block</span></code> or similar),
+SLURM exports <code class="docutils literal notranslate"><span class="pre">SLURM_TOPOLOGY_ADDR</span></code> (e.g. <code class="docutils literal notranslate"><span class="pre">block5.node3</span></code>) describing where each
+node sits in the switch hierarchy. <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can use this address to compute
+infrastructure ranks so that nodes within the same switch block receive contiguous
+ranks, improving collective performance on hierarchical fabrics.</p>
+<p>Enable by setting:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SLURM_TOPOLOGY_ADDR_PATTERN</span><span class="o">=</span>block.node
+</pre></div>
+</div>
+<p>When active, the launcher parses <code class="docutils literal notranslate"><span class="pre">SLURM_TOPOLOGY_ADDR</span></code> as <code class="docutils literal notranslate"><span class="pre">blockX.nodeY</span></code> and
+computes <code class="docutils literal notranslate"><span class="pre">infra_rank</span> <span class="pre">=</span> <span class="pre">X</span> <span class="pre">*</span> <span class="pre">multiplier</span> <span class="pre">+</span> <span class="pre">Y</span></code>. The multiplier defaults to <code class="docutils literal notranslate"><span class="pre">10^10</span></code>,
+reserving 10 digits for the node index and keeping the block index in the most
+significant position so the global rank ordering tracks topology.</p>
+<p>Override the multiplier when node numbers per block can exceed 10 digits, or when a
+tighter packing is desired:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SLURM_TOPOLOGY_NODES_PER_BLOCK</span><span class="o">=</span><span class="m">1024</span><span class="w">   </span><span class="c1"># block X gets ranks [X*1024, X*1024+1023]</span>
+</pre></div>
+</div>
+<p>Constraints:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">SLURM_TOPOLOGY_ADDR</span></code> must match <code class="docutils literal notranslate"><span class="pre">blockX.nodeY</span></code> (two dot-separated parts, each
+containing digits). Other topology patterns are ignored.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">node_num</span></code> must be <code class="docutils literal notranslate"><span class="pre">&lt;</span> <span class="pre">multiplier</span></code>; the launcher raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> otherwise.</p></li>
+<li><p>Block-aware ranking is bypassed when <code class="docutils literal notranslate"><span class="pre">CROSS_SLURM_PROCID</span></code> or
+<code class="docutils literal notranslate"><span class="pre">NVRX_INFRA_RANK_FROM_NODENAME</span></code> is set; those take precedence (see
+<code class="docutils literal notranslate"><span class="pre">get_infrastructure_rank</span></code> in <code class="docutils literal notranslate"><span class="pre">fault_tolerance/utils.py</span></code> for the full precedence
+chain).</p></li>
+</ul>
+<p>Block-aware ranking is independent of <code class="docutils literal notranslate"><span class="pre">--ft-segment</span></code>: it controls how ranks are
+<em>numbered</em> across the cluster topology, while <code class="docutils literal notranslate"><span class="pre">--ft-segment</span></code> controls which nodes
+become active vs. hot-spare within a single allocation. The two compose.</p>
+</section>
+<section id="hot-spare-vs-cold-spare">
+<h5>Hot Spare vs. Cold Spare<a class="headerlink" href="#hot-spare-vs-cold-spare" title="Link to this heading"></a></h5>
+<p>The hot-spare mechanism above keeps standby nodes ready for immediate failover. A
+complementary pattern — sometimes called <strong>cold spare</strong> — relies on SLURM to schedule a
+fresh job only after a failure, instead of holding idle nodes in reserve.</p>
+<ul class="simple">
+<li><p><strong>Hot spare</strong> — extra nodes co-allocated with the job; failover happens within the
+running launcher and is fast, at the cost of paying for idle standbys.</p></li>
+<li><p><strong>Cold spare</strong> — no idle nodes reserved; on failure the scheduler must queue a new job
+to acquire replacement nodes. Cheaper, but recovery latency includes scheduler queue
+time.</p></li>
+</ul>
+</section>
+<section id="hot-spare-with-slurm-job-array-deployment">
+<h5>Hot Spare with SLURM Job Array Deployment<a class="headerlink" href="#hot-spare-with-slurm-job-array-deployment" title="Link to this heading"></a></h5>
+<p>For large jobs the spare-node pool can be assembled from <strong>separate SLURM array tasks</strong>
+rather than a single oversized allocation. Each array task contributes one block of
+nodes; <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> joins all currently-running tasks into a single rendezvous. This
+pattern combines hot- and cold-spare strategies — surplus blocks inside the running pool
+act as hot spares, while queued (not-yet-running) array tasks act as cold spares that
+SLURM dispatches only after a sibling exits.</p>
+<p><strong>Sbatch directives</strong> — per-task allocation plus an array dimension:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1">#SBATCH --nodes=16              # nodes per array task</span>
+<span class="c1">#SBATCH --array=0-3%3           # 4 tasks total, at most 3 running concurrently</span>
+<span class="c1">#SBATCH --ntasks-per-node=1</span>
+<span class="c1">#SBATCH --segment=16            # SLURM-level NVLink-domain segment</span>
+</pre></div>
+</div>
+<p>How the pool behaves with <code class="docutils literal notranslate"><span class="pre">--array=0-3%3</span></code>:</p>
+<ul class="simple">
+<li><p>SLURM runs <strong>3</strong> of the 4 array tasks concurrently. The 4th sits in the queue with
+<strong>no allocation reserved</strong> for it (cold spare).</p></li>
+<li><p>The 3 running tasks together provide <code class="docutils literal notranslate"><span class="pre">3</span> <span class="pre">×</span> <span class="pre">16</span> <span class="pre">=</span> <span class="pre">48</span></code> allocated nodes, all joined to
+the same rendezvous.</p></li>
+<li><p>With <code class="docutils literal notranslate"><span class="pre">--nnodes=32:48</span></code>, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> trains on as few as <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">×</span> <span class="pre">16</span> <span class="pre">=</span> <span class="pre">32</span></code> nodes,
+leaving up to <code class="docutils literal notranslate"><span class="pre">16</span></code> nodes from the running pool as the <strong>hot spare</strong>.</p></li>
+<li><p>When a node failure causes its array task to exit, SLURM dispatches the queued task
+from the cold-spare slot — it acquires fresh nodes and joins the rendezvous via the
+shared <code class="docutils literal notranslate"><span class="pre">RDZV_HOST</span></code> file.</p></li>
+</ul>
+<p><strong>Cross-task rendezvous</strong> — array tasks share one rendezvous through <code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_JOB_ID</span></code>.
+Task 0 publishes its first hostname to a shared file; other tasks read it and join:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="o">[[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SLURM_ARRAY_TASK_ID</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="s2">&quot;0&quot;</span><span class="w"> </span><span class="o">]]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="w">    </span>scontrol<span class="w"> </span>show<span class="w"> </span>hostnames<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SLURM_NODELIST</span><span class="s2">&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>head<span class="w"> </span>-n1<span class="w"> </span>&gt;<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RDZV_FILE</span><span class="s2">&quot;</span>
+<span class="k">fi</span>
+<span class="k">while</span><span class="w"> </span><span class="o">[[</span><span class="w"> </span>!<span class="w"> </span>-f<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RDZV_FILE</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">]]</span><span class="p">;</span><span class="w"> </span><span class="k">do</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="k">done</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">RDZV_HOST</span><span class="o">=</span><span class="k">$(</span>cat<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$RDZV_FILE</span><span class="s2">&quot;</span><span class="k">)</span>
+</pre></div>
+</div>
+<p><strong>Launcher arguments</strong> — <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code> spans the full pool, and <code class="docutils literal notranslate"><span class="pre">--rdzv-id</span></code> is keyed on
+the array job ID so every task lands in the same rendezvous:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ACTIVE_SLURM_ARRAY_TASKS</span><span class="o">=</span><span class="m">3</span><span class="w">      </span><span class="c1"># tasks needed for training; one block is spare</span>
+
+ft_launcher<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--nnodes<span class="w"> </span><span class="k">$((</span><span class="w"> </span><span class="nv">SLURM_JOB_NUM_NODES</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="o">(</span><span class="nv">ACTIVE_SLURM_ARRAY_TASKS</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="m">1</span><span class="o">)</span><span class="w"> </span><span class="k">))</span>:<span class="k">$((</span><span class="w"> </span><span class="nv">SLURM_JOB_NUM_NODES</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="nv">ACTIVE_SLURM_ARRAY_TASKS</span><span class="w"> </span><span class="k">))</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--nproc-per-node<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-segment<span class="o">=</span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--rdzv-id<span class="w"> </span><span class="si">${</span><span class="nv">SLURM_ARRAY_JOB_ID</span><span class="si">}</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--rdzv-endpoint<span class="w"> </span><span class="si">${</span><span class="nv">RDZV_HOST</span><span class="si">}</span>:<span class="si">${</span><span class="nv">RDZV_PORT</span><span class="si">}</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--max-restarts<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>training_script.py
+</pre></div>
+</div>
+<p><strong>Key constraints:</strong></p>
+<ul class="simple">
+<li><p>All array tasks must request the same <code class="docutils literal notranslate"><span class="pre">--nodes</span></code> and <code class="docutils literal notranslate"><span class="pre">--ntasks-per-node</span></code>; infra-rank
+assignment assumes uniform per-task allocation size.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-segment</span></code> must match the SLURM <code class="docutils literal notranslate"><span class="pre">--segment</span></code> (and the per-task <code class="docutils literal notranslate"><span class="pre">--nodes</span></code>) so
+each array task maps to one NVLink domain.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">%K</span></code> in <code class="docutils literal notranslate"><span class="pre">--array=0-N%K</span></code> controls how many tasks run <strong>concurrently</strong> (hot-spare
+pool size); <code class="docutils literal notranslate"><span class="pre">N+1-K</span></code> queued tasks act as <strong>cold spares</strong>. Size both so that the
+running pool covers <code class="docutils literal notranslate"><span class="pre">--nnodes=min:max</span></code> with headroom, and the queue holds enough
+cold spares for the expected number of failures.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> reads <code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_JOB_ID</span></code> / <code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_TASK_ID</span></code> to keep
+infrastructure ranks contiguous across tasks.</p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Leave</strong> <code class="docutils literal notranslate"><span class="pre">--kill-on-bad-exit</span></code> <strong>at its default (on).</strong> Unlike the
+single-allocation hot-spare case, here <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> exits <strong>1</strong> on
+<code class="docutils literal notranslate"><span class="pre">UnhealthyNodeException</span></code> so srun’s default kill-on-bad-exit terminates the
+failing array task and SLURM can schedule a fresh one in its place. Do <strong>not</strong>
+pass <code class="docutils literal notranslate"><span class="pre">--kill-on-bad-exit=0</span></code> for array-task deployments.</p>
+</div>
+</section>
 </section>
 <section id="numa-binding">
 <h4>NUMA binding<a class="headerlink" href="#numa-binding" title="Link to this heading"></a></h4>
