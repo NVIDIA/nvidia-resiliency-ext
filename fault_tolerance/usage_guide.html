@@ -311,6 +311,7 @@ service dependencies.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-base-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_base_url</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-model</span> <span class="pre">&lt;MODEL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_model</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-startup-timeout</span> <span class="pre">&lt;SECONDS&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_startup_timeout</span></code>), default <code class="docutils literal notranslate"><span class="pre">20</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_export_url</span></code>)</p></li>
 </ul>
 <p>The managed attribution app-log directory is derived from
 <code class="docutils literal notranslate"><span class="pre">dirname(realpath(--ft-per-cycle-applog-prefix))</span></code>. Its stdout/stderr log is derived
@@ -319,6 +320,12 @@ from <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle
 <p>The managed attribution API key must come from <code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span></code> or inherited
 <code class="docutils literal notranslate"><span class="pre">LLM_API_KEY_FILE</span></code>. If neither points to a readable file, the TCPStore-host launcher fails
 before starting the attribution service.</p>
+<p>To export managed attribution results, pass <code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span></code> or
+set <code class="docutils literal notranslate"><span class="pre">attribution_export_url</span></code> in the fault tolerance YAML config.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> sends job metadata with each attribution submission: <code class="docutils literal notranslate"><span class="pre">user</span></code> is read from
+<code class="docutils literal notranslate"><span class="pre">SLURM_JOB_USER</span></code> or <code class="docutils literal notranslate"><span class="pre">USER</span></code>, and <code class="docutils literal notranslate"><span class="pre">job_id</span></code> is read from <code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_JOB_ID</span></code> or
+<code class="docutils literal notranslate"><span class="pre">SLURM_JOB_ID</span></code>. If no corresponding environment variable is set, that field is omitted from
+the submission payload.</p>
 <p>Example:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--ft-per-cycle-applog-prefix<span class="w"> </span>/lustre/job123/train.log<span class="w"> </span><span class="se">\</span>
@@ -326,6 +333,7 @@ before starting the attribution service.</p>
 <span class="w">  </span>--ft-attribution-llm-api-key-file<span class="w"> </span>/secure/llm_api_key<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--ft-attribution-llm-base-url<span class="w"> </span>https://integrate.api.nvidia.com/v1<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--ft-attribution-llm-model<span class="w"> </span>nvidia/nemotron-3-super-120b-a12b<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ft-attribution-export-url<span class="w"> </span>https://dataflow.example.test/dataflow2/example-index/posting<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>train.py
 </pre></div>
 </div>
