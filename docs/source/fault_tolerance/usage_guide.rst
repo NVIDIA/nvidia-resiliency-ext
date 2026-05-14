@@ -367,6 +367,15 @@ Example for NVSwitch deployment with segment=4 (12 nodes requested, 8 needed):
    # 8 active nodes = 2 complete segments
    # 4 hot spare nodes available for restart
 
+.. note::
+   **Single-job hot-spare deployments: pass** ``srun --kill-on-bad-exit=0``.
+   Both simple and segment-aware mode rely on the launcher exiting **0** on an
+   ``UnhealthyNodeException`` so srun's default kill-on-bad-exit does not tear the
+   allocation down on the graceful failover path. To stay robust against
+   non-graceful exits (segfaults, OOM kills, signals), launch with
+   ``srun --kill-on-bad-exit=0`` so a single bad node never takes the whole job
+   with it.
+
 Block-Aware Rank Assignment
 """""""""""""""""""""""""""
 
@@ -481,6 +490,13 @@ the array job ID so every task lands in the same rendezvous:
   the spare.
 * ``ft_launcher`` reads ``SLURM_ARRAY_JOB_ID`` / ``SLURM_ARRAY_TASK_ID`` to keep
   infrastructure ranks contiguous across tasks.
+
+.. note::
+   **Leave** ``--kill-on-bad-exit`` **at its default (on).** Unlike the
+   single-allocation hot-spare case, here ``ft_launcher`` exits **1** on
+   ``UnhealthyNodeException`` so srun's default kill-on-bad-exit terminates the
+   failing array task and SLURM can schedule a fresh one in its place. Do **not**
+   pass ``--kill-on-bad-exit=0`` for array-task deployments.
 
 NUMA binding
 ^^^^^^^^^^^^
