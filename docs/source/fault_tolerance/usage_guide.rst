@@ -367,24 +367,120 @@ Example for NVSwitch deployment with segment=4 (12 nodes requested, 8 needed):
    # 8 active nodes = 2 complete segments
    # 4 hot spare nodes available for restart
 
-Hot Spare vs. Cold Spare (SLURM Array Jobs)
-"""""""""""""""""""""""""""""""""""""""""""
+Block-Aware Rank Assignment
+"""""""""""""""""""""""""""
 
-The hot-spare mechanism above keeps standby nodes inside the same allocation, ready for
-immediate failover. A complementary pattern — sometimes called **cold spare** — relies on
-SLURM array jobs (``sbatch --array=...``) or ``--requeue`` to acquire fresh nodes only
-after a failure, instead of holding idle nodes in reserve.
+On SLURM clusters configured with a topology plugin (``topology/block`` or similar),
+SLURM exports ``SLURM_TOPOLOGY_ADDR`` (e.g. ``block5.node3``) describing where each
+node sits in the switch hierarchy. ``ft_launcher`` can use this address to compute
+infrastructure ranks so that nodes within the same switch block receive contiguous
+ranks, improving collective performance on hierarchical fabrics.
+
+Enable by setting:
+
+.. code-block:: bash
+
+   export SLURM_TOPOLOGY_ADDR_PATTERN=block.node
+
+When active, the launcher parses ``SLURM_TOPOLOGY_ADDR`` as ``blockX.nodeY`` and
+computes ``infra_rank = X * multiplier + Y``. The multiplier defaults to ``10^10``,
+reserving 10 digits for the node index and keeping the block index in the most
+significant position so the global rank ordering tracks topology.
+
+Override the multiplier when node numbers per block can exceed 10 digits, or when a
+tighter packing is desired:
+
+.. code-block:: bash
+
+   export SLURM_TOPOLOGY_NODES_PER_BLOCK=1024   # block X gets ranks [X*1024, X*1024+1023]
+
+Constraints:
+
+* ``SLURM_TOPOLOGY_ADDR`` must match ``blockX.nodeY`` (two dot-separated parts, each
+  containing digits). Other topology patterns are ignored.
+* ``node_num`` must be ``< multiplier``; the launcher raises ``ValueError`` otherwise.
+* Block-aware ranking is bypassed when ``CROSS_SLURM_PROCID`` or
+  ``NVRX_INFRA_RANK_FROM_NODENAME`` is set; those take precedence (see
+  ``get_infrastructure_rank`` in ``fault_tolerance/utils.py`` for the full precedence
+  chain).
+
+Block-aware ranking is independent of ``--ft-segment``: it controls how ranks are
+*numbered* across the cluster topology, while ``--ft-segment`` controls which nodes
+become active vs. hot-spare within a single allocation. The two compose.
+
+Hot Spare vs. Cold Spare
+""""""""""""""""""""""""
+
+The hot-spare mechanism above keeps standby nodes ready for immediate failover. A
+complementary pattern — sometimes called **cold spare** — relies on SLURM to schedule a
+fresh job only after a failure, instead of holding idle nodes in reserve.
 
 * **Hot spare** — extra nodes co-allocated with the job; failover happens within the
-  same allocation and is fast, at the cost of paying for idle standbys.
-* **Cold spare (SLURM array / requeue)** — no idle nodes reserved; on failure the next
-  array task (or requeued job) is scheduled and takes the place of the failed one.
-  Cheaper, but recovery latency includes scheduler queue time. ``ft_launcher`` recognizes
-  ``SLURM_ARRAY_JOB_ID`` / ``SLURM_ARRAY_TASK_ID`` and uses them to keep infrastructure
-  rank assignment consistent across array tasks.
+  running launcher and is fast, at the cost of paying for idle standbys.
+* **Cold spare** — no idle nodes reserved; on failure the scheduler must queue a new job
+  to acquire replacement nodes. Cheaper, but recovery latency includes scheduler queue
+  time.
 
-The two are not mutually exclusive: a job can request a small hot-spare pool for fast
-recovery from single-node failures and rely on a SLURM array for catastrophic restarts.
+Hot Spare with SLURM Job Array Deployment
+"""""""""""""""""""""""""""""""""""""""""
+
+For large jobs the hot-spare pool can be assembled from **separate SLURM array tasks**
+rather than a single oversized allocation. Each array task contributes one block of
+nodes; ``ft_launcher`` joins them into a single rendezvous and treats the surplus block
+as a hot spare. This avoids requesting one giant allocation and lets SLURM schedule the
+spare block independently.
+
+**Sbatch directives** — per-task allocation plus an array dimension:
+
+.. code-block:: bash
+
+   #SBATCH --nodes=16              # nodes per array task
+   #SBATCH --array=0-3%3           # 4 tasks total, at most 3 active at once
+   #SBATCH --ntasks-per-node=1
+   #SBATCH --segment=16            # SLURM-level NVLink-domain segment
+
+With ``--array=0-3%3``, SLURM holds one of the four 16-node blocks back at any time. The
+three running tasks together provide ``3 × 16 = 48`` nodes; training proceeds on as few
+as ``2 × 16 = 32`` of them, leaving the rest as the hot-spare pool.
+
+**Cross-task rendezvous** — array tasks share one rendezvous through ``SLURM_ARRAY_JOB_ID``.
+Task 0 publishes its first hostname to a shared file; other tasks read it and join:
+
+.. code-block:: bash
+
+   if [[ "$SLURM_ARRAY_TASK_ID" == "0" ]]; then
+       scontrol show hostnames "$SLURM_NODELIST" | head -n1 > "$RDZV_FILE"
+   fi
+   while [[ ! -f "$RDZV_FILE" ]]; do sleep 1; done
+   export RDZV_HOST=$(cat "$RDZV_FILE")
+
+**Launcher arguments** — ``--nnodes`` spans the full pool, and ``--rdzv-id`` is keyed on
+the array job ID so every task lands in the same rendezvous:
+
+.. code-block:: bash
+
+   ACTIVE_SLURM_ARRAY_TASKS=3      # tasks needed for training; one block is spare
+
+   ft_launcher \
+       --nnodes $(( SLURM_JOB_NUM_NODES * (ACTIVE_SLURM_ARRAY_TASKS - 1) )):$(( SLURM_JOB_NUM_NODES * ACTIVE_SLURM_ARRAY_TASKS )) \
+       --nproc-per-node 4 \
+       --ft-segment=16 \
+       --rdzv-id ${SLURM_ARRAY_JOB_ID} \
+       --rdzv-endpoint ${RDZV_HOST}:${RDZV_PORT} \
+       --max-restarts 10 \
+       training_script.py
+
+**Key constraints:**
+
+* All array tasks must request the same ``--nodes`` and ``--ntasks-per-node``; infra-rank
+  assignment assumes uniform per-task allocation size.
+* ``--ft-segment`` must match the SLURM ``--segment`` (and the per-task ``--nodes``) so
+  each array task maps to one NVLink domain.
+* ``%K`` in ``--array=0-N%K`` controls how many tasks run concurrently — set it so that
+  ``K × nodes_per_task`` covers the active node count and leaves at least one block for
+  the spare.
+* ``ft_launcher`` reads ``SLURM_ARRAY_JOB_ID`` / ``SLURM_ARRAY_TASK_ID`` to keep
+  infrastructure ranks contiguous across tasks.
 
 NUMA binding
 ^^^^^^^^^^^^
