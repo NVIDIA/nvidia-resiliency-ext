@@ -27,7 +27,7 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
     - Fail-count tracking in `NodeHealthCheck` ([#244](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/244)).
 
 - **Checkpointing**
-    - **CPU shared-memory D2H path** in `FileSystemWriterAsync` removes a redundant H2H copy and resolves the prior shm D2H race ([#298](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/298)).
+    - **CPU shared-memory D2H path (experimental)** in `FileSystemWriterAsync` removes a redundant H2H copy and resolves the prior shm D2H race ([#298](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/298)).
     - **PersistentAsyncCaller upgrades**: QoS control, worker data cache, warmup, IPC-handle caching via `ConsistentDataIdentifier`, and class-level metadata cache in `CachedMetadataFileSystemReader` ([#273](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/273), [#274](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/274), [#275](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/275)).
     - Reliability fixes: SIGSEGV on SIGKILL with dangling CUDA IPC handles ([#284](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/284)), CUDA IPC handle errors in persistent worker ([#288](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/288)), premature GC of preloaded pinned host tensors in `TemporalAsyncCaller` ([#291](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/291)), MXFP8/TE quantized tensor handling in IPC cache ([#276](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/276)), spawned persistent worker CUDA-device init ([#238](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/238)).
 
@@ -82,6 +82,7 @@ pip install nvidia-resiliency-ext[dataflow]
 - **Python**: wheels are published for 3.10, 3.11, 3.12.
 - **Attribution, Flight Recorder analysis, LogSage, and MCP integration are experimental.** APIs, CLI flags, and service contracts may change in subsequent releases.
 - **External InJob control-plane is experimental** and not yet QA-validated; APIs may change in subsequent releases.
+- **CPU shared-memory D2H path in `FileSystemWriterAsync` is experimental** ([#298](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/298)); enable only in non-production runs while we collect soak feedback.
 
 
 ## NVIDIA Resiliency Extension v0.5.0
