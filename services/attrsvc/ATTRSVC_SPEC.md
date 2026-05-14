@@ -396,7 +396,7 @@ Refer to live **`GET /stats`** response or OpenAPI for the current JSON shape.
 21. DATAFLOW & SLACK (OPTIONAL)
 --------------------------------------------------------------------------------
 
-Postprocessing posts results when `DATAFLOW_HTTP_URL` is configured with the
+Postprocessing posts results when `EXPORT_URL` is configured with the
 complete posting URI. No endpoint is built into the package. Slack posts when
 `SLACK_BOT_TOKEN` set or token fallback files are present. Wiring:
 `Settings` → `AttributionControllerConfig` → `AttributionController`. Record build:

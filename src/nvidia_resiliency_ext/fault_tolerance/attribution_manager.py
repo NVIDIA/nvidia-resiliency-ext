@@ -30,6 +30,9 @@ _ATTRIBUTION_STOP_TIMEOUT = 5.0
 _ATTRIBUTION_READY_POLL_INTERVAL = 0.5
 _MANAGED_ATTRIBUTION_ENDPOINT = "localhost"
 _EXTERNAL_ATTRIBUTION_SCHEMES = {"http", "grpc"}
+_ATTRSVC_EXPORT_URL_ENV = "NVRX_ATTRSVC_EXPORT_URL"
+_ATTRIBUTION_EXPORT_URL_CONFIG = "--ft-attribution-export-url / attribution_export_url"
+_EXPORT_URL_SCHEMES = {"http", "https"}
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,7 @@ class AttributionConfig:
     analysis_backend: Optional[str] = None
     compute_timeout: Optional[float] = None
     log_level: Optional[str] = None
+    export_url: Optional[str] = None
 
     @property
     def is_enabled(self) -> bool:
@@ -89,6 +93,16 @@ class AttributionConfig:
         if endpoint is not None:
             _validate_attribution_endpoint(endpoint)
 
+        export_url = _resolve_export_url(args, ft_cfg)
+        if export_url is not None and (
+            endpoint is None or not is_managed_attribution_endpoint(endpoint)
+        ):
+            endpoint_desc = endpoint if endpoint is not None else "disabled"
+            raise ValueError(
+                f"{_ATTRIBUTION_EXPORT_URL_CONFIG} requires launcher-managed attribution "
+                f"with --ft-attribution-endpoint localhost, got {endpoint_desc!r}"
+            )
+
         startup_timeout = getattr(args, "ft_attribution_startup_timeout", None)
         if startup_timeout is None:
             startup_timeout = DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT
@@ -108,6 +122,7 @@ class AttributionConfig:
                 analysis_backend=getattr(args, "ft_attribution_analysis_backend", None),
                 compute_timeout=getattr(args, "ft_attribution_compute_timeout", None),
                 log_level=getattr(args, "ft_attribution_log_level", None),
+                export_url=None,
             )
 
         applog_dir = os.path.dirname(os.path.realpath(os.path.abspath(base_log_file)))
@@ -136,6 +151,7 @@ class AttributionConfig:
             analysis_backend=getattr(args, "ft_attribution_analysis_backend", None),
             compute_timeout=getattr(args, "ft_attribution_compute_timeout", None),
             log_level=getattr(args, "ft_attribution_log_level", None),
+            export_url=export_url,
         )
 
 
@@ -255,6 +271,8 @@ class AttributionManager:
     def _child_env(self, api_key_file: str) -> dict[str, str]:
         assert self.cfg.applog_dir is not None
         env = os.environ.copy()
+        # Export URL for launcher-managed attrsvc is explicit via CLI/YAML, not parent env.
+        env.pop(_ATTRSVC_EXPORT_URL_ENV, None)
         env["LLM_API_KEY_FILE"] = api_key_file
         # nvrx-attrsvc owns the service-side environment variable contract.
         env["NVRX_ATTRSVC_ENDPOINT"] = _managed_attribution_client_endpoint()
@@ -264,6 +282,7 @@ class AttributionManager:
         _set_if_not_none(env, "NVRX_ATTRSVC_ANALYSIS_BACKEND", self.cfg.analysis_backend)
         _set_if_not_none(env, "NVRX_ATTRSVC_COMPUTE_TIMEOUT", self.cfg.compute_timeout)
         _set_if_not_none(env, "NVRX_ATTRSVC_LOG_LEVEL", self.cfg.log_level)
+        _set_if_not_none(env, _ATTRSVC_EXPORT_URL_ENV, self.cfg.export_url)
         return env
 
     def _wait_until_ready(self) -> None:
@@ -355,6 +374,32 @@ def _validate_attribution_endpoint(endpoint: str) -> None:
         raise ValueError("--ft-attribution-endpoint must include a port")
 
     _validate_attribution_endpoint_host(parsed.hostname)
+
+
+def _resolve_export_url(args: Any, ft_cfg: FaultToleranceConfig) -> Optional[str]:
+    value = getattr(args, "ft_attribution_export_url", None)
+    if value is None:
+        value = getattr(ft_cfg, "attribution_export_url", None)
+    if value is None:
+        return None
+
+    value = str(value).strip()
+    if not value:
+        return None
+    _validate_export_url(value)
+    return value
+
+
+def _validate_export_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in _EXPORT_URL_SCHEMES or not parsed.netloc:
+        raise ValueError(
+            f"{_ATTRIBUTION_EXPORT_URL_CONFIG} must be a complete http(s) URL, got {url!r}"
+        )
+    if parsed.query or parsed.fragment:
+        raise ValueError(
+            f"{_ATTRIBUTION_EXPORT_URL_CONFIG} must not include query parameters or fragments"
+        )
 
 
 def _validate_attribution_endpoint_host(hostname: str) -> None:

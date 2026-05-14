@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, Optional
 
 import httpx
 
-from .config import DATAFLOW_HTTP_URL_ENV, dataflow_http_url_from_env
+from .config import EXPORT_URL_ENV, export_url_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _dataflow_http_timeout_seconds() -> float:
 
 
 def _dataflow_http_endpoint() -> str:
-    return dataflow_http_url_from_env()
+    return export_url_from_env()
 
 
 def _dataflow_http_queue() -> str:
@@ -65,10 +65,10 @@ def _dataflow_http_queue() -> str:
 
 
 def _dataflow_http_url(endpoint: str) -> str:
-    """Return the explicitly configured dataflow HTTP post URL."""
+    """Return the explicitly configured export URL for dataflow HTTP posts."""
     endpoint = endpoint.strip()
     if not endpoint:
-        raise ValueError("NVRX_ATTRSVC_DATAFLOW_HTTP_URL is required for dataflow HTTP posting")
+        raise ValueError("NVRX_ATTRSVC_EXPORT_URL is required for dataflow HTTP posting")
     return endpoint
 
 
@@ -90,7 +90,7 @@ def make_dataflow_http_post_fn(
     if not resolved_endpoint.strip():
 
         def _missing_endpoint_post(_data: Dict[str, Any], _unused: str) -> bool:
-            logger.error("%s is required for dataflow HTTP posting", DATAFLOW_HTTP_URL_ENV)
+            logger.error("%s is required for dataflow HTTP posting", EXPORT_URL_ENV)
             return False
 
         return _missing_endpoint_post

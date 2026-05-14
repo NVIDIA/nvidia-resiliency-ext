@@ -230,6 +230,7 @@ service dependencies.
   - ``--ft-attribution-llm-base-url <URL>`` (alias: ``--ft_attribution_llm_base_url``)
   - ``--ft-attribution-llm-model <MODEL>`` (alias: ``--ft_attribution_llm_model``)
   - ``--ft-attribution-startup-timeout <SECONDS>`` (alias: ``--ft_attribution_startup_timeout``), default ``20``
+  - ``--ft-attribution-export-url <URL>`` (alias: ``--ft_attribution_export_url``)
 
   The managed attribution app-log directory is derived from
   ``dirname(realpath(--ft-per-cycle-applog-prefix))``. Its stdout/stderr log is derived
@@ -239,6 +240,14 @@ service dependencies.
   The managed attribution API key must come from ``--ft-attribution-llm-api-key-file`` or inherited
   ``LLM_API_KEY_FILE``. If neither points to a readable file, the TCPStore-host launcher fails
   before starting the attribution service.
+
+  To export managed attribution results, pass ``--ft-attribution-export-url`` or
+  set ``attribution_export_url`` in the fault tolerance YAML config.
+
+  ``ft_launcher`` sends job metadata with each attribution submission: ``user`` is read from
+  ``SLURM_JOB_USER`` or ``USER``, and ``job_id`` is read from ``SLURM_ARRAY_JOB_ID`` or
+  ``SLURM_JOB_ID``. If no corresponding environment variable is set, that field is omitted from
+  the submission payload.
 
   Example:
 
@@ -250,6 +259,7 @@ service dependencies.
        --ft-attribution-llm-api-key-file /secure/llm_api_key \
        --ft-attribution-llm-base-url https://integrate.api.nvidia.com/v1 \
        --ft-attribution-llm-model nvidia/nemotron-3-super-120b-a12b \
+       --ft-attribution-export-url https://dataflow.example.test/dataflow2/example-index/posting \
        train.py
 
   To use an externally managed attribution service instead, specify an explicit endpoint:

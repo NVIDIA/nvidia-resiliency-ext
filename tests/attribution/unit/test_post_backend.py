@@ -104,7 +104,7 @@ class TestDataflowHttpPost(unittest.TestCase):
         with mock.patch.dict(
             "os.environ",
             {
-                "NVRX_ATTRSVC_DATAFLOW_HTTP_URL": (
+                "NVRX_ATTRSVC_EXPORT_URL": (
                     "https://dataflow.example.test/dataflow2/sandbox-nvrx/posting"
                 )
             },
