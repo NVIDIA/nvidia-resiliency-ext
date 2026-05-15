@@ -116,6 +116,30 @@ def _compute_data_structure_key_from_plan(items: List[WriteItem]) -> str:
     return hashlib.sha256(str(structure_info).encode()).hexdigest()
 
 
+def _compute_tensor_data_ptrs(items: List[WriteItem], tensors: List[Any]) -> Tuple[Tuple, ...]:
+    """Compute a storage identity fingerprint for tensors cached via CUDA IPC."""
+    ptrs = []
+    for item, tensor in zip(items, tensors):
+        chunk = item.tensor_data.chunk if item.tensor_data is not None else None
+        chunk_info = (tuple(chunk.offsets), tuple(chunk.sizes)) if chunk is not None else None
+
+        if isinstance(tensor, torch.Tensor):
+            storage = tensor.untyped_storage()
+            tensor_info = (
+                str(tensor.device),
+                tensor.data_ptr(),
+                storage.data_ptr(),
+                tensor.storage_offset(),
+                tuple(tensor.size()),
+                tuple(tensor.stride()),
+                str(tensor.dtype),
+            )
+        else:
+            tensor_info = (type(tensor).__qualname__,)
+        ptrs.append((item.index.fqn, chunk_info, tensor_info))
+    return tuple(ptrs)
+
+
 @_disable_gc()
 def get_write_results_queue(mp_mode: str = 'spawn') -> mp.Queue:
     """Get or create a multiprocessing queue for write results.
@@ -159,6 +183,11 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     # Class-level cache to track identifiers that have been sent to worker across instances
     _cached_identifiers: set = set()
+
+    # Training-side CUDA IPC tensor fingerprint cache.
+    # Key: SHA-256 of plan items (same as ConsistentDataIdentifier).
+    # Value: data/storage pointer fingerprint for the GPU tensors sent to the worker.
+    _cached_tensor_data_ptrs: ClassVar[Dict[str, Tuple[Tuple, ...]]] = {}
 
     # Training-side shm tensor cache: reuses allocations across checkpoints.
     # Only populated when use_cpu_shm_for_gpu_tensors=True AND use_cached_data_structure=True.
@@ -404,17 +433,27 @@ class FileSystemWriterAsync(FileSystemWriter):
                     )
             elif cache_exists:
                 # --- original GPU IPC path, reuse ---
+                current_data_ptrs = _compute_tensor_data_ptrs(gpu_items, gpu_data)
+                cache_data_is_current = (
+                    FileSystemWriterAsync._cached_tensor_data_ptrs.get(key) == current_data_ptrs
+                )
                 self.consistent_data_identifier = ConsistentDataIdentifier(key)
-                self.cached_tensor_data = None  # Signal to reuse cached data
+                self.cached_tensor_data = None if cache_data_is_current else (gpu_items, gpu_data)
+                if not cache_data_is_current:
+                    FileSystemWriterAsync._cached_tensor_data_ptrs[key] = current_data_ptrs
+                cache_action = "Reusing" if cache_data_is_current else "Refreshing"
                 logger.debug(
-                    f"Reusing cached GPU tensors (key={key}), "
-                    f"resolved {len(uncached_items)} uncached tensors fresh"
+                    f"{cache_action} cached GPU tensors (key={key}), "
+                    f"{len(uncached_items)} uncached tensors passed fresh"
                 )
             elif gpu_items:
                 # --- original GPU IPC path, first time ---
                 self.consistent_data_identifier = ConsistentDataIdentifier(key)
                 self.cached_tensor_data = (gpu_items, gpu_data)
                 FileSystemWriterAsync._cached_identifiers.add(key)
+                FileSystemWriterAsync._cached_tensor_data_ptrs[key] = _compute_tensor_data_ptrs(
+                    gpu_items, gpu_data
+                )
                 logger.debug(
                     f"Caching {len(gpu_items)} GPU tensors (key={key}), "
                     f"{len(uncached_items)} uncached tensors passed fresh"
@@ -493,6 +532,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             logger.info(f"Clearing shm tensor cache ({len(cls._shm_tensor_cache)} entries)")
             cls._shm_tensor_cache.clear()
         cls._cached_identifiers.clear()
+        cls._cached_tensor_data_ptrs.clear()
 
     @classmethod
     def register_shm_drain_callback(cls, fn: Optional[Callable[[], None]]) -> None:
@@ -1194,6 +1234,9 @@ class FileSystemWriterAsync(FileSystemWriter):
             if self.consistent_data_identifier is not None:
                 FileSystemWriterAsync._cached_identifiers.discard(
                     self.consistent_data_identifier.key
+                )
+                FileSystemWriterAsync._cached_tensor_data_ptrs.pop(
+                    self.consistent_data_identifier.key, None
                 )
             try:
                 raise RuntimeError(
