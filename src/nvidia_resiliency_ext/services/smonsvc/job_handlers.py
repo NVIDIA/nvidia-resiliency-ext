@@ -16,6 +16,7 @@ from nvidia_resiliency_ext.attribution import (
     JobMode,
     parse_attrsvc_response,
 )
+from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TERMINAL
 from nvidia_resiliency_ext.attribution.orchestration.types import RECOMMENDATION_TIMEOUT
 
 if TYPE_CHECKING:
@@ -119,6 +120,25 @@ def fetch_results(
         state: MonitorState to update counters
         attrsvc_client: Client for attrsvc HTTP requests
     """
+
+    if not getattr(job, "terminal_signaled", False):
+        job.terminal_signaled = True
+
+        def on_terminal_success(_response):
+            logger.info(f"[{job.job_id}] Terminal analysis signaled: {log_path}")
+
+        def on_terminal_client_error(error_msg: str):
+            logger.debug(f"[{job.job_id}] Terminal signal POST failed: {error_msg}")
+
+        attrsvc_client.request_with_retry(
+            method="POST",
+            job_id=job.job_id,
+            log_path=log_path,
+            on_success=on_terminal_success,
+            on_client_error=on_terminal_client_error,
+            user=job.user,
+            analysis_intent=ANALYSIS_INTENT_TERMINAL,
+        )
 
     def on_success(response):
         try:

@@ -105,7 +105,7 @@ class SubmitRequest(BaseModel):
     log_path: str
     user: str = "unknown"  # Optional: SLURM job user, for dataflow records
     job_id: str | None = None  # Optional: SLURM job ID, required for split logging mode
-    analysis_intent: str = ANALYSIS_INTENT_TRACK_ONLY  # Optional: progressive early-start hint
+    analysis_intent: str = ANALYSIS_INTENT_TRACK_ONLY  # track_only, progressive, or terminal
 
     @field_validator("analysis_intent")
     @classmethod

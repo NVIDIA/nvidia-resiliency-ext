@@ -2,15 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import concurrent.futures
 import importlib
+import logging
 import sys
 import types
 from typing import Any
 
+from nvidia_resiliency_ext.attribution.coalescing import LogAnalysisCoalesced
 from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode, LogSageExecutionConfig
 from nvidia_resiliency_ext.attribution.orchestration.job import JobMode
 from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ANALYSIS_INTENT_PROGRESSIVE,
+    ANALYSIS_INTENT_TERMINAL,
     MODULE_LOG_ANALYZER_PROGRESSIVE_START,
     PROGRESSIVE_STATUS_UNSUPPORTED,
     ProgressiveLogAnalysisStartTool,
@@ -66,8 +70,31 @@ class FakeLogAnalyzer:
         self.progressive_starts: list[tuple[str, str, str | None]] = []
         self.progressive_started: asyncio.Event | None = None
         self.progressive_release: asyncio.Event | None = None
+        self.terminal_runs: list[tuple[str, str, str | None]] = []
+        self.terminal_started: asyncio.Event | None = None
+        self.terminal_release: asyncio.Event | None = None
+        self.jobs: dict[str, Any] = {}
 
     def register_callbacks(self, _callback: Any) -> None:
+        pass
+
+    def validate_path(
+        self,
+        log_path: str,
+        *,
+        require_regular_file: bool = True,
+        reject_empty: bool = False,
+    ) -> str:
+        _ = (require_regular_file, reject_empty)
+        return log_path
+
+    def get_job(self, log_path: str) -> Any:
+        return self.jobs.get(log_path)
+
+    def check_pending_jobs(self) -> None:
+        pass
+
+    def record_deferred_single_demotion(self) -> None:
         pass
 
     async def submit(
@@ -77,6 +104,11 @@ class FakeLogAnalyzer:
         job_id: str | None = None,
     ) -> LogAnalyzerSubmitResult:
         self.submissions.append((log_path, user, job_id))
+        self.jobs[log_path] = types.SimpleNamespace(
+            mode=JobMode.SINGLE,
+            user=user,
+            job_id=job_id,
+        )
         return LogAnalyzerSubmitResult(
             submitted=True,
             normalized_path=log_path,
@@ -105,6 +137,25 @@ class FakeLogAnalyzer:
         job_id: str | None = None,
     ) -> ProgressiveStartResult:
         return await self.start(log_path, user=user, job_id=job_id)
+
+    async def run_attribution_for_path(
+        self,
+        log_path: str,
+        *,
+        user: str = "unknown",
+        job_id: str | None = None,
+    ) -> LogAnalysisCoalesced:
+        self.terminal_runs.append((log_path, user, job_id))
+        if self.terminal_started is not None:
+            self.terminal_started.set()
+        if self.terminal_release is not None:
+            await self.terminal_release.wait()
+        return LogAnalysisCoalesced(
+            log_result={
+                "result": [],
+                "recommendation": {"action": "RESTART", "source": "test"},
+            },
+        )
 
 
 class FakeMcpClient:
@@ -174,6 +225,58 @@ def test_progressive_submit_is_ignored_when_feature_gate_disabled(monkeypatch, t
     asyncio.run(run())
 
     assert log_analyzer.progressive_starts == []
+
+
+def test_terminal_submit_starts_final_analysis_that_get_can_join(monkeypatch, tmp_path):
+    Analyzer = _import_analyzer_with_optional_dependency_stubs(monkeypatch)
+    log_analyzer = FakeLogAnalyzer()
+    analyzer = Analyzer(
+        allowed_root=str(tmp_path),
+        log_analyzer=log_analyzer,
+        progressive_analysis_enabled=False,
+    )
+    log_path = str(tmp_path / "train_cycle0.log")
+
+    async def run() -> None:
+        log_analyzer.terminal_started = asyncio.Event()
+        log_analyzer.terminal_release = asyncio.Event()
+
+        result = await asyncio.wait_for(
+            analyzer.submit(
+                log_path,
+                user="alice",
+                job_id="123",
+                analysis_intent=ANALYSIS_INTENT_TERMINAL,
+            ),
+            timeout=0.5,
+        )
+        assert result.submitted is True
+
+        await asyncio.wait_for(log_analyzer.terminal_started.wait(), timeout=0.5)
+        get_result = asyncio.create_task(analyzer.analyze(log_path))
+        await asyncio.sleep(0)
+
+        assert log_analyzer.terminal_runs == [(log_path, "alice", "123")]
+        log_analyzer.terminal_release.set()
+        await asyncio.wait_for(get_result, timeout=0.5)
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    assert log_analyzer.terminal_runs == [(log_path, "alice", "123")]
+
+
+def test_terminal_analysis_threadsafe_cancellation_logs_debug(monkeypatch, caplog):
+    Analyzer = _import_analyzer_with_optional_dependency_stubs(monkeypatch)
+    future = concurrent.futures.Future()
+    future.cancel()
+
+    caplog.set_level(logging.DEBUG)
+
+    Analyzer._log_terminal_analysis_failure("/tmp/train.log", future)
+
+    assert "Terminal analysis task cancelled for /tmp/train.log" in caplog.text
+    assert "Terminal analysis task failed" not in caplog.text
 
 
 def test_invalid_analysis_intent_uses_parameter_error(monkeypatch, tmp_path):
