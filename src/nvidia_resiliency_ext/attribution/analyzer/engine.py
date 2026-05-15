@@ -56,6 +56,7 @@ from nvidia_resiliency_ext.attribution.orchestration.llm_output import (
 from nvidia_resiliency_ext.attribution.orchestration.log_analyzer import LogAnalyzer
 from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ANALYSIS_INTENT_PROGRESSIVE,
+    ANALYSIS_INTENT_TERMINAL,
     ANALYSIS_INTENT_TRACK_ONLY,
     normalize_analysis_intent,
 )
@@ -286,7 +287,8 @@ class Analyzer:
             user: Job owner (for dataflow records)
             job_id: Job ID (required for split logging mode)
             analysis_intent: Track-only by default; ``progressive`` starts early
-                analysis when the configured backend supports it.
+                analysis when the configured backend supports it; ``terminal`` starts
+                final analysis through the coalescer without waiting for the result.
 
         Returns:
             LogAnalyzerSubmitResult on success, LogAnalyzerError on failure
@@ -302,6 +304,8 @@ class Analyzer:
 
         if intent == ANALYSIS_INTENT_PROGRESSIVE:
             self._schedule_progressive_analysis(result.normalized_path, user, job_id)
+        elif intent == ANALYSIS_INTENT_TERMINAL:
+            self._schedule_terminal_analysis(result.normalized_path)
 
         return result
 
@@ -363,6 +367,58 @@ class Analyzer:
         except Exception as e:
             logger.warning(
                 "Progressive analysis start failed for %s: %s: %s",
+                normalized_path,
+                type(e).__name__,
+                e,
+            )
+
+    async def _run_terminal_analysis(self, normalized_path: str) -> None:
+        """Run the normal result-gathering path after an explicit terminal signal."""
+        result = await self.analyze(normalized_path)
+        if isinstance(result, LogAnalyzerError):
+            logger.warning(
+                "Terminal analysis failed for %s: %s: %s",
+                normalized_path,
+                result.error_code,
+                result.message,
+            )
+        else:
+            logger.debug("Terminal analysis completed for %s", normalized_path)
+
+    def _schedule_terminal_analysis(self, normalized_path: str) -> None:
+        """Start final analysis without delaying POST /logs terminal responses."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._main_loop is None or self._main_loop.is_closed():
+                logger.error(
+                    "Event loop not set — skipping terminal analysis start for %s",
+                    normalized_path,
+                )
+                return
+            future = asyncio.run_coroutine_threadsafe(
+                self._run_terminal_analysis(normalized_path),
+                self._main_loop,
+            )
+            future.add_done_callback(
+                lambda done: self._log_terminal_analysis_failure(normalized_path, done)
+            )
+        else:
+            task = loop.create_task(self._run_terminal_analysis(normalized_path))
+            task.add_done_callback(
+                lambda done: self._log_terminal_analysis_failure(normalized_path, done)
+            )
+        logger.debug("Scheduled terminal analysis start for %s", normalized_path)
+
+    @staticmethod
+    def _log_terminal_analysis_failure(normalized_path: str, done: Any) -> None:
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            logger.debug("Terminal analysis task cancelled for %s", normalized_path)
+        except Exception as e:
+            logger.warning(
+                "Terminal analysis task failed for %s: %s: %s",
                 normalized_path,
                 type(e).__name__,
                 e,

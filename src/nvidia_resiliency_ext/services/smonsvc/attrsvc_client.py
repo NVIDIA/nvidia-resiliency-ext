@@ -20,6 +20,7 @@ from nvidia_resiliency_ext.attribution.orchestration.http_api import (
     get_log_response,
     post_log,
 )
+from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TRACK_ONLY
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +249,7 @@ class AttrsvcClient:
         on_404: Callable | None = None,
         user: str = "unknown",
         cycle: int | None = None,
+        analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
     ) -> None:
         """
         Make an HTTP request to /logs endpoint with retry logic.
@@ -261,6 +263,7 @@ class AttrsvcClient:
             on_404: Optional callback for 404 errors (POST only - file not found)
             user: SLURM job user (for POST requests)
             cycle: Cycle number for GET requests in splitlog mode (None = latest)
+            analysis_intent: Attribution analysis intent for POST requests.
         """
         for attempt in range(self._max_attempts):
             response = None
@@ -271,6 +274,7 @@ class AttrsvcClient:
                         log_path,
                         user=user,
                         job_id=job_id,
+                        analysis_intent=analysis_intent,
                     )
                 else:  # GET
                     response = get_log_response(

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TERMINAL
 from nvidia_resiliency_ext.services.attrsvc.app import _prepare_uds_path
 from nvidia_resiliency_ext.services.attrsvc.config import parse_service_endpoint
 from nvidia_resiliency_ext.services.smonsvc.attrsvc_client import (
@@ -142,6 +143,39 @@ def test_request_with_retry_uses_relative_logs_route(mock_httpx):
     client.get.assert_called_once_with(
         "/logs",
         params={"log_path": "/tmp/job.log"},
+        headers={"accept": "application/json"},
+    )
+    on_success.assert_called_once_with(response)
+
+
+@patch("nvidia_resiliency_ext.services.smonsvc.attrsvc_client.httpx")
+def test_request_with_retry_posts_terminal_intent(mock_httpx):
+    response = MagicMock()
+    response.status_code = 200
+    client = MagicMock()
+    client.post.return_value = response
+    mock_httpx.Client.return_value = client
+    on_success = MagicMock()
+
+    attrsvc = AttrsvcClient("unix:///tmp/nvrx-attrsvc.sock", request_throttle=0)
+    attrsvc.request_with_retry(
+        "POST",
+        job_id="123",
+        log_path="/tmp/job.log",
+        on_success=on_success,
+        on_client_error=MagicMock(),
+        user="alice",
+        analysis_intent=ANALYSIS_INTENT_TERMINAL,
+    )
+
+    client.post.assert_called_once_with(
+        "/logs",
+        json={
+            "log_path": "/tmp/job.log",
+            "user": "alice",
+            "job_id": "123",
+            "analysis_intent": "terminal",
+        },
         headers={"accept": "application/json"},
     )
     on_success.assert_called_once_with(response)

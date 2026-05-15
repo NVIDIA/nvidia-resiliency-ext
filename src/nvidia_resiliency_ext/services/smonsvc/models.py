@@ -85,6 +85,7 @@ class SlurmJob:
     log_submitted: bool = False  # POST was attempted (success or client error)
     post_success: bool = False  # POST succeeded (200) - only fetch results if True
     result_fetched: bool = False
+    terminal_signaled: bool = False  # True after POST analysis_intent=terminal succeeds
     path_fetch_attempted: bool = False  # True after attempting to fetch stdout path
     last_state: JobState | None = None
     get_attempts: int = 0  # Number of GET attempts (for giving up after max retries)
@@ -96,6 +97,7 @@ SLURM_JOB_TRACKING_FIELDS = (
     "log_submitted",
     "post_success",
     "result_fetched",
+    "terminal_signaled",
     "path_fetch_attempted",
     "get_attempts",
 )
