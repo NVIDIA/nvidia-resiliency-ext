@@ -1,0 +1,511 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Progressive FT Launcher Attribution &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Attribution Feature Requirements Template" href="requirements-template.html" />
+    <link rel="prev" title="Attribution Feature Requirements" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Failure Attribution</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">Attribution Feature Requirements</a><ul class="current">
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Progressive FT Launcher Attribution</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#summary">Summary</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#problem">Problem</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#goals">Goals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#non-goals">Non-Goals</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#user-flows">User Flows</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#functional-requirements">Functional Requirements</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#api-and-data-contract">API and Data Contract</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#configuration">Configuration</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#observability">Observability</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#compatibility">Compatibility</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvrx-side-implementation-plan">NVRx-Side Implementation Plan</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#progressive-execution-model">Progressive Execution Model</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#logsage-api-proposal">LogSage API Proposal</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#validation">Validation</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#open-questions">Open Questions</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="requirements-template.html">Attribution Feature Requirements Template</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Failure Attribution</a></li>
+          <li class="breadcrumb-item"><a href="index.html">Attribution Feature Requirements</a></li>
+      <li class="breadcrumb-item active">Progressive FT Launcher Attribution</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/attribution/features/progressive-ft-launcher-attribution.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="progressive-ft-launcher-attribution">
+<h1>Progressive FT Launcher Attribution<a class="headerlink" href="#progressive-ft-launcher-attribution" title="Link to this heading"></a></h1>
+<section id="summary">
+<h2>Summary<a class="headerlink" href="#summary" title="Link to this heading"></a></h2>
+<p>Progressive FT launcher attribution reduces restart-decision latency by starting
+log analysis when a fault-tolerance cycle starts, while the workload is still
+running. When the cycle ends and <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> asks attrsvc for a stop/restart
+decision, attrsvc should reuse the analysis work already completed for the same
+per-cycle application log and only perform the final missing work needed to
+return an authoritative decision.</p>
+<p>The feature is aimed at the <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> integration path. The cluster-wide
+service path may expose progressive behavior for validation, but it is not a
+user-facing requirement there because service-mode attribution is post-mortem
+and is not latency sensitive.</p>
+<p>Design conclusion: attrsvc should stay mostly as plumbing. The progressive
+option is offered at the NVRx-owned loganalysis tool boundary, and that tool can
+later decide whether to delegate progressive state to LogSage or drive multiple
+LogSage calls over the file flow. Until the LogSage contract is available,
+<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> can carry the intent and the loganalysis tool can report
+<code class="docutils literal notranslate"><span class="pre">unsupported</span></code> without changing <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> behavior.</p>
+</section>
+<section id="problem">
+<h2>Problem<a class="headerlink" href="#problem" title="Link to this heading"></a></h2>
+<p>Today, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> submits a per-cycle log path near cycle start with
+<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> and later requests attribution with <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> after the
+workload has stopped. The <code class="docutils literal notranslate"><span class="pre">POST</span></code> path records/tracks the log, but the
+<code class="docutils literal notranslate"><span class="pre">GET</span></code> path triggers the full LogSage attribution pipeline. For large
+application logs this makes <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> wait for parsing and LLM analysis
+after the workload has already died, increasing the time before the launcher can
+act on a stop/restart decision.</p>
+<p>The per-cycle log path is already a stable correlation key. Both calls refer to
+the same path produced by the cycle log naming convention, for example
+<code class="docutils literal notranslate"><span class="pre">&lt;applog&gt;_cycle&lt;id&gt;.log</span></code>.</p>
+</section>
+<section id="goals">
+<h2>Goals<a class="headerlink" href="#goals" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Start attribution pre-work from the <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> cycle-start <code class="docutils literal notranslate"><span class="pre">POST</span></code>.</p></li>
+<li><p>Preserve the existing <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> decision contract for <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+<li><p>Make the final <code class="docutils literal notranslate"><span class="pre">GET</span></code> result equivalent to terminal analysis of the complete
+per-cycle log.</p></li>
+<li><p>Avoid enabling expensive progressive analysis by default for cluster-wide
+service-mode submissions.</p></li>
+<li><p>Keep progressive analysis an optimization: if pre-analysis is unavailable,
+failed, stale, or unsupported, <code class="docutils literal notranslate"><span class="pre">GET</span></code> must fall back to the existing terminal
+analysis behavior.</p></li>
+</ul>
+</section>
+<section id="non-goals">
+<h2>Non-Goals<a class="headerlink" href="#non-goals" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Do not require progressive analysis for service-mode cluster scans.</p></li>
+<li><p>Do not introduce a user-facing live-attribution workflow outside
+<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+<li><p>Do not change the stop/restart policy consumed by <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+<li><p>Do not make <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> block on analysis completion.</p></li>
+<li><p>Do not make <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> generate or return an attribution result.</p></li>
+</ul>
+</section>
+<section id="user-flows">
+<h2>User Flows<a class="headerlink" href="#user-flows" title="Link to this heading"></a></h2>
+<section id="ft-launcher-mode">
+<h3><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> mode<a class="headerlink" href="#ft-launcher-mode" title="Link to this heading"></a></h3>
+<ol class="arabic simple">
+<li><p>At cycle start, the launcher computes the per-cycle log path and sends
+<code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> for that path.</p></li>
+<li><p>Attrsvc recognizes the submission as an <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> progressive-analysis
+request and starts non-blocking pre-analysis for the growing file.</p></li>
+<li><p>The workload runs and continues writing to the same log file.</p></li>
+<li><p>At cycle end, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> sends <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> for the same path.</p></li>
+<li><p>Attrsvc uses the progressive state to complete the normal stop/end analysis
+and returns the normal attribution payload with a normalized recommendation.</p></li>
+<li><p>If progressive state is missing or unusable, attrsvc computes the result with
+the existing terminal pipeline.</p></li>
+</ol>
+</section>
+<section id="service-mode">
+<h3>Service mode<a class="headerlink" href="#service-mode" title="Link to this heading"></a></h3>
+<p>Service mode may continue using <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> for job/file tracking and
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> for post-mortem attribution. Progressive analysis should remain
+disabled unless explicitly requested by a test or diagnostic client.</p>
+</section>
+</section>
+<section id="functional-requirements">
+<h2>Functional Requirements<a class="headerlink" href="#functional-requirements" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> must accept an explicit signal that the caller wants
+progressive analysis for a single growing log.</p></li>
+<li><p>The ft_launcher client must send that signal when submitting a per-cycle log.</p></li>
+<li><p>Attrsvc must forward progressive intent to the loganalysis tool boundary and
+return from <code class="docutils literal notranslate"><span class="pre">POST</span></code> without waiting for analyzer completion.</p></li>
+<li><p>The loganalysis tool may delegate progressive state to LogSage or implement
+the file-flow orchestration itself. Attrsvc should not need to know which
+model was chosen.</p></li>
+<li><p>Attrsvc must not infer progressive analysis only from the absence of
+<code class="docutils literal notranslate"><span class="pre">job_id</span></code> because non-<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> callers can also submit single files.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> must continue to run the normal terminal analysis path before
+returning a decision. Once LogSage/tool support exists, that terminal call can
+reuse progressive work when available.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> must fall back to the existing full terminal analysis path when
+progressive analysis is unsupported, incomplete, stale, failed, or disabled.</p></li>
+<li><p>Progressive state, if any, must be correlated by normalized log path because
+this is the stable key shared by <code class="docutils literal notranslate"><span class="pre">POST</span></code> and <code class="docutils literal notranslate"><span class="pre">GET</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> must remain a notification/early-start path. <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code>
+remains the result-producing path.</p></li>
+<li><p>The existing result cache behavior does not change: <code class="docutils literal notranslate"><span class="pre">POST</span></code> does not populate
+the final analysis cache; <code class="docutils literal notranslate"><span class="pre">GET</span></code> remains the path that computes and records
+final attribution results.</p></li>
+</ul>
+</section>
+<section id="api-and-data-contract">
+<h2>API and Data Contract<a class="headerlink" href="#api-and-data-contract" title="Link to this heading"></a></h2>
+<section id="handoff-points">
+<h3>Handoff Points<a class="headerlink" href="#handoff-points" title="Link to this heading"></a></h3>
+<p>The feature crosses three handoff points. Each handoff should be documented
+separately so NVRx-owned plumbing is not confused with the shared LogSage
+capability contract.</p>
+<dl class="simple">
+<dt>Service HTTP boundary</dt><dd><p>Owned by NVRx. <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> accepts the optional progressive intent and
+<code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> remains the stop/end decision API. This boundary should stay
+backward compatible for existing attrsvc clients. The service does not own
+progressive parsing, tailing, or final-result caching.</p>
+</dd>
+<dt>MCP / loganalysis boundary</dt><dd><p>Owned by NVRx. This is the product feature boundary: it exposes the
+progressive option regardless of whether the implementation is an MCP tool,
+an in-process adapter, repeated LogSage calls, or a future LogSage-native
+progressive session. This is where NVRx should hide implementation ownership
+from attrsvc.</p>
+</dd>
+<dt>LogSage API boundary</dt><dd><p>Shared with LogSage. This contract defines whether LogSage can start work
+early, preserve progressive state, and let the terminal analysis call reuse
+that state while producing a result equivalent to full terminal analysis. It
+remains the main open design item.</p>
+</dd>
+</dl>
+</section>
+<section id="http-api">
+<h3>HTTP API<a class="headerlink" href="#http-api" title="Link to this heading"></a></h3>
+<p>Extend <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> with optional fields:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">analysis_intent</span></code></dt><dd><p>Optional analysis behavior requested by the client. Proposed values are
+<code class="docutils literal notranslate"><span class="pre">&quot;track_only&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;progressive&quot;</span></code>. Default is <code class="docutils literal notranslate"><span class="pre">&quot;track_only&quot;</span></code> for
+backward compatibility.</p>
+</dd>
+</dl>
+<p>The existing <code class="docutils literal notranslate"><span class="pre">log_path</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code>, and <code class="docutils literal notranslate"><span class="pre">job_id</span></code> fields stay compatible.
+Existing clients that omit <code class="docutils literal notranslate"><span class="pre">analysis_intent</span></code> retain current behavior.</p>
+<p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> should keep the current response shape. It may optionally include
+diagnostic metadata in the future, but <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> must continue to consume
+the normalized <code class="docutils literal notranslate"><span class="pre">recommendation</span></code> field without understanding progressive
+internals.</p>
+</section>
+<section id="python-api">
+<h3>Python API<a class="headerlink" href="#python-api" title="Link to this heading"></a></h3>
+<p>Extend the internal submit boundary from the HTTP adapter down to the analyzer
+with an optional progressive intent. The NVRx-side lifecycle should remain
+simple: <code class="docutils literal notranslate"><span class="pre">POST</span></code> starts early work when requested, and the existing
+<code class="docutils literal notranslate"><span class="pre">GET</span></code>/<code class="docutils literal notranslate"><span class="pre">analyze</span></code> path remains the stop/end activity that returns the final
+decision.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">submit_log(...,</span> <span class="pre">analysis_intent=&quot;track_only&quot;)</span></code></p></li>
+<li><p>analyzer-level delegation to
+<code class="docutils literal notranslate"><span class="pre">LogAnalyzer.start_progressive_analysis(path,</span> <span class="pre">user,</span> <span class="pre">job_id)</span></code></p></li>
+<li><p>loganalysis runner delegation to the selected lib/MCP tool adapter</p></li>
+</ul>
+<p>The current plumbing does not change <code class="docutils literal notranslate"><span class="pre">Analyzer.analyze</span></code> or the <code class="docutils literal notranslate"><span class="pre">GET</span></code> result
+path. When the LogSage/tool contract supports reuse, terminal analysis can add a
+<code class="docutils literal notranslate"><span class="pre">use_progressive</span></code>-style option at the loganalysis layer while preserving the
+existing caller-facing <code class="docutils literal notranslate"><span class="pre">GET</span></code> shape.</p>
+</section>
+<section id="mcp-loganalysis-contract">
+<h3>MCP / Loganalysis Contract<a class="headerlink" href="#mcp-loganalysis-contract" title="Link to this heading"></a></h3>
+<p>The MCP/loganalysis boundary is NVRx-owned and should mirror the in-process
+library adapter. The boundary needs two concepts:</p>
+<dl class="simple">
+<dt>Progressive start</dt><dd><p>A non-result-producing operation used by the <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> path when
+<code class="docutils literal notranslate"><span class="pre">analysis_intent=&quot;progressive&quot;</span></code>. The initial code exposes this as
+<code class="docutils literal notranslate"><span class="pre">log_analyzer_progressive_start</span></code>. It accepts the normalized <code class="docutils literal notranslate"><span class="pre">log_path</span></code>,
+<code class="docutils literal notranslate"><span class="pre">is_per_cycle=True</span></code> for ft_launcher cycle logs, optional observability
+fields, and any runtime settings needed by LogSage to bind a future
+progressive session. It returns status metadata such as
+accepted/unsupported/failed and, if useful, a handle or session id. It must
+not return a final attribution result or create a cached MCP result resource.</p>
+</dd>
+<dt>Terminal run with progressive reuse</dt><dd><p>The existing <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> path should still invoke terminal log analysis and
+receive the current LogSage-shaped result. Once the LogSage API is settled,
+the loganalysis boundary needs a way to ask the backend to reuse progressive
+state for the same path, for example an optional <code class="docutils literal notranslate"><span class="pre">use_progressive=True</span></code>
+argument on <code class="docutils literal notranslate"><span class="pre">log_analyzer</span></code>. If the backend cannot reuse state, the call
+should fall back to normal terminal analysis. The current plumbing leaves
+terminal <code class="docutils literal notranslate"><span class="pre">GET</span></code> unchanged.</p>
+</dd>
+</dl>
+<p>Flight-recorder analysis is unchanged by this feature. <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> does not
+notify FR. On <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code>, attrsvc can continue to run log analysis and FR
+analysis with the existing terminal orchestration; only the log-analysis call
+needs a way to reuse progressive LogSage state when it exists.</p>
+</section>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
+<p>Add a service-side policy switch for progressive analysis. The default honors
+explicit progressive requests because ft_launcher is the expected caller and the
+POST path remains non-blocking even while the LogSage progressive API is being
+implemented.</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">NVRX_ATTRSVC_PROGRESSIVE_ANALYSIS</span></code></dt><dd><p><code class="docutils literal notranslate"><span class="pre">all_explicit</span></code> by default. Honors explicit progressive <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code>
+requests. Set <code class="docutils literal notranslate"><span class="pre">off</span></code> to disable progressive start. A stricter
+ft_launcher-only policy would require a caller identity or another
+server-side way to identify the submitter.</p>
+</dd>
+</dl>
+<p>No attrsvc polling, cache, or concurrency settings are required in the current
+plumbing. If the loganalysis tool later owns repeated LogSage calls over a
+growing file, those operational controls should live with that tool
+implementation rather than in the HTTP service wrapper.</p>
+</section>
+<section id="observability">
+<h2>Observability<a class="headerlink" href="#observability" title="Link to this heading"></a></h2>
+<p>Expose enough state to tell whether the latency optimization is working:</p>
+<ul class="simple">
+<li><p>Count progressive <code class="docutils literal notranslate"><span class="pre">POST</span></code> requests and whether they were accepted, ignored,
+or rejected by policy.</p></li>
+<li><p>Count started, unsupported, failed, canceled, completed, and fallback
+progressive analyses.</p></li>
+<li><p>Track final <code class="docutils literal notranslate"><span class="pre">GET</span></code> latency and, where possible, time saved by progressive
+work.</p></li>
+<li><p>Include active progressive paths in status/debug output without dumping log
+contents.</p></li>
+<li><p>Log when <code class="docutils literal notranslate"><span class="pre">GET</span></code> falls back to terminal analysis, including the fallback
+reason.</p></li>
+</ul>
+</section>
+<section id="compatibility">
+<h2>Compatibility<a class="headerlink" href="#compatibility" title="Link to this heading"></a></h2>
+<p>Existing attrsvc callers must continue to work without sending new fields.
+Service-mode <code class="docutils literal notranslate"><span class="pre">POST</span></code> calls with <code class="docutils literal notranslate"><span class="pre">job_id</span></code> continue to support splitlog
+detection and tracking. Single-file <code class="docutils literal notranslate"><span class="pre">POST</span></code> calls from older clients remain
+track-only.</p>
+<p>The final <code class="docutils literal notranslate"><span class="pre">GET</span></code> result must remain semantically compatible with the current
+terminal analysis result. A progressive implementation may improve latency, but
+must not weaken final attribution correctness.</p>
+</section>
+<section id="nvrx-side-implementation-plan">
+<h2>NVRx-Side Implementation Plan<a class="headerlink" href="#nvrx-side-implementation-plan" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Add an explicit progressive intent field to the shared HTTP helper and
+attrsvc <code class="docutils literal notranslate"><span class="pre">SubmitRequest</span></code>.</p></li>
+<li><p>Update the attribution-owned in-job HTTP client to send
+<code class="docutils literal notranslate"><span class="pre">analysis_intent=&quot;progressive&quot;</span></code> on its normal <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> notification.
+<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> should continue using the existing attribution submit hook
+and should not own the HTTP payload detail.</p></li>
+<li><p>Thread the intent through <code class="docutils literal notranslate"><span class="pre">AttributionHttpAdapter</span></code>,
+<code class="docutils literal notranslate"><span class="pre">AttributionController</span></code>, and <code class="docutils literal notranslate"><span class="pre">Analyzer.submit</span></code>.</p></li>
+<li><p>In attrsvc, keep default <code class="docutils literal notranslate"><span class="pre">POST</span></code> behavior as track-only. When progressive
+intent is requested and the service feature gate allows it, initiate
+progressive analysis through <code class="docutils literal notranslate"><span class="pre">LogAnalyzer.start_progressive_analysis</span></code>.</p></li>
+<li><p>In MCP mode, expose <code class="docutils literal notranslate"><span class="pre">log_analyzer_progressive_start</span></code> as a
+non-result-producing tool. Until LogSage support exists, it returns
+<code class="docutils literal notranslate"><span class="pre">unsupported</span></code> status metadata.</p></li>
+<li><p>On success, return the existing response shape. <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> remains the
+path that produces and records final attribution results.</p></li>
+<li><p>Once the LogSage contract exists, extend the terminal loganalysis call so it
+can request progressive reuse while keeping the existing <code class="docutils literal notranslate"><span class="pre">GET</span></code> response
+shape and fallback behavior.</p></li>
+</ol>
+</section>
+<section id="progressive-execution-model">
+<h2>Progressive Execution Model<a class="headerlink" href="#progressive-execution-model" title="Link to this heading"></a></h2>
+<p>Attrsvc owns request plumbing and policy. The NVRx loganalysis tool owns the
+progressive option exposed to attrsvc. The implementation behind that tool is
+still a design choice and should be settled with the LogSage implementation.</p>
+<dl class="simple">
+<dt>LogSage-owned progression</dt><dd><p>The loganalysis tool calls a LogSage <code class="docutils literal notranslate"><span class="pre">start</span></code> operation and returns.
+LogSage owns any background watching, tailing, checkpointing, or incremental
+state. The normal <code class="docutils literal notranslate"><span class="pre">GET</span></code> path calls terminal analysis with progressive reuse
+enabled. Attrsvc only sees accepted/unsupported/failure status.</p>
+</dd>
+<dt>Tool-owned progression</dt><dd><p>The NVRx loganalysis tool advances analysis as the file grows, possibly by
+calling LogSage multiple times or by using a smaller LogSage <code class="docutils literal notranslate"><span class="pre">advance</span></code>
+primitive. Polling/tailing configuration, concurrency limits, lifecycle
+cleanup, and state tracking belong to that tool implementation.</p>
+</dd>
+</dl>
+<p>The requirement does not choose between these models. It requires that
+<code class="docutils literal notranslate"><span class="pre">POST</span></code> can request an early start, <code class="docutils literal notranslate"><span class="pre">GET</span></code> remains the stop/end decision path,
+and terminal correctness is preserved by fallback to the existing full analysis.</p>
+</section>
+<section id="logsage-api-proposal">
+<h2>LogSage API Proposal<a class="headerlink" href="#logsage-api-proposal" title="Link to this heading"></a></h2>
+<p>The current LogSage-style API is effectively terminal:</p>
+<ul class="simple">
+<li><p>input: complete <code class="docutils literal notranslate"><span class="pre">log_path</span></code></p></li>
+<li><p>output: final LogSage-shaped result and recommendation</p></li>
+</ul>
+<p>For this feature, the NVRx loganalysis tool needs a way for LogSage to preserve
+and reuse work for a growing per-cycle log. The shared behavior can be expressed
+with two operations:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">start(path,</span> <span class="pre">*,</span> <span class="pre">session_id=None,</span> <span class="pre">is_per_cycle=True,</span> <span class="pre">metadata=None)</span></code></dt><dd><p>Create or return progressive state for a log. This should be idempotent for
+the same normalized path or supplied session id.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">run(path,</span> <span class="pre">*,</span> <span class="pre">use_progressive=True,</span> <span class="pre">final=True)</span></code></dt><dd><p>Return the normal terminal LogSage result for the complete log, reusing any
+progressive state that was started for the same path. This is invoked from
+the existing <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/logs</span></code> stop/end path.</p>
+</dd>
+</dl>
+<p>LogSage may internally expose an <code class="docutils literal notranslate"><span class="pre">advance</span></code> or completion primitive if that is
+the cleanest implementation, or the NVRx loganalysis tool may drive repeated
+LogSage calls. Attrsvc does not need a separate public
+<code class="docutils literal notranslate"><span class="pre">finalize_progressive</span></code> operation. The important part is that the terminal
+<code class="docutils literal notranslate"><span class="pre">run</span></code> can consume any remaining tail bytes, validate the final log state, and
+produce the same result shape used today.</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">cancel(handle)</span></code></dt><dd><p>Release resources if the job ends without a final attribution request or the
+service is shutting down.</p>
+</dd>
+</dl>
+<p>Minimum status metadata returned through the NVRx boundary:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">handle</span></code> or <code class="docutils literal notranslate"><span class="pre">session_id</span></code></dt><dd><p>Stable identifier for the progressive analysis.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">consumed_offset</span></code></dt><dd><p>Last byte or line offset included in progressive state.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">status</span></code></dt><dd><p><code class="docutils literal notranslate"><span class="pre">pending</span></code>, <code class="docutils literal notranslate"><span class="pre">running</span></code>, <code class="docutils literal notranslate"><span class="pre">ready_to_complete</span></code>, <code class="docutils literal notranslate"><span class="pre">completed</span></code>, <code class="docutils literal notranslate"><span class="pre">failed</span></code>,
+or <code class="docutils literal notranslate"><span class="pre">unsupported</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">error</span></code></dt><dd><p>Structured failure reason when status is <code class="docutils literal notranslate"><span class="pre">failed</span></code> or <code class="docutils literal notranslate"><span class="pre">unsupported</span></code>.</p>
+</dd>
+</dl>
+<p>The important semantic requirement is that the stop/end <code class="docutils literal notranslate"><span class="pre">run</span></code> must produce a
+result equivalent to running terminal LogSage on the complete final file.
+Attrsvc should not need to understand LogSage’s internal summaries, LLM prompt
+state, or whether reuse was LogSage-owned or tool-owned.</p>
+</section>
+<section id="validation">
+<h2>Validation<a class="headerlink" href="#validation" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Unit-test that existing <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/logs</span></code> requests remain track-only by default.</p></li>
+<li><p>Unit-test that ft_launcher <code class="docutils literal notranslate"><span class="pre">POST</span></code> sends progressive intent.</p></li>
+<li><p>Unit-test that <code class="docutils literal notranslate"><span class="pre">Analyzer.submit</span></code> delegates progressive start to the
+loganalysis boundary only when the feature gate is enabled.</p></li>
+<li><p>Unit-test that the MCP/loganalysis progressive-start operation returns status
+metadata and does not run terminal attribution.</p></li>
+<li><p>Once LogSage/tool reuse exists, unit-test that the terminal MCP/loganalysis
+call can request progressive reuse while preserving the existing result shape.</p></li>
+<li><p>Unit-test that service-mode <code class="docutils literal notranslate"><span class="pre">POST</span></code> with <code class="docutils literal notranslate"><span class="pre">job_id</span></code> does not initiate
+progressive analysis by default.</p></li>
+<li><p>Once reuse exists, unit-test <code class="docutils literal notranslate"><span class="pre">GET</span></code> fallback when progressive state is
+missing, unsupported, failed, stale, or cannot be used to complete analysis.</p></li>
+<li><p>Unit-test that <code class="docutils literal notranslate"><span class="pre">POST</span></code> does not return a completed attribution result.</p></li>
+<li><p>Integration-test the full <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> flow with a fake progressive
+analyzer: POST starts state, log grows, GET returns a normal recommendation
+through the existing stop/end path.</p></li>
+<li><p>End-to-end validate latency improvement with real LogSage progressive support
+once available.</p></li>
+</ul>
+</section>
+<section id="open-questions">
+<h2>Open Questions<a class="headerlink" href="#open-questions" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>What exact LogSage API should back <code class="docutils literal notranslate"><span class="pre">log_analyzer_progressive_start</span></code> and
+terminal reuse?</p></li>
+<li><p>Should progressive advancement be LogSage-owned after <code class="docutils literal notranslate"><span class="pre">start</span></code>, or should the
+NVRx loganalysis tool drive repeated LogSage calls over the growing file?</p></li>
+<li><p>If the NVRx loganalysis tool owns advancement, what polling and concurrency
+policy should it use?</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="index.html" class="btn btn-neutral float-left" title="Attribution Feature Requirements" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="requirements-template.html" class="btn btn-neutral float-right" title="Attribution Feature Requirements Template" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

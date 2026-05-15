@@ -15,6 +15,7 @@ Features
 * `Async checkpointing <checkpointing/async/index.html>`_
 * `Local checkpointing <checkpointing/local/index.html>`_
 * `Straggler (slower ranks) detection <straggler_det/index.html>`_
+* `Failure attribution <attribution/index.html>`_
 * `Shared utilities and distributed logging <shared_utils/index.html>`_
 
 .. toctree::
@@ -26,4 +27,5 @@ Features
    checkpointing/async/index
    checkpointing/local/index
    straggler_det/index
+   attribution/index
    shared_utils/index

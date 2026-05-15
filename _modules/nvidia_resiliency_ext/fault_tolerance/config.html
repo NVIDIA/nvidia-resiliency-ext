@@ -49,6 +49,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../../attribution/index.html">Failure Attribution</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../../shared_utils/index.html">Shared Utilities</a></li>
 </ul>
 
@@ -178,6 +179,8 @@
 <span class="sd">      Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).</span>
 <span class="sd">    * Attribution service (optional, disabled unless `attribution_endpoint` is set):</span>
 <span class="sd">      - `attribution_endpoint` [str] endpoint of the attribution service</span>
+<span class="sd">      - `attribution_export_url` [str] complete export posting URL for</span>
+<span class="sd">        launcher-managed attribution service postprocessing.</span>
 
 <span class="sd">    * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.</span>
 <span class="sd">      &lt;base&gt;/nvrx/). If set, the rendezvous host writes cycle info JSON files and</span>
@@ -227,6 +230,7 @@
     <span class="p">)</span>
     <span class="c1"># Attribution service configuration (optional)</span>
     <span class="n">attribution_endpoint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">attribution_export_url</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="c1"># NVRx cycle info: base directory for cycle_info JSON files</span>
     <span class="n">cycle_info_dir</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
