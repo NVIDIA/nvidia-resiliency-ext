@@ -1028,8 +1028,15 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
             device_index: GPU device index to monitor. None checks all GPUs.
             interval: Seconds between async health checks.
             window_count: Rolling window size — how many past checks to consider.
-            threshold: Max allowed flagged windows before reporting failure.
-            on_failure: Callback invoked when health check fails.
+            threshold: Maximum flagged windows still considered healthy.
+                Failure is reported when the number of flagged windows in
+                the rolling deque exceeds this value (i.e. at ``threshold + 1``
+                or more). Default 15 with ``window_count=30`` means: fail
+                when more than half of the last 30 samples flagged events.
+            on_failure: Async callable invoked (awaited) when the health
+                check fails. Must be an ``async def`` function -- synchronous
+                callables will raise ``TypeError``. Mirrors the contract of
+                ``NVLHealthCheck.async_check``.
         """
         super().__init__()
         self.device_index = device_index
@@ -1234,17 +1241,28 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
                 if counters:
                     self._tier1_api_supported = True
                     return counters
-                # Driver returned not-supported for all three FIDs.
-                if not self._tier1_not_supported_warned:
-                    logger.warning(
-                        f"NVLinkWindowHealthCheck: tier-1 field IDs (215/295/208) not supported "
-                        f"on device {device_id} port {port}. "
-                        f"Falling back to tier-2 / legacy API."
-                    )
-                    self._tier1_not_supported_warned = True
-                self._tier1_api_supported = False
+                # API returned but all three FIDs said "not supported" on
+                # this port. Only treat as "tier-1 unsupported by driver"
+                # on a first-time probe -- an inactive/out-of-range port
+                # must not demote a tier already confirmed working on
+                # another port (sticky-True semantic, see _prev_counters
+                # comment above).
+                if self._tier1_api_supported is None:
+                    if not self._tier1_not_supported_warned:
+                        logger.warning(
+                            f"NVLinkWindowHealthCheck: tier-1 field IDs (215/295/208) not supported "
+                            f"on device {device_id} port {port}. "
+                            f"Falling back to tier-2 / legacy API."
+                        )
+                        self._tier1_not_supported_warned = True
+                    self._tier1_api_supported = False
             except self.pynvml.NVMLError:
-                pass  # fall through to tier 2
+                # Persistent driver-level failure on a first-time probe --
+                # disable tier-1 so we don't retry every port every call.
+                # Same sticky-True guard: a transient NVMLError after the
+                # tier was already confirmed working doesn't disable it.
+                if self._tier1_api_supported is None:
+                    self._tier1_api_supported = False
 
         # Tier 2: per-lane field IDs L0-L5 (older hardware, ports 0-5 only).
         if self._tier2_api_supported is not False and port < 6:
@@ -1266,12 +1284,18 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
                     if counters_t2:
                         self._tier2_api_supported = True
                         return counters_t2
+                    # API succeeded but no results for this port -- don't
+                    # demote a tier already confirmed working on another
+                    # port (sticky-True semantic).
+                    if self._tier2_api_supported is None:
+                        self._tier2_api_supported = False
                 except self.pynvml.NVMLError as e:
                     logger.warning(
                         f"NVLinkWindowHealthCheck: nvmlDeviceGetFieldValues tier-2 not supported "
                         f"on device {device_id}: {e}. Falling back to legacy API."
                     )
-                self._tier2_api_supported = False
+                    if self._tier2_api_supported is None:
+                        self._tier2_api_supported = False
 
         return None
 
