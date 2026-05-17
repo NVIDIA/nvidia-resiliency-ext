@@ -983,8 +983,12 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
 
     Each call to _perform_health_check() is one window. A window is flagged when
     any NVLink port shows a delta > 0 in DL_REPLAY or DL_RECOVERY error counters
-    vs. the previous call. Returns False when any single port exceeds ``threshold``
-    flagged windows within the last ``window_count`` calls.
+    vs. the previous call. A port is "bad" when it exceeds ``threshold`` flagged
+    windows within the last ``window_count`` calls. A GPU is reported unhealthy
+    when at least ``gpu_ports_threshold`` of its NVLink ports are bad. Returns
+    False when any GPU is unhealthy; the warning log identifies which GPU and
+    which of its ports tripped, matching the per-GPU framing of other checks
+    in this file (e.g. ``NVLHealthCheck``).
 
     Counter reading uses three tiers (first that works wins per port):
 
@@ -1021,6 +1025,7 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
         interval: int = 60,
         window_count: int = 30,
         threshold: int = 15,
+        gpu_ports_threshold: int = 1,
         on_failure: Optional[Callable] = None,
     ):
         """
@@ -1028,20 +1033,33 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
             device_index: GPU device index to monitor. None checks all GPUs.
             interval: Seconds between async health checks.
             window_count: Rolling window size — how many past checks to consider.
-            threshold: Maximum flagged windows still considered healthy.
-                Failure is reported when the number of flagged windows in
-                the rolling deque exceeds this value (i.e. at ``threshold + 1``
-                or more). Default 15 with ``window_count=30`` means: fail
-                when more than half of the last 30 samples flagged events.
+            threshold: Maximum flagged windows still considered healthy at the
+                per-port level. A port is "bad" when the number of flagged
+                windows in its rolling deque exceeds this value (i.e. at
+                ``threshold + 1`` or more). Default 15 with ``window_count=30``
+                means: a port is bad when more than half of the last 30 samples
+                flagged events.
+            gpu_ports_threshold: Minimum number of bad NVLink ports on a GPU
+                before the GPU is reported unhealthy. Default 1 -- any single
+                bad port flags the whole GPU, matching the per-GPU decision
+                pattern of ``NVLHealthCheck`` and the other health checks in
+                this file. Raise this to tolerate isolated noisy ports and
+                only fail when the failure is more widespread; trade-off is
+                that a GPU with one consistently noisy port produces no
+                ``WARN`` log or ``on_failure`` invocation until enough other
+                ports also exceed the per-port threshold. Values ``< 1``
+                behave identically to ``1`` (every GPU with at least one bad
+                port has ``len(bad_ports) >= 1``, so the rollup always trips).
             on_failure: Async callable invoked (awaited) when the health
                 check fails. Must be an ``async def`` function -- synchronous
-                callables will raise ``TypeError``. Mirrors the contract of
-                ``NVLHealthCheck.async_check``.
+                callables will raise ``TypeError``. Matches the await pattern
+                of ``NVLHealthCheck.async_check``.
         """
         super().__init__()
         self.device_index = device_index
         self.interval = interval
         self.threshold = threshold
+        self.gpu_ports_threshold = gpu_ports_threshold
         self.on_failure = on_failure
         self.pynvml_available = self.check_pynvml_availability()
 
@@ -1075,7 +1093,11 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
         self._api_not_supported_warned = False
 
     async def async_check(self) -> None:
-        """Periodically checks NVLink event windows; invokes on_failure when threshold is exceeded."""
+        """Periodically samples NVLink event windows and invokes ``on_failure``
+        when the per-GPU rollup fails (i.e. some GPU has at least
+        ``gpu_ports_threshold`` ports whose flagged-window count exceeds the
+        per-port ``threshold``). See ``_perform_health_check`` for the rollup
+        rule."""
         while True:
             await asyncio.sleep(self.interval)
             result = await self._check_health()
@@ -1092,8 +1114,13 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
     @with_pynvml_lock
     def _perform_health_check(self) -> bool:
         """
-        Sample NVLink counters, record whether this window had events, and
-        return False if the flagged window count exceeds the threshold.
+        Sample NVLink counters, update each port's rolling window, then roll
+        up the per-port state to a per-GPU decision.
+
+        A port is "bad" when its flagged-window count exceeds ``threshold``.
+        A GPU is unhealthy when at least ``gpu_ports_threshold`` of its ports
+        are bad. Returns ``False`` when any GPU is unhealthy; emits one warning
+        log per unhealthy GPU listing all its bad ports.
         """
         if not self.pynvml_available:
             return True
@@ -1119,8 +1146,13 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
             except Exception as e:
                 logger.warning(f"NVLinkWindowHealthCheck NVML shutdown error: {e}")
 
-        # Update per-port rolling window and check threshold.
-        all_healthy = True
+        # Update per-port rolling window and roll up to per-GPU decision.
+        # A port is "bad" when its flagged-window count exceeds `threshold`.
+        # A GPU is unhealthy when at least `gpu_ports_threshold` of its
+        # ports are bad. The check returns False if any GPU is unhealthy
+        # (True only when every GPU passes), matching the per-GPU framing
+        # of NVLHealthCheck.
+        bad_ports_per_gpu: Dict[int, list] = {}
         for key, had_events in port_events.items():
             if key not in self._window_history:
                 self._window_history[key] = deque(maxlen=self._window_count)
@@ -1128,10 +1160,21 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
             flagged = sum(self._window_history[key])
             if flagged > self.threshold:
                 device_id, port = key
+                bad_ports_per_gpu.setdefault(device_id, []).append(
+                    (port, flagged, len(self._window_history[key]))
+                )
+
+        all_healthy = True
+        for device_id, bad_ports in bad_ports_per_gpu.items():
+            if len(bad_ports) >= self.gpu_ports_threshold:
+                port_detail = ", ".join(
+                    f"port {p} ({f}/{w} flagged)" for p, f, w in bad_ports
+                )
                 logger.warning(
-                    f"NVLinkWindowHealthCheck: device {device_id} port {port}: "
-                    f"{flagged}/{len(self._window_history[key])} windows had "
-                    f"NVLink replay/recovery events (threshold={self.threshold})."
+                    f"NVLinkWindowHealthCheck: GPU {device_id} unhealthy -- "
+                    f"{len(bad_ports)} NVLink ports flagged for replay/recovery "
+                    f"events (gpu_ports_threshold={self.gpu_ports_threshold}, "
+                    f"per-port threshold={self.threshold}): {port_detail}."
                 )
                 all_healthy = False
         return all_healthy
