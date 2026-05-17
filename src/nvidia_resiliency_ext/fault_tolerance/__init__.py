@@ -14,6 +14,8 @@
 # limitations under the License.
 
 from .config import FaultToleranceConfig  # noqa: F401
+from .config import HealthLoggingConfig  # noqa: F401
+from .config import HealthLogSourceConfig  # noqa: F401
 from .data import WorkloadAction  # noqa: F401
 from .data import WorkloadControlRequest  # noqa: F401
 from .rank_monitor_client import RankMonitorClient  # noqa: F401

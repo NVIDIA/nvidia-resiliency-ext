@@ -23,12 +23,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from nvidia_resiliency_ext import fault_tolerance
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.shared_utils.health_check import AttrSvcResult
 
 WORLD_SIZE = 4
 DEFAULT_TIMEOUT = 90
@@ -128,6 +130,113 @@ def test_legacy_rdzv_impl_injects_use_libuv_false():
         config, _, _ = launcher.config_from_args(args)
 
     assert config.rdzv_configs["use_libuv"] is False
+
+
+def test_fact_url_starts_launcher_managed_fact_agent(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "train.py",
+        ]
+    )
+    fact_agent_manager = MagicMock()
+    fact_agent_manager.start_if_needed.return_value = SimpleNamespace(
+        socket_path=str(tmp_path / "managed-fact-agent.sock")
+    )
+
+    with (
+        patch.object(
+            launcher.LocalElasticAgent,
+            "setup_rank_monitors_early",
+            return_value={},
+        ),
+        patch.object(
+            launcher,
+            "FactAgentManager",
+            return_value=fact_agent_manager,
+        ) as manager_cls,
+        patch.object(launcher, "_FACT_AGENT_MANAGER", None),
+    ):
+        config, _, _ = launcher.config_from_args(args)
+
+    manager_cls.assert_called_once_with(
+        fact_url="http://fact.example:8001/latest",
+        socket_path=None,
+        rpc_timeout_s=2.0,
+    )
+    fact_agent_manager.start_if_needed.assert_called_once()
+    assert config.fault_tol_cfg.fact_agent_socket_path == str(tmp_path / "managed-fact-agent.sock")
+
+
+def test_fact_agent_start_failure_is_nonfatal(caplog):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "train.py",
+        ]
+    )
+    fact_agent_manager = MagicMock()
+    fact_agent_manager.start_if_needed.side_effect = RuntimeError("boom")
+
+    with (
+        patch.object(
+            launcher.LocalElasticAgent,
+            "setup_rank_monitors_early",
+            return_value={},
+        ),
+        patch.object(launcher, "FactAgentManager", return_value=fact_agent_manager),
+        patch.object(launcher, "_FACT_AGENT_MANAGER", None),
+        caplog.at_level(logging.WARNING),
+    ):
+        config, _, _ = launcher.config_from_args(args)
+
+    fact_agent_manager.start_if_needed.assert_called_once()
+    assert config.fault_tol_cfg.fact_url == "http://fact.example:8001/latest"
+    assert "Failed to start local nvrx-fact-agent" in caplog.text
+
+
+def test_fact_agent_rpc_timeout_must_be_positive():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "--ft-fact-agent-rpc-timeout",
+            "0",
+            "train.py",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="--ft-fact-agent-rpc-timeout must be positive"):
+        launcher.config_from_args(args)
 
 
 def test_rank_not_send_initial_hb(tmp_dir):
@@ -355,6 +464,7 @@ def _make_agent_spec(rdzv_round=1):
     """Minimal WorkerSpec-like object for testing launcher cycle-info env interaction."""
     spec = MagicMock()
     spec.rdzv_handler = MagicMock()
+    spec.rdzv_handler._attribution_service = None
     spec.rdzv_handler.round.return_value = rdzv_round
     spec.rdzv_handler.get_active_node_addrs.return_value = ["node001", "node002"]
     spec.rdzv_handler.get_standby_node_addrs.return_value = ["node003"]
@@ -508,6 +618,7 @@ class TestHandleRestartDecision(unittest.TestCase):
     def test_handle_restart_decision_progress_terminate(self):
         """Returns False without restarting when progress tracker says terminate early."""
         agent = self._make_agent()
+        agent._rdzv_handler._attribution_service = None
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = True
         agent._remaining_restarts = 2
@@ -527,6 +638,7 @@ class TestHandleRestartDecision(unittest.TestCase):
     def test_handle_restart_decision_restarts_remaining(self):
         """Returns True and decrements _remaining_restarts when restarts are available."""
         agent = self._make_agent()
+        agent._rdzv_handler._attribution_service = None
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 2
@@ -544,9 +656,39 @@ class TestHandleRestartDecision(unittest.TestCase):
         mock_restart.assert_called_once()
         mock_open.assert_not_called()
 
+    def test_handle_restart_decision_attrsvc_stop_blocks_restart(self):
+        """Returns False without consuming a restart when attrsvc recommends STOP."""
+        agent = self._make_agent()
+        attrsvc = MagicMock()
+        attrsvc.get_last_result.return_value = AttrSvcResult(
+            result={"state": "STOP"},
+            recommendation="STOP",
+            should_stop=True,
+            log_path="/path/to/cycle_0.log",
+        )
+        agent._rdzv_handler._attribution_service = attrsvc
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 2
+
+        with (
+            patch.object(agent, '_restart_workers') as mock_restart,
+            patch.object(agent, '_open_rendezvous_for_restart') as mock_open,
+        ):
+            result = agent._handle_restart_decision(
+                role="test", spec=self.spec, log_msg="[%s] restarting", open_rendezvous=True
+            )
+
+        self.assertFalse(result)
+        self.assertEqual(agent._remaining_restarts, 2)
+        attrsvc.get_last_result.assert_called_once()
+        mock_restart.assert_not_called()
+        mock_open.assert_not_called()
+
     def test_handle_restart_decision_no_restarts_left(self):
         """Returns False when _remaining_restarts is 0."""
         agent = self._make_agent()
+        agent._rdzv_handler._attribution_service = None
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 0
@@ -562,6 +704,7 @@ class TestHandleRestartDecision(unittest.TestCase):
     def test_handle_restart_decision_open_rendezvous_called_when_requested(self):
         """Calls _open_rendezvous_for_restart() when open_rendezvous=True."""
         agent = self._make_agent()
+        agent._rdzv_handler._attribution_service = None
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 1

@@ -35,6 +35,7 @@ def _attribution_item(raw_text, reason_code):
         "auto_resume_explanation": "",
         "attribution_text": "",
         "checkpoint_saved_flag": 0,
+        "action": reason_code,
         "primary_issues": [],
         "secondary_issues": [],
     }
@@ -618,7 +619,7 @@ class TestAttributionService(unittest.TestCase):
         mock_client.assert_not_called()
 
     @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
-    def test_get_results_returns_stop_decision(self, mock_client):
+    def test_get_results_returns_stop_recommendation(self, mock_client):
         client = mock_client.return_value.__enter__.return_value
         response = MagicMock()
         response.status_code = 200
@@ -640,9 +641,13 @@ class TestAttributionService(unittest.TestCase):
         client.get.return_value = response
         service = AttributionService(endpoint="http://attr.example:8000/")
 
-        should_stop = service._get_results("/tmp/train.log")
+        result = service._get_results("/tmp/train.log")
 
-        self.assertTrue(should_stop)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.recommendation.action, "STOP")
+        self.assertEqual(result.recommendation.reason, "STOP - DONT RESTART")
+        self.assertTrue(result.should_stop)
+        self.assertEqual(result.log_path, "/tmp/train.log")
         mock_client.assert_called_once_with(base_url="http://attr.example:8000", timeout=60.0)
         client.get.assert_called_once_with(
             "/logs",
@@ -671,9 +676,11 @@ class TestAttributionService(unittest.TestCase):
         client.get.return_value = response
         service = AttributionService(endpoint="http://attr.example:8000/")
 
-        should_stop = service._get_results("/tmp/train.log")
+        result = service._get_results("/tmp/train.log")
 
-        self.assertFalse(should_stop)
+        self.assertIsNotNone(result)
+        self.assertFalse(result.should_stop)
+        self.assertEqual(result.recommendation.action, "RESTART")
 
     @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
     def test_get_results_maps_continue_recommendation_to_no_stop(self, mock_client):
@@ -696,9 +703,11 @@ class TestAttributionService(unittest.TestCase):
         client.get.return_value = response
         service = AttributionService(endpoint="http://attr.example:8000/")
 
-        should_stop = service._get_results("/tmp/train.log")
+        result = service._get_results("/tmp/train.log")
 
-        self.assertFalse(should_stop)
+        self.assertIsNotNone(result)
+        self.assertFalse(result.should_stop)
+        self.assertEqual(result.recommendation.action, "CONTINUE")
 
 
 if __name__ == "__main__":
