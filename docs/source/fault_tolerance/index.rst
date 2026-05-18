@@ -17,6 +17,7 @@ The ``nvidia-resiliency-ext`` package also includes the PTL callback ``FaultTole
    :caption: Contents:
 
    usage_guide
+   fact_node_attribution
    integration
    api
    examples

@@ -199,6 +199,8 @@ Validation behavior:
   - Other existing types (e.g., devices/symlinks): performs ``stat`` access
 
 
+.. _fault-tolerance-attribution-service:
+
 Attribution service integration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -293,6 +295,8 @@ On restarts, the launcher periodically checks GPU memory usage and waits until i
 the tolerance threshold or the timeout is reached. Memory statistics for each GPU are collected
 and logged after the reclaim process completes. If the timeout is reached, an error is logged but the
 restart proceeds as a best effort.
+
+.. _fault-tolerance-per-cycle-logging:
 
 Per-cycle logging and gRPC log aggregation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

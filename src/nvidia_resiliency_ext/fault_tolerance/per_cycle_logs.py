@@ -183,6 +183,17 @@ def _patch_subprocess_handler_once():
     _SUBPROCESS_HANDLER_PATCHED = True
 
 
+def insert_suffix_before_ext(path: str, suffix: str) -> str:
+    """Insert ``suffix`` before the file extension of ``path``."""
+    base_without_ext, ext = os.path.splitext(path)
+    return f"{base_without_ext}{suffix}{ext}"
+
+
+def get_source_cycle_log_file(path_prefix: str, source_name: str, cycle_index: int) -> str:
+    """Build a source-specific cycle logfile path from ``path_prefix``."""
+    return insert_suffix_before_ext(path_prefix, f"_{source_name}_cycle{cycle_index}")
+
+
 class PipeSubprocessHandler(SubprocessHandler):
     """
     Custom SubprocessHandler that supports pipe-based logging via a special marker string.
@@ -1583,6 +1594,14 @@ class PipeBasedLogsSpecs(LogsSpecs):
         base_without_ext = os.path.splitext(self._base_log_file)[0]
         ext = os.path.splitext(self._base_log_file)[1] or ".log"
         return f"{base_without_ext}_cycle{cycle_index}{ext}"
+
+    @property
+    def grpc_server_address(self) -> Optional[str]:
+        return self._grpc_server_address
+
+    @property
+    def node_id(self) -> Optional[Union[int, str]]:
+        return self._node_id
 
     def cleanup(self):
         """
