@@ -540,6 +540,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
         temporal_cache: dict[str, str] = {}
         file_offset = 0
         log_lines: list[str] = []
+        empty_logs_stop = self.stop_accumulating_count
 
         application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = None, None, None, None
 
@@ -557,13 +558,12 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     file_offset = f.tell()
 
             # TODO Bounding with amount of logs 30 minutes < 1_000_000
-            print(new_lines)
             if len(new_lines):
                 empty_logs_stop = self.stop_accumulating_count
             else:
-                empty_logs_stop=-1
+                empty_logs_stop -= 1
 
-            if empty_logs_stop<=0:
+            if empty_logs_stop <= 0:
                 break
 
             log_lines.extend(new_lines)
