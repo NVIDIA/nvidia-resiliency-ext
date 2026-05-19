@@ -23,10 +23,11 @@ import os
 import subprocess  # nosec B404
 import sys
 import threading
+import time
 import traceback
 from collections import defaultdict, deque
 from functools import wraps
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import defusedxml.ElementTree as ET
 import httpx
@@ -37,11 +38,18 @@ from nvidia_resiliency_ext.attribution.orchestration.http_api import (
     get_log_response,
     post_log,
 )
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    ANALYSIS_INTENT_PROGRESSIVE,
+    ANALYSIS_INTENT_TERMINAL,
+)
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env, job_user_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
 # Get the nvrx logger
 logger = logging.getLogger(LogConfig.name)
+
+_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS = 2.0
 
 
 # -----------------------------
@@ -1781,87 +1789,184 @@ class AttributionService:
       - GETs results by the last submitted log_path
     """
 
+    DEFAULT_DECISION_TIMEOUT_SECONDS = 60.0
+
     def __init__(
         self,
         endpoint: str,
+        decision_timeout: Optional[float] = None,
     ):
         self.endpoint = endpoint.rstrip("/")
+        if decision_timeout is None:
+            decision_timeout = self.DEFAULT_DECISION_TIMEOUT_SECONDS
+        self.decision_timeout = float(decision_timeout)
+        if self.decision_timeout <= 0:
+            raise ValueError("attribution decision timeout must be positive")
         self._unsupported_transport_warned = False
         # Track the most recent log_path we submitted
         self._last_submitted: Optional[str] = None
+        self._terminal_deadline: Optional[float] = None
+        self._get_started_recorded = False
 
     def __call__(self) -> None:
         """
-        Fire-and-forget entrypoint. GET results for the previously submitted log.
-        Runs in a background daemon thread.
+        Request terminal analysis for the previously submitted log.
 
         Note: _submit_log() should be called first (from launcher) to set _last_submitted.
         """
-        log_path = self._last_submitted
-        if log_path:
-            threading.Thread(
-                target=self._get_results,
-                args=(log_path,),
-                daemon=True,
-            ).start()
+        self.request_terminal_analysis()
 
-    def get_last_result(self) -> Optional[bool]:
-        """Synchronously fetch whether attribution recommends stopping the last log."""
+    def get_last_result(
+        self,
+        node_id: Optional[Any] = None,
+    ) -> Optional[bool]:
+        """Briefly join terminal analysis and fetch whether attribution recommends stopping.
+
+        Returns:
+          - True when attribution recommends stopping the job.
+          - False when attribution recommends continuing, or when the launcher-side
+            decision budget expires and restart should fail open.
+          - None when attribution is still pending within the decision budget.
+        """
         log_path = self._last_submitted
         if not log_path:
             logger.debug("AttributionService GET skipped: no submitted log path")
+            return False
+
+        self._start_get_profiling(node_id)
+        decision_remaining = self._remaining_decision_timeout()
+        if decision_remaining <= 0:
+            logger.warning(
+                "AttributionService decision budget exhausted for %s; attempting final "
+                "bounded GET",
+                log_path,
+            )
+            result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
+            record_profiling_event(
+                ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
+                node_id=node_id,
+            )
+            if result is None:
+                return False
+            return result
+
+        result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
+
+        if result is None:
             return None
-        return self._get_results(log_path)
+
+        record_profiling_event(
+            ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
+            node_id=node_id,
+        )
+        return result
+
+    def _start_get_profiling(self, node_id: Optional[Any]) -> None:
+        if self._get_started_recorded:
+            return
+        self._get_started_recorded = True
+        record_profiling_event(
+            ProfilingEvent.ATTRIBUTION_GET_STARTED,
+            node_id=node_id,
+        )
+
+    def _ensure_decision_deadline(self) -> float:
+        if self._terminal_deadline is None:
+            self._terminal_deadline = time.monotonic() + self.decision_timeout
+        return self._terminal_deadline
+
+    def _remaining_decision_timeout(self) -> float:
+        """Return the remaining launcher-side budget for the current attribution decision."""
+        return self._ensure_decision_deadline() - time.monotonic()
 
     def _submit_log(self, log_path: str) -> None:
         """
         Submit a log file for progressive analysis via POST.
-        Runs in a background daemon thread (fire-and-forget).
+        The POST is synchronous but bounded to avoid delaying launcher progress.
         """
         self._last_submitted = log_path
-        threading.Thread(
-            target=self._do_submit_log,
-            args=(log_path,),
-            daemon=True,
-        ).start()
+        self._terminal_deadline = None
+        self._get_started_recorded = False
+        self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_PROGRESSIVE)
 
-    def _do_submit_log(self, log_path: str) -> None:
-        """Perform the actual POST request (runs in background thread)."""
+    def request_terminal_analysis(self) -> None:
+        """
+        Request terminal analysis for the last submitted workload log.
+
+        The POST returns after attrsvc accepts the request and schedules final analysis.
+        Later GETs use non-blocking probes until a verdict is cached.
+        """
+        log_path = self._last_submitted
+        if not log_path:
+            logger.debug("AttributionService terminal POST skipped: no submitted log path")
+            return
+        self._ensure_decision_deadline()
+        self._do_submit_log(
+            log_path,
+            analysis_intent=ANALYSIS_INTENT_TERMINAL,
+        )
+
+    def _do_submit_log(
+        self,
+        log_path: str,
+        analysis_intent: str = ANALYSIS_INTENT_PROGRESSIVE,
+        timeout: float = _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS,
+    ) -> None:
+        """Perform the actual POST request."""
         base_url = self._http_base_url()
         if base_url is None:
             return
         try:
-            with httpx.Client(base_url=base_url, timeout=10.0) as client:
+            with httpx.Client(base_url=base_url, timeout=timeout) as client:
                 url = f"{base_url}{ROUTE_LOGS}"
-                logger.debug("AttributionService POST: %s (log_path=%s)", url, log_path)
+                logger.debug(
+                    "AttributionService POST: %s (log_path=%s, analysis_intent=%s)",
+                    url,
+                    log_path,
+                    analysis_intent,
+                )
                 post_log(
                     client,
                     log_path,
                     user=job_user_from_env(),
                     job_id=job_id_from_env(),
-                    analysis_intent="progressive",
+                    analysis_intent=analysis_intent,
                 )
         except Exception as e:
             logger.warning(
                 "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e
             )
 
-    def _get_results(self, log_path: str) -> Optional[bool]:
+    def _get_results(
+        self,
+        log_path: str,
+        timeout: float = _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS,
+    ) -> Optional[bool]:
         """
         Get the stop decision for a previously submitted log file via GET.
+
+        Terminal analysis is triggered earlier via POST, so launcher uses a
+        non-blocking probe before rendezvous closes the next round.
         """
         base_url = self._http_base_url()
         if base_url is None:
             return None
         try:
-            with httpx.Client(base_url=base_url, timeout=60.0) as client:
+            with httpx.Client(base_url=base_url, timeout=timeout) as client:
                 url = f"{base_url}{ROUTE_LOGS}"
                 logger.debug("AttributionService GET: %s (log_path=%s)", url, log_path)
-                resp = get_log_response(client, log_path)
+                resp = get_log_response(client, log_path, wait=False)
                 if resp.status_code == 200:
                     payload = resp.json() if resp.text else {}
                     attrsvc_result = parse_attrsvc_response(payload, log_path=log_path)
                     logger.info(attrsvc_result.format_log_message())
+                    if attrsvc_result.status.lower() != "completed":
+                        logger.debug(
+                            "AttributionService GET for %s returned status=%s; polling again",
+                            log_path,
+                            attrsvc_result.status,
+                        )
+                        return None
                     return attrsvc_result.should_stop
                 else:
                     logger.warning(

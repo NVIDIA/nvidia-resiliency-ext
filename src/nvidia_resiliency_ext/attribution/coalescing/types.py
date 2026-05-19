@@ -102,6 +102,13 @@ class SubmittedResult(TypedDict):
     entries: List[SubmittedEntryInfo]
 
 
+class PeekResult(TypedDict):
+    """Non-blocking cache/coalescer status for a single key."""
+
+    status: str
+    result: Any
+
+
 @dataclass
 class CoalescerStats:
     """Statistics counters for :class:`~nvidia_resiliency_ext.attribution.coalescing.coalescer.RequestCoalescer`.

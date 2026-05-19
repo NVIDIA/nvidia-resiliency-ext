@@ -29,11 +29,13 @@ from .types import (
     ComputeStats,
     InFlightEntry,
     InflightResult,
+    PeekResult,
     StatsResult,
     SubmittedResult,
 )
 
 logger = logging.getLogger(__name__)
+_CACHE_MISS = object()
 
 
 def _cache_recommendation(payload: Any, *, module: str) -> Dict[str, str]:
@@ -502,6 +504,48 @@ class RequestCoalescer:
         )
         return imported
 
+    def _get_valid_cached_result_unsafe(self, key: str, now: float) -> Any:
+        """Return a valid cached result, or ``_CACHE_MISS``. Caller must hold lock."""
+        if key not in self._cache:
+            return _CACHE_MISS
+
+        cache_entry = self._cache[key]
+        cache_age = now - cache_entry.cached_at
+
+        def cache_hit() -> Any:
+            self._stats.cache_hits += 1
+            self._submitted.pop(key, None)
+            return cache_entry.result
+
+        # Within grace period: serve without validation
+        if cache_age < self._grace_period:
+            return cache_hit()
+
+        # After grace period: validate file (mtime, size)
+        if cache_entry.file_mtime is not None and cache_entry.file_size is not None:
+            current_mtime, current_size = self._get_file_metadata(key)
+            if current_mtime == cache_entry.file_mtime and current_size == cache_entry.file_size:
+                return cache_hit()
+
+            # File changed - invalidate and treat as miss
+            self._cache.pop(key, None)
+            self._stats.cache_invalidated += 1
+            logger.debug(
+                f"Cache invalidated (file changed): {key} "
+                f"(mtime: {cache_entry.file_mtime}->{current_mtime}, "
+                f"size: {cache_entry.file_size}->{current_size})"
+            )
+        elif cache_entry.file_mtime is not None and cache_entry.file_size is None:
+            # Timeout entry: has mtime (for cleanup) but no size -> always retry
+            self._cache.pop(key, None)
+            self._stats.cache_invalidated += 1
+            logger.debug(f"Cache invalidated (timeout entry, retry): {key}")
+        else:
+            # No file metadata - treat as hit
+            return cache_hit()
+
+        return _CACHE_MISS
+
     async def get_inflight(self) -> InflightResult:
         """
         Get currently in-flight requests.
@@ -515,6 +559,22 @@ class RequestCoalescer:
                 "count": len(paths),
                 "paths": paths,
             }
+
+    async def peek(self, key: str) -> PeekResult:
+        """Return cache/coalescer status without starting or awaiting compute."""
+        async with self._lock:
+            cached_result = self._get_valid_cached_result_unsafe(key, time.monotonic())
+            if cached_result is not _CACHE_MISS:
+                if self._is_cached_timeout(cached_result):
+                    logger.info(f"Cache hit for {key} (timeout result)")
+                else:
+                    logger.info(f"Cache hit for {key}")
+                return {"status": "completed", "result": cached_result}
+
+            if key in self._in_flight:
+                return {"status": "in_flight", "result": None}
+
+            return {"status": "pending", "result": None}
 
     async def track_submission(self, key: str) -> None:
         """Track a submitted key."""
@@ -589,7 +649,7 @@ class RequestCoalescer:
         future: "asyncio.Future[Any] | None" = None
         is_compute_owner = False
 
-        cached_result = None
+        cached_result = _CACHE_MISS
         is_waiting = False
 
         # Check if cleanup is needed (minimal lock time)
@@ -609,49 +669,10 @@ class RequestCoalescer:
         async with self._lock:
             now = time.monotonic()
             # Check cache first
-            if key in self._cache:
-                cache_entry = self._cache[key]
-                cache_age = now - cache_entry.cached_at
-
-                # Within grace period: serve without validation
-                if cache_age < self._grace_period:
-                    self._stats.cache_hits += 1
-                    self._submitted.pop(key, None)
-                    cached_result = cache_entry.result
-                else:
-                    # After grace period: validate file (mtime, size)
-                    if cache_entry.file_mtime is not None and cache_entry.file_size is not None:
-                        current_mtime, current_size = self._get_file_metadata(key)
-                        if (
-                            current_mtime == cache_entry.file_mtime
-                            and current_size == cache_entry.file_size
-                        ):
-                            # File unchanged - cache hit
-                            self._stats.cache_hits += 1
-                            self._submitted.pop(key, None)
-                            cached_result = cache_entry.result
-                        else:
-                            # File changed - invalidate and treat as miss
-                            self._cache.pop(key, None)
-                            self._stats.cache_invalidated += 1
-                            logger.debug(
-                                f"Cache invalidated (file changed): {key} "
-                                f"(mtime: {cache_entry.file_mtime}->{current_mtime}, "
-                                f"size: {cache_entry.file_size}->{current_size})"
-                            )
-                    elif cache_entry.file_mtime is not None and cache_entry.file_size is None:
-                        # Timeout entry: has mtime (for cleanup) but no size → always retry
-                        self._cache.pop(key, None)
-                        self._stats.cache_invalidated += 1
-                        logger.debug(f"Cache invalidated (timeout entry, retry): {key}")
-                    else:
-                        # No file metadata - treat as hit
-                        self._stats.cache_hits += 1
-                        self._submitted.pop(key, None)
-                        cached_result = cache_entry.result
+            cached_result = self._get_valid_cached_result_unsafe(key, now)
 
             # Not in cache or invalidated - check in-flight or start compute
-            if cached_result is None:
+            if cached_result is _CACHE_MISS:
                 if key in self._in_flight:
                     # Already in-flight, we'll wait
                     future = self._in_flight[key].future
@@ -667,7 +688,7 @@ class RequestCoalescer:
                     is_compute_owner = True
 
         # Logging outside lock
-        if cached_result is not None:
+        if cached_result is not _CACHE_MISS:
             if self._is_cached_timeout(cached_result):
                 logger.info(f"Cache hit for {key} (timeout result)")
             else:

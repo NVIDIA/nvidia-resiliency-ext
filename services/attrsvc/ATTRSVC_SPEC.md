@@ -233,6 +233,8 @@ Response: `{ "mode": "pending" | "single" | "splitlog" }`.
 **GET /logs**  
 Returns single-file or splitlog-shaped JSON; optional `file` selects a file in
 splitlog mode; `wl_restart` selects a workload chunk within the analyzed file.
+Optional `wait=false` probes cache/in-flight state without starting or awaiting
+analysis; responses may use `status="in_flight"` or `status="pending"`.
 Exact fields match library serializers — see **`types.py`** and OpenAPI **`/docs`**.
 Responses include a normalized `recommendation` object:
 `{ "action": "STOP" | "RESTART" | "CONTINUE" | "UNKNOWN" | "TIMEOUT",

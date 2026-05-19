@@ -230,6 +230,7 @@ service dependencies.
   - ``--ft-attribution-llm-base-url <URL>`` (alias: ``--ft_attribution_llm_base_url``)
   - ``--ft-attribution-llm-model <MODEL>`` (alias: ``--ft_attribution_llm_model``)
   - ``--ft-attribution-startup-timeout <SECONDS>`` (alias: ``--ft_attribution_startup_timeout``), default ``20``
+  - ``--ft-attribution-decision-timeout <SECONDS>`` (alias: ``--ft_attribution_decision_timeout``), default ``60``
   - ``--ft-attribution-export-url <URL>`` (alias: ``--ft_attribution_export_url``)
 
   The managed attribution app-log directory is derived from
@@ -243,6 +244,10 @@ service dependencies.
 
   To export managed attribution results, pass ``--ft-attribution-export-url`` or
   set ``attribution_export_url`` in the fault tolerance YAML config.
+
+  ``--ft-attribution-decision-timeout`` is the total launcher-side budget for one
+  attribution decision, measured from the terminal analysis request until the rendezvous
+  host fetches the STOP/RESTART recommendation.
 
   ``ft_launcher`` sends job metadata with each attribution submission: ``user`` is read from
   ``SLURM_JOB_USER`` or ``USER``, and ``job_id`` is read from ``SLURM_ARRAY_JOB_ID`` or
