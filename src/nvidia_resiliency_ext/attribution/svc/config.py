@@ -24,8 +24,8 @@ from enum import Enum
 # LLM defaults — override with NVRX_LLM_MODEL / NVRX_LLM_BASE_URL env vars.
 # Default endpoint is build.nvidia.com (publicly accessible).
 # Internal NVIDIA users can override to inference.nvidia.com via NVRX_LLM_BASE_URL.
-DEFAULT_LLM_MODEL = os.environ.get("NVRX_LLM_MODEL", "nvidia/nemotron-3-super-120b-a12b")
-DEFAULT_LLM_BASE_URL = os.environ.get("NVRX_LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+DEFAULT_LLM_MODEL = os.environ.get("NVRX_LLM_MODEL", "nvidia/qwen/qwen-235b")
+DEFAULT_LLM_BASE_URL = os.environ.get("NVRX_LLM_BASE_URL", "https://inference-api.nvidia.com/v1")
 
 # TTL constants (see spec Section 3.2)
 TTL_PENDING_SECONDS = 7 * 24 * 60 * 60  # 1 week - pending job expiry
