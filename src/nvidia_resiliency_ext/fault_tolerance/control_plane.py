@@ -179,7 +179,8 @@ def _start_control_services(
             attribution_endpoint = services.attribution_manager.start_if_needed()
             if attribution_endpoint is not None:
                 services.attribution_service = AttributionService(
-                    endpoint=attribution_endpoint.endpoint
+                    endpoint=attribution_endpoint.endpoint,
+                    decision_timeout=getattr(attribution_endpoint, "decision_timeout", None),
                 )
 
         if args.ft_enable_log_server:
@@ -244,10 +245,11 @@ def _run_control_rendezvous_loop(
     )
     if services.cycle_info_reporter is not None:
         state._cycle_info_reporter = services.cycle_info_reporter
+    state._attribution_service = services.attribution_service
 
     while not stop_event.is_set():
         if services.attribution_service is not None:
-            services.attribution_service()
+            services.attribution_service.request_terminal_analysis()
         try:
             closed_round = state.close_current_round_as_host(
                 node,

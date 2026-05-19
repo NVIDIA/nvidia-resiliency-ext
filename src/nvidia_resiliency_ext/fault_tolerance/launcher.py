@@ -475,7 +475,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         """
         return self._rdzv_handler.round()
 
-
     def _current_cycle_info_path(self) -> Optional[str]:
         if not self._ft_cfg.cycle_info_dir:
             return None
@@ -536,7 +535,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         log_msg: str,
         open_rendezvous: bool = False,
     ) -> bool:
-        """Handle restart decision logic based on progress tracking and remaining restarts.
+        """Handle restart decision logic based on attribution, progress, and restart budget.
 
         Args:
             role: The role name for logging
@@ -548,6 +547,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             True if restart was initiated (caller should continue monitoring loop)
             False if no restart (caller should stop workers and return failure)
         """
+        self._request_terminal_attribution()
         self._progress_tracker.analyze_previous_cycle()
         should_terminate_early = self._progress_tracker.should_terminate_early()
 
@@ -867,6 +867,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         #       The 'name' field of the Event is NOT used in the TorchelasticStatusLogEntry.
         event = events.Event(name=name, source=events.EventSource.AGENT, metadata=metadata)
         events.record(event)
+
+    def _request_terminal_attribution(self) -> None:
+        """Ask attrsvc to start final analysis for the last submitted cycle log."""
+        if not self._is_store_host:
+            return
+        attribution_service = getattr(self._rdzv_handler, "_attribution_service", None)
+        if attribution_service is None:
+            return
+        attribution_service.request_terminal_analysis()
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -2789,7 +2798,6 @@ def _validate_attribution_requires_per_cycle_applog(
             "Attribution service needs per-cycle application logs as analysis input."
         )
 
-
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
     _validate_args(args)
@@ -2870,6 +2878,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+
     # Pass distributed storage health check configuration
     cli_dist_storage = getattr(args, 'ft_enable_dist_storage_healthcheck', None)
     if cli_dist_storage is not None:
@@ -2971,6 +2980,11 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         attribution_endpoint = attribution_manager.start_if_needed()
         if attribution_endpoint is not None:
             rdzv_configs['attribution_endpoint'] = attribution_endpoint.endpoint
+            decision_timeout = getattr(attribution_endpoint, "decision_timeout", None)
+            if decision_timeout is not None:
+                rdzv_configs['attribution_decision_timeout'] = str(
+                    decision_timeout
+                )
 
         if getattr(args, 'ft_enable_log_server', False):
             assert log_funnel_ports is not None

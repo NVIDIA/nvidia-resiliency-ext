@@ -630,6 +630,8 @@ class _RendezvousBarrierState:
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
         # Permanent shutdown: once set, no further rendezvous rounds (graceful exit).
         self.shutdown_key = f"{self.prefix}:shutdown"
+        self._attribution_service: Optional[AttributionService] = None
+        self._attribution_settled_for_round: int = -1
         # Job-level unhealthy counter; persists across all rounds.
         self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
         # Latest closed round's active membership. This is host-local by design:
@@ -1250,7 +1252,7 @@ class _RendezvousBarrierState:
             node_desc: Node descriptor for logging
 
         Raises:
-            RendezvousClosedError: If rendezvous was permanently shut down
+            RendezvousClosedError: If rendezvous was permanently shut down.
             RendezvousTimeoutError: If rendezvous has timed out
         """
         # Check for permanent shutdown
@@ -1349,6 +1351,36 @@ class _RendezvousBarrierState:
             wait_count += 1
             time.sleep(1.0)  # Poll every 1 second
 
+    def _attribution_gate(self, node_desc: _NodeDesc) -> bool:
+        """Return whether attribution permits closing the current round.
+
+        Raises ``RendezvousGracefulExitError`` if attribution recommends stopping.
+        Returns ``False`` while attribution is still pending, or when it has just
+        settled and the caller should re-read close state before assigning ranks.
+        """
+        if self._attribution_service is None or self._round == 0:
+            return True
+
+        if self._attribution_settled_for_round == self._round:
+            return True
+
+        result = self._attribution_service.get_last_result(node_id=node_desc)
+
+        if result is None:
+            return False
+
+        if result is True:
+            msg = (
+                f"The node '{node_desc}' is closing rendezvous because attribution "
+                f"recommended stopping the job."
+            )
+            log.error(msg)
+            self.set_shutdown()
+            raise RendezvousGracefulExitError(msg)
+
+        self._attribution_settled_for_round = self._round
+        return False
+
     def _host_close_round(
         self,
         node_desc: _NodeDesc,
@@ -1407,6 +1439,9 @@ class _RendezvousBarrierState:
             # Only attempt snapshot + constraint check when enough nodes have joined.
             if current_joined < min_nodes:
                 time.sleep(0.1)
+                continue
+
+            if not self._attribution_gate(node_desc):
                 continue
 
             current_time = time.monotonic()
@@ -2085,6 +2120,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
+        attribution_decision_timeout: Optional[float] = None,
         cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
     ):
@@ -2121,6 +2157,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 List of storage paths to check for health.
             attribution_endpoint:
                 Endpoint of the attribution service.
+            attribution_decision_timeout:
+                Launcher-side attribution decision budget in seconds.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -2148,6 +2186,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
+            attribution_decision_timeout=attribution_decision_timeout,
             cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
         )
@@ -2164,6 +2203,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
+        attribution_decision_timeout: Optional[float] = None,
         cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
     ) -> None:
@@ -2239,9 +2279,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         # Attribution service client (optional, only on master node)
         if is_store_host and attribution_endpoint:
-            self._attribution_service = AttributionService(endpoint=attribution_endpoint)
+            self._attribution_service = AttributionService(
+                endpoint=attribution_endpoint,
+                decision_timeout=attribution_decision_timeout,
+            )
         else:
             self._attribution_service = None
+        self._barrier_state._attribution_service = self._attribution_service
 
     @property
     def _rendezvous_round(self) -> int:
@@ -2387,11 +2431,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 "Storage path health check",
                 f"Node {self._this_node} has invalid or unreadable paths.",
             )
-
-        # Perform optional log analysis (non-fatal)
-        # Note: _submit_log() was already called from launcher before workers started
-        if self._attribution_service is not None:
-            self._attribution_service()
 
         # Perform Node health check (external service if available)
         _nodehealth_checker = get_node_health_check()
@@ -2784,6 +2823,9 @@ def create_handler(
         storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
         attribution_endpoint = params.config.get('attribution_endpoint', None)
+        attribution_decision_timeout = params.config.get('attribution_decision_timeout', None)
+        if attribution_decision_timeout is not None:
+            attribution_decision_timeout = float(attribution_decision_timeout)
         cycle_info_dir = params.config.get('cycle_info_dir', None)
         cycle_log_prefix = params.config.get('cycle_log_prefix', None)
 
@@ -2804,6 +2846,7 @@ def create_handler(
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
+            attribution_decision_timeout=attribution_decision_timeout,
             cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
         )

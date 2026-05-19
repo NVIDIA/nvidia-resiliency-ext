@@ -97,6 +97,8 @@ class FaultToleranceConfig:
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
     * Attribution service (optional, disabled unless `attribution_endpoint` is set):
       - `attribution_endpoint` [str] endpoint of the attribution service
+      - `attribution_decision_timeout` [float] launcher-side attribution decision
+        budget in seconds, measured from terminal analysis request to result fetch.
       - `attribution_export_url` [str] complete export posting URL for
         launcher-managed attribution service postprocessing.
 
@@ -148,6 +150,7 @@ class FaultToleranceConfig:
     )
     # Attribution service configuration (optional)
     attribution_endpoint: Optional[str] = None
+    attribution_decision_timeout: Optional[float] = None
     attribution_export_url: Optional[str] = None
 
     # NVRx cycle info: base directory for cycle_info JSON files
