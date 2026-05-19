@@ -14,20 +14,10 @@ from langchain_openai import ChatOpenAI
 from logsage.auto_resume_policy.attribution_classes import *
 from logsage.auto_resume_policy.error_attribution import (
     CONTEXT_SIZE,
-    #CYCLES_THRESHOLD,
-    #XSS_FILTERING,
-    #attribution_from_finished_status,
-    #error_attribution_to_memory,
-    #get_auto_resume_postprocessing,
     get_proposed_solution_cat,
 
 )
-#from src.nvidia_resiliency_ext.attribution.log_analyzer.temoral_logsage import (
-#    get_attribution,
-#    get_auto_resume,
-#    get_proposed_solution_policies,
-#    template_post_error_check, get_auto_resume_postprocessing,
-#)
+
 from logsage.auto_resume_policy.error_attribution import get_attribution, get_auto_resume, get_proposed_solution_policies
 from logsage.auto_resume_policy.util_postprocessing import get_auto_resume_postprocessing
 from logsage.auto_resume_policy.prompts import template_post_error_check
@@ -67,7 +57,6 @@ LOGSAGE_LLM_ENDPOINT_FAILED = "LLM ENDPOINT FAILED"
 
 MARKER_NEW_RUN_DIR_ADDED = "[sbatch_script]: New run dir added:"
 
-CYCLES_THRESHOLD = 3
 EMPTY_LOGS_TOP = 3
 
 
@@ -406,6 +395,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
         self.is_per_cycle = bool(self._init_config.get("is_per_cycle", False))
         self.is_streaming_logs = bool(self._init_config.get("is_streaming_logs", False))
         self.repeated_amount = int(self._init_config.get("repeated_amount", 3)),
+        self.stop_accumulating_count = int(self._init_config.get("stop_accumulating_count", 3)),
         self.logs_minutes_before_job_end = int(self._init_config.get("logs_minutes_before_job_end", 20)),
         self.chunks_per_time = int(self._init_config.get("logs_minutes_before_job_end", 5)),
         if self.is_streaming_logs:
@@ -535,33 +525,13 @@ class NVRxLogAnalyzer(NVRxAttribution):
         """
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg["log_path"]
-        job_stage = cfg["job_stage"]
-        is_per_cycle = bool(cfg.get("is_per_cycle", self.is_per_cycle))
-        exclude_nvrx = bool(cfg.get("exclude_nvrx_logs", self.exclude_nvrx_logs))
-        is_streaming_logs = bool(cfg.get("is_streaming_logs", False))
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                input_data = f.readlines()
-        except UnicodeDecodeError:
-            # Fallback for non-UTF-8 or mixed encoding; latin-1 never raises decode errors.
-            # Other exceptions (e.g. PermissionError, FileNotFoundError) propagate.
-            with open(path, 'r', encoding='latin-1') as f:
-                input_data = f.readlines()
-
-        empty_logs_stop = 3
 
         if path not in self.job_stage_dict:
             self.job_stage_dict[path] = 'start'
 
-        s_time = time.time()
-
         llm = self.llm
         cache_dict = self.lru_cache
         attribution = cfg.get("attribution")
-        path_previous = _previous_path(path)
-        attribution_previous = (
-            self.attribution_dict.get(path_previous, '') if path_previous else ''
-        )
         cycle_counter = int(cfg.get("cycle_counter", 0))
         cycle_counter_key = _cycle_counter_key(path)
         if cycle_counter == 0:
@@ -589,7 +559,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
             # TODO Bounding with amount of logs 30 minutes < 1_000_000
             print(new_lines)
             if len(new_lines):
-                empty_logs_stop = EMPTY_LOGS_TOP
+                empty_logs_stop = self.stop_accumulating_count
             else:
                 empty_logs_stop=-1
 
@@ -617,7 +587,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
             self.job_inline_data_dict[path].append((file_offset, new_lines, chunk_data, application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk))
 
-            #time.sleep(10 * 60)
             time.sleep(self.chunks_per_time*60)
 
         return None
@@ -642,20 +611,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
         """
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg["log_path"]
-        job_stage = cfg["job_stage"]
-        is_per_cycle = bool(cfg.get("is_per_cycle", self.is_per_cycle))
-        exclude_nvrx = bool(cfg.get("exclude_nvrx_logs", self.exclude_nvrx_logs))
-        is_streaming_logs = bool(cfg.get("is_streaming_logs", False))
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                input_data = f.readlines()
-        except UnicodeDecodeError:
-            # Fallback for non-UTF-8 or mixed encoding; latin-1 never raises decode errors.
-            # Other exceptions (e.g. PermissionError, FileNotFoundError) propagate.
-            with open(path, 'r', encoding='latin-1') as f:
-                input_data = f.readlines()
-
-        empty_logs_stop = 3
 
         if path not in self.job_stage_dict:
             self.job_stage_dict[path] = 'start'
@@ -675,8 +630,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
             self.cycle_counter_dict[cycle_counter_key] = cycle_counter
 
         temporal_cache: dict[str, str] = {}
-        file_offset = 0
-        log_lines: list[str] = []
 
         application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = None, None, None, None
 
@@ -705,7 +658,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
         chunk = chunk + new_lines
 
         chunk_data = _retry_return_application_errors_rt(llm, chunk, cache_dict, temporal_cache)
-        app_data = chunk_data
 
         last_with_errors = chunk_data
         if last_with_errors.application_errors_list_full:
