@@ -381,8 +381,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
         self.cycle_counter_dict = {}
         self.job_inline_data_dict = {}
         self.attribution_dict = {}
-        print("self.api_key: ",self.api_key)
-        print("DEFAULT_LLM_BASE_URL: ", DEFAULT_LLM_BASE_URL)
         self.llm = ChatOpenAI(
             model=self._init_config.get("model", DEFAULT_LLM_MODEL),
             api_key=self.api_key,
