@@ -125,10 +125,10 @@ def fetch_results(
         job.terminal_signaled = True
 
         def on_terminal_success(_response):
-            logger.info(f"[{job.job_id}] Terminal analysis signaled: {log_path}")
+            logger.info(f"[{job.job_id}] Terminal analysis requested: {log_path}")
 
         def on_terminal_client_error(error_msg: str):
-            logger.debug(f"[{job.job_id}] Terminal signal POST failed: {error_msg}")
+            logger.debug(f"[{job.job_id}] Terminal analysis request POST failed: {error_msg}")
 
         attrsvc_client.request_with_retry(
             method="POST",

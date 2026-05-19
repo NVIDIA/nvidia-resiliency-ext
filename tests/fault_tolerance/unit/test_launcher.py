@@ -359,6 +359,7 @@ def _make_agent_spec(rdzv_round=1):
     spec.rdzv_handler.get_active_node_addrs.return_value = ["node001", "node002"]
     spec.rdzv_handler.get_standby_node_addrs.return_value = ["node003"]
     spec.rdzv_handler.get_active_ranks.return_value = [0, 1]
+    spec.rdzv_handler._attribution_service = None
     spec.max_restarts = 3
     return spec
 
@@ -508,9 +509,11 @@ class TestHandleRestartDecision(unittest.TestCase):
     def test_handle_restart_decision_progress_terminate(self):
         """Returns False without restarting when progress tracker says terminate early."""
         agent = self._make_agent()
+        agent._is_store_host = True
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = True
         agent._remaining_restarts = 2
+        agent._rdzv_handler._attribution_service = MagicMock()
 
         with (
             patch.object(agent, '_restart_workers') as mock_restart,
@@ -521,6 +524,7 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertFalse(result)
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_called_once_with()
         mock_restart.assert_not_called()
         mock_open.assert_not_called()
 
@@ -544,12 +548,41 @@ class TestHandleRestartDecision(unittest.TestCase):
         mock_restart.assert_called_once()
         mock_open.assert_not_called()
 
-    def test_handle_restart_decision_no_restarts_left(self):
-        """Returns False when _remaining_restarts is 0."""
+    def test_handle_restart_decision_requests_terminal_attribution_before_restart(self):
+        """Starts terminal attribution before local restart decisions and keeps moving."""
         agent = self._make_agent()
+        agent._is_store_host = True
+        agent._progress_tracker = MagicMock()
+        agent._remaining_restarts = 2
+        agent._rdzv_handler._attribution_service = MagicMock()
+        calls = []
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.side_effect = (
+            lambda: calls.append("terminal")
+        )
+        agent._progress_tracker.analyze_previous_cycle.side_effect = lambda: calls.append("analyze")
+        agent._progress_tracker.should_terminate_early.side_effect = (
+            lambda: calls.append("progress-check") or False
+        )
+
+        with patch.object(
+            agent, '_restart_workers', side_effect=lambda _wg: calls.append("restart")
+        ):
+            result = agent._handle_restart_decision(
+                role="test", spec=self.spec, log_msg="[%s] restarting"
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(calls, ["terminal", "analyze", "progress-check", "restart"])
+        agent._rdzv_handler._attribution_service.get_last_result.assert_not_called()
+
+    def test_handle_restart_decision_no_restarts_left(self):
+        """Returns False when _remaining_restarts is 0 after requesting terminal attribution."""
+        agent = self._make_agent()
+        agent._is_store_host = True
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 0
+        agent._rdzv_handler._attribution_service = MagicMock()
 
         with patch.object(agent, '_restart_workers') as mock_restart:
             result = agent._handle_restart_decision(
@@ -557,6 +590,7 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertFalse(result)
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_called_once_with()
         mock_restart.assert_not_called()
 
     def test_handle_restart_decision_open_rendezvous_called_when_requested(self):
@@ -617,6 +651,70 @@ class TestHandleRestartDecision(unittest.TestCase):
         agent._open_rendezvous_for_restart()
         # No open_rendezvous() on the legacy handler
         self.assertFalse(hasattr(legacy_rdzv, '_barrier_state'))
+
+
+def test_rendezvous_host_sets_graceful_shutdown_when_attribution_says_stop():
+    from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
+
+    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import _RendezvousBarrierState
+
+    state = object.__new__(_RendezvousBarrierState)
+    state._round = 1
+    state._attribution_service = MagicMock()
+    state._attribution_service.get_last_result.return_value = True
+    state._attribution_settled_for_round = -1
+    state.set_shutdown = MagicMock()
+
+    with pytest.raises(RendezvousGracefulExitError):
+        state._attribution_gate("node-a")
+
+    state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
+    state.set_shutdown.assert_called_once()
+
+
+def test_rendezvous_host_retries_close_round_when_attribution_pending():
+    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import _RendezvousBarrierState
+
+    state = object.__new__(_RendezvousBarrierState)
+    state._round = 1
+    state._attribution_service = MagicMock()
+    state._attribution_service.get_last_result.return_value = None
+    state._attribution_settled_for_round = -1
+
+    should_close = state._attribution_gate("node-a")
+
+    assert should_close is False
+    state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
+    assert state._attribution_settled_for_round == -1
+
+
+def test_rendezvous_host_skips_attribution_gate_for_initial_round():
+    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import _RendezvousBarrierState
+
+    state = object.__new__(_RendezvousBarrierState)
+    state._round = 0
+    state._attribution_service = MagicMock()
+    state._attribution_settled_for_round = -1
+
+    assert state._attribution_gate("node-a") is True
+    state._attribution_service.get_last_result.assert_not_called()
+
+
+def test_rendezvous_host_closes_round_when_attribution_allows_restart():
+    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import _RendezvousBarrierState
+
+    state = object.__new__(_RendezvousBarrierState)
+    state._round = 1
+    state._attribution_service = MagicMock()
+    state._attribution_service.get_last_result.return_value = False
+    state._attribution_settled_for_round = -1
+
+    should_close = state._attribution_gate("node-a")
+
+    assert should_close is False
+    assert state._attribution_settled_for_round == 1
+    assert state._attribution_gate("node-a") is True
+    state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
 
 
 def test_ft_log_aggregator_count_rejects_negative():

@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional, Sequence
 from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT,
 )
+from nvidia_resiliency_ext.shared_utils.health_check import AttributionService
 
 
 def str_to_bool(value: Any) -> bool:
@@ -390,12 +391,16 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         help="Analysis backend for launcher-managed attribution service: mcp or lib.",
     )
     parser.add_argument(
-        "--ft-attribution-compute-timeout",
-        "--ft_attribution_compute_timeout",
+        "--ft-attribution-decision-timeout",
+        "--ft_attribution_decision_timeout",
         type=float,
         default=None,
-        dest="ft_attribution_compute_timeout",
-        help="Analysis compute timeout in seconds for launcher-managed attribution service.",
+        dest="ft_attribution_decision_timeout",
+        help=(
+            "Total launcher-side attribution decision budget in seconds, measured from "
+            "terminal analysis request to rendezvous result fetch. "
+            f"Default: {AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS}."
+        ),
     )
     parser.add_argument(
         "--ft-attribution-log-level",
