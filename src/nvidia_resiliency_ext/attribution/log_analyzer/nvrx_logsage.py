@@ -543,7 +543,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
         while True:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    print("time start: ", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                     f.seek(file_offset)
                     new_lines = f.readlines()
                     file_offset = f.tell()
@@ -563,15 +562,13 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 break
 
             log_lines.extend(new_lines)
-            print("len(log_lines): ",len(log_lines))
             attribution_list = []
 
             chunk_data = _retry_return_application_errors_rt(llm, new_lines, cache_dict, self.temporal_cache_dict[path])
-            print("new_lines",new_lines)
             app_data = chunk_data
             if chunk_data.application_errors_list_full:
                 application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = get_attribution(
-                    llm, app_data, attribution)
+                    llm, app_data, True)
                 attribution_list.append(attribution_raw_chunk)
 
             self.job_inline_data_dict[path].append((file_offset, new_lines, chunk_data, application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk))
@@ -683,7 +680,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
             ]
         if last_with_errors.application_errors_list_full:
             application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = get_attribution(
-                llm, last_with_errors, attribution)
+                llm, last_with_errors, True)
             last_attribution_dict_chunk = attribution_dict_chunk
             last_attribution_raw_chunk = attribution_raw_chunk
             last_application_log_chunk = application_log

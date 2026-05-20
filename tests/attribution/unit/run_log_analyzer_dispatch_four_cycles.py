@@ -125,7 +125,7 @@ def _dispatch(analyzer, path: str, job_stage: str, cycle: int):
     analyzer._init_config["log_path"] = path
     analyzer._init_config["job_stage"] = job_stage
     analyzer._init_config["cycle_counter"] = cycle
-    analyzer._init_config["attribution"] = ""
+    analyzer._init_config["attribution"] = True
 
     from nvidia_resiliency_ext.attribution.log_analyzer import nvrx_logsage
     analyzer.job_inline_data_dict.setdefault(path, [])
@@ -200,6 +200,7 @@ def run_dispatch_all_cycles(
             f"poll {poll_interval_sec:.0f}s)",
             flush=True,
         )
+        start_t0 = time.monotonic()
         with patch.object(
             nvrx_logsage.time,
             "sleep",
@@ -212,10 +213,11 @@ def run_dispatch_all_cycles(
                     f"[dispatch] cycle {cycle}: start deadline reached",
                     flush=True,
                 )
+        start_elapsed = time.monotonic() - start_t0
 
         history_len = len(analyzer.job_inline_data_dict.get(path, []))
         print(
-            f"[dispatch] cycle {cycle}: start done, "
+            f"[dispatch] cycle {cycle}: start took {start_elapsed:.2f}s, "
             f"job_inline_data_dict[{os.path.basename(path)}] len="
             f"{history_len}",
             flush=True,
@@ -227,7 +229,13 @@ def run_dispatch_all_cycles(
             "analyze_logs_rt_end",
             flush=True,
         )
+        end_t0 = time.monotonic()
         end_result = _dispatch(analyzer, path, "end", cycle)
+        end_elapsed = time.monotonic() - end_t0
+        print(
+            f"[dispatch] cycle {cycle}: end took {end_elapsed:.2f}s",
+            flush=True,
+        )
         # The end phase OR-reduces checkpoint_saved across all per-poll
         # entries in job_inline_data_dict[path]; recompute the same way
         # for visibility.
@@ -257,7 +265,10 @@ def run_dispatch_all_cycles(
                 f"(history={ckpt_saved_in_history})",
                 flush=True,
             )
-        per_cycle_result.append((cycle, path, end_result, ckpt_saved_in_history))
+        per_cycle_result.append(
+            (cycle, path, end_result, ckpt_saved_in_history,
+             start_elapsed, end_elapsed)
+        )
 
     print("\n[dispatch] ====== summary ======", flush=True)
     print("[dispatch] attribution_dict (per path):", flush=True)
@@ -269,11 +280,15 @@ def run_dispatch_all_cycles(
         print(f"  {os.path.basename(key)}: {counter}", flush=True)
 
     print("[dispatch] per-cycle auto_resume:", flush=True)
-    for cycle, _path, result, ckpt in per_cycle_result:
+    for cycle, _path, result, ckpt, start_s, end_s in per_cycle_result:
         ar = getattr(result, "auto_resume", None) if result else None
         verb = getattr(result, "auto_resume_verbose", "") if result else ""
         ckpt_tag = " [checkpoint_saved]" if ckpt else ""
-        print(f"  cycle {cycle}: {ar!r}  ({verb!r}){ckpt_tag}", flush=True)
+        print(
+            f"  cycle {cycle}: {ar!r}  ({verb!r}){ckpt_tag} "
+            f"[start={start_s:.2f}s, end={end_s:.2f}s]",
+            flush=True,
+        )
 
 
 def main() -> int:
