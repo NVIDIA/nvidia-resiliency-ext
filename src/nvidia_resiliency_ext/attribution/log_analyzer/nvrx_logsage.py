@@ -377,7 +377,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
             self._init_config.get("model", DEFAULT_LLM_MODEL),
         )
         self.lru_cache = LRUCache(100_000)
-        self.job_stage_dict = {}
+        self.temporal_cache_dict = {}
         self.cycle_counter_dict = {}
         self.job_inline_data_dict = {}
         self.attribution_dict = {}
@@ -524,9 +524,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg["log_path"]
 
-        if path not in self.job_stage_dict:
-            self.job_stage_dict[path] = 'start'
-
         llm = self.llm
         cache_dict = self.lru_cache
         attribution = cfg.get("attribution")
@@ -535,7 +532,8 @@ class NVRxLogAnalyzer(NVRxAttribution):
         if cycle_counter == 0:
             self.cycle_counter_dict[cycle_counter_key] = cycle_counter
 
-        temporal_cache: dict[str, str] = {}
+        if path not in self.temporal_cache_dict:
+            self.temporal_cache_dict[path] = {}
         file_offset = 0
         log_lines: list[str] = []
         empty_logs_stop = self.stop_accumulating_count
@@ -567,15 +565,8 @@ class NVRxLogAnalyzer(NVRxAttribution):
             log_lines.extend(new_lines)
             print("len(log_lines): ",len(log_lines))
             attribution_list = []
-            app_data = None
-            global_checkpoint_saved = False
-            last_with_errors = None
-            last_attribution_dict_chunk = None
-            last_attribution_raw_chunk = None
-            last_application_log_chunk = None
-            last_hw_category_chunk = None
 
-            chunk_data = _retry_return_application_errors_rt(llm, new_lines, cache_dict, temporal_cache)
+            chunk_data = _retry_return_application_errors_rt(llm, new_lines, cache_dict, self.temporal_cache_dict[path])
             print("new_lines",new_lines)
             app_data = chunk_data
             if chunk_data.application_errors_list_full:
@@ -610,9 +601,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg["log_path"]
 
-        if path not in self.job_stage_dict:
-            self.job_stage_dict[path] = 'start'
-
         s_time = time.time()
 
         llm = self.llm
@@ -627,11 +615,9 @@ class NVRxLogAnalyzer(NVRxAttribution):
         if cycle_counter == 0:
             self.cycle_counter_dict[cycle_counter_key] = cycle_counter
 
-        temporal_cache: dict[str, str] = {}
+        if path not in self.temporal_cache_dict:
+            self.temporal_cache_dict[path] = {}
 
-        application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = None, None, None, None
-
-        print("time end: ", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         if len(self.job_inline_data_dict[path]):
             file_offset = self.job_inline_data_dict[path][-1][0]
         else:
@@ -655,7 +641,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
             chunk = chunk + item[1]
         chunk = chunk + new_lines
 
-        chunk_data = _retry_return_application_errors_rt(llm, chunk, cache_dict, temporal_cache)
+        chunk_data = _retry_return_application_errors_rt(llm, chunk, cache_dict, self.temporal_cache_dict[path])
 
         last_with_errors = chunk_data
         if last_with_errors.application_errors_list_full:
