@@ -395,7 +395,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
         self.repeated_amount = int(self._init_config.get("repeated_amount", 3)),
         self.stop_accumulating_count = int(self._init_config.get("stop_accumulating_count", 3)),
         self.logs_minutes_before_job_end = int(self._init_config.get("logs_minutes_before_job_end", 20)),
-        self.chunks_per_time = int(self._init_config.get("logs_minutes_before_job_end", 5)),
+        self.chunks_per_time = int(self._init_config.get("chunks_per_time", 5)),
         if self.is_streaming_logs:
             super().__init__(
                 preprocess_input=self._analyze_logs_rt_dispatch,
