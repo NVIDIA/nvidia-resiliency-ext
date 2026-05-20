@@ -700,12 +700,13 @@ class NVRxLogAnalyzer(NVRxAttribution):
         logger.info("error extraction latency: %s", time.time() - s_time)
         application_errors_full = [error[0] for error in last_with_errors.application_errors_list_full]
 
+        self.temporal_cache_dict.pop(path, None)
+
         if (
                 len(last_with_errors.application_errors_list_full) == 0
                 or last_with_errors.finished == FinishedStatus.APPLICATION_DONE
         ):
             attribution_finished = attribution_from_finished_status(last_with_errors, last_with_errors.application_errors_list_unique)
-            #attribution_finished = error_attribution_to_memory(attribution_finished)
             return attribution_finished
 
         attribution_output = last_attribution_dict_chunk["attribution"]
