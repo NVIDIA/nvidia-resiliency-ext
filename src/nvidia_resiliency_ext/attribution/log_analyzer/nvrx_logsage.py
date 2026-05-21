@@ -17,7 +17,6 @@ from logsage.auto_resume_policy.error_attribution import (
     get_attribution,
     get_auto_resume,
     get_proposed_solution_cat,
-    get_proposed_solution_policies,
 )
 from logsage.auto_resume_policy.error_extraction import (
     finished_validation,
