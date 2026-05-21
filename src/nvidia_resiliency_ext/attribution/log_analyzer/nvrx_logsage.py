@@ -62,8 +62,6 @@ from nvidia_resiliency_ext.attribution.orchestration.types import (
 
 logger = logging.getLogger(__name__)
 
-LogSageCycleFields = tuple[str, str, str, str, str]
-
 FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
 FINISHED_STATUS_SLURM_CANCELLED = "SLURM_CANCELLED"
 FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE = "SLURM_CANCELLED_JOB_REQUEUE"
