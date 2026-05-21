@@ -11,7 +11,15 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI
-from logsage.auto_resume_policy.attribution_classes import *
+from logsage.auto_resume_policy.attribution_classes import (
+    ApplicationData,
+    Attribution,
+    AutoResumeAction,
+    ErrorAttribution,
+    FinishedStatus,
+    LogSageCycleFields,
+    LRUCache,
+)
 from logsage.auto_resume_policy.error_attribution import (
     CONTEXT_SIZE,
     get_attribution,
