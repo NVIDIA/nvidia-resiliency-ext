@@ -461,9 +461,7 @@ class Analyzer:
         logger.debug("Scheduled %s analysis start for %s", stage_label, normalized_path)
 
     @staticmethod
-    def _log_stage_analysis_failure(
-        normalized_path: str, done: Any, *, stage_label: str
-    ) -> None:
+    def _log_stage_analysis_failure(normalized_path: str, done: Any, *, stage_label: str) -> None:
         try:
             done.result()
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
@@ -481,9 +479,7 @@ class Analyzer:
 
     @staticmethod
     def _log_terminal_analysis_failure(normalized_path: str, done: Any) -> None:
-        Analyzer._log_stage_analysis_failure(
-            normalized_path, done, stage_label="terminal"
-        )
+        Analyzer._log_stage_analysis_failure(normalized_path, done, stage_label="terminal")
 
     async def analyze(
         self,

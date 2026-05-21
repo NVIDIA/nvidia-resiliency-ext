@@ -50,33 +50,43 @@ def main() -> int:
     parser.add_argument("--log-dir", default=_HERE)
     parser.add_argument("--num-cycles", type=int, default=4)
     parser.add_argument(
-        "--chunk-interval", type=float, default=60.0,
+        "--chunk-interval",
+        type=float,
+        default=60.0,
         help="Seconds between writer chunks (default 60s = 1 min)",
     )
     parser.add_argument(
-        "--poll-interval", type=float, default=60.0,
+        "--poll-interval",
+        type=float,
+        default=60.0,
         help="Seconds between analyzer polls (default 60s = 1 min)",
     )
     parser.add_argument(
-        "--cycle-duration", type=float, default=300.0,
+        "--cycle-duration",
+        type=float,
+        default=300.0,
         help="Analyzer's per-cycle deadline (default 300s = 5 min)",
     )
     parser.add_argument(
-        "--end-window-minutes", type=float, default=2.0,
-        help="Minutes of history the end phase reuses (default 2 = "
-             "tail + last 2 minutes)",
+        "--end-window-minutes",
+        type=float,
+        default=2.0,
+        help="Minutes of history the end phase reuses (default 2 = " "tail + last 2 minutes)",
     )
     parser.add_argument(
-        "--checkpoint-cycles", default="last",
+        "--checkpoint-cycles",
+        default="last",
         help="Which cycle indices include a 'Saved checkpoint' line. "
-             "Default 'last' = only the final cycle. The end phase's "
-             "checkpoint_saved circuit-breaker then prevents the "
-             "repeated-issue STOP from firing on that cycle.",
+        "Default 'last' = only the final cycle. The end phase's "
+        "checkpoint_saved circuit-breaker then prevents the "
+        "repeated-issue STOP from firing on that cycle.",
     )
     parser.add_argument(
-        "--writer-head-start", type=float, default=0.5,
+        "--writer-head-start",
+        type=float,
+        default=0.5,
         help="Seconds the writer leads the analyzer so the first poll "
-             "finds a non-empty file (default 0.5s)",
+        "finds a non-empty file (default 0.5s)",
     )
     args = parser.parse_args()
 
@@ -97,26 +107,36 @@ def main() -> int:
     common_env["PYTHONUNBUFFERED"] = "1"
 
     writer_cmd = [
-        sys.executable, WRITER_SCRIPT,
-        "--log-dir", args.log_dir,
-        "--num-cycles", str(args.num_cycles),
-        "--chunk-interval", str(args.chunk_interval),
-        "--checkpoint-cycles", args.checkpoint_cycles,
+        sys.executable,
+        WRITER_SCRIPT,
+        "--log-dir",
+        args.log_dir,
+        "--num-cycles",
+        str(args.num_cycles),
+        "--chunk-interval",
+        str(args.chunk_interval),
+        "--checkpoint-cycles",
+        args.checkpoint_cycles,
     ]
     analyzer_cmd = [
-        sys.executable, ANALYZER_SCRIPT,
-        "--log-dir", args.log_dir,
-        "--num-cycles", str(args.num_cycles),
-        "--cycle-duration", str(args.cycle_duration),
-        "--poll-interval", str(args.poll_interval),
-        "--end-window-minutes", str(args.end_window_minutes),
+        sys.executable,
+        ANALYZER_SCRIPT,
+        "--log-dir",
+        args.log_dir,
+        "--num-cycles",
+        str(args.num_cycles),
+        "--cycle-duration",
+        str(args.cycle_duration),
+        "--poll-interval",
+        str(args.poll_interval),
+        "--end-window-minutes",
+        str(args.end_window_minutes),
     ]
 
     print(f"[driver] writer:   {' '.join(writer_cmd)}", flush=True)
     print(f"[driver] analyzer: {' '.join(analyzer_cmd)}", flush=True)
     print(
-        f"[driver] launching in parallel, writer head start "
-        f"{args.writer_head_start:.1f}s",
+        f"[driver] launching in parallel, writer head start " f"{args.writer_head_start:.1f}s",
         flush=True,
     )
 

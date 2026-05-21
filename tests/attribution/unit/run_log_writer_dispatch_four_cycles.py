@@ -30,7 +30,7 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 NUM_CYCLES = 4
 CHUNKS_PER_CYCLE = 5
-CHECKPOINT_CHUNK_INDEX = 3   # minute 3 — the late-training chunk
+CHECKPOINT_CHUNK_INDEX = 3  # minute 3 — the late-training chunk
 
 # 5 chunks per cycle, one per minute → 5-minute cycle window. The OOM
 # lands in the last chunk so it falls inside the end phase's
@@ -41,16 +41,13 @@ CHUNK_TEMPLATES = [
     "[{ts}] FT: initialized\n"
     "[{ts}] Cycle: {cycle} begin\n",
     # minute 1 — early training
-    "[{ts}] step 100 loss=0.512 lr=1e-4\n"
-    "[{ts}] step 200 loss=0.487 lr=1e-4\n",
+    "[{ts}] step 100 loss=0.512 lr=1e-4\n" "[{ts}] step 200 loss=0.487 lr=1e-4\n",
     # minute 2 — mid training
-    "[{ts}] step 300 loss=0.461 lr=1e-4\n"
-    "[{ts}] step 400 loss=0.439 lr=1e-4\n",
+    "[{ts}] step 300 loss=0.461 lr=1e-4\n" "[{ts}] step 400 loss=0.439 lr=1e-4\n",
     # minute 3 — late training (last clean window before failure).
     # In "checkpoint cycles" we append CHECKPOINT_LINE here so the
     # end phase observes checkpoint_saved=True alongside the OOM.
-    "[{ts}] step 500 loss=0.421 lr=1e-4\n"
-    "[{ts}] step 600 loss=0.408 lr=1e-4\n",
+    "[{ts}] step 500 loss=0.421 lr=1e-4\n" "[{ts}] step 600 loss=0.408 lr=1e-4\n",
     # minute 4 — failure (this chunk must land inside the end phase's
     # tail + 2-minute window)
     "[{ts}] ERROR: torch.cuda.OutOfMemoryError: CUDA out of memory.\n"
@@ -96,27 +93,30 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--log-dir", default=_HERE)
     parser.add_argument(
-        "--num-cycles", type=int, default=NUM_CYCLES,
+        "--num-cycles",
+        type=int,
+        default=NUM_CYCLES,
         help=f"Number of cycle files (default {NUM_CYCLES})",
     )
     parser.add_argument(
-        "--chunk-interval", type=float, default=60.0,
+        "--chunk-interval",
+        type=float,
+        default=60.0,
         help="Seconds between chunks; also the gap after the last chunk "
-             "of a cycle, so each cycle is chunks_per_cycle * "
-             "chunk_interval long (default 60s).",
+        "of a cycle, so each cycle is chunks_per_cycle * "
+        "chunk_interval long (default 60s).",
     )
     parser.add_argument(
-        "--checkpoint-cycles", default="last",
+        "--checkpoint-cycles",
+        default="last",
         help="Which cycle indices include a 'Saved checkpoint' line in "
-             "their minute-3 chunk. Accepts 'last' (default — only the "
-             "final cycle), 'all', 'none', or a comma-separated list "
-             "like '0,2'.",
+        "their minute-3 chunk. Accepts 'last' (default — only the "
+        "final cycle), 'all', 'none', or a comma-separated list "
+        "like '0,2'.",
     )
     args = parser.parse_args()
 
-    checkpoint_cycles = _parse_checkpoint_cycles(
-        args.checkpoint_cycles, args.num_cycles
-    )
+    checkpoint_cycles = _parse_checkpoint_cycles(args.checkpoint_cycles, args.num_cycles)
 
     os.makedirs(args.log_dir, exist_ok=True)
     # Truncate up front so the analyzer's first read against any cycle
@@ -128,8 +128,7 @@ def main() -> int:
     chunks_per_cycle = len(CHUNK_TEMPLATES)
     cycle_seconds = chunks_per_cycle * args.chunk_interval
     ckpt_summary = (
-        ",".join(str(c) for c in sorted(checkpoint_cycles))
-        if checkpoint_cycles else "none"
+        ",".join(str(c) for c in sorted(checkpoint_cycles)) if checkpoint_cycles else "none"
     )
     print(
         f"[writer] {args.num_cycles} cycles × {chunks_per_cycle} chunks @ "
@@ -146,10 +145,7 @@ def main() -> int:
                 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 content = tmpl.format(ts=ts, cycle=cycle)
                 ckpt_emitted = False
-                if (
-                    chunk_idx == CHECKPOINT_CHUNK_INDEX
-                    and cycle in checkpoint_cycles
-                ):
+                if chunk_idx == CHECKPOINT_CHUNK_INDEX and cycle in checkpoint_cycles:
                     content += CHECKPOINT_LINE.format(ts=ts)
                     ckpt_emitted = True
                 with open(path, "a", encoding="utf-8") as f:

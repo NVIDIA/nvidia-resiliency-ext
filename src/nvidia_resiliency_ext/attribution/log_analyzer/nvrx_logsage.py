@@ -14,15 +14,18 @@ from langchain_openai import ChatOpenAI
 from logsage.auto_resume_policy.attribution_classes import *
 from logsage.auto_resume_policy.error_attribution import (
     CONTEXT_SIZE,
+    get_attribution,
+    get_auto_resume,
     get_proposed_solution_cat,
-
+    get_proposed_solution_policies,
 )
-
-from logsage.auto_resume_policy.error_attribution import get_attribution, get_auto_resume, get_proposed_solution_policies
-from logsage.auto_resume_policy.util_postprocessing import get_auto_resume_postprocessing
+from logsage.auto_resume_policy.error_extraction import (
+    finished_validation,
+    return_application_errors,
+    return_application_errors_rt,
+)
 from logsage.auto_resume_policy.prompts import template_post_error_check
-from logsage.auto_resume_policy.error_extraction import return_application_errors, \
-    return_application_errors_rt, finished_validation
+from logsage.auto_resume_policy.util_postprocessing import get_auto_resume_postprocessing
 from logsage.auto_resume_policy.utils import chunk_indices
 
 from nvidia_resiliency_ext.attribution.base import (
@@ -320,6 +323,7 @@ def attribution_from_finished_status(
         cor_category="",
     )
 
+
 def lines_after(lines, needle):
     for i, line in enumerate(lines):
         if needle in line:
@@ -532,10 +536,12 @@ class NVRxLogAnalyzer(NVRxAttribution):
         self.exclude_nvrx_logs = bool(self._init_config.get("exclude_nvrx_logs", False))
         self.is_per_cycle = bool(self._init_config.get("is_per_cycle", False))
         self.is_streaming_logs = bool(self._init_config.get("is_streaming_logs", False))
-        self.repeated_amount = int(self._init_config.get("repeated_amount", 3)),
-        self.stop_accumulating_count = int(self._init_config.get("stop_accumulating_count", 3)),
-        self.logs_minutes_before_job_end = int(self._init_config.get("logs_minutes_before_job_end", 20)),
-        self.chunks_per_time = int(self._init_config.get("chunks_per_time", 5)),
+        self.repeated_amount = (int(self._init_config.get("repeated_amount", 3)),)
+        self.stop_accumulating_count = (int(self._init_config.get("stop_accumulating_count", 3)),)
+        self.logs_minutes_before_job_end = (
+            int(self._init_config.get("logs_minutes_before_job_end", 20)),
+        )
+        self.chunks_per_time = (int(self._init_config.get("chunks_per_time", 5)),)
         if self.is_streaming_logs:
             super().__init__(
                 preprocess_input=self._analyze_logs_rt_dispatch,
@@ -553,25 +559,24 @@ class NVRxLogAnalyzer(NVRxAttribution):
     def init_config(self) -> Dict[str, Any]:
         return dict(self._init_config)
 
-
     async def _analyze_logs_rt_dispatch(self) -> ErrorAttribution | None:
         cfg = effective_run_or_init_config(self._init_config)
         if cfg.get("job_stage") == "end":
             return await self.analyze_logs_rt_end()
         return await self.analyze_logs_rt_start()
 
-
     async def llm_analyze_rt(self, rt_result: ErrorAttribution | None) -> list[LogSageCycleFields]:
         if rt_result is None:
             return []
-        return [(
-            str(rt_result.auto_resume),
-            str(rt_result.auto_resume_verbose),
-            f"Attribution: Primary issues: [{rt_result.attribution}], Secondary issues: []",
-            "",
-            str(getattr(rt_result, "checkpoint_saved", False)),
-        )]
-
+        return [
+            (
+                str(rt_result.auto_resume),
+                str(rt_result.auto_resume_verbose),
+                f"Attribution: Primary issues: [{rt_result.attribution}], Secondary issues: []",
+                "",
+                str(getattr(rt_result, "checkpoint_saved", False)),
+            )
+        ]
 
     async def analyze_logs_rt_start(self) -> list[ApplicationData]:
         """
@@ -608,7 +613,12 @@ class NVRxLogAnalyzer(NVRxAttribution):
         log_lines: list[str] = []
         empty_logs_stop = self.stop_accumulating_count
 
-        application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = None, None, None, None
+        application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = (
+            None,
+            None,
+            None,
+            None,
+        )
 
         while True:
             try:
@@ -633,19 +643,34 @@ class NVRxLogAnalyzer(NVRxAttribution):
             log_lines.extend(new_lines)
             attribution_list = []
 
-            chunk_data = _retry_return_application_errors_rt(llm, new_lines, cache_dict, self.temporal_cache_dict[path])
+            chunk_data = _retry_return_application_errors_rt(
+                llm, new_lines, cache_dict, self.temporal_cache_dict[path]
+            )
             app_data = chunk_data
             if chunk_data.application_errors_list_full:
-                application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = get_attribution(
-                    llm, app_data, True)
+                (
+                    application_log,
+                    attribution_raw_chunk,
+                    attribution_dict_chunk,
+                    hw_category_chunk,
+                ) = get_attribution(llm, app_data, True)
                 attribution_list.append(attribution_raw_chunk)
 
-            self.job_inline_data_dict[path].append((file_offset, new_lines, chunk_data, application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk))
+            self.job_inline_data_dict[path].append(
+                (
+                    file_offset,
+                    new_lines,
+                    chunk_data,
+                    application_log,
+                    attribution_raw_chunk,
+                    attribution_dict_chunk,
+                    hw_category_chunk,
+                )
+            )
 
-            time.sleep(self.chunks_per_time*60)
+            time.sleep(self.chunks_per_time * 60)
 
         return None
-
 
     async def analyze_logs_rt_end(self) -> list[ApplicationData]:
         """
@@ -674,9 +699,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
         cache_dict = self.lru_cache
 
         path_previous = _previous_path(path)
-        attribution_previous = (
-            self.attribution_dict.get(path_previous, '') if path_previous else ''
-        )
+        attribution_previous = self.attribution_dict.get(path_previous, '') if path_previous else ''
         cycle_counter = int(cfg.get("cycle_counter", 0))
         cycle_counter_key = _cycle_counter_key(path)
         if cycle_counter == 0:
@@ -708,7 +731,9 @@ class NVRxLogAnalyzer(NVRxAttribution):
             chunk = chunk + item[1]
         chunk = chunk + new_lines
 
-        chunk_data = _retry_return_application_errors_rt(llm, chunk, cache_dict, self.temporal_cache_dict[path])
+        chunk_data = _retry_return_application_errors_rt(
+            llm, chunk, cache_dict, self.temporal_cache_dict[path]
+        )
 
         last_with_errors = chunk_data
         if last_with_errors.application_errors_list_full:
@@ -718,10 +743,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
             n_lines = len(last_with_errors.original_text)
             prompt_post_error = ChatPromptTemplate.from_template(template_post_error_check)
             post_error_chain = (
-                    {"question": RunnablePassthrough()}
-                    | prompt_post_error
-                    | llm
-                    | StrOutputParser()
+                {"question": RunnablePassthrough()} | prompt_post_error | llm | StrOutputParser()
             )
 
             post_error_texts = []
@@ -731,12 +753,17 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     continue
                 first_idx = int(group[0])
                 last_idx = int(group[-1])
-                if first_idx < n_lines - last_idx and len(last_with_errors.original_text) > last_idx + 50:
-                    post_error_lines = last_with_errors.original_text[last_idx + 1: last_idx + 51]
+                if (
+                    first_idx < n_lines - last_idx
+                    and len(last_with_errors.original_text) > last_idx + 50
+                ):
+                    post_error_lines = last_with_errors.original_text[last_idx + 1 : last_idx + 51]
                     post_error_texts.append("\n".join(post_error_lines)[:CONTEXT_SIZE])
                     checked_groups.append(group)
 
-            post_error_results = post_error_chain.batch(post_error_texts) if post_error_texts else []
+            post_error_results = (
+                post_error_chain.batch(post_error_texts) if post_error_texts else []
+            )
 
             indices_to_remove = set()
             for group, result in zip(checked_groups, post_error_results):
@@ -749,8 +776,9 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 if error[2] not in indices_to_remove
             ]
         if last_with_errors.application_errors_list_full:
-            application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = get_attribution(
-                llm, last_with_errors, True)
+            application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = (
+                get_attribution(llm, last_with_errors, True)
+            )
             last_attribution_dict_chunk = attribution_dict_chunk
             last_attribution_raw_chunk = attribution_raw_chunk
             last_application_log_chunk = application_log
@@ -758,22 +786,28 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         if last_with_errors is None:
             history = self.job_inline_data_dict.get(path, [])
-            last_with_errors = (history[-1][2] if len(history) >= 1 else None)
+            last_with_errors = history[-1][2] if len(history) >= 1 else None
 
-        last_with_errors.checkpoint_saved = any([item[2].checkpoint_saved for item in self.job_inline_data_dict[path]])
+        last_with_errors.checkpoint_saved = any(
+            [item[2].checkpoint_saved for item in self.job_inline_data_dict[path]]
+        )
 
         last_with_errors = finished_validation(llm, last_with_errors)
 
         logger.info("error extraction latency: %s", time.time() - s_time)
-        application_errors_full = [error[0] for error in last_with_errors.application_errors_list_full]
+        application_errors_full = [
+            error[0] for error in last_with_errors.application_errors_list_full
+        ]
 
         self.temporal_cache_dict.pop(path, None)
 
         if (
-                len(last_with_errors.application_errors_list_full) == 0
-                or last_with_errors.finished == FinishedStatus.APPLICATION_DONE
+            len(last_with_errors.application_errors_list_full) == 0
+            or last_with_errors.finished == FinishedStatus.APPLICATION_DONE
         ):
-            attribution_finished = attribution_from_finished_status(last_with_errors, last_with_errors.application_errors_list_unique)
+            attribution_finished = attribution_from_finished_status(
+                last_with_errors, last_with_errors.application_errors_list_unique
+            )
             return attribution_finished
 
         attribution_output = last_attribution_dict_chunk["attribution"]
@@ -797,15 +831,18 @@ class NVRxLogAnalyzer(NVRxAttribution):
         if last_with_errors.checkpoint_saved and cycle_counter > 0:
             is_attribution_current_last = False
 
-        if is_attribution_current_last and self.cycle_counter_dict[cycle_counter_key] == self.repeated_amount - 1:
+        if (
+            is_attribution_current_last
+            and self.cycle_counter_dict[cycle_counter_key] == self.repeated_amount - 1
+        ):
             auto_resume_output = 'STOP - DONT RESTART IMMEDIATE'
             auto_resume_verbose = "Stop job due to repeated issue"
 
         if is_attribution_current_last:
             if auto_resume_verbose != "Stop job due to repeated issue":
-                self.cycle_counter_dict[cycle_counter_key]+=1
+                self.cycle_counter_dict[cycle_counter_key] += 1
         else:
-            self.cycle_counter_dict[cycle_counter_key]=1
+            self.cycle_counter_dict[cycle_counter_key] = 1
 
         logger.info("Policy suggestion and Error attribution started")
 
@@ -818,7 +855,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
             auto_resume_verbose=auto_resume_verbose,
             attribution=attribution_output,
         )
-
 
     async def analyze_logs(self) -> list[ApplicationData]:
         """

@@ -128,6 +128,7 @@ def _dispatch(analyzer, path: str, job_stage: str, cycle: int):
     analyzer._init_config["attribution"] = True
 
     from nvidia_resiliency_ext.attribution.log_analyzer import nvrx_logsage
+
     analyzer.job_inline_data_dict.setdefault(path, [])
     ck = nvrx_logsage._cycle_counter_key(path)
     analyzer.cycle_counter_dict.setdefault(ck, 0)
@@ -188,8 +189,7 @@ def run_dispatch_all_cycles(
             continue
 
         print(
-            f"\n[dispatch] === cycle {cycle} "
-            f"({os.path.basename(path)}) ===",
+            f"\n[dispatch] === cycle {cycle} " f"({os.path.basename(path)}) ===",
             flush=True,
         )
 
@@ -225,8 +225,7 @@ def run_dispatch_all_cycles(
 
         # Phase 2 — end branch via dispatcher.
         print(
-            f"[dispatch] cycle {cycle}: job_stage=end   → "
-            "analyze_logs_rt_end",
+            f"[dispatch] cycle {cycle}: job_stage=end   → " "analyze_logs_rt_end",
             flush=True,
         )
         end_t0 = time.monotonic()
@@ -266,8 +265,7 @@ def run_dispatch_all_cycles(
                 flush=True,
             )
         per_cycle_result.append(
-            (cycle, path, end_result, ckpt_saved_in_history,
-             start_elapsed, end_elapsed)
+            (cycle, path, end_result, ckpt_saved_in_history, start_elapsed, end_elapsed)
         )
 
     print("\n[dispatch] ====== summary ======", flush=True)
@@ -295,24 +293,31 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--log-dir", default=DEFAULT_LOG_DIR)
     parser.add_argument(
-        "--num-cycles", type=int, default=NUM_CYCLES,
+        "--num-cycles",
+        type=int,
+        default=NUM_CYCLES,
         help=f"Number of cycle files (default {NUM_CYCLES})",
     )
     parser.add_argument(
-        "--cycle-duration", type=float, default=300.0,
-        help="Seconds the start phase polls per cycle before exiting "
-             "(default 300s = 5 min)",
+        "--cycle-duration",
+        type=float,
+        default=300.0,
+        help="Seconds the start phase polls per cycle before exiting " "(default 300s = 5 min)",
     )
     parser.add_argument(
-        "--poll-interval", type=float, default=60.0,
+        "--poll-interval",
+        type=float,
+        default=60.0,
         help="Seconds between polls inside the start phase (default 60s = 1 min)",
     )
     parser.add_argument(
-        "--end-window-minutes", type=float, default=2.0,
+        "--end-window-minutes",
+        type=float,
+        default=2.0,
         help="Minutes of streaming history the end phase glues to the "
-             "freshly read tail before re-running extraction. With the "
-             "writer at 1 chunk/min, '2' = tail + last 2 minutes "
-             "(default 2)",
+        "freshly read tail before re-running extraction. With the "
+        "writer at 1 chunk/min, '2' = tail + last 2 minutes "
+        "(default 2)",
     )
     args = parser.parse_args()
 
