@@ -2533,6 +2533,7 @@ def get_args_parser() -> ArgumentParser:
     add_cycle_info_args(parser)
 
     parser.add_argument(
+        "--ft-ignore-missing-cfg",
         action='store_true',
         dest="ft_ignore_missing_cfg",
         help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
