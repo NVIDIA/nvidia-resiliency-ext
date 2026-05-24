@@ -23,12 +23,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from nvidia_resiliency_ext import fault_tolerance
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.shared_utils.health_check import AttrSvcResult
 
 WORLD_SIZE = 4
 DEFAULT_TIMEOUT = 90
@@ -128,6 +131,357 @@ def test_legacy_rdzv_impl_injects_use_libuv_false():
         config, _, _ = launcher.config_from_args(args)
 
     assert config.rdzv_configs["use_libuv"] is False
+
+
+def test_fact_url_starts_launcher_managed_fact_agent(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "train.py",
+        ]
+    )
+    fact_agent_manager = MagicMock()
+    fact_agent_manager.start_if_needed.return_value = SimpleNamespace(
+        socket_path=str(tmp_path / "managed-fact-agent.sock")
+    )
+
+    with (
+        patch.object(
+            launcher.LocalElasticAgent,
+            "setup_rank_monitors_early",
+            return_value={},
+        ),
+        patch.object(
+            launcher,
+            "FactAgentManager",
+            return_value=fact_agent_manager,
+        ) as manager_cls,
+        patch.object(launcher, "_FACT_AGENT_MANAGER", None),
+        patch.dict(
+            os.environ,
+            {"SLURM_JOB_USER": "slurm-user", "SLURM_CLUSTER_NAME": "slurm-cluster"},
+            clear=False,
+        ),
+    ):
+        config, _, _ = launcher.config_from_args(args)
+
+    manager_cls.assert_called_once()
+    manager_kwargs = manager_cls.call_args.kwargs
+    assert manager_kwargs["fact_url"] == "http://fact.example:8001/latest"
+    assert manager_kwargs["socket_path"] is None
+    assert manager_kwargs["rpc_timeout_s"] == 2.0
+    assert manager_kwargs["run_id"] == "none"
+    assert manager_kwargs["rdzv_endpoint"] == "127.0.0.1:29500"
+    assert manager_kwargs["store_timeout_s"] == 60.0
+    assert manager_kwargs["is_store_host"] is True
+    assert manager_kwargs["job_id"] == "none"
+    assert manager_kwargs["ranks_per_node"] == 1
+    assert manager_kwargs["username"] == "slurm-user"
+    assert manager_kwargs["cluster"] == "slurm-cluster"
+    assert manager_kwargs["health_log_prefix"] is None
+    assert manager_kwargs["dmesg_artifact_enabled"] is False
+    assert manager_kwargs["result_artifact_enabled"] is False
+    assert manager_kwargs["grpc_server_address"] is None
+    assert manager_kwargs["grpc_node_id"] is None
+    assert manager_kwargs["fact_history_es_url"] is None
+    assert manager_kwargs["fact_history_es_auth_file"] is None
+    fact_agent_manager.start_if_needed.assert_called_once()
+    assert config.fault_tol_cfg.fact_agent_socket_path == str(tmp_path / "managed-fact-agent.sock")
+
+
+def test_fact_agent_start_failure_is_nonfatal(caplog):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "train.py",
+        ]
+    )
+    fact_agent_manager = MagicMock()
+    fact_agent_manager.start_if_needed.side_effect = RuntimeError("boom")
+
+    with (
+        patch.object(
+            launcher.LocalElasticAgent,
+            "setup_rank_monitors_early",
+            return_value={},
+        ),
+        patch.object(launcher, "FactAgentManager", return_value=fact_agent_manager),
+        patch.object(launcher, "_FACT_AGENT_MANAGER", None),
+        caplog.at_level(logging.WARNING),
+    ):
+        config, _, _ = launcher.config_from_args(args)
+
+    fact_agent_manager.start_if_needed.assert_called_once()
+    assert config.fault_tol_cfg.fact_url == "http://fact.example:8001/latest"
+    assert "Failed to start local nvrx-fact-agent" in caplog.text
+
+
+def test_fact_result_artifact_flag_passes_to_fact_agent_manager(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "--ft-health-log-prefix",
+            str(tmp_path / "job_health.log"),
+            "--ft-enable-fact-result-artifact",
+            "true",
+            "--ft-per-cycle-applog-prefix",
+            str(tmp_path / "train.log"),
+            "--ft-enable-log-server",
+            "true",
+            "train.py",
+        ]
+    )
+    fact_agent_manager = MagicMock()
+    grpc_proc = MagicMock()
+
+    class FakePipeBasedLogsSpecs:
+        def __init__(
+            self,
+            base_log_file,
+            launcher_pipe_fd=None,
+            launcher_log_file=None,
+            grpc_server_address=None,
+            node_id=None,
+        ):
+            self.base_log_file = base_log_file
+            self.grpc_server_address = grpc_server_address
+            self.node_id = node_id
+
+    with (
+        patch.object(
+            launcher.LocalElasticAgent,
+            "setup_rank_monitors_early",
+            return_value={},
+        ),
+        patch.object(launcher, "PipeBasedLogsSpecs", FakePipeBasedLogsSpecs),
+        patch.object(launcher, "_start_grpc_log_servers", return_value=[grpc_proc]),
+        patch.object(launcher, "FactAgentManager", return_value=fact_agent_manager) as manager_cls,
+        patch.object(launcher, "_FACT_AGENT_MANAGER", None),
+        patch.object(launcher, "_GRPC_SERVER_PROCESSES", None),
+    ):
+        launcher.config_from_args(args)
+
+    assert manager_cls.call_args.kwargs["result_artifact_enabled"] is True
+    assert manager_cls.call_args.kwargs["grpc_server_address"] == "localhost:50051"
+
+
+def test_fact_result_artifact_requires_grpc_log_aggregation(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "--ft-health-log-prefix",
+            str(tmp_path / "job_health.log"),
+            "--ft-enable-fact-result-artifact",
+            "true",
+            "train.py",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="require gRPC log aggregation"):
+        launcher.config_from_args(args)
+
+
+def test_fact_dmesg_artifact_requires_grpc_log_aggregation(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "--ft-health-log-prefix",
+            str(tmp_path / "job_health.log"),
+            "--ft-enable-health-log-dmesg",
+            "true",
+            "train.py",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="require gRPC log aggregation"):
+        launcher.config_from_args(args)
+
+
+def test_fact_agent_notification_includes_cycle_start_time():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+    agent._ft_cfg = SimpleNamespace(
+        fact_url="http://fact.example/latest",
+        fact_agent_socket_path="/tmp/fact-agent.sock",
+        fact_agent_rpc_timeout=2.0,
+        fact_policy_ready_timeout=60.0,
+    )
+    agent._is_store_host = True
+    agent._node_id = "node-a"
+    agent._fact_agent_cycle_start_time = datetime(2026, 5, 10, 12, 0, 0, tzinfo=timezone.utc)
+    agent._rdzv_handler = SimpleNamespace(
+        _this_node=SimpleNamespace(addr="node-a"),
+        get_active_node_addrs=lambda: ["node-a:29500", "node-b:29500"],
+    )
+
+    with patch.object(
+        launcher,
+        "notify_fact_agent",
+        return_value={"accepted": True},
+    ) as notify:
+        launcher.LocalElasticAgent._notify_fact_agent(agent, SimpleNamespace(), 3)
+
+    payload = notify.call_args.kwargs["payload"]
+    cycle_end_time = datetime.fromisoformat(payload.pop("cycle_end_time"))
+    assert cycle_end_time.tzinfo is not None
+    assert payload == {
+        "event": "cycle_failed",
+        "cycle": 3,
+        "cycle_start_time": "2026-05-10T12:00:00+00:00",
+        "expected_nodes": ["node-a", "node-b"],
+    }
+
+
+def test_fact_agent_rpc_timeout_must_be_positive():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "--ft-fact-agent-rpc-timeout",
+            "0",
+            "train.py",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="--ft-fact-agent-rpc-timeout must be positive"):
+        launcher.config_from_args(args)
+
+
+def test_fact_policy_ready_timeout_must_be_non_negative():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    args = parser.parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-fact-url",
+            "http://fact.example:8001/latest",
+            "--ft-fact-policy-ready-timeout",
+            "-1",
+            "train.py",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="--ft-fact-policy-ready-timeout must be non-negative"):
+        launcher.config_from_args(args)
+
+
+def test_fact_avoid_nodes_waits_for_ready_policy():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+    agent._ft_cfg = SimpleNamespace(
+        fact_url="http://fact.example/latest",
+        fact_agent_socket_path="/tmp/fact-agent.sock",
+        fact_agent_rpc_timeout=2.0,
+        fact_policy_ready_timeout=1.0,
+    )
+    agent._is_store_host = True
+    agent._last_fact_agent_cycle = 7
+
+    with patch.object(
+        launcher,
+        "notify_fact_agent",
+        side_effect=[
+            {"cycle_id": "7", "status": "pending", "avoid_nodes": []},
+            {"cycle_id": "7", "status": "ready", "avoid_nodes": ["node-a"]},
+        ],
+    ) as notify, patch.object(launcher.time, "sleep") as sleep:
+        nodes = launcher.LocalElasticAgent.get_fact_avoid_nodes_for_rendezvous(agent)
+
+    assert nodes == ["node-a"]
+    assert notify.call_count == 2
+    sleep.assert_called_once()
+
+
+def test_fact_avoid_nodes_does_not_wait_for_skipped_policy():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+    agent._ft_cfg = SimpleNamespace(
+        fact_url="http://fact.example/latest",
+        fact_agent_socket_path="/tmp/fact-agent.sock",
+        fact_agent_rpc_timeout=2.0,
+        fact_policy_ready_timeout=60.0,
+    )
+    agent._is_store_host = True
+    agent._last_fact_agent_cycle = 7
+
+    with patch.object(
+        launcher,
+        "notify_fact_agent",
+        return_value={"cycle_id": "7", "status": "skipped", "avoid_nodes": []},
+    ) as notify, patch.object(launcher.time, "sleep") as sleep:
+        nodes = launcher.LocalElasticAgent.get_fact_avoid_nodes_for_rendezvous(agent)
+
+    assert nodes == []
+    notify.assert_called_once()
+    sleep.assert_not_called()
 
 
 def test_rank_not_send_initial_hb(tmp_dir):
@@ -355,6 +709,7 @@ def _make_agent_spec(rdzv_round=1):
     """Minimal WorkerSpec-like object for testing launcher cycle-info env interaction."""
     spec = MagicMock()
     spec.rdzv_handler = MagicMock()
+    spec.rdzv_handler._attribution_service = None
     spec.rdzv_handler.round.return_value = rdzv_round
     spec.rdzv_handler.get_active_node_addrs.return_value = ["node001", "node002"]
     spec.rdzv_handler.get_standby_node_addrs.return_value = ["node003"]
@@ -508,6 +863,7 @@ class TestHandleRestartDecision(unittest.TestCase):
     def test_handle_restart_decision_progress_terminate(self):
         """Returns False without restarting when progress tracker says terminate early."""
         agent = self._make_agent()
+        agent._rdzv_handler._attribution_service = None
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = True
         agent._remaining_restarts = 2
@@ -527,6 +883,7 @@ class TestHandleRestartDecision(unittest.TestCase):
     def test_handle_restart_decision_restarts_remaining(self):
         """Returns True and decrements _remaining_restarts when restarts are available."""
         agent = self._make_agent()
+        agent._rdzv_handler._attribution_service = None
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 2
@@ -544,9 +901,39 @@ class TestHandleRestartDecision(unittest.TestCase):
         mock_restart.assert_called_once()
         mock_open.assert_not_called()
 
+    def test_handle_restart_decision_attrsvc_stop_blocks_restart(self):
+        """Returns False without consuming a restart when attrsvc recommends STOP."""
+        agent = self._make_agent()
+        attrsvc = MagicMock()
+        attrsvc.get_last_result.return_value = AttrSvcResult(
+            result={"state": "STOP"},
+            recommendation="STOP",
+            should_stop=True,
+            log_path="/path/to/cycle_0.log",
+        )
+        agent._rdzv_handler._attribution_service = attrsvc
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 2
+
+        with (
+            patch.object(agent, '_restart_workers') as mock_restart,
+            patch.object(agent, '_open_rendezvous_for_restart') as mock_open,
+        ):
+            result = agent._handle_restart_decision(
+                role="test", spec=self.spec, log_msg="[%s] restarting", open_rendezvous=True
+            )
+
+        self.assertFalse(result)
+        self.assertEqual(agent._remaining_restarts, 2)
+        attrsvc.get_last_result.assert_called_once()
+        mock_restart.assert_not_called()
+        mock_open.assert_not_called()
+
     def test_handle_restart_decision_no_restarts_left(self):
         """Returns False when _remaining_restarts is 0."""
         agent = self._make_agent()
+        agent._rdzv_handler._attribution_service = None
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 0
@@ -562,6 +949,7 @@ class TestHandleRestartDecision(unittest.TestCase):
     def test_handle_restart_decision_open_rendezvous_called_when_requested(self):
         """Calls _open_rendezvous_for_restart() when open_rendezvous=True."""
         agent = self._make_agent()
+        agent._rdzv_handler._attribution_service = None
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 1
@@ -798,6 +1186,38 @@ def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
     assert (log_dir / "grpc_diag_root.log").is_file()
     assert (log_dir / "grpc_diag_leaf_0.log").is_file()
     assert (log_dir / "grpc_diag_leaf_1.log").is_file()
+
+
+def test_main_stops_fact_agent_before_grpc_log_servers():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    order = []
+    args = SimpleNamespace(ft_log_server_graceful_shutdown_timeout=1.25)
+    grpc_proc = object()
+    fact_manager = MagicMock()
+    attr_manager = MagicMock()
+    fact_manager.stop.side_effect = lambda: order.append("fact")
+    attr_manager.stop.side_effect = lambda: order.append("attr")
+
+    def stop_grpc(procs, timeout):
+        assert procs == [grpc_proc]
+        assert timeout == 1.25
+        order.append("grpc")
+
+    with (
+        patch.object(launcher, "parse_args", return_value=args),
+        patch.object(launcher, "run", return_value=None),
+        patch.object(launcher, "stop_grpc_log_servers", side_effect=stop_grpc),
+        patch.object(launcher.sys, "exit", side_effect=SystemExit) as sys_exit,
+        patch.object(launcher, "_FACT_AGENT_MANAGER", fact_manager),
+        patch.object(launcher, "_ATTRIBUTION_MANAGER", attr_manager),
+        patch.object(launcher, "_GRPC_SERVER_PROCESSES", [grpc_proc]),
+        pytest.raises(SystemExit),
+    ):
+        launcher.main([])
+
+    assert order == ["fact", "attr", "grpc"]
+    sys_exit.assert_called_once_with(0)
 
 
 def test_managed_attribution_listen_port_rejects_log_funnel_overlap():

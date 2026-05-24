@@ -57,6 +57,12 @@ from torch.distributed.elastic.multiprocessing import LogsDest, LogsSpecs, Std
 from torch.distributed.elastic.multiprocessing.subprocess_handler import SubprocessHandler
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+from nvidia_resiliency_ext.shared_utils.log_paths import (
+    get_source_cycle_log_file as get_source_cycle_log_file,
+)
+from nvidia_resiliency_ext.shared_utils.log_paths import (
+    insert_suffix_before_ext as insert_suffix_before_ext,
+)
 from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
 
 # Special marker string to signal pipe-based logging
@@ -1583,6 +1589,14 @@ class PipeBasedLogsSpecs(LogsSpecs):
         base_without_ext = os.path.splitext(self._base_log_file)[0]
         ext = os.path.splitext(self._base_log_file)[1] or ".log"
         return f"{base_without_ext}_cycle{cycle_index}{ext}"
+
+    @property
+    def grpc_server_address(self) -> Optional[str]:
+        return self._grpc_server_address
+
+    @property
+    def node_id(self) -> Optional[Union[int, str]]:
+        return self._node_id
 
     def cleanup(self):
         """

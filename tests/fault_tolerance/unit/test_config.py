@@ -186,6 +186,42 @@ def test_read_from_yaml():
         assert ft.rank_out_of_section_timeout == 333.0
 
 
+def test_read_health_logging_from_yaml():
+    yaml_lines = [
+        "fault_tolerance:",
+        "    health_logging:",
+        "        prefix: /lustre/logs/job_health.log",
+        "        dmesg:",
+        "            enabled: true",
+        "        fact_result:",
+        "            enabled: true",
+        "        healthcheck:",
+        "            enabled: true",
+    ]
+    with tmp_yaml_file(yaml_lines) as temp_file:
+        ft = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file)
+        assert ft.health_logging.prefix == "/lustre/logs/job_health.log"
+        assert ft.health_logging.dmesg.enabled is True
+        assert ft.health_logging.fact_result.enabled is True
+        assert ft.health_logging.healthcheck.enabled is True
+
+
+def test_read_fact_agent_options_from_yaml():
+    yaml_lines = [
+        "fault_tolerance:",
+        "    fact_url: http://fact-yaml.example:8001/latest",
+        "    fact_agent_socket_path: /tmp/nvrx-fact-agent-test.sock",
+        "    fact_agent_rpc_timeout: 1.5",
+        "    fact_agent_store_timeout: 12",
+    ]
+    with tmp_yaml_file(yaml_lines) as temp_file:
+        ft = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file)
+        assert ft.fact_url == "http://fact-yaml.example:8001/latest"
+        assert ft.fact_agent_socket_path == "/tmp/nvrx-fact-agent-test.sock"
+        assert ft.fact_agent_rpc_timeout == 1.5
+        assert ft.fact_agent_store_timeout == 12
+
+
 def test_read_from_yaml_nested():
     YAML_LINES = [
         "some_other_section:",
@@ -238,3 +274,130 @@ def test_to_yaml_file():
         ref_conf.to_yaml_file(temp_file.name)
         restored_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file.name)
     assert restored_conf == ref_conf
+
+
+def test_health_logging_cli_overrides_yaml():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
+
+    yaml_lines = [
+        "fault_tolerance:",
+        "    health_logging:",
+        "        prefix: /lustre/logs/from_yaml.log",
+        "        dmesg:",
+        "            enabled: false",
+        "        fact_result:",
+        "            enabled: false",
+        "        healthcheck:",
+        "            enabled: false",
+    ]
+    with tmp_yaml_file(yaml_lines) as temp_file:
+        parser = get_args_parser()
+        args = parser.parse_args(
+            [
+                "--ft-cfg-path",
+                temp_file,
+                "--ft-health-log-prefix",
+                "/lustre/logs/from_cli.log",
+                "--ft-enable-health-log-dmesg",
+                "true",
+                "--ft-enable-fact-result-artifact",
+                "true",
+                "dummy.py",
+            ]
+        )
+        ft = fault_tolerance.FaultToleranceConfig.from_args(args)
+
+    assert ft.health_logging.prefix == "/lustre/logs/from_cli.log"
+    assert ft.health_logging.dmesg.enabled is True
+    assert ft.health_logging.fact_result.enabled is True
+    assert ft.health_logging.healthcheck.enabled is False
+
+
+def test_fact_agent_cli_overrides_yaml():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
+
+    yaml_lines = [
+        "fault_tolerance:",
+        "    fact_url: http://fact-yaml.example:8001/latest",
+        "    fact_agent_socket_path: /tmp/yaml-fact-agent.sock",
+        "    fact_agent_rpc_timeout: 3",
+        "    fact_policy_ready_timeout: 60",
+        "    fact_agent_store_timeout: 45",
+    ]
+    with tmp_yaml_file(yaml_lines) as temp_file:
+        parser = get_args_parser()
+        args = parser.parse_args(
+            [
+                "--ft-cfg-path",
+                temp_file,
+                "--ft-fact-url",
+                "http://fact-cli.example:8001/latest",
+                "--ft-fact-agent-socket-path",
+                "/tmp/cli-fact-agent.sock",
+                "--ft-fact-agent-rpc-timeout",
+                "1.25",
+                "--ft-fact-policy-ready-timeout",
+                "9",
+                "--ft-fact-agent-store-timeout",
+                "8",
+                "dummy.py",
+            ]
+        )
+        ft = fault_tolerance.FaultToleranceConfig.from_args(args)
+
+    assert ft.fact_url == "http://fact-cli.example:8001/latest"
+    assert ft.fact_agent_socket_path == "/tmp/cli-fact-agent.sock"
+    assert ft.fact_agent_rpc_timeout == 1.25
+    assert ft.fact_policy_ready_timeout == 9
+    assert ft.fact_agent_store_timeout == 8
+
+
+def test_fact_history_cli_overrides_yaml():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
+
+    yaml_lines = [
+        "fault_tolerance:",
+        "    fact_history_es_url: http://history-yaml.example",
+        "    fact_history_es_auth_file: /tmp/history-yaml.auth",
+        "    fact_history_lookback: 7d",
+        "    fact_history_index: history-yaml-*",
+        "    fact_history_max_candidate_nodes: 8",
+        "    fact_history_query_timeout: 12",
+        "    fact_min_repeat_count_for_avoid: 3",
+        "    fact_max_attribution_avoids_per_cycle: 2",
+    ]
+    with tmp_yaml_file(yaml_lines) as temp_file:
+        parser = get_args_parser()
+        args = parser.parse_args(
+            [
+                "--ft-cfg-path",
+                temp_file,
+                "--ft-fact-history-es-url",
+                "http://history-cli.example",
+                "--ft-fact-history-es-auth-file",
+                "/tmp/history-cli.auth",
+                "--ft-fact-history-lookback",
+                "14d",
+                "--ft-fact-history-index",
+                "history-cli-*",
+                "--ft-fact-history-max-candidate-nodes",
+                "16",
+                "--ft-fact-history-query-timeout",
+                "30",
+                "--ft-fact-min-repeat-count-for-avoid",
+                "2",
+                "--ft-fact-max-attribution-avoids-per-cycle",
+                "1",
+                "dummy.py",
+            ]
+        )
+        ft = fault_tolerance.FaultToleranceConfig.from_args(args)
+
+    assert ft.fact_history_es_url == "http://history-cli.example"
+    assert ft.fact_history_es_auth_file == "/tmp/history-cli.auth"
+    assert ft.fact_history_lookback == "14d"
+    assert ft.fact_history_index == "history-cli-*"
+    assert ft.fact_history_max_candidate_nodes == 16
+    assert ft.fact_history_query_timeout == 30
+    assert ft.fact_min_repeat_count_for_avoid == 2
+    assert ft.fact_max_attribution_avoids_per_cycle == 1

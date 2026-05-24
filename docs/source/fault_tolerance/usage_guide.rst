@@ -199,8 +199,10 @@ Validation behavior:
   - Other existing types (e.g., devices/symlinks): performs ``stat`` access
 
 
-Attribution service integration
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. _fault-tolerance-attribution-service:
+
+Application-log attribution service integration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Per-cycle application logs do not enable attribution by themselves. To enable attribution, set
 ``--ft-attribution-endpoint``. The endpoint value ``localhost`` makes ``ft_launcher`` run the
@@ -271,6 +273,58 @@ service dependencies.
        --ft-attribution-endpoint http://attribution.service.internal:8000 \
        train.py
 
+FACT dmesg evidence collection
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+FACT host-evidence collection is separate from the application-log service
+above. ``--ft-fact-url`` enables a launcher-managed local ``nvrx-fact-agent`` on
+each node. On failed cycles, the launcher notifies the agent over a private UDS;
+the agent collects a bounded recent ``dmesg`` window, submits it to FACT, and
+continues best-effort if FACT is unavailable.
+
+To also write postmortem artifacts, set an absolute health-log prefix and
+enable the desired artifacts. The FACT result JSONL artifact requires launcher
+gRPC log aggregation because the root log server is the single writer for the
+shared result file.
+
+YAML configuration:
+
+.. code-block:: yaml
+
+   fault_tolerance:
+     fact_url: http://fact.example.internal:8001/latest
+     health_logging:
+       prefix: /lustre/logs/job_health.log
+       dmesg:
+         enabled: true
+       fact_result:
+         enabled: true
+
+When either artifact is enabled, also provide the launcher log-funnel flags or
+equivalent env args: ``--ft-per-cycle-applog-prefix`` and
+``--ft-enable-log-server true``.
+
+Equivalent launcher flags:
+
+.. code-block:: bash
+
+   ft_launcher \
+     --ft-per-cycle-applog-prefix /lustre/logs/train.log \
+     --ft-enable-log-server true \
+     --ft-fact-url http://fact.example.internal:8001/latest \
+     --ft-health-log-prefix /lustre/logs/job_health.log \
+     --ft-enable-health-log-dmesg true \
+     --ft-enable-fact-result-artifact true \
+     train.py
+
+``--ft-fact-url`` accepts either the FACT service root or API root
+(``/latest``). The artifact flags only control optional postmortem artifacts;
+FACT consumes POSTed dmesg contents, not the written log path.
+
+See :doc:`fact_node_attribution` for output file naming, FACT result behavior,
+and the distinction between FACT node findings and job-level restart
+recommendations.
+
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^
 
@@ -293,6 +347,8 @@ On restarts, the launcher periodically checks GPU memory usage and waits until i
 the tolerance threshold or the timeout is reached. Memory statistics for each GPU are collected
 and logged after the reclaim process completes. If the timeout is reached, an error is logged but the
 restart proceeds as a best effort.
+
+.. _fault-tolerance-per-cycle-logging:
 
 Per-cycle logging and gRPC log aggregation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
