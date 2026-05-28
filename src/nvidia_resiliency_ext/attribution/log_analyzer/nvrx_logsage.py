@@ -19,8 +19,6 @@ from logsage.auto_resume_policy.attribution_classes import (
     FinishedStatus,
     LRUCache,
 )
-
-LogSageCycleFields = tuple[str, str, str, str, str]
 from logsage.auto_resume_policy.error_attribution import (
     CONTEXT_SIZE,
     get_attribution,
@@ -62,6 +60,8 @@ from nvidia_resiliency_ext.attribution.orchestration.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+LogSageCycleFields = tuple[str, str, str, str, str]
 
 FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
 FINISHED_STATUS_SLURM_CANCELLED = "SLURM_CANCELLED"
