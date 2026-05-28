@@ -769,11 +769,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg.get("log_path")
-        if (
-            path
-            and self.job_inline_data_dict.get(path)
-            and len(output_list) == 1
-        ):
+        if path and self.job_inline_data_dict.get(path) and len(output_list) == 1:
             rt_result = self._streaming_attribution(output_list[0], cfg, path)
             if rt_result is None:
                 return []
@@ -909,9 +905,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
         llm = self.llm
 
         path_previous = _previous_path(path)
-        attribution_previous = (
-            self.attribution_dict.get(path_previous, '') if path_previous else ''
-        )
+        attribution_previous = self.attribution_dict.get(path_previous, '') if path_previous else ''
         cycle_counter = int(cfg.get("cycle_counter", 0))
         cycle_counter_key = _cycle_counter_key(path)
 
