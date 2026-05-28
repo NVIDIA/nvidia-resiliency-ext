@@ -26,7 +26,7 @@ from typing import Any, Mapping
 # Default endpoint is build.nvidia.com (publicly accessible).
 # Internal NVIDIA users can override to inference.nvidia.com via NVRX_LLM_BASE_URL.
 DEFAULT_LLM_MODEL = os.environ.get("NVRX_LLM_MODEL", "nvidia/nemotron-3-super-120b-a12b")
-DEFAULT_LLM_BASE_URL = os.environ.get("NVRX_LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+DEFAULT_LLM_BASE_URL = os.environ.get("NVRX_LLM_BASE_URL", "https://inference-api.nvidia.com/v1")
 DEFAULT_LLM_TEMPERATURE = 0.2
 DEFAULT_LLM_TOP_P = 0.7
 DEFAULT_LLM_MAX_TOKENS = 8192

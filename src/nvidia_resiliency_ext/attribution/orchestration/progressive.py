@@ -80,14 +80,27 @@ class ProgressiveLogAnalysisStartTool:
     still being defined.
     """
 
-    def __init__(self, _args: Mapping[str, Any] | None = None):
-        pass
+    def __init__(
+        self,
+        _args: Mapping[str, Any] | None = None,
+        *,
+        analyzer: Any = None,
+    ):
+        self._analyzer = analyzer
 
-    async def run(self, _arguments: Mapping[str, Any]) -> dict[str, str | None]:
-        """Return status metadata without running terminal attribution."""
-        payload = ProgressiveStartResult(
-            status=PROGRESSIVE_STATUS_UNSUPPORTED,
-            message="LogSage progressive start API is not configured",
-        ).as_payload()
-        payload["module"] = MODULE_LOG_ANALYZER_PROGRESSIVE_START
-        return payload
+    async def run(self, _arguments: Mapping[str, Any]) -> dict[str, str | None] | None:
+        """Run the progressive start phase.
+
+        With no analyzer bound, returns the ``unsupported`` status payload.
+        With an analyzer bound, delegates to
+        ``NVRxLogAnalyzer.analyze_logs_rt_start``.
+        """
+        if self._analyzer is None:
+            payload = ProgressiveStartResult(
+                status=PROGRESSIVE_STATUS_UNSUPPORTED,
+                message="LogSage progressive start API is not configured",
+            ).as_payload()
+            payload["module"] = MODULE_LOG_ANALYZER_PROGRESSIVE_START
+            return payload
+
+        return await self._analyzer.analyze_logs_rt_start()
