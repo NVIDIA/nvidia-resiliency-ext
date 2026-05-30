@@ -359,6 +359,7 @@ def _make_agent_spec(rdzv_round=1):
     spec.rdzv_handler.get_active_node_addrs.return_value = ["node001", "node002"]
     spec.rdzv_handler.get_standby_node_addrs.return_value = ["node003"]
     spec.rdzv_handler.get_active_ranks.return_value = [0, 1]
+    spec.rdzv_handler._attribution_service = None
     spec.max_restarts = 3
     return spec
 
@@ -543,6 +544,68 @@ class TestHandleRestartDecision(unittest.TestCase):
         self.assertEqual(agent._remaining_restarts, 1)
         mock_restart.assert_called_once()
         mock_open.assert_not_called()
+
+    def test_restart_workers_waits_for_gpu_memory_between_stop_and_start(self):
+        """GPU memory reclaim is part of restart, after stop and before new workers start."""
+        agent = self._make_agent()
+        worker_group = MagicMock()
+        worker_group.spec.role = "test"
+        worker_group.spec.local_world_size = 4
+        calls = []
+
+        with (
+            patch.object(agent, '_stop_workers', side_effect=lambda _wg: calls.append("stop")),
+            patch.object(
+                agent,
+                '_wait_for_gpu_memory_reclaim',
+                side_effect=lambda num_gpus: calls.append(("wait", num_gpus)),
+            ),
+            patch.object(
+                agent,
+                '_initialize_workers',
+                side_effect=lambda _wg: calls.append("start"),
+            ),
+        ):
+            agent._restart_workers(worker_group)
+
+        self.assertEqual(calls, ["stop", ("wait", 4), "start"])
+        self.assertEqual(worker_group.state.name, "STOPPED")
+
+    def test_stop_workers_does_not_wait_for_gpu_memory_reclaim(self):
+        """Final stop only terminates workers; GPU reclaim wait is restart-only."""
+        agent = self._make_agent()
+        worker_group = MagicMock()
+        worker_group.group_rank = 0
+
+        with (
+            patch.object(agent, '_shutdown'),
+            patch.object(agent, '_wait_for_gpu_memory_reclaim') as wait_for_reclaim,
+            patch("nvidia_resiliency_ext.fault_tolerance.launcher.record_profiling_event"),
+        ):
+            agent._stop_workers(worker_group)
+
+        wait_for_reclaim.assert_not_called()
+
+    def test_handle_restart_decision_stops_when_attribution_service_says_stop(self):
+        """Returns False before restart when the managed attribution service recommends stop."""
+        agent = self._make_agent()
+        agent._is_store_host = True
+        agent._progress_tracker = MagicMock()
+        agent._remaining_restarts = 2
+        agent._rdzv_handler._attribution_service = MagicMock()
+        agent._rdzv_handler._attribution_service.get_last_result.return_value = True
+        agent._rdzv_handler._barrier_state = MagicMock()
+
+        with patch.object(agent, '_restart_workers') as mock_restart:
+            result = agent._handle_restart_decision(
+                role="test", spec=self.spec, log_msg="[%s] restarting"
+            )
+
+        self.assertFalse(result)
+        self.assertTrue(agent._graceful_stop_requested)
+        agent._rdzv_handler._barrier_state.set_shutdown.assert_called_once()
+        agent._progress_tracker.analyze_previous_cycle.assert_not_called()
+        mock_restart.assert_not_called()
 
     def test_handle_restart_decision_no_restarts_left(self):
         """Returns False when _remaining_restarts is 0."""
