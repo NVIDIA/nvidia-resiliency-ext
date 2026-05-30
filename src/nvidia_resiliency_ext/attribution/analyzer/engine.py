@@ -307,6 +307,8 @@ class Analyzer:
             self._schedule_progressive_analysis(result.normalized_path, user, job_id)
         elif intent == ANALYSIS_INTENT_TERMINAL:
             self._schedule_terminal_analysis(result.normalized_path)
+        elif intent == ANALYSIS_INTENT_TRACK_ONLY and self._log.is_streaming_logs:
+            self._schedule_start_analysis(result.normalized_path)
 
         return result
 
@@ -375,7 +377,7 @@ class Analyzer:
 
     async def _run_terminal_analysis(self, normalized_path: str) -> None:
         """Run the normal result-gathering path after an explicit terminal signal."""
-        result = await self.analyze(normalized_path)
+        result = await self.analyze(normalized_path, job_stage="end")
         if isinstance(result, LogAnalyzerError):
             logger.warning(
                 "Terminal analysis failed for %s: %s: %s",
@@ -388,48 +390,104 @@ class Analyzer:
 
     def _schedule_terminal_analysis(self, normalized_path: str) -> None:
         """Start final analysis without delaying POST /logs terminal responses."""
+        self._schedule_stage_analysis(
+            normalized_path,
+            self._run_terminal_analysis,
+            stage_label="terminal",
+        )
+
+    async def _run_start_analysis(self, normalized_path: str) -> None:
+        """Kick off streaming LogSage at job start.
+
+        Bypasses the coalescer: ``analyze_logs_rt_start`` is a long-running reader
+        that accumulates per-path state but produces no cacheable attribution
+        payload; coalescing here would deadlock the slot until the streamer exits,
+        preventing the eventual terminal analysis from running.
+        """
+        try:
+            await self._log.fetch_log_result(normalized_path, job_stage="start")
+        except Exception as e:
+            logger.warning(
+                "Start analysis failed for %s: %s: %s",
+                normalized_path,
+                type(e).__name__,
+                e,
+            )
+        else:
+            logger.debug("Start analysis completed for %s", normalized_path)
+
+    def _schedule_start_analysis(self, normalized_path: str) -> None:
+        """Kick off streaming LogSage start without delaying POST /logs responses."""
+        self._schedule_stage_analysis(
+            normalized_path,
+            self._run_start_analysis,
+            stage_label="start",
+        )
+
+    def _schedule_stage_analysis(
+        self,
+        normalized_path: str,
+        coro_factory: Any,
+        *,
+        stage_label: str,
+    ) -> None:
+        """Schedule a fire-and-forget per-stage analysis task on the running loop."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             if self._main_loop is None or self._main_loop.is_closed():
                 logger.error(
-                    "Event loop not set — skipping terminal analysis start for %s",
+                    "Event loop not set — skipping %s analysis start for %s",
+                    stage_label,
                     normalized_path,
                 )
                 return
             future = asyncio.run_coroutine_threadsafe(
-                self._run_terminal_analysis(normalized_path),
+                coro_factory(normalized_path),
                 self._main_loop,
             )
             future.add_done_callback(
-                lambda done: self._log_terminal_analysis_failure(normalized_path, done)
+                lambda done: self._log_stage_analysis_failure(
+                    normalized_path, done, stage_label=stage_label
+                )
             )
         else:
-            task = loop.create_task(self._run_terminal_analysis(normalized_path))
+            task = loop.create_task(coro_factory(normalized_path))
             task.add_done_callback(
-                lambda done: self._log_terminal_analysis_failure(normalized_path, done)
+                lambda done: self._log_stage_analysis_failure(
+                    normalized_path, done, stage_label=stage_label
+                )
             )
-        logger.debug("Scheduled terminal analysis start for %s", normalized_path)
+        logger.debug("Scheduled %s analysis start for %s", stage_label, normalized_path)
 
     @staticmethod
-    def _log_terminal_analysis_failure(normalized_path: str, done: Any) -> None:
+    def _log_stage_analysis_failure(normalized_path: str, done: Any, *, stage_label: str) -> None:
         try:
             done.result()
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
-            logger.debug("Terminal analysis task cancelled for %s", normalized_path)
+            logger.debug(
+                "%s analysis task cancelled for %s", stage_label.capitalize(), normalized_path
+            )
         except Exception as e:
             logger.warning(
-                "Terminal analysis task failed for %s: %s: %s",
+                "%s analysis task failed for %s: %s: %s",
+                stage_label.capitalize(),
                 normalized_path,
                 type(e).__name__,
                 e,
             )
+
+    @staticmethod
+    def _log_terminal_analysis_failure(normalized_path: str, done: Any) -> None:
+        Analyzer._log_stage_analysis_failure(normalized_path, done, stage_label="terminal")
 
     async def analyze(
         self,
         log_path: str,
         file: Optional[str] = None,
         wl_restart: Optional[int] = None,
+        *,
+        job_stage: Optional[str] = None,
     ) -> LogAnalyzerOutcome:
         """
         Analyze a log file using LLM.
@@ -492,7 +550,10 @@ class Analyzer:
                     f"job.job_id={getattr(job, 'job_id', 'N/A') if job else 'N/A'}"
                 )
             coalesced_raw = await self._coalescer.get_or_compute(
-                validated, lambda: self._run_llm_analysis(validated, user=user, job_id=job_id)
+                validated,
+                lambda: self._run_llm_analysis(
+                    validated, user=user, job_id=job_id, job_stage=job_stage
+                ),
             )
             bundle = coalesced_from_cache(coalesced_raw)
             fr_dump = bundle.fr_dump_path
@@ -591,10 +652,17 @@ class Analyzer:
     # ─── Internal methods ───
 
     async def _run_llm_analysis(
-        self, path: str, user: str = "unknown", job_id: Optional[str] = None
+        self,
+        path: str,
+        user: str = "unknown",
+        job_id: Optional[str] = None,
+        *,
+        job_stage: Optional[str] = None,
     ) -> LogAnalysisCoalesced:
         """On cache miss: delegate to :meth:`LogAnalyzer.run_attribution_for_path`."""
-        return await self._log.run_attribution_for_path(path, user=user, job_id=job_id)
+        return await self._log.run_attribution_for_path(
+            path, user=user, job_id=job_id, job_stage=job_stage
+        )
 
     async def _analyze_splitlog_mode(
         self,

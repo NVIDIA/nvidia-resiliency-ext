@@ -22,11 +22,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
-# LLM defaults — override with NVRX_LLM_MODEL / NVRX_LLM_BASE_URL env vars.
-# Default endpoint is build.nvidia.com (publicly accessible).
-# Internal NVIDIA users can override to inference.nvidia.com via NVRX_LLM_BASE_URL.
-DEFAULT_LLM_MODEL = os.environ.get("NVRX_LLM_MODEL", "nvidia/nemotron-3-super-120b-a12b")
-DEFAULT_LLM_BASE_URL = os.environ.get("NVRX_LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+DEFAULT_LLM_MODEL = os.environ.get("NVRX_LLM_MODEL", "nvidia/qwen/qwen-235b")
+DEFAULT_LLM_BASE_URL = os.environ.get("NVRX_LLM_BASE_URL", "https://inference-api.nvidia.com/v1")
 DEFAULT_LLM_TEMPERATURE = 0.2
 DEFAULT_LLM_TOP_P = 0.7
 DEFAULT_LLM_MAX_TOKENS = 8192
@@ -65,6 +62,10 @@ class LogSageExecutionConfig:
     llm_temperature: float | None = None
     llm_top_p: float | None = None
     llm_max_tokens: int | None = None
+    #: When True, NVRxLogAnalyzer runs in streaming mode (start kicks off a per-path
+    #: background reader, end finalizes with the accumulated state). When False, only
+    #: terminal analysis runs and the start signal is a no-op at the LogSage layer.
+    is_streaming_logs: bool = False
 
     def llm_runtime_overrides(self) -> dict[str, Any]:
         """LLM kwargs for LogSage/MCP/runtime calls, omitting unset overrides."""

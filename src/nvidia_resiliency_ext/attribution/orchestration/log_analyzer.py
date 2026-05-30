@@ -154,21 +154,39 @@ class LogSageRunner:
                 raise
             return self._lib_log_analyzer
 
-    async def _fetch_log_result_lib(self, path: str) -> Dict[str, Any]:
+    def _streaming_kwargs(self) -> Dict[str, Any]:
+        """Streaming-mode flags forwarded to NVRxLogAnalyzer init/run kwargs."""
+        if not self.config.is_streaming_logs:
+            return {}
+        return {"is_streaming_logs": True}
+
+    @property
+    def is_streaming_logs(self) -> bool:
+        """Whether streaming-mode LogSage is enabled for this runner."""
+        return bool(self.config.is_streaming_logs)
+
+    async def _fetch_log_result_lib(
+        self, path: str, *, job_stage: Optional[str] = None
+    ) -> Dict[str, Any]:
         is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
         run_kwargs = {
             "log_path": path,
             "exclude_nvrx_logs": False,
             "is_per_cycle": is_per_cycle,
+            **self._streaming_kwargs(),
             **self.config.llm_runtime_overrides(),
         }
+        if job_stage is not None:
+            run_kwargs["job_stage"] = job_stage
         analyzer = await self._get_lib_log_analyzer(run_kwargs)
         async with self._log_analysis_lock:
             result = await analyzer.run(run_kwargs)
 
         return nvrx_run_result_to_log_dict(result, path)
 
-    async def _fetch_log_result_mcp(self, path: str) -> Dict[str, Any]:
+    async def _fetch_log_result_mcp(
+        self, path: str, *, job_stage: Optional[str] = None
+    ) -> Dict[str, Any]:
         self._ensure_mcp_ready()
 
         is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
@@ -176,8 +194,11 @@ class LogSageRunner:
             "log_path": path,
             "exclude_nvrx_logs": False,
             "is_per_cycle": is_per_cycle,
+            **self._streaming_kwargs(),
             **self.config.llm_runtime_overrides(),
         }
+        if job_stage is not None:
+            run_kwargs["job_stage"] = job_stage
 
         async with self._log_analysis_lock:
             log_result = await self._mcp_client.run_module_resilient(
@@ -185,11 +206,18 @@ class LogSageRunner:
             )
         return log_result
 
-    async def fetch_log_result(self, path: str) -> Dict[str, Any]:
-        """Run LogSage for ``path``; return result items plus a derived recommendation."""
+    async def fetch_log_result(
+        self, path: str, *, job_stage: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Run LogSage for ``path``; return result items plus a derived recommendation.
+
+        ``job_stage`` (``"start"`` / ``"end"``) is forwarded to NVRxLogAnalyzer's
+        run kwargs and read by its streaming dispatcher; ignored when streaming
+        mode is off.
+        """
         if self.config.use_lib_log_analysis:
-            return await self._fetch_log_result_lib(path)
-        return await self._fetch_log_result_mcp(path)
+            return await self._fetch_log_result_lib(path, job_stage=job_stage)
+        return await self._fetch_log_result_mcp(path, job_stage=job_stage)
 
     async def _start_progressive_analysis_lib(
         self,
@@ -431,8 +459,15 @@ class LogAnalyzer:
     async def reconnect_mcp(self) -> bool:
         return await self._runner.reconnect_mcp()
 
-    async def fetch_log_result(self, path: str) -> Dict[str, Any]:
-        return await self._runner.fetch_log_result(path)
+    async def fetch_log_result(
+        self, path: str, *, job_stage: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await self._runner.fetch_log_result(path, job_stage=job_stage)
+
+    @property
+    def is_streaming_logs(self) -> bool:
+        """True when the LogSage runner is configured for streaming start/end stages."""
+        return self._runner.is_streaming_logs
 
     async def start_progressive_analysis(
         self,
@@ -529,7 +564,12 @@ class LogAnalyzer:
         task.add_done_callback(self._post_tasks.discard)
 
     async def run_attribution_for_path(
-        self, path: str, user: str = "unknown", job_id: Optional[str] = None
+        self,
+        path: str,
+        user: str = "unknown",
+        job_id: Optional[str] = None,
+        *,
+        job_stage: Optional[str] = None,
     ) -> LogAnalysisCoalesced:
         """Run LogSage and optional FR pipeline for ``path``; return coalescer payload."""
         if not os.access(path, os.R_OK):
@@ -565,7 +605,7 @@ class LogAnalyzer:
             path,
             mode=mode,
             run_logsage=(
-                (lambda: self.fetch_log_result(path))
+                (lambda: self.fetch_log_result(path, job_stage=job_stage))
                 if mode != AnalysisPipelineMode.TRACE_ONLY
                 else None
             ),
