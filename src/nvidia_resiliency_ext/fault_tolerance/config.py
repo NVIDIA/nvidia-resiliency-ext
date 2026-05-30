@@ -19,9 +19,30 @@ import dataclasses
 import logging
 import signal
 from dataclasses import dataclass, fields
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 
 import yaml
+
+
+@dataclass
+class HealthLogSourceConfig:
+    """Enablement for one FACT agent file output source."""
+
+    enabled: bool = False
+
+
+@dataclass
+class HealthLoggingConfig:
+    """Optional per-cycle evidence file configuration."""
+
+    prefix: Optional[str] = None
+    dmesg: HealthLogSourceConfig = dataclasses.field(default_factory=HealthLogSourceConfig)
+    fact_result: HealthLogSourceConfig = dataclasses.field(default_factory=HealthLogSourceConfig)
+    healthcheck: HealthLogSourceConfig = dataclasses.field(default_factory=HealthLogSourceConfig)
+
+    @property
+    def is_any_source_enabled(self) -> bool:
+        return self.dmesg.enabled or self.fact_result.enabled or self.healthcheck.enabled
 
 
 @dataclass
@@ -95,10 +116,33 @@ class FaultToleranceConfig:
       out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
       timeout monitoring as they can be significantly slower than steady-state iterations.
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
-    * Attribution service (optional, disabled unless `attribution_endpoint` is set):
-      - `attribution_endpoint` [str] endpoint of the attribution service
+    * Application-log attribution service (optional, disabled unless
+      `attribution_endpoint` is set):
+      - `attribution_endpoint` [str] endpoint of the service that returns
+        job-level restart recommendations such as STOP/RESTART
       - `attribution_export_url` [str] complete export posting URL for
-        launcher-managed attribution service postprocessing.
+        launcher-managed application-log attribution service postprocessing.
+    * FACT agent (optional):
+      - `fact_url` [str] FACT API URL used by `nvrx-fact-agent` for node-level
+        attribution from host evidence. The launcher starts the local agent
+        and passes this URL to it.
+      - `fact_agent_socket_path` [str|None] optional local UDS path override
+        for the launcher-managed `nvrx-fact-agent`
+      - `fact_agent_rpc_timeout` [float] timeout for local UDS ACK
+      - `fact_policy_ready_timeout` [float] maximum time to wait for an
+        avoid-node policy decision before rendezvous fails open
+      - `fact_agent_store_timeout` [float] timeout used by the agent for TCPStore reads
+      - `fact_history_es_url` [str|None] FACT history backend URL for
+        repeat-offender avoid policy
+      - `fact_history_es_auth_file` [str|None] auth file for the FACT history backend
+    * Dmesg evidence files (optional):
+      - `health_logging.prefix` [str] absolute file prefix for per-cycle
+        shared evidence artifacts
+      - `health_logging.dmesg.enabled` [bool] asks `nvrx-fact-agent` to write
+        the collected dmesg text to a shared per-cycle file on failed cycles
+      - `health_logging.fact_result.enabled` [bool] asks `nvrx-fact-agent` to
+        write per-node FACT submission records and the store-host FACT result
+        record through the launcher gRPC log funnel
 
     * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.
       <base>/nvrx/). If set, the rendezvous host writes cycle info JSON files and
@@ -149,9 +193,25 @@ class FaultToleranceConfig:
     # Attribution service configuration (optional)
     attribution_endpoint: Optional[str] = None
     attribution_export_url: Optional[str] = None
+    # FACT agent configuration (optional)
+    fact_url: Optional[str] = None
+    fact_agent_socket_path: Optional[str] = None
+    fact_agent_rpc_timeout: float = 2.0
+    fact_policy_ready_timeout: float = 60.0
+    fact_agent_store_timeout: float = 60.0
+    fact_history_es_url: Optional[str] = None
+    fact_history_es_auth_file: Optional[str] = None
+    fact_history_lookback: str = "14d"
+    fact_history_index: Optional[str] = None
+    fact_history_max_candidate_nodes: int = 16
+    fact_history_query_timeout: float = 30.0
+    fact_min_repeat_count_for_avoid: int = 2
+    fact_max_attribution_avoids_per_cycle: int = 1
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None
+    # Standalone health logging configuration
+    health_logging: HealthLoggingConfig = dataclasses.field(default_factory=HealthLoggingConfig)
 
     @property
     def is_progress_tracking_enabled(self) -> bool:
@@ -178,6 +238,11 @@ class FaultToleranceConfig:
         extra_args = {k: v for k, v in kwargs.items() if k not in fields_set}
         if extra_args and not ignore_not_recognized:
             raise ValueError(f"Not recognized args: {extra_args}")
+        health_logging = matching_args.get("health_logging")
+        if isinstance(health_logging, dict):
+            matching_args["health_logging"] = FaultToleranceConfig._parse_health_logging_dict(
+                health_logging
+            )
         return FaultToleranceConfig(**matching_args)
 
     @staticmethod
@@ -289,6 +354,10 @@ class FaultToleranceConfig:
             'gpu_memory_reclaim_timeout',
             'gpu_memory_tolerance_mb',
             'gpu_memory_poll_interval',
+            'fact_agent_rpc_timeout',
+            'fact_policy_ready_timeout',
+            'fact_agent_store_timeout',
+            'fact_history_query_timeout',
         ]
         for field in fields(FaultToleranceConfig):
             cli_field_name = f"ft_{field.name}"
@@ -304,11 +373,59 @@ class FaultToleranceConfig:
         for arg_name, arg_val in cli_ft_args.items():
             setattr(ft_cfg, arg_name, arg_val)
 
+        # Health logging CLI overrides
+        health_logging = ft_cfg.health_logging
+        prefix = getattr(args, "ft_health_log_prefix", None)
+        if prefix is not None:
+            health_logging.prefix = prefix
+        dmesg_enabled = getattr(args, "ft_enable_health_log_dmesg", None)
+        if dmesg_enabled is not None:
+            health_logging.dmesg.enabled = bool(dmesg_enabled)
+        fact_result_enabled = getattr(args, "ft_enable_fact_result_artifact", None)
+        if fact_result_enabled is not None:
+            health_logging.fact_result.enabled = bool(fact_result_enabled)
+        ft_cfg.health_logging = health_logging
+
         # Fix any type issues
         ft_cfg._fix_log_level_type()
         ft_cfg._fix_rank_termination_signal_type()
 
         return ft_cfg
+
+    @staticmethod
+    def _parse_health_logging_dict(data: Any) -> HealthLoggingConfig:
+        if isinstance(data, HealthLoggingConfig):
+            return data
+        if data is None:
+            return HealthLoggingConfig()
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Invalid health_logging config: expected mapping, got {type(data).__name__}"
+            )
+
+        prefix = data.get("prefix")
+        dmesg_cfg = data.get("dmesg", {})
+        fact_result_cfg = data.get("fact_result", {})
+        healthcheck_cfg = data.get("healthcheck", {})
+
+        def _parse_source(source_name: str, raw: Any) -> HealthLogSourceConfig:
+            if raw is None:
+                return HealthLogSourceConfig()
+            if isinstance(raw, HealthLogSourceConfig):
+                return raw
+            if not isinstance(raw, dict):
+                raise ValueError(
+                    f"Invalid health_logging.{source_name} config: expected mapping, got {type(raw).__name__}"
+                )
+            enabled = raw.get("enabled", False)
+            return HealthLogSourceConfig(enabled=bool(enabled))
+
+        return HealthLoggingConfig(
+            prefix=prefix,
+            dmesg=_parse_source("dmesg", dmesg_cfg),
+            fact_result=_parse_source("fact_result", fact_result_cfg),
+            healthcheck=_parse_source("healthcheck", healthcheck_cfg),
+        )
 
     def to_yaml_file(self, cfg_path: str) -> None:
         """

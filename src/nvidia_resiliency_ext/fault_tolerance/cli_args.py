@@ -336,10 +336,12 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         dest="ft_attribution_endpoint",
         help=(
-            "Endpoint for the attribution service. Default: disabled. "
+            "Endpoint for the application-log attribution service that returns job-level "
+            "restart recommendations such as STOP/RESTART. Default: disabled. "
             "Set to localhost to let the TCPStore host process manage nvrx-attrsvc. "
             "Use an explicit endpoint such as http://host:port, grpc://host:port, "
-            "or unix:///path/to/socket for an externally managed attribution service."
+            "or unix:///path/to/socket for an externally managed service. "
+            "This is separate from FACT node attribution configured with --ft-fact-url."
         ),
     )
     parser.add_argument(
@@ -349,7 +351,8 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT,
         dest="ft_attribution_startup_timeout",
         help=(
-            "Seconds to wait for launcher-managed attribution service /healthz readiness. "
+            "Seconds to wait for launcher-managed application-log attribution service "
+            "/healthz readiness. "
             f"Default: {DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT}."
         ),
     )
@@ -360,7 +363,8 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         dest="ft_attribution_llm_api_key_file",
         help=(
-            "Path to the LLM API key file for launcher-managed attribution service. "
+            "Path to the LLM API key file for launcher-managed application-log "
+            "attribution service. "
             "If unset, LLM_API_KEY_FILE from the launcher environment is used."
         ),
     )
@@ -370,7 +374,7 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         dest="ft_attribution_llm_base_url",
-        help="LLM base URL for launcher-managed attribution service.",
+        help="LLM base URL for launcher-managed application-log attribution service.",
     )
     parser.add_argument(
         "--ft-attribution-llm-model",
@@ -378,7 +382,7 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         dest="ft_attribution_llm_model",
-        help="LLM model identifier for launcher-managed attribution service.",
+        help="LLM model identifier for launcher-managed application-log attribution service.",
     )
     parser.add_argument(
         "--ft-attribution-analysis-backend",
@@ -387,7 +391,7 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         dest="ft_attribution_analysis_backend",
         choices=("mcp", "lib"),
-        help="Analysis backend for launcher-managed attribution service: mcp or lib.",
+        help="Analysis backend for launcher-managed application-log attribution service: mcp or lib.",
     )
     parser.add_argument(
         "--ft-attribution-compute-timeout",
@@ -395,7 +399,10 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=None,
         dest="ft_attribution_compute_timeout",
-        help="Analysis compute timeout in seconds for launcher-managed attribution service.",
+        help=(
+            "Analysis compute timeout in seconds for launcher-managed application-log "
+            "attribution service."
+        ),
     )
     parser.add_argument(
         "--ft-attribution-log-level",
@@ -404,7 +411,7 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         dest="ft_attribution_log_level",
         choices=("DEBUG", "INFO", "WARNING"),
-        help="Log level for launcher-managed attribution service.",
+        help="Log level for launcher-managed application-log attribution service.",
     )
     parser.add_argument(
         "--ft-attribution-export-url",
@@ -412,7 +419,111 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         dest="ft_attribution_export_url",
-        help="Complete result export URL for launcher-managed attribution service.",
+        help=(
+            "Complete result export URL for launcher-managed application-log "
+            "attribution service."
+        ),
+    )
+    parser.add_argument(
+        "--ft-fact-url",
+        type=str,
+        default=None,
+        dest="ft_fact_url",
+        help=(
+            "FACT API URL used by nvrx-fact-agent for node-level attribution from host "
+            "evidence, e.g. http://host:8001/latest. ft_launcher starts the local "
+            "agent and passes this URL to it. Separate from --ft-attribution-endpoint."
+        ),
+    )
+    parser.add_argument(
+        "--ft-fact-agent-socket-path",
+        type=str,
+        default=None,
+        dest="ft_fact_agent_socket_path",
+        help=(
+            "Advanced override for the local UDS path used by launcher-managed "
+            "nvrx-fact-agent. Defaults to a private per-launcher tmp path."
+        ),
+    )
+    parser.add_argument(
+        "--ft-fact-agent-rpc-timeout",
+        type=float,
+        default=None,
+        dest="ft_fact_agent_rpc_timeout",
+        help="Timeout in seconds for the local nvrx-fact-agent ACK. Default: 2.",
+    )
+    parser.add_argument(
+        "--ft-fact-policy-ready-timeout",
+        type=float,
+        default=None,
+        dest="ft_fact_policy_ready_timeout",
+        help=(
+            "Maximum seconds for the store-host launcher to wait for FACT avoid_nodes "
+            "before rendezvous fails open. Default: 60."
+        ),
+    )
+    parser.add_argument(
+        "--ft-fact-agent-store-timeout",
+        type=float,
+        default=None,
+        dest="ft_fact_agent_store_timeout",
+        help="Timeout in seconds for nvrx-fact-agent TCPStore reads. Default: 60.",
+    )
+    parser.add_argument(
+        "--ft-fact-history-es-url",
+        type=str,
+        default=None,
+        dest="ft_fact_history_es_url",
+        help="FACT history backend URL used for repeat-offender avoid policy.",
+    )
+    parser.add_argument(
+        "--ft-fact-history-es-auth-file",
+        type=str,
+        default=None,
+        dest="ft_fact_history_es_auth_file",
+        help="Auth file for FACT history backend. Contents are read by nvrx-fact-agent.",
+    )
+    parser.add_argument(
+        "--ft-fact-history-lookback",
+        type=str,
+        default=None,
+        dest="ft_fact_history_lookback",
+        help="FACT history lookback window for repeat-offender policy. Default: 14d.",
+    )
+    parser.add_argument(
+        "--ft-fact-history-index",
+        type=str,
+        default=None,
+        dest="ft_fact_history_index",
+        help="Deployment-specific FACT node-history index or collection.",
+    )
+    parser.add_argument(
+        "--ft-fact-history-max-candidate-nodes",
+        type=int,
+        default=None,
+        dest="ft_fact_history_max_candidate_nodes",
+        help="Skip history lookup when current FACT suspects exceed this count. Default: 16.",
+    )
+    parser.add_argument(
+        "--ft-fact-history-query-timeout",
+        type=float,
+        default=None,
+        dest="ft_fact_history_query_timeout",
+        help="FACT history query timeout in seconds. Default: 30.",
+    )
+    parser.add_argument(
+        "--ft-fact-min-repeat-count-for-avoid",
+        type=int,
+        default=None,
+        dest="ft_fact_min_repeat_count_for_avoid",
+        help="Minimum current+prior same-node count required to avoid a node. Default: 2.",
+    )
+    parser.add_argument(
+        "--ft-fact-max-attribution-avoids-per-cycle",
+        type=int,
+        default=None,
+        dest="ft_fact_max_attribution_avoids_per_cycle",
+        help="Maximum attribution-based avoid nodes per cycle. Default: 1.",
     )
 
 

@@ -16,6 +16,7 @@ from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
     MultiplexingReaderThread,
     PipeSubprocessHandler,
     _should_filter_line,
+    get_source_cycle_log_file,
 )
 
 
@@ -74,6 +75,11 @@ class TestLogFiltering:
         assert _should_filter_line("252 device-mapper") is True
         assert _should_filter_line("Character devices:") is True
         assert _should_filter_line("Rank 1117: Error") is False
+
+
+def test_get_source_cycle_log_file():
+    path = get_source_cycle_log_file("/lustre/logs/job_health.log", "dmesg", 3)
+    assert path == "/lustre/logs/job_health_dmesg_cycle3.log"
 
 
 class TestMultiplexingReaderThread:

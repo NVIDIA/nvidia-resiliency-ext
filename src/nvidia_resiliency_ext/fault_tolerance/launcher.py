@@ -35,6 +35,7 @@ import warnings
 from argparse import REMAINDER, ArgumentParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from string import Template
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
@@ -69,6 +70,12 @@ from torch.distributed.elastic.rendezvous.utils import (
 )
 from torch.distributed.elastic.utils import macros
 
+from nvidia_resiliency_ext.attribution.fact.client import normalize_fact_attribution_url
+from nvidia_resiliency_ext.attribution.fact.manager import FactAgentManager
+from nvidia_resiliency_ext.attribution.fact.rpc import (
+    default_socket_path as default_fact_agent_socket_path,
+)
+from nvidia_resiliency_ext.attribution.fact.rpc import notify_fact_agent
 from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     DEFAULT_ATTRIBUTION_PORT,
     AttributionConfig,
@@ -132,6 +139,16 @@ _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
 # [root, leaf0, ..., leaf_{N-1}] when ft_log_aggregator_count > 1.
 _GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
 _ATTRIBUTION_MANAGER: Optional[AttributionManager] = None
+_FACT_AGENT_MANAGER: Optional[FactAgentManager] = None
+
+
+def _resolve_fact_username() -> Optional[str]:
+    return os.environ.get("SLURM_JOB_USER") or os.environ.get("USER") or os.environ.get("LOGNAME")
+
+
+def _resolve_fact_cluster() -> Optional[str]:
+    return os.environ.get("SLURM_CLUSTER_NAME") or os.environ.get("NVRX_CLUSTER_NAME")
+
 
 def init_node_health_check(endpoint: Optional[str]) -> None:
     global _NODE_HEALTH_CHECK_INSTANCE
@@ -377,6 +394,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         workers_stop_timeout: float = 30,
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
+        rdzv_endpoint: Optional[str] = None,
         rank_monitors: Optional[Dict[int, RankMonitorState]] = None,
     ):
         super().__init__(spec, exit_barrier_timeout)
@@ -389,6 +407,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._term_timeout = term_timeout
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
+        self._rdzv_endpoint = rdzv_endpoint
         # Rank monitor state (process, IPC connections, listener tasks) per local rank
         # Pre-created rank monitors passed from config (created before gRPC)
         self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
@@ -418,6 +437,9 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        self._pending_fact_agent_cycle: Optional[int] = None
+        self._fact_agent_cycle_start_time: Optional[datetime] = None
+        self._last_fact_agent_cycle: Optional[int] = None
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -529,6 +551,53 @@ class LocalElasticAgent(SimpleElasticAgent):
                 logger.error(f"Failed to open rendezvous: {e}")
         # For legacy rendezvous, no action needed - it uses different mechanism
 
+    def _attribution_recommends_stop(self, role: str) -> bool:
+        service = getattr(self._rdzv_handler, "_attribution_service", None)
+        if service is None:
+            return False
+
+        get_last_result = getattr(service, "get_last_result", None)
+        if not callable(get_last_result):
+            return False
+
+        try:
+            attrsvc_result = get_last_result()
+        except Exception as exc:
+            logger.warning(
+                "[%s] Application-log attribution result fetch failed: %s", role, exc
+            )
+            return False
+
+        if attrsvc_result is None:
+            logger.info(
+                "[%s] Application-log attribution returned no restart recommendation", role
+            )
+            return False
+
+        recommendation = getattr(attrsvc_result, "recommendation", None)
+        if getattr(attrsvc_result, "should_stop", False) is True:
+            logger.error(
+                "[%s] Application-log attribution recommended STOP for %s; "
+                "no restart will be attempted.",
+                role,
+                getattr(attrsvc_result, "log_path", "submitted log"),
+            )
+            return True
+
+        recommendation_text = (
+            recommendation
+            if isinstance(recommendation, str)
+            else getattr(recommendation, "action", None)
+        )
+        if recommendation_text:
+            logger.info(
+                "[%s] Application-log attribution recommendation for %s: %s",
+                role,
+                getattr(attrsvc_result, "log_path", "submitted log"),
+                recommendation_text,
+            )
+        return False
+
     def _handle_restart_decision(
         self,
         role: str,
@@ -548,9 +617,14 @@ class LocalElasticAgent(SimpleElasticAgent):
             True if restart was initiated (caller should continue monitoring loop)
             False if no restart (caller should stop workers and return failure)
         """
+        if self._ft_cfg.fact_url:
+            self._pending_fact_agent_cycle = self._get_global_cycle_number()
+        attrsvc_recommends_stop = self._attribution_recommends_stop(role)
         self._progress_tracker.analyze_previous_cycle()
         should_terminate_early = self._progress_tracker.should_terminate_early()
 
+        if attrsvc_recommends_stop:
+            return False
         if should_terminate_early:
             logger.error(
                 "[%s] Progress tracker detected no progress across restarts. "
@@ -868,6 +942,119 @@ class LocalElasticAgent(SimpleElasticAgent):
         event = events.Event(name=name, source=events.EventSource.AGENT, metadata=metadata)
         events.record(event)
 
+    def _get_fact_agent_node_candidates(self) -> List[str]:
+        get_active = getattr(self._rdzv_handler, "get_active_node_addrs", None)
+        active_addrs = get_active() if callable(get_active) else None
+        if not active_addrs:
+            return []
+        nodes = []
+        for addr in active_addrs:
+            node = str(addr).split(":", 1)[0]
+            if node:
+                nodes.append(node)
+        return sorted(set(nodes))
+
+    def _get_fact_agent_local_node(self) -> str:
+        this_node = getattr(self._rdzv_handler, "_this_node", None)
+        node_addr = getattr(this_node, "addr", None)
+        return str(node_addr or self._node_id or socket.getfqdn(socket.gethostname()))
+
+    def _notify_fact_agent(self, _worker_group: WorkerGroup, cycle_index: int) -> None:
+        if not self._ft_cfg.fact_url:
+            return
+
+        local_node = self._get_fact_agent_local_node()
+        expected_nodes = self._get_fact_agent_node_candidates() if self._is_store_host else []
+        if self._is_store_host and not expected_nodes:
+            logger.warning(
+                "nvrx-fact-agent could not discover active nodes from rendezvous; "
+                "FACT attribution scope is limited to local node %s",
+                local_node,
+            )
+            expected_nodes = [local_node]
+
+        payload: Dict[str, Any] = {
+            "event": "cycle_failed",
+            "cycle": cycle_index,
+            "cycle_end_time": datetime.now(timezone.utc).isoformat(),
+            "expected_nodes": expected_nodes,
+        }
+        if self._fact_agent_cycle_start_time is not None:
+            payload["cycle_start_time"] = self._fact_agent_cycle_start_time.isoformat()
+        socket_path = self._ft_cfg.fact_agent_socket_path or default_fact_agent_socket_path()
+        try:
+            ack = notify_fact_agent(
+                socket_path=socket_path,
+                payload=payload,
+                timeout_s=self._ft_cfg.fact_agent_rpc_timeout,
+            )
+        except Exception as exc:
+            logger.warning(
+                "nvrx-fact-agent notification failed for cycle %s via %s: %s",
+                cycle_index,
+                socket_path,
+                exc,
+            )
+            return
+
+        if not ack.get("accepted"):
+            logger.warning(
+                "nvrx-fact-agent rejected cycle %s request: %s",
+                cycle_index,
+                ack.get("error", ack),
+            )
+            return
+        logger.info("nvrx-fact-agent accepted cycle %s request", cycle_index)
+        self._last_fact_agent_cycle = cycle_index
+
+    def get_fact_avoid_nodes_for_rendezvous(self) -> List[str]:
+        if not self._ft_cfg.fact_url or not self._is_store_host:
+            return []
+        cycle_index = self._last_fact_agent_cycle
+        if cycle_index is None:
+            return []
+        socket_path = self._ft_cfg.fact_agent_socket_path or default_fact_agent_socket_path()
+        deadline = time.monotonic() + max(0.0, self._ft_cfg.fact_policy_ready_timeout)
+        response: Dict[str, Any] = {}
+        while True:
+            try:
+                response = notify_fact_agent(
+                    socket_path=socket_path,
+                    payload={"event": "get_avoid_nodes", "cycle": cycle_index},
+                    timeout_s=self._ft_cfg.fact_agent_rpc_timeout,
+                )
+            except Exception as exc:
+                logger.info("nvrx-fact-agent avoid-node query failed: %s", exc)
+                return []
+
+            status = response.get("status")
+            if status == "ready":
+                break
+            if status != "pending":
+                logger.info(
+                    "nvrx-fact-agent avoid-node decision unavailable for cycle %s: %s",
+                    cycle_index,
+                    response,
+                )
+                return []
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.info(
+                    "nvrx-fact-agent avoid-node decision not ready for cycle %s: %s",
+                    cycle_index,
+                    response,
+                )
+                return []
+            time.sleep(min(0.5, remaining))
+
+        avoid_nodes = response.get("avoid_nodes")
+        if not isinstance(avoid_nodes, list):
+            return []
+        nodes = [str(node) for node in avoid_nodes if str(node)]
+        if nodes:
+            logger.info("nvrx-fact-agent suggested avoid_nodes=%s", nodes)
+        return nodes
+
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
@@ -932,6 +1119,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             # that would cause cycle N+1 data to be written to cycle N log files.
             self._logs_specs.clear_all_pipes_from_reader()
 
+        fact_agent_cycle = self._pending_fact_agent_cycle
+        self._pending_fact_agent_cycle = None
+        if fact_agent_cycle is not None:
+            self._notify_fact_agent(worker_group, fact_agent_cycle)
+
         # Record worker termination event after shutdown is complete
         record_profiling_event(
             ProfilingEvent.WORKER_TERMINATED,
@@ -951,6 +1143,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # At this point, rendezvous has completed and we're about to start workers.
         # The cycle number is used for profiling and environment variable setting.
         current_cycle = restart_count = self._get_global_cycle_number()
+        self._fact_agent_cycle_start_time = datetime.now(timezone.utc)
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -1550,6 +1743,7 @@ def launch_agent(
         workers_stop_timeout=config.workers_stop_timeout,
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
+        rdzv_endpoint=config.rdzv_endpoint,
         rank_monitors=config.rank_monitors,  # Pass pre-created rank monitors
     )
 
@@ -2170,6 +2364,41 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-health-log-prefix",
+        action=env,
+        type=str,
+        default=None,
+        dest="ft_health_log_prefix",
+        help="Prefix for per-cycle health log files (must be absolute path when used, e.g. "
+        "/lustre/logs/job_health.log). "
+        "Dmesg health logs are derived by inserting the source and cycle before the extension, "
+        "for example /lustre/logs/job_health_dmesg_cycle0.log.",
+    )
+
+    parser.add_argument(
+        "--ft-enable-health-log-dmesg",
+        action=env,
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_enable_health_log_dmesg",
+        help="Ask nvrx-fact-agent to queue shared per-cycle dmesg evidence files on "
+        "failed cycles. Requires --ft-fact-url, --ft-health-log-prefix, and launcher "
+        "gRPC log aggregation.",
+    )
+
+    parser.add_argument(
+        "--ft-enable-fact-result-artifact",
+        action=env,
+        type=lambda x: str(x).lower() not in ["false", "0", "no"],
+        default=None,
+        dest="ft_enable_fact_result_artifact",
+        help="Ask nvrx-fact-agent to write per-node FACT submission records and the "
+        "store-host FACT result record through the gRPC log funnel. Requires "
+        "--ft-fact-url, --ft-health-log-prefix, --ft-per-cycle-applog-prefix, "
+        "and --ft-enable-log-server true.",
+    )
+
+    parser.add_argument(
         "-r",
         "--redirects",
         action=env,
@@ -2787,7 +3016,7 @@ def _validate_attribution_requires_per_cycle_applog(
     ):
         raise ValueError(
             "--ft-attribution-endpoint requires --ft-per-cycle-applog-prefix to be specified. "
-            "Attribution service needs per-cycle application logs as analysis input."
+            "Application-log attribution needs per-cycle application logs as analysis input."
         )
 
 
@@ -2860,6 +3089,67 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
     _validate_attribution_requires_per_cycle_applog(args, fault_tol_cfg)
+    health_logging_cfg = fault_tol_cfg.health_logging
+    if fault_tol_cfg.fact_agent_rpc_timeout <= 0:
+        raise ValueError("--ft-fact-agent-rpc-timeout must be positive")
+
+    if fault_tol_cfg.fact_policy_ready_timeout < 0:
+        raise ValueError("--ft-fact-policy-ready-timeout must be non-negative")
+    if fault_tol_cfg.fact_agent_store_timeout < 0:
+        raise ValueError("--ft-fact-agent-store-timeout must be non-negative")
+    fact_history_requested = bool(
+        fault_tol_cfg.fact_history_es_url or fault_tol_cfg.fact_history_es_auth_file
+    )
+    if fact_history_requested:
+        if not fault_tol_cfg.fact_url:
+            raise ValueError("FACT history policy requires --ft-fact-url")
+        if not fault_tol_cfg.fact_history_es_url or not fault_tol_cfg.fact_history_es_auth_file:
+            raise ValueError(
+                "FACT history policy requires both --ft-fact-history-es-url and "
+                "--ft-fact-history-es-auth-file"
+            )
+        if fault_tol_cfg.fact_history_max_candidate_nodes < 1:
+            raise ValueError("--ft-fact-history-max-candidate-nodes must be positive")
+        if fault_tol_cfg.fact_history_query_timeout <= 0:
+            raise ValueError("--ft-fact-history-query-timeout must be positive")
+        if fault_tol_cfg.fact_min_repeat_count_for_avoid < 1:
+            raise ValueError("--ft-fact-min-repeat-count-for-avoid must be positive")
+        if fault_tol_cfg.fact_max_attribution_avoids_per_cycle < 0:
+            raise ValueError("--ft-fact-max-attribution-avoids-per-cycle must be non-negative")
+    fact_artifact_enabled = (
+        health_logging_cfg.dmesg.enabled or health_logging_cfg.fact_result.enabled
+    )
+    if fact_artifact_enabled:
+        if not fault_tol_cfg.fact_url:
+            raise ValueError(
+                "FACT health logging artifacts require --ft-fact-url so "
+                "ft_launcher can notify nvrx-fact-agent on failed cycles."
+            )
+        if not health_logging_cfg.prefix:
+            raise ValueError(
+                "fault_tolerance.health_logging.prefix (or --ft-health-log-prefix) is required "
+                "when FACT health logging artifacts are enabled."
+            )
+        if not os.path.isabs(health_logging_cfg.prefix):
+            raise ValueError(
+                f"--ft-health-log-prefix must be an absolute path, got: {health_logging_cfg.prefix}. "
+                "Example: /lustre/logs/job_health.log"
+            )
+        if health_logging_cfg.fact_result.enabled:
+            if not getattr(args, "ft_per_cycle_applog_prefix", None) or not getattr(
+                args, "ft_enable_log_server", False
+            ):
+                raise ValueError(
+                    "--ft-enable-fact-result-artifact requires gRPC log aggregation "
+                    "(--ft-per-cycle-applog-prefix and --ft-enable-log-server true) "
+                    "so FACT result JSONL is written by a single root log writer."
+                )
+    fact_agent_enabled = fault_tol_cfg.fact_url is not None
+    if fact_agent_enabled:
+        try:
+            normalize_fact_attribution_url(fault_tol_cfg.fact_url or "")
+        except ValueError as exc:
+            raise ValueError(f"Invalid --ft-fact-url: {exc}") from exc
 
     # Pass segment-related configs to rendezvous config
     rdzv_configs['segment'] = fault_tol_cfg.segment
@@ -2929,6 +3219,12 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     if base_log_file:
         rdzv_configs['cycle_log_prefix'] = base_log_file
 
+    rdzv_endpoint_host = parse_rendezvous_endpoint(rdzv_endpoint, default_port=-1)[0]
+    host, _ = parse_rendezvous_endpoint(rdzv_endpoint, default_port=0)
+    is_tcp_store_host = _is_store_host_from_config(host, rdzv_configs)
+    grpc_server_address = None
+    node_id = None
+
     if base_log_file:
         # Validate that the path is absolute (not relative)
         if not os.path.isabs(base_log_file):
@@ -2945,13 +3241,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
                 "Using PipeBasedLogsSpecs automatically."
             )
 
-        rdzv_endpoint_host = parse_rendezvous_endpoint(rdzv_endpoint, default_port=-1)[0]
-        host, _ = parse_rendezvous_endpoint(rdzv_endpoint, default_port=0)
-        is_tcp_store_host = _is_store_host_from_config(host, rdzv_configs)
-
         # Configure gRPC if enabled
-        grpc_server_address = None
-        node_id = None
         log_funnel_ports = None
 
         if getattr(args, 'ft_enable_log_server', False):
@@ -2998,7 +3288,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
                 if not _GRPC_SERVER_PROCESSES:
                     logger.error(
                         "Failed to start gRPC log server(s) on TCP store host. "
-                        "Disabling gRPC log aggregation for all nodes (falling back to direct file writing)."
+                        "Disabling gRPC log aggregation for all nodes."
                     )
                     grpc_server_address = None
                     node_id = None
@@ -3037,6 +3327,60 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
             tee=Std.from_str(args.tee),
             local_ranks_filter=ranks,
         )
+
+    if fact_agent_enabled:
+        if (
+            health_logging_cfg.dmesg.enabled or health_logging_cfg.fact_result.enabled
+        ) and grpc_server_address is None:
+            raise RuntimeError(
+                "FACT artifacts require gRPC log aggregation, but no gRPC "
+                "server address is available."
+            )
+        fact_agent_manager = FactAgentManager(
+            fact_url=fault_tol_cfg.fact_url,
+            socket_path=fault_tol_cfg.fact_agent_socket_path,
+            rpc_timeout_s=fault_tol_cfg.fact_agent_rpc_timeout,
+            run_id=args.rdzv_id,
+            rdzv_endpoint=rdzv_endpoint,
+            store_timeout_s=fault_tol_cfg.fact_agent_store_timeout,
+            local_node=args.local_addr or socket.getfqdn(),
+            is_store_host=is_tcp_store_host,
+            job_id=(
+                os.environ.get("SLURM_ARRAY_JOB_ID")
+                or os.environ.get("SLURM_JOB_ID")
+                or args.rdzv_id
+            ),
+            ranks_per_node=nproc_per_node,
+            username=_resolve_fact_username(),
+            cluster=_resolve_fact_cluster(),
+            health_log_prefix=health_logging_cfg.prefix,
+            dmesg_artifact_enabled=health_logging_cfg.dmesg.enabled,
+            result_artifact_enabled=health_logging_cfg.fact_result.enabled,
+            grpc_server_address=grpc_server_address,
+            grpc_node_id=node_id,
+            fact_history_es_url=fault_tol_cfg.fact_history_es_url,
+            fact_history_es_auth_file=fault_tol_cfg.fact_history_es_auth_file,
+            fact_history_lookback=fault_tol_cfg.fact_history_lookback,
+            fact_history_index=fault_tol_cfg.fact_history_index,
+            fact_history_max_candidate_nodes=fault_tol_cfg.fact_history_max_candidate_nodes,
+            fact_history_query_timeout_s=fault_tol_cfg.fact_history_query_timeout,
+            fact_min_repeat_count_for_avoid=fault_tol_cfg.fact_min_repeat_count_for_avoid,
+            fact_max_attribution_avoids_per_cycle=(
+                fault_tol_cfg.fact_max_attribution_avoids_per_cycle
+            ),
+        )
+        global _FACT_AGENT_MANAGER
+        _FACT_AGENT_MANAGER = fact_agent_manager
+        try:
+            fact_agent_endpoint = fact_agent_manager.start_if_needed()
+            if fact_agent_endpoint is not None:
+                fault_tol_cfg.fact_agent_socket_path = fact_agent_endpoint.socket_path
+        except Exception as exc:
+            logger.warning(
+                "Failed to start local nvrx-fact-agent; FACT dmesg collection "
+                "will be best-effort and may be unavailable: %s",
+                exc,
+            )
 
     config = LaunchConfig(
         min_nodes=min_nodes,
@@ -3551,18 +3895,22 @@ def main(args=None):
         logger.info("Agent exits with exit code = 0.")
         exit_code = 0
     finally:
-        # Clean up gRPC server AFTER all logging is done
-        # (logging cleanup already happened in run()'s finally block)
-        global _GRPC_SERVER_PROCESSES, _ATTRIBUTION_MANAGER
+        # Stop log-producing helper processes before the gRPC log servers so
+        # their final artifact writes can drain.
+        global _GRPC_SERVER_PROCESSES, _ATTRIBUTION_MANAGER, _FACT_AGENT_MANAGER
+        if _FACT_AGENT_MANAGER is not None:
+            _FACT_AGENT_MANAGER.stop()
+            _FACT_AGENT_MANAGER = None
+
+        if _ATTRIBUTION_MANAGER is not None:
+            _ATTRIBUTION_MANAGER.stop()
+            _ATTRIBUTION_MANAGER = None
+
         if _GRPC_SERVER_PROCESSES:
             grpc_graceful_shutdown_timeout = float(
                 getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
             )
             stop_grpc_log_servers(_GRPC_SERVER_PROCESSES, grpc_graceful_shutdown_timeout)
-
-        if _ATTRIBUTION_MANAGER is not None:
-            _ATTRIBUTION_MANAGER.stop()
-            _ATTRIBUTION_MANAGER = None
 
     sys.exit(exit_code)
 

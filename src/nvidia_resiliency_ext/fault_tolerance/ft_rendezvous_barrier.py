@@ -863,6 +863,62 @@ class _RendezvousBarrierState:
             sorted(standby_only_participants, key=lambda x: x[1]),
         )
 
+    @staticmethod
+    def _participant_node_key(node_desc: _NodeDesc) -> str:
+        return str(node_desc.addr).split(":", 1)[0]
+
+    def _fact_avoid_nodes(self) -> List[str]:
+        agent = self._agent
+        if agent is None:
+            return []
+        get_avoid_nodes = getattr(agent, "get_fact_avoid_nodes_for_rendezvous", None)
+        if not callable(get_avoid_nodes):
+            return []
+        try:
+            return [str(node).split(":", 1)[0] for node in get_avoid_nodes() if str(node)]
+        except Exception as exc:
+            log.info("FACT avoid-node lookup failed; proceeding without avoid nodes: %s", exc)
+            return []
+
+    def _apply_fact_avoid_nodes(
+        self,
+        active_candidate_participants: List[Participant],
+        standby_only_participants: List[Participant],
+        min_nodes: int,
+    ) -> Tuple[List[Participant], List[Participant]]:
+        avoid_nodes = self._fact_avoid_nodes()
+        if not avoid_nodes:
+            return active_candidate_participants, standby_only_participants
+
+        avoid_set = set(avoid_nodes)
+        kept_active = []
+        demoted = []
+        for participant in active_candidate_participants:
+            node_desc, _, _, _ = participant
+            if self._participant_node_key(node_desc) in avoid_set:
+                demoted.append(participant)
+            else:
+                kept_active.append(participant)
+
+        if not demoted:
+            return active_candidate_participants, standby_only_participants
+
+        if len(kept_active) < min_nodes or not self._can_meet_segment_constraint(
+            kept_active,
+            min_nodes,
+        ):
+            log.info(
+                "Skipping FACT avoid_nodes=%s because placement would be infeasible",
+                avoid_nodes,
+            )
+            return active_candidate_participants, standby_only_participants
+
+        log.info(
+            "Applying FACT avoid_nodes=%s by assigning them standby ranks",
+            [self._participant_node_key(node_desc) for node_desc, _, _, _ in demoted],
+        )
+        return kept_active, demoted + standby_only_participants
+
     def _assign_group_ranks(
         self,
         active_candidate_participants: List[Participant],
@@ -1530,6 +1586,11 @@ class _RendezvousBarrierState:
                 f"participants{replacement_group_info}{unhealthy_replacement_group_info}, "
                 f"min={min_nodes} (fetch {fetch_elapsed*1000:.1f}ms, check {check_elapsed*1000:.1f}ms)"
             )
+            active_candidate_participants, standby_only_participants = self._apply_fact_avoid_nodes(
+                complete_replacement_group_participants,
+                incomplete_replacement_group_participants,
+                min_nodes,
+            )
             # Assign ranks BEFORE setting round_done=1 so Step 3 readers can get their rank
             # immediately without any additional waiting.
             self.assign_group_ranks(
@@ -1537,8 +1598,8 @@ class _RendezvousBarrierState:
                 max_nodes,
                 node_desc,
                 slot_participants=current_round_participants,
-                active_candidate_participants=complete_replacement_group_participants,
-                standby_only_participants=incomplete_replacement_group_participants,
+                active_candidate_participants=active_candidate_participants,
+                standby_only_participants=standby_only_participants,
             )
             self._report_cycle_start_as_host(self._round)
             self.store.set(self.round_done_key, "1".encode('utf-8'))

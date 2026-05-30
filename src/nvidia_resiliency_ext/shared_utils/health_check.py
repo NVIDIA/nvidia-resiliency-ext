@@ -31,7 +31,7 @@ from typing import Callable, Dict, Optional, Tuple, Union
 import defusedxml.ElementTree as ET
 import httpx
 
-from nvidia_resiliency_ext.attribution import parse_attrsvc_response
+from nvidia_resiliency_ext.attribution import AttrSvcResult, parse_attrsvc_response
 from nvidia_resiliency_ext.attribution.orchestration.http_api import (
     ROUTE_LOGS,
     get_log_response,
@@ -1805,8 +1805,8 @@ class AttributionService:
                 daemon=True,
             ).start()
 
-    def get_last_result(self) -> Optional[bool]:
-        """Synchronously fetch whether attribution recommends stopping the last log."""
+    def get_last_result(self) -> Optional[AttrSvcResult]:
+        """Synchronously fetch attribution for the most recently submitted log."""
         log_path = self._last_submitted
         if not log_path:
             logger.debug("AttributionService GET skipped: no submitted log path")
@@ -1846,9 +1846,9 @@ class AttributionService:
                 "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e
             )
 
-    def _get_results(self, log_path: str) -> Optional[bool]:
+    def _get_results(self, log_path: str) -> Optional[AttrSvcResult]:
         """
-        Get the stop decision for a previously submitted log file via GET.
+        Get the normalized attribution result for a previously submitted log file via GET.
         """
         base_url = self._http_base_url()
         if base_url is None:
@@ -1862,7 +1862,7 @@ class AttributionService:
                     payload = resp.json() if resp.text else {}
                     attrsvc_result = parse_attrsvc_response(payload, log_path=log_path)
                     logger.info(attrsvc_result.format_log_message())
-                    return attrsvc_result.should_stop
+                    return attrsvc_result
                 else:
                     logger.warning(
                         "AttributionService GET for %s returned %d", log_path, resp.status_code
