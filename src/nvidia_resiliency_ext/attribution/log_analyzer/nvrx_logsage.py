@@ -1053,7 +1053,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 )
 
         logger.info("Policy recommendation and error attribution:")
-        logger.info("Recommendation: ",auto_resume_output)
+        logger.info("Recommendation: ", auto_resume_output)
         logger.info("Attribution: ", attribution_output)
 
         return ErrorAttribution(
