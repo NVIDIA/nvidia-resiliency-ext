@@ -80,14 +80,17 @@ class _Phase1Deadline(Exception):
 
 
 def _make_deadline_sleep(start_duration_sec: float, poll_interval_sec: float):
-    real_sleep = time.sleep
+    # ``analyze_logs_rt_start`` awaits ``asyncio.sleep`` between polls, so this
+    # replacement must be a coroutine. We patch ``asyncio.sleep`` (not
+    # ``time.sleep``) at the call site below.
+    real_sleep = asyncio.sleep
     deadline = time.monotonic() + start_duration_sec
 
-    def deadline_sleep(*_args, **_kwargs):
+    async def deadline_sleep(*_args, **_kwargs):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise _Phase1Deadline()
-        real_sleep(min(poll_interval_sec, remaining))
+        await real_sleep(min(poll_interval_sec, remaining))
 
     return deadline_sleep
 
@@ -226,7 +229,7 @@ def run_dispatch_all_cycles(
         )
         start_t0 = time.monotonic()
         with patch.object(
-            nvrx_logsage.time,
+            nvrx_logsage.asyncio,
             "sleep",
             _make_deadline_sleep(cycle_duration_sec, poll_interval_sec),
         ):

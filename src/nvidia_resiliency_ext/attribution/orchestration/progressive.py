@@ -27,6 +27,7 @@ MODULE_LOG_ANALYZER_PROGRESSIVE_START = "log_analyzer_progressive_start"
 
 PROGRESSIVE_STATUS_UNSUPPORTED = "unsupported"
 PROGRESSIVE_STATUS_FAILED = "failed"
+PROGRESSIVE_STATUS_STARTED = "started"
 
 
 def normalize_analysis_intent(value: str | None) -> str:
@@ -100,7 +101,15 @@ class ProgressiveLogAnalysisStartTool:
                 status=PROGRESSIVE_STATUS_UNSUPPORTED,
                 message="LogSage progressive start API is not configured",
             ).as_payload()
-            payload["module"] = MODULE_LOG_ANALYZER_PROGRESSIVE_START
-            return payload
+        else:
+            result = await self._analyzer.analyze_logs_rt_start()
+            if isinstance(result, Mapping):
+                payload = dict(result)
+            else:
+                payload = ProgressiveStartResult(
+                    status=PROGRESSIVE_STATUS_FAILED,
+                    message="progressive start returned no payload",
+                ).as_payload()
 
-        return await self._analyzer.analyze_logs_rt_start()
+        payload["module"] = MODULE_LOG_ANALYZER_PROGRESSIVE_START
+        return payload

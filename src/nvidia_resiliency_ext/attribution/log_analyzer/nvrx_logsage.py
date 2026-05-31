@@ -1,5 +1,6 @@
 import argparse
 import ast
+import asyncio
 import logging
 import os
 import random
@@ -50,6 +51,10 @@ from nvidia_resiliency_ext.attribution.orchestration.config import (
     resolved_llm_runtime_kwargs,
 )
 from nvidia_resiliency_ext.attribution.orchestration.llm_output import logsage_recommendation
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    PROGRESSIVE_STATUS_STARTED,
+    ProgressiveStartResult,
+)
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     RECOMMENDATION_CONTINUE,
     RECOMMENDATION_RESTART,
@@ -541,12 +546,12 @@ class NVRxLogAnalyzer(NVRxAttribution):
         self.attribution_dict = {}
         self.exclude_nvrx_logs = bool(self._init_config.get("exclude_nvrx_logs", False))
         self.is_per_cycle = bool(self._init_config.get("is_per_cycle", False))
-        self.repeated_amount = (int(self._init_config.get("repeated_amount", 3)),)
-        self.stop_accumulating_count = (int(self._init_config.get("stop_accumulating_count", 3)),)
-        self.logs_minutes_before_job_end = (
-            int(self._init_config.get("logs_minutes_before_job_end", 20)),
+        self.repeated_amount = int(self._init_config.get("repeated_amount", 3))
+        self.stop_accumulating_count = int(self._init_config.get("stop_accumulating_count", 3))
+        self.logs_minutes_before_job_end = int(
+            self._init_config.get("logs_minutes_before_job_end", 20)
         )
-        self.chunks_per_time = (int(self._init_config.get("chunks_per_time", 5)),)
+        self.chunks_per_time = int(self._init_config.get("chunks_per_time", 5))
         super().__init__(
             preprocess_input=self.analyze_logs,
             attribution=self.llm_analyze,
@@ -557,23 +562,18 @@ class NVRxLogAnalyzer(NVRxAttribution):
     def init_config(self) -> Dict[str, Any]:
         return dict(self._init_config)
 
-    async def analyze_logs_rt_start(self) -> list[ApplicationData]:
-        """
-        Analyzes the logs and returns the application errors.
+    async def analyze_logs_rt_start(self) -> dict[str, str | None]:
+        """Run the progressive-analysis start phase for the configured log path.
 
-        Args:
-            input_data: The input data to analyze.
+        This is a non-result-producing phase: it polls the log file, accumulating
+        per-poll attribution data into ``self.job_inline_data_dict[path]`` as a side
+        effect for a later (history-aware) ``analyze_logs`` call. It does not return
+        the attribution itself.
 
         Returns:
-            application_errors_list_full_purified: The application errors list full purified.
-            application_errors_list_full: The application errors list full.
-            application_errors_list_full_purified_with_rank: The application errors list full purified with rank.
-            application_errors_list_full_with_rank: The application errors list full with rank.
-            error_type: The error type.
-            error_type_with_rank: The error type with rank.
-            error_type_with_rank_and_rank: The error type with rank and rank.
-            error_type_with_rank_and_rank_and_rank: The error type with rank and rank and rank.
-
+            A :class:`~nvidia_resiliency_ext.attribution.orchestration.progressive.ProgressiveStartResult`
+            payload (``status`` / ``message`` / ``handle``) describing the start outcome.
+            The ``module`` key is added by the calling MCP tool.
         """
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg["log_path"]
@@ -588,6 +588,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         if path not in self.temporal_cache_dict:
             self.temporal_cache_dict[path] = {}
+        self.job_inline_data_dict.setdefault(path, [])
         file_offset = 0
         log_lines: list[str] = []
         empty_logs_stop = self.stop_accumulating_count
@@ -651,12 +652,17 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 f"{len(self.job_inline_data_dict[path])}: "
                 f"chunk_data.checkpoint_saved="
                 f"{getattr(chunk_data, 'checkpoint_saved', False)}",
-                flush=True,
             )
 
-            time.sleep(self.chunks_per_time * 60)
+            await asyncio.sleep(self.chunks_per_time * 60)
 
-        return None
+        return ProgressiveStartResult(
+            status=PROGRESSIVE_STATUS_STARTED,
+            message=(
+                f"progressive analysis accumulated "
+                f"{len(self.job_inline_data_dict[path])} chunk(s) for {path}"
+            ),
+        ).as_payload()
 
     async def analyze_logs(self) -> list[ApplicationData]:
         """
@@ -708,7 +714,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 f"[ckpt] analyze_logs (history-aware): OR-reduced "
                 f"checkpoint_saved={chunk_data.checkpoint_saved} "
                 f"across {len(history)} history entries",
-                flush=True,
             )
             return [chunk_data]
 
@@ -916,7 +921,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
             f"cycle_counter={cycle_counter}, "
             f"cycle_counter_dict[{cycle_counter_key}]="
             f"{self.cycle_counter_dict.get(cycle_counter_key)}",
-            flush=True,
         )
 
         last_attribution_dict_chunk = None
@@ -1010,7 +1014,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
             f"is_attribution_current_last={is_attribution_current_last} "
             f"(checkpoint_saved={last_with_errors.checkpoint_saved}, "
             f"cycle_counter={cycle_counter})",
-            flush=True,
         )
 
         if last_with_errors.checkpoint_saved and cycle_counter > 0:
@@ -1019,19 +1022,20 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 "[ckpt] _streaming_attribution: checkpoint_saved bypass FIRED "
                 "→ is_attribution_current_last forced to False; "
                 "repeated-issue STOP override will be skipped",
-                flush=True,
             )
 
         if (
             is_attribution_current_last
-            and self.cycle_counter_dict[cycle_counter_key] == self.repeated_amount - 1
+            and self.cycle_counter_dict.get(cycle_counter_key, 0) == self.repeated_amount - 1
         ):
             auto_resume_output = 'STOP - DONT RESTART IMMEDIATE'
             auto_resume_verbose = "Stop job due to repeated issue"
 
         if is_attribution_current_last:
             if auto_resume_verbose != "Stop job due to repeated issue":
-                self.cycle_counter_dict[cycle_counter_key] += 1
+                self.cycle_counter_dict[cycle_counter_key] = (
+                    self.cycle_counter_dict.get(cycle_counter_key, 0) + 1
+                )
         else:
             self.cycle_counter_dict[cycle_counter_key] = 1
 
@@ -1040,7 +1044,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 logger.info(
                     "[ckpt] _streaming_attribution: checkpoint_saved override "
                     f"FIRED; flipping {auto_resume_output!r} → 'RESTART IMMEDIATE'",
-                    flush=True,
                 )
                 auto_resume_output = "RESTART IMMEDIATE"
                 auto_resume_verbose = (
@@ -1049,8 +1052,9 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     + auto_resume_verbose[1:]
                 )
 
-        logger.info("Policy suggestion and Error attribution started")
-        logger.info(auto_resume_output)
+        logger.info("Policy recommendation and error attribution:")
+        logger.info("Recommendation: ",auto_resume_output)
+        logger.info("Attribution: ", attribution_output)
 
         return ErrorAttribution(
             application_errors_full=application_errors_full,

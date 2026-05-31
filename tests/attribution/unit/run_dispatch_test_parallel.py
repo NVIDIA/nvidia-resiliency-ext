@@ -190,8 +190,13 @@ def main() -> int:
         writer_rc = writer.wait()
         analyzer_rc = analyzer.wait()
 
+    # Both children have already exited (wait() returned), so their stdout
+    # pipes are at EOF and each stream thread will drain the remaining buffered
+    # output and finish on its own. Give them a few seconds to flush the final
+    # cycle's result + the summary block before we exit (daemon threads would
+    # otherwise be killed mid-flush, truncating the tail).
     for t in threads:
-        t.join(timeout=2.0)
+        t.join(timeout=5.0)
 
     print(
         f"\n[driver] writer exit={writer_rc}, analyzer exit={analyzer_rc}",
