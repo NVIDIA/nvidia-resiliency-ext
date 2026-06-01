@@ -26,7 +26,7 @@ flowchart TB
         AN[Analyzer]
     end
 
-    subgraph log_analyzer_pkg [log_analyzer]
+    subgraph orchestration_pkg [orchestration]
         LA[LogAnalyzer]
         SP[slurm_parser / SplitlogTracker]
     end
@@ -40,7 +40,7 @@ flowchart TB
         RAP["run_attribution_pipeline"]
         LS["LogSage\n(MCP or in-process)"]
         FR["trace_analyzer\nextract + analyze_fr_dump"]
-        MERGE["log_fr_analyzer\nmerge_log_fr_llm"]
+        MERGE["log_fr_analyzer\noptional merge_log_fr_llm"]
         PP[postprocessing]
     end
 
@@ -76,7 +76,7 @@ flowchart LR
     A --> LS2[LogSage only]
     B --> FR2[FR dump analysis only]
     C --> PAR[LogSage + FR when dump path found\nparallel when both]
-    D --> PAR2[Same as LOG_AND_TRACE]
+    D --> PAR2[Same as LOG_AND_TRACE\nwhen FR data exists]
     PAR2 --> M[merge_log_fr_llm]
 ```
 
@@ -87,7 +87,7 @@ flowchart TB
     AN[Analyzer]
     LA[LogAnalyzer]
 
-    subgraph pipeline [log_analyzer/analysis_pipeline]
+    subgraph pipeline [orchestration/analysis_pipeline]
         AP[run_attribution_pipeline]
     end
 
@@ -119,11 +119,11 @@ flowchart TB
 ### 2.4 Proposed attribution controller boundary
 
 The long-term boundary should separate **frontends**, an **AttributionController**, and
-**analysis engines**. Both `ft_launcher` and `nvrx_attrsvc` need attribution, but neither
+**analysis engines**. Both `ft_launcher` and `nvrx-attrsvc` need attribution, but neither
 should own the full set of attribution internals.
 
 ```text
-[ft_launcher | nvrx_attrsvc | future callers]
+[ft_launcher | nvrx-attrsvc | future callers]
         <>
 AttributionController
         <>
@@ -133,7 +133,7 @@ AttributionController
 The **frontend** layer owns caller-specific lifecycle and transport:
 
 - `ft_launcher`: worker monitoring, restart timing, restart budget, and applying the final restart/stop decision.
-- `nvrx_attrsvc`: HTTP routing, FastAPI lifecycle, request/response models, service auth/rate limits, and service health endpoints.
+- `nvrx-attrsvc`: HTTP routing, FastAPI lifecycle, request/response models, service auth/rate limits, and service health endpoints.
 - Future callers: CLI tools, batch jobs, notebook/debug workflows, or other control planes.
 
 The **AttributionController** owns attribution semantics and state:
@@ -144,21 +144,21 @@ The **AttributionController** owns attribution semantics and state:
 - log analysis orchestration
 - FR discovery and FR analysis orchestration
 - result normalization into a caller-stable shape
-- Slack and Elasticsearch/dataflow posting, with idempotency for side effects
+- Slack and direct dataflow HTTP posting, with idempotency for side effects
 - dry-run behavior and attribution-level status
 
 The controller should have one contract with two deployment modes:
 
 ```text
 Embedded mode:
-external client <> nvrx_attrsvc process
+external client <> nvrx-attrsvc process
                     └── AttributionController object <> MCP
 
 Hosted mode:
 ft_launcher <> AttributionController process <> MCP
 ```
 
-For `nvrx_attrsvc`, the controller can be embedded because the service process already provides
+For `nvrx-attrsvc`, the controller can be embedded because the service process already provides
 the process boundary, HTTP lifecycle, and health surface. For `ft_launcher`, the controller should
 be hosted as a separate long-lived process so launcher code does not own attribution state,
 side-effect idempotency, cache, or MCP lifecycle.
@@ -169,7 +169,7 @@ cache, credentials, and postprocessing config. The analysis section uses
 `analysis.engine_backend` (`lib` or `mcp`) for the LogSage/FR execution backend; that is separate
 from whether the controller itself is embedded or hosted as a process. Controller config also
 includes LLM knobs, cache persistence, timeouts, LLM API key policy, Slack,
-Elasticsearch/dataflow, dry-run behavior, and non-secret deployment metadata. Avoid a mutable
+direct dataflow HTTP, dry-run behavior, and non-secret deployment metadata. Avoid a mutable
 public `configure(...)` API unless dynamic reconfiguration becomes a real requirement.
 
 The controller contract should stay small:
@@ -208,13 +208,13 @@ implemented using MCP transport, it should expose service-grade methods such as
 | Area | Responsibility |
 |------|------------------|
 | **`controller.py`** | **`AttributionController`** and nested config dataclasses: frontend-facing attribution boundary; owns startup config, LLM API key validation, cache persistence, health/status policy, postprocessing wiring, dataflow/Slack stats, and delegates analysis to **`Analyzer`**. |
-| **`analyzer/`** | **`Analyzer`** (`engine.py`): path policy, `RequestCoalescer`, `submit` / `analyze`, splitlog branches; delegates heavy lifting to **`LogAnalyzer`**. Re-exports pipeline symbols from `svc.analysis_pipeline` for convenience. |
+| **`analyzer/`** | **`Analyzer`** (`engine.py`): path policy, `RequestCoalescer`, `submit` / `analyze`, splitlog branches; delegates heavy lifting to **`LogAnalyzer`**. Re-exports pipeline symbols from `orchestration.analysis_pipeline` for convenience. |
 | **`log_analyzer/`** | LogSage package surface only: `NVRxLogAnalyzer` implementation plus its minimal `__init__.py` export. It no longer owns orchestration, parsing, splitlog, or config/types modules. |
-| **`svc/`** | Log-side service/orchestration subsystem: **`LogAnalyzer`**, `Job` / `FileInfo`, SLURM parsing, splitlog polling, **`run_attribution_pipeline`** / **`AnalysisPipelineMode`**, `LogAnalyzerConfig` and result dataclasses, path validation, wire keys (`RESP_*`), and LogSage execution config/runtime helpers. |
+| **`orchestration/`** | Log-side orchestration subsystem: **`LogAnalyzer`**, `Job` / `FileInfo`, SLURM parsing, splitlog polling, **`run_attribution_pipeline`** / **`AnalysisPipelineMode`**, `LogAnalyzerConfig` and result dataclasses, path validation, wire keys (`RESP_*`), and LogSage execution config/runtime helpers. |
 | **`coalescing/`** | `RequestCoalescer`: dedupe concurrent analysis for the same path; cache entries as `LogAnalysisCoalesced` (LogSage dict + optional FR fields + optional LLM merge summary) |
 | **`trace_analyzer/`** | Flight-recorder dump discovery/analysis (`extract_fr_dump_path`, `analyze_fr_dump`, `CollectiveAnalyzer`, etc.) |
-| **`combined_log_fr/`** | **log + FR LLM fusion** (`CombinedLogFR`); MCP tool **`log_fr_analyzer`**; shared `merge_log_fr_llm()` for `LOG_AND_TRACE_WITH_LLM` |
-| **`postprocessing/`** | Build records, optional Elasticsearch post, Slack; `post_analysis_items` / `post_results` after analysis |
+| **`combined_log_fr/`** | MCP tool **`log_fr_analyzer`** for one-call LogSage + FR collection; optional **log + FR LLM fusion** (`CombinedLogFR`, `merge_log_fr_llm()`) for `LOG_AND_TRACE_WITH_LLM` |
+| **`postprocessing/`** | Build records, optional direct dataflow HTTP post, Slack; `post_analysis_items` / `post_results` run as best-effort observability after analysis |
 | **`mcp_integration/`** | Subprocess MCP client/server so LogSage can run isolated from the caller (see `mcp_integration/README.md`) |
 
 ---
@@ -225,7 +225,7 @@ implemented using MCP transport, it should expose service-grade methods such as
 2. **Analyze** (`Analyzer.analyze`): resolve job mode, file + optional `wl_restart`; on cache hit return from `RequestCoalescer`; on miss call **`_run_llm_analysis`** → **`LogAnalyzer.run_attribution_for_path`**.
 3. **`run_attribution_for_path`** loads log text via **MCP** or **in-process** LogSage (`LogSageExecutionConfig.use_lib_log_analysis`), then runs **`run_attribution_pipeline`**:
    - **`LogAnalyzer.analysis_pipeline_mode`** selects log-only, trace-only, log+trace, or log+trace+LLM merge. The default **`Analyzer`** constructs **`LogAnalyzer`** with **`LOG_AND_TRACE`**; override by passing a custom **`log_analyzer`** (or embed **`LogAnalyzer`** directly).
-4. **Validate** LogSage-shaped dict (unless trace-only); **post** per-cycle items through `postprocessing.post_analysis_items` (and FR-only path when there are no cycles but FR data exists).
+4. **Validate** LogSage-shaped dict (unless trace-only); **schedule** best-effort observability through `postprocessing.post_analysis_items` (including the FR-only path when there are no cycles but FR data exists). Dataflow/Slack latency and failures are not on the launcher response path.
 5. **Return** `LogAnalysisCoalesced` to the coalescer; callers receive `LogAnalysisCycleResult` / `LogAnalysisSplitlogResult`.
 
 ---
@@ -241,7 +241,8 @@ These concepts drive `Job`, `FileInfo`, and HTTP query parameters such as `wl_re
 
 Hierarchy (conceptual): **Job** → scheduler-restart blocks → within each, one or more **workload** cycles in the same file or across files.
 
-Implementation details: `log_analyzer/job.py`, `splitlog.py`, `slurm_parser.py`.
+Implementation details: `orchestration/job.py`, `orchestration/splitlog.py`,
+`orchestration/slurm_parser.py`.
 
 ---
 
@@ -259,7 +260,7 @@ If no markers are found, the whole file is treated as a single cycle.
 
 ## 7. Configuration: `Analyzer` ctor vs `LogAnalyzerConfig` vs `LogSageExecutionConfig`
 
-Do **not** conflate the bundled type **`LogAnalyzerConfig`** (`log_analyzer/types.py`) with the **`Analyzer`** constructor. They overlap conceptually but are wired differently.
+Do **not** conflate the bundled type **`LogAnalyzerConfig`** (`orchestration/types.py`) with the **`Analyzer`** constructor. They overlap conceptually but are wired differently.
 
 ### 7.1 `Analyzer` (`analyzer/engine.py`)
 
@@ -267,7 +268,7 @@ Constructed with **keyword and positional arguments**, not `config=...`:
 
 - **`allowed_root`** (required): absolute path prefix for validation.
 - **`use_lib_log_analysis`** (default `False`): lib vs MCP when **`log_sage`** is omitted; ignored when **`log_sage`** is provided (then use `log_sage.use_lib_log_analysis`).
-- **`log_sage`** (optional): a **`LogSageExecutionConfig`** (`log_analyzer/config.py`) — LLM knobs, MCP log level, lib/MCP switch. If omitted, defaults are built from **`use_lib_log_analysis`** only.
+- **`log_sage`** (optional): a **`LogSageExecutionConfig`** (`orchestration/config.py`) — LLM knobs, MCP log level, lib/MCP switch. If omitted, defaults are built from **`use_lib_log_analysis`** only.
 - **`compute_timeout`**, **`grace_period_seconds`**: passed into **`RequestCoalescer`** when you do not inject a custom **`coalescer`**.
 - Optional DI: **`coalescer`**, **`log_analyzer`**, **`trace_analyzer`**.
 
@@ -286,11 +287,11 @@ Analyzer(
 
 `cfg.analysis_pipeline_mode` is **not** applied unless you build **`LogAnalyzer(..., analysis_pipeline_mode=cfg.analysis_pipeline_mode)`** and pass it as **`log_analyzer=`**.
 
-### 7.2 `LogAnalyzerConfig` (`log_analyzer/types.py`)
+### 7.2 `LogAnalyzerConfig` (`orchestration/types.py`)
 
 A **documentation / aggregation** dataclass: `allowed_root`, LLM defaults, `use_lib_log_analysis`, **`analysis_pipeline_mode`**. Its **`log_sage_execution()`** method returns **`LogSageExecutionConfig`** for **`LogAnalyzer`** / **`Analyzer(log_sage=...)`**. It is **not** passed wholesale into **`Analyzer`**.
 
-### 7.3 `LogSageExecutionConfig` (`log_analyzer/config.py`)
+### 7.3 `LogSageExecutionConfig` (`orchestration/config.py`)
 
 The subset that **`LogSageRunner`** / **`LogAnalyzer`** actually consume for LogSage and MCP: **`use_lib_log_analysis`**, **`mcp_server_log_level`**, **`llm_model`**, **`llm_base_url`**, **`llm_temperature`**, **`llm_top_p`**, **`llm_max_tokens`**.
 
@@ -304,28 +305,56 @@ The subset that **`LogSageRunner`** / **`LogAnalyzer`** actually consume for Log
 
 ## 8. LogSage output shape and parsing
 
-**Parsing structured text:** `svc.llm_output.parse_llm_response` → `ParsedLLMResponse` (`auto_resume`, `auto_resume_explanation`, `attribution_text`, `checkpoint_saved_flag`). Expected LLM layout includes a first-line decision, explanation, `Attribution:` section, and checkpoint flag.
+**Parsing structured text:** `NVRxLogAnalyzer.print_output` converts each five-field LogSage cycle tuple into a structured `RawAnalysisResultItem` once. Downstream code reuses those parsed fields instead of reparsing `raw_text`.
 
 **Typical success dict** from the log analyzer module (MCP or lib), simplified:
 
 ```text
 {
   "module": "log_analyzer",
-  "state": "complete" | "CONTINUE" | "STOP" | ...   # see live code for exact strings
-  "result": [ ["<raw_llm_text>", ...metadata...], ... ]   # per cycle
+  "recommendation": {
+    "action": "STOP" | "RESTART" | "CONTINUE" | "UNKNOWN" | "TIMEOUT",
+    "source": "log_analyzer"
+  },
+  "result": [
+    {
+      "raw_text": "<raw_llm_text>",
+      "auto_resume": "<parsed decision>",
+      "auto_resume_explanation": "<parsed explanation>",
+      "attribution_text": "<parsed attribution text>",
+      "checkpoint_saved_flag": 0 | 1,
+      "primary_issues": ["..."],
+      "secondary_issues": ["..."],
+      "action": "STOP" | "RESTART" | "CONTINUE" | "UNKNOWN"
+    },
+    ...
+  ]   # per cycle
 }
 ```
 
-**Timeout / error** may set `"state": "timeout"` or `"error"` with `"result": []` and an `"error"` message.
+**Timeout / error** uses `"result": []` plus `recommendation`; timeout/error
+payloads may also include `"state": "timeout"` and an `"error"` message for
+diagnostics. Consumers should still branch on `recommendation.action`, not
+`state`, for restart/stop semantics.
 
-Exact state strings and HTTP semantics for clients are specified in the **service** document; the library returns these dicts to `LogAnalyzer` and postprocessing.
+`log_fr_analyzer` uses the same top-level shape with
+`"module": "log_fr_analyzer"`. It may also include `fr` and, when
+`LOG_AND_TRACE_WITH_LLM` ran with FR data present, `llm_merged_summary`
+alongside the LogSage `result` and `recommendation`.
+`fr_analyzer` also includes `result` and `recommendation`; because FR is
+monitor-only, its recommendation action is `UNKNOWN`.
+
+**Flight recorder output:** FR analysis reports missing/hanging ranks for
+monitoring and postprocessing (`fr_analysis`, `s_fr_*`). It does not decide
+workload stop/restart policy and does not override the LogSage-derived
+`recommendation.action`.
 
 ---
 
 ## 9. File size and concurrent writes
 
 - No hard max file size in the library; very large files are read fully into memory for analysis (context window still limits effective LLM input).
-- **While writer is active:** reads are single snapshot; UTF-8 with `errors='ignore'`; optional minimum size checks (`MIN_FILE_SIZE_KB` in `log_analyzer/config.py`).
+- **While writer is active:** reads are single snapshot; UTF-8 with `errors='ignore'`; optional minimum size checks (`MIN_FILE_SIZE_KB` in `orchestration/config.py`).
 - Splitlog timing (analyze after next file appears, etc.) interacts with **service** polling; the library reads whatever path it is given.
 
 ---
@@ -354,8 +383,9 @@ attribution/
 ├── combined_log_fr/         # CombinedLogFR + merge_log_fr_llm
 ├── coalescing/              # RequestCoalescer, LogAnalysisCoalesced, coalesced_cache
 ├── controller.py            # AttributionController boundary and config
-├── log_analyzer/            # LogAnalyzer, analysis_pipeline, job, splitlog, slurm_parser, nvrx_logsage, types, …
+├── log_analyzer/            # NVRxLogAnalyzer implementation and package export
 ├── mcp_integration/         # MCP client/server (see mcp_integration/README.md)
+├── orchestration/           # LogAnalyzer, analysis_pipeline, job, splitlog, slurm_parser, types, config
 ├── postprocessing/          # Dataflow record, poster, Slack
 ├── trace_analyzer/          # FR dumps, collective analysis
 └── straggler/               # Profiling utilities; separate from LogAnalyzer attribution

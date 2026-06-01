@@ -29,7 +29,7 @@ from langchain_openai import ChatOpenAI
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[4]))
 from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
-from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL
+from nvidia_resiliency_ext.attribution.orchestration.config import DEFAULT_LLM_BASE_URL
 
 logger = logging.getLogger(__name__)
 

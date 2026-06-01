@@ -188,9 +188,11 @@ class FRAnalysisResult:
 def fr_result_from_mcp_module_response(resp: Any) -> Optional[FRAnalysisResult]:
     """Build :class:`FRAnalysisResult` from :meth:`NVRxMCPClient.run_module` / ``run_module_resilient`` JSON.
 
-    Expects the usual MCP envelope ``{\"result\": ...}`` where ``result`` is either the structured
-    dict from :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution.CollectiveAnalyzer`
-    (``analysis_text`` + ``hanging_ranks``) or a legacy plain string (hanging ranks only).
+    Expects the usual MCP envelope ``{\"result\": ..., \"recommendation\": ...}``.
+    ``result`` is either the structured dict from
+    :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution.CollectiveAnalyzer`
+    (``analysis_text`` + ``hanging_ranks``) or a plain string (hanging ranks only).
+    The recommendation is intentionally ignored because FR is monitor-only.
     """
     if not isinstance(resp, dict):
         return None

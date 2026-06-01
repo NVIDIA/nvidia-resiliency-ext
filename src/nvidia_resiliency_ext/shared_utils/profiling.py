@@ -31,9 +31,12 @@ class ProfilingEvent(Enum):
     FAILURE_DETECTED = "failure_detected"
     WORKER_TERMINATED = "worker_terminated"
     RENDEZVOUS_STARTED = "rendezvous_started"
+    HEALTH_CHECK_COMPLETED = "health_check_completed"
     RENDEZVOUS_COMPLETED = "rendezvous_completed"
     WORKER_START_STARTED = "worker_start_started"
     WORKER_START_COMPLETED = "worker_start_completed"
+    ATTRIBUTION_GET_STARTED = "attribution_get_started"
+    ATTRIBUTION_GET_COMPLETED = "attribution_get_completed"
 
 
 class FaultToleranceProfiler:

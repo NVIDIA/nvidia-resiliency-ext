@@ -14,14 +14,31 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Resource, TextContent, Tool
 
-from nvidia_resiliency_ext.attribution.base import AttributionState
+from nvidia_resiliency_ext.attribution.logging_utils import bounded_log_value
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import (
     AttributionModuleRegistry,
     global_registry,
     serialize_result,
 )
+from nvidia_resiliency_ext.attribution.orchestration.llm_output import recommendation_payload
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+    PROGRESSIVE_STATUS_FAILED,
+)
+from nvidia_resiliency_ext.attribution.orchestration.types import (
+    AttributionRecommendation,
+    LogSageAnalysisResult,
+)
+from nvidia_resiliency_ext.attribution.orchestration.utils import (
+    LOG_ANALYZER_MODULE,
+    log_analyzer_result_payload,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _unknown_recommendation_payload(module_name: str) -> dict[str, str]:
+    return recommendation_payload(AttributionRecommendation(source=module_name))
 
 
 class NVRxMCPServer:
@@ -119,10 +136,26 @@ class NVRxMCPServer:
                     logger.warning("Error executing tool '%s': %s", name, e)
                 else:
                     logger.error("Error executing tool '%s': %s", name, e, exc_info=True)
+                if name == MODULE_LOG_ANALYZER_PROGRESSIVE_START:
+                    error_body = {
+                        "module": name,
+                        "status": PROGRESSIVE_STATUS_FAILED,
+                        "message": str(e),
+                        "handle": None,
+                    }
+                elif self.registry.get_module_metadata(name):
+                    error_body = {
+                        "module": name,
+                        "result": [],
+                        "recommendation": _unknown_recommendation_payload(name),
+                        "error": str(e),
+                    }
+                else:
+                    error_body = {"error": str(e), "tool": name, "arguments": arguments}
                 return [
                     TextContent(
                         type="text",
-                        text=json.dumps({"error": str(e), "tool": name, "arguments": arguments}),
+                        text=json.dumps(error_body),
                     )
                 ]
 
@@ -186,10 +219,9 @@ class NVRxMCPServer:
         """Handle result retrieval request."""
         result_id = arguments["result_id"]
 
-        # Search for result in cache
-        for key, value in self.registry.iter_results_cache_items():
-            if result_id in key:
-                return [TextContent(type="text", text=serialize_result(value))]
+        result = self.registry.get_cached_result_by_id(result_id)
+        if result is not None:
+            return [TextContent(type="text", text=serialize_result(result))]
 
         return [
             TextContent(type="text", text=json.dumps({"error": f"Result not found: {result_id}"}))
@@ -209,29 +241,64 @@ class NVRxMCPServer:
         else:
             instance = self.module_instances[module_name]
 
-        # Extract input data
-        logger.info(f"arguments: {arguments_with_defaults}")
+        logger.info(
+            "module=%s argument_keys=%s",
+            module_name,
+            sorted(arguments_with_defaults.keys()),
+        )
+        logger.debug(
+            "module=%s arguments=%s", module_name, bounded_log_value(arguments_with_defaults)
+        )
 
         # Run the attribution with defaults applied
         result = await instance.run(arguments_with_defaults)
 
-        # Generate result ID and cache
-        result_id = self.registry.cache_result(module_name, arguments, result)
+        if module_name == MODULE_LOG_ANALYZER_PROGRESSIVE_START:
+            response = dict(result) if isinstance(result, dict) else {"status": str(result)}
+            response.setdefault("module", module_name)
+            return [TextContent(type="text", text=serialize_result(response))]
+
+        result_id = self.registry.result_id_for_args(arguments_with_defaults)
 
         # Handle tuple results (result, AttributionState)
         actual_result = result
-        state = AttributionState.CONTINUE
 
         if isinstance(result, tuple) and len(result) == 2:
-            actual_result, state = result
+            actual_result, _state = result
 
-        response = {
-            "module": module_name,
-            "result_id": result_id,
-            "resource_uri": f"attribution://{module_name}/{result_id}",
-            "result": actual_result,
-            "state": state.name if isinstance(state, AttributionState) else str(state),
-        }
+        if module_name == LOG_ANALYZER_MODULE and isinstance(
+            actual_result, (list, LogSageAnalysisResult)
+        ):
+            response = log_analyzer_result_payload(actual_result, module=module_name)
+            response.update(
+                {
+                    "result_id": result_id,
+                    "resource_uri": f"attribution://{module_name}/{result_id}",
+                }
+            )
+        elif (
+            isinstance(actual_result, dict)
+            and isinstance(actual_result.get("result"), list)
+            and isinstance(actual_result.get("recommendation"), dict)
+        ):
+            response = dict(actual_result)
+            response.setdefault("module", module_name)
+            response.update(
+                {
+                    "result_id": result_id,
+                    "resource_uri": f"attribution://{module_name}/{result_id}",
+                }
+            )
+        else:
+            response = {
+                "module": module_name,
+                "result_id": result_id,
+                "resource_uri": f"attribution://{module_name}/{result_id}",
+                "result": actual_result,
+                "recommendation": _unknown_recommendation_payload(module_name),
+            }
+
+        self.registry.cache_result_by_id(module_name, result_id, response)
 
         return [TextContent(type="text", text=serialize_result(response))]
 

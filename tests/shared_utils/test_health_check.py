@@ -20,11 +20,24 @@ import unittest
 from unittest.mock import MagicMock, mock_open, patch
 
 from nvidia_resiliency_ext.shared_utils.health_check import (
+    AttributionService,
     NicHealthCheck,
     NVLHealthCheck,
     PciMixin,
     PynvmlMixin,
 )
+
+
+def _attribution_item(raw_text, reason_code):
+    return {
+        "raw_text": raw_text,
+        "auto_resume": raw_text.split("\n", 1)[0],
+        "auto_resume_explanation": "",
+        "attribution_text": "",
+        "checkpoint_saved_flag": 0,
+        "primary_issues": [],
+        "secondary_issues": [],
+    }
 
 
 class TestPynvmlMixin(unittest.TestCase):
@@ -547,6 +560,377 @@ class TestNVLHealthCheck(unittest.TestCase):
                 result = checker._perform_health_check()
                 self.assertTrue(result)
                 mock_check.assert_called_once_with(0)
+
+
+class TestAttributionService(unittest.TestCase):
+
+    def test_default_decision_timeout_is_owned_by_service(self):
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        none_service = AttributionService(
+            endpoint="http://attr.example:8000/",
+            decision_timeout=None,
+        )
+
+        self.assertEqual(
+            service.decision_timeout, AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS
+        )
+        self.assertEqual(
+            none_service.decision_timeout, AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS
+        )
+        self.assertEqual(AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS, 60.0)
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_http_endpoint_posts_progressive_intent_to_logs_route(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        with patch.dict(
+            os.environ,
+            {
+                "SLURM_JOB_USER": "alice",
+                "USER": "fallback-user",
+                "SLURM_ARRAY_JOB_ID": "12345",
+                "SLURM_JOB_ID": "67890",
+            },
+        ):
+            service._do_submit_log("/tmp/train.log")
+
+        mock_client.assert_called_once_with(base_url="http://attr.example:8000", timeout=2.0)
+        client.post.assert_called_once_with(
+            "/logs",
+            json={
+                "log_path": "/tmp/train.log",
+                "user": "alice",
+                "job_id": "12345",
+                "analysis_intent": "progressive",
+            },
+            headers={"accept": "application/json"},
+        )
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_http_endpoint_posts_terminal_intent_to_logs_route(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        with patch.dict(
+            os.environ,
+            {
+                "SLURM_JOB_USER": "alice",
+                "SLURM_ARRAY_JOB_ID": "12345",
+            },
+        ):
+            service._do_submit_log("/tmp/train.log", analysis_intent="terminal")
+
+        mock_client.assert_called_once_with(base_url="http://attr.example:8000", timeout=2.0)
+        client.post.assert_called_once_with(
+            "/logs",
+            json={
+                "log_path": "/tmp/train.log",
+                "user": "alice",
+                "job_id": "12345",
+                "analysis_intent": "terminal",
+            },
+            headers={"accept": "application/json"},
+        )
+
+    def test_submit_log_posts_progressive_work_synchronously(self):
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        with patch.object(service, "_do_submit_log") as mock_submit:
+            service._submit_log("/tmp/train.log")
+
+        self.assertEqual(service._last_submitted, "/tmp/train.log")
+        mock_submit.assert_called_once_with(
+            "/tmp/train.log",
+            analysis_intent="progressive",
+        )
+
+    def test_request_terminal_analysis_posts_terminal_work_synchronously(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
+        service._last_submitted = "/tmp/train.log"
+
+        with (
+            patch.object(service, "_do_submit_log") as mock_submit,
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
+                return_value=10.0,
+            ),
+        ):
+            service.request_terminal_analysis()
+
+        mock_submit.assert_called_once_with(
+            "/tmp/train.log",
+            analysis_intent="terminal",
+        )
+        self.assertEqual(service._terminal_deadline, 17.0)
+
+    def test_request_terminal_analysis_skips_without_submitted_log(self):
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        with patch.object(service, "_do_submit_log") as mock_submit:
+            service.request_terminal_analysis()
+
+        mock_submit.assert_not_called()
+
+    def test_get_last_result_allows_close_without_submitted_log(self):
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        should_stop = service.get_last_result()
+
+        self.assertFalse(should_stop)
+
+    def test_get_last_result_uses_remaining_decision_budget(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
+        service._last_submitted = "/tmp/train.log"
+        service._terminal_deadline = 20.0
+
+        with (
+            patch.object(service, "_get_results", return_value=False) as mock_get,
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
+                return_value=16.5,
+            ),
+        ):
+            should_stop = service.get_last_result()
+
+        self.assertFalse(should_stop)
+        mock_get.assert_called_once_with("/tmp/train.log", timeout=2.0)
+
+    def test_terminal_analysis_does_not_extend_existing_decision_budget(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
+        service._last_submitted = "/tmp/train.log"
+        service._terminal_deadline = 20.0
+
+        with (
+            patch.object(service, "_do_submit_log") as mock_submit,
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
+                return_value=19.0,
+            ),
+        ):
+            service.request_terminal_analysis()
+
+        self.assertEqual(service._terminal_deadline, 20.0)
+        mock_submit.assert_called_once_with(
+            "/tmp/train.log",
+            analysis_intent="terminal",
+        )
+
+    def test_get_last_result_uses_final_get_after_decision_budget_expires(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
+        service._last_submitted = "/tmp/train.log"
+        service._terminal_deadline = 20.0
+
+        with (
+            patch.object(service, "_get_results", return_value=True) as mock_get,
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
+                return_value=21.0,
+            ),
+        ):
+            should_stop = service.get_last_result()
+
+        self.assertTrue(should_stop)
+        mock_get.assert_called_once_with("/tmp/train.log", timeout=2.0)
+
+    def test_get_last_result_uses_default_get_timeout_with_remaining_budget(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
+        service._last_submitted = "/tmp/train.log"
+        service._terminal_deadline = 20.0
+
+        with (
+            patch.object(service, "_get_results", return_value=None) as mock_get,
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
+                return_value=19.8,
+            ),
+        ):
+            should_stop = service.get_last_result()
+
+        self.assertIsNone(should_stop)
+        mock_get.assert_called_once_with("/tmp/train.log", timeout=2.0)
+
+    def test_get_last_result_profiles_wait_until_decision(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
+        service._last_submitted = "/tmp/train.log"
+        service._terminal_deadline = 20.0
+
+        with (
+            patch.object(service, "_get_results", side_effect=[None, True]),
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
+                return_value=10.0,
+            ),
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.record_profiling_event"
+            ) as record_event,
+        ):
+            self.assertIsNone(service.get_last_result(node_id="node-a"))
+            self.assertTrue(service.get_last_result(node_id="node-a"))
+
+        self.assertEqual(record_event.call_args_list[0].args[0].value, "attribution_get_started")
+        self.assertEqual(record_event.call_args_list[0].kwargs, {"node_id": "node-a"})
+        self.assertEqual(record_event.call_args_list[1].args[0].value, "attribution_get_completed")
+        self.assertEqual(
+            record_event.call_args_list[1].kwargs,
+            {"node_id": "node-a"},
+        )
+
+    def test_get_last_result_profiles_budget_expiry_as_fail_open(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
+        service._last_submitted = "/tmp/train.log"
+        service._terminal_deadline = 20.0
+        service._get_started_recorded = True
+
+        with (
+            patch.object(service, "_get_results", return_value=None) as mock_get,
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
+                return_value=21.25,
+            ),
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.record_profiling_event"
+            ) as record_event,
+        ):
+            should_stop = service.get_last_result(node_id="node-a")
+
+        self.assertFalse(should_stop)
+        mock_get.assert_called_once_with("/tmp/train.log", timeout=2.0)
+        record_event.assert_called_once()
+        self.assertEqual(record_event.call_args.args[0].value, "attribution_get_completed")
+        self.assertEqual(
+            record_event.call_args.kwargs,
+            {"node_id": "node-a"},
+        )
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_http_endpoint_omits_job_metadata_when_env_unset(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        with patch.dict(os.environ, {}, clear=True):
+            service._do_submit_log("/tmp/train.log")
+
+        client.post.assert_called_once_with(
+            "/logs",
+            json={
+                "log_path": "/tmp/train.log",
+                "analysis_intent": "progressive",
+            },
+            headers={"accept": "application/json"},
+        )
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_non_http_endpoint_does_not_create_http_client(self, mock_client):
+        service = AttributionService(endpoint="grpc://attr.example:50050")
+
+        service._do_submit_log("/tmp/train.log")
+
+        mock_client.assert_not_called()
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_get_results_returns_stop_decision(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "recommendation": {
+                "action": "STOP",
+                "reason": "STOP - DONT RESTART",
+                "source": "log_analyzer",
+            },
+            "result": {
+                "module": "log_analyzer",
+                "result_id": "abc123",
+                "resource_uri": "attribution://log_analyzer/abc123",
+                "result": [_attribution_item("raw attribution item", "UNKNOWN")],
+            },
+            "status": "completed",
+        }
+        client.get.return_value = response
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        should_stop = service._get_results("/tmp/train.log")
+
+        self.assertTrue(should_stop)
+        mock_client.assert_called_once_with(base_url="http://attr.example:8000", timeout=2.0)
+        client.get.assert_called_once_with(
+            "/logs",
+            params={"log_path": "/tmp/train.log", "wait": False},
+            headers={"accept": "application/json"},
+        )
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_get_results_maps_restart_recommendation_to_no_stop(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "recommendation": {
+                "action": "RESTART",
+                "reason": "RESTART IMMEDIATE",
+                "source": "log_analyzer",
+            },
+            "result": {
+                "module": "log_analyzer",
+                "result": [_attribution_item("RESTART IMMEDIATE", "RESTART_IMMEDIATE")],
+            },
+            "status": "completed",
+        }
+        client.get.return_value = response
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        should_stop = service._get_results("/tmp/train.log")
+
+        self.assertFalse(should_stop)
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_get_results_treats_non_completed_status_as_not_ready(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "status": "in_flight",
+            "recommendation": {
+                "action": "UNKNOWN",
+                "reason": "analysis still running",
+                "source": "log_analyzer",
+            },
+        }
+        client.get.return_value = response
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        should_stop = service._get_results("/tmp/train.log")
+
+        self.assertIsNone(should_stop)
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_get_results_maps_continue_recommendation_to_no_stop(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "recommendation": {
+                "action": "CONTINUE",
+                "reason": "training cycle still running",
+                "source": "log_analyzer",
+            },
+            "result": {
+                "module": "log_analyzer",
+                "result": [_attribution_item("ERRORS NOT FOUND", "NO_ERRORS")],
+            },
+            "status": "completed",
+        }
+        client.get.return_value = response
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        should_stop = service._get_results("/tmp/train.log")
+
+        self.assertFalse(should_stop)
 
 
 if __name__ == "__main__":

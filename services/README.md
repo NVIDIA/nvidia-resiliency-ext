@@ -6,8 +6,8 @@ Automated log analysis and failure attribution for distributed training jobs.
 
 | Component | Description | Documentation |
 |-----------|-------------|---------------|
-| **nvrx-attrsvc** | FastAPI server for LLM-based log analysis | [nvrx_attrsvc/README.md](nvrx_attrsvc/README.md) |
-| **nvrx-smonsvc** | SLURM job monitor for automatic log submission | [nvrx_smonsvc/README.md](nvrx_smonsvc/README.md) |
+| **nvrx-attrsvc** | FastAPI server for LLM-based log analysis | [attrsvc/README.md](attrsvc/README.md) |
+| **nvrx-smonsvc** | SLURM job monitor for automatic log submission | [smonsvc/README.md](smonsvc/README.md) |
 
 See component READMEs for quick start, configuration, and API details.
 
@@ -43,8 +43,8 @@ Periodically snapshot service endpoints for debugging:
 ./scripts/snapshot_services.sh hostname
 
 # Individual services (in respective directories)
-./nvrx_attrsvc/snapshot_attrsvc.sh hostname 8000
-./nvrx_smonsvc/deploy/snapshot_smonsvc.sh hostname 8100
+./attrsvc/deploy/snapshot_attrsvc.sh hostname 8000
+./smonsvc/deploy/snapshot_smonsvc.sh hostname 8100
 ```
 
 Configure via environment: `SNAPSHOT_INTERVAL`, `SNAPSHOT_OUTPUT_DIR`.
@@ -53,12 +53,11 @@ Configure via environment: `SNAPSHOT_INTERVAL`, `SNAPSHOT_OUTPUT_DIR`.
 
 | Path | Description |
 |------|-------------|
-| `nvrx_attrsvc/` | Attribution service package |
-| `nvrx_smonsvc/` | SLURM monitor package |
+| `attrsvc/` | Attribution service deployment docs and assets |
+| `smonsvc/` | SLURM monitor deployment docs and assets |
 | `scripts/` | Shell scripts ([README](scripts/README.md)) |
-| `pyproject.toml` | Python package configuration |
 
 ## Library Layer
 
 The core analysis functionality in `nvidia_resiliency_ext.attribution` can be used without HTTP.
-See [nvrx_attrsvc/README.md](nvrx_attrsvc/README.md#python-api) for the Python API.
+See [attrsvc/README.md](attrsvc/README.md#python-api) for the Python API.

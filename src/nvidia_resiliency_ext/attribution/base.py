@@ -135,9 +135,7 @@ class NVRxAttribution(Generic[T, R]):
         preprocess_input: Callable[[Union[T, List[T]]], Any],
         attribution: Callable[[Any], R],
         output_handler: Callable[[R], None],
-        attribution_kwargs: Optional[Dict[str, Any]] = None,
         thread_pool: Optional[ThreadPoolExecutor] = None,
-        stop_on_stop: bool = False,
     ):
         """Initialize the attribution module.
 
@@ -145,9 +143,7 @@ class NVRxAttribution(Generic[T, R]):
             preprocess_input: Function to preprocess the input data. Can handle single objects or lists.
             attribution: Function to perform the attribution computation
             output_handler: Function to handle the attribution results
-            attribution_kwargs: Optional keyword arguments to pass to the attribution function
             thread_pool: Optional thread pool for running sync functions
-            stop_on_stop: Whether to stop the attribution pipeline if the output handler returns STOP state
         """
         self.register_attr_pipeline(
             {
@@ -156,12 +152,9 @@ class NVRxAttribution(Generic[T, R]):
                 'output_handler': output_handler,
             }
         )
-        self.attribution_kwargs = attribution_kwargs or {}
         self._thread_pool = thread_pool or ThreadPoolExecutor(max_workers=4)
-        self._stop_on_stop = stop_on_stop
-        # Get the shared loop and set the thread pool
+        # Keep a loop handle for synchronous callers; sync steps use self._thread_pool explicitly.
         self._loop = self.get_shared_loop()
-        self._loop.set_default_executor(self._thread_pool)
 
     def inspect_type_consistency(self, attr_pipeline: Dict[str, Callable]) -> None:
         """Inspect the type consistency of the attribution pipeline.
@@ -220,7 +213,7 @@ class NVRxAttribution(Generic[T, R]):
         n = _callable_arity(fn)
         if n > 1:
             raise TypeError(f"preprocess_input must accept 0 or 1 arguments, not {n}")
-        if asyncio.iscoroutinefunction(fn):
+        if inspect.iscoroutinefunction(fn):
             if n == 0:
                 return await fn()
             return await fn(run_args)
@@ -238,7 +231,7 @@ class NVRxAttribution(Generic[T, R]):
             The attribution results
         """
         # Check if attribution is async
-        if asyncio.iscoroutinefunction(self._attribution):
+        if inspect.iscoroutinefunction(self._attribution):
             return await self._attribution(preprocessed_data)
         else:
             return await self._run_sync_in_thread(self._attribution, preprocessed_data)
@@ -250,7 +243,7 @@ class NVRxAttribution(Generic[T, R]):
             attribution_result: The results from the attribution computation
         """
         # Check if output_handler is async
-        if asyncio.iscoroutinefunction(self._output_handler):
+        if inspect.iscoroutinefunction(self._output_handler):
             return await self._output_handler(attribution_result)
         else:
             return await self._run_sync_in_thread(self._output_handler, attribution_result)
@@ -291,7 +284,9 @@ class NVRxAttribution(Generic[T, R]):
         Returns:
             The attribution results of type R
         """
-        loop = self._loop
+        loop = self.get_shared_loop()
+        if loop is not self._loop:
+            self._loop = loop
 
         try:
             return loop.run_until_complete(self.run(args))

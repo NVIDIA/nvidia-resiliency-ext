@@ -3,6 +3,7 @@
 
 import argparse
 import logging
+import re
 from typing import Any, Mapping, Union
 
 from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
@@ -13,12 +14,33 @@ from nvidia_resiliency_ext.attribution.base import (
     normalize_attribution_args,
 )
 from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
-from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+from nvidia_resiliency_ext.attribution.logging_utils import bounded_log_value
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TOP_P,
+    resolved_llm_runtime_kwargs,
+)
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
 
 from .llm_merge import merge_log_fr_llm, unpack_run_result
 
 logger = logging.getLogger(__name__)
+
+_EXCLUDED_RANKS_LABEL = "list of ranks to be excluded:"
+
+
+def _excluded_ranks_from_attribution_result(attribution_result: str) -> set[int]:
+    """Parse ranks from merge output lines like ``List of ranks to be excluded: 1,2,3``."""
+    ranks: set[int] = set()
+    for line in str(attribution_result).splitlines():
+        if _EXCLUDED_RANKS_LABEL not in line.lower():
+            continue
+        _, _, rank_text = line.partition(":")
+        ranks.update(int(token) for token in re.findall(r"\d+", rank_text))
+    return ranks
 
 
 class CombinedLogFR(NVRxAttribution):
@@ -39,7 +61,7 @@ class CombinedLogFR(NVRxAttribution):
     async def preprocess_input(self) -> dict:
         cfg = merged_attribution_config(self._init_config)
         input_data = cfg["input_data"]
-        logger.info("input_data: %s", cfg["input_data"])
+        logger.info("input_data: %s", bounded_log_value(input_data))
         log_result = input_data[0]
         fr_result = input_data[1]
         output: dict[str, Any] = {}
@@ -51,27 +73,22 @@ class CombinedLogFR(NVRxAttribution):
         log_result = output['Application Logs']
         fr_result = output['Collective Operations Analysis']
 
-        logger.info(f"fr_result: {fr_result}")
+        logger.info("fr_result: %s", bounded_log_value(fr_result))
         cfg = merged_attribution_config(self._init_config)
         return await merge_log_fr_llm(
             log_result,
             fr_result,
             llm_api_key=self._llm_api_key,
-            model=cfg.get("model", DEFAULT_LLM_MODEL),
-            base_url=cfg.get("base_url", DEFAULT_LLM_BASE_URL),
-            temperature=float(cfg.get("temperature", 0.2)),
-            top_p=float(cfg.get("top_p", 0.7)),
-            max_tokens=int(cfg.get("max_tokens", 8192)),
+            **resolved_llm_runtime_kwargs(cfg),
         )
 
     async def print_output(self, attribution_result: str) -> tuple[str, AttributionState]:
-        rank_list = []
-        logger.info(f"attribution_result: {attribution_result}")
-        for line in attribution_result.split('\n'):
-            if 'List of ranks to be excluded:' in line:
-                rank_list.append(line.split(':')[1].strip())
-        if rank_list and len(rank_list) > self.threshold:
-            logger.info(f"rank_list: {rank_list}")
+        excluded_ranks = _excluded_ranks_from_attribution_result(attribution_result)
+        logger.info("attribution_result: %s", bounded_log_value(attribution_result))
+        if excluded_ranks and len(excluded_ranks) > self.threshold:
+            logger.info("excluded_ranks: %s", bounded_log_value(sorted(excluded_ranks)))
+            # Standalone merge runner state only; service policy still comes from
+            # the explicit recommendation envelope, not FR/merge rank output.
             return attribution_result, AttributionState.STOP
         return attribution_result, AttributionState.CONTINUE
 
@@ -101,9 +118,26 @@ def main():
         default=DEFAULT_LLM_BASE_URL,
         help='Base URL for the OpenAI-compatible API endpoint',
     )
-    parser.add_argument('-t', '--temperature', type=float, default=0.2, help='Temperature for LLM')
-    parser.add_argument('-p', '--top_p', type=float, default=0.7, help='Top P for LLM')
-    parser.add_argument('--max_tokens', type=int, default=8192, help='Max tokens for LLM')
+    parser.add_argument(
+        '-t',
+        '--temperature',
+        type=float,
+        default=DEFAULT_LLM_TEMPERATURE,
+        help='Temperature for LLM',
+    )
+    parser.add_argument(
+        '-p',
+        '--top_p',
+        type=float,
+        default=DEFAULT_LLM_TOP_P,
+        help='Top P for LLM',
+    )
+    parser.add_argument(
+        '--max_tokens',
+        type=int,
+        default=DEFAULT_LLM_MAX_TOKENS,
+        help='Max tokens for LLM',
+    )
     parser.add_argument(
         '--pattern', default="_dump_*", help='File pattern to match (default: _dump_*)'
     )

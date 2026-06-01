@@ -4,7 +4,7 @@
 """Core log analysis engine.
 
 The service-layer wiring (analysis pipeline, job tracking, splitlog, parsers, config, etc.)
-lives in :mod:`nvidia_resiliency_ext.attribution.svc`.
+lives in :mod:`nvidia_resiliency_ext.attribution.orchestration`.
 
 Example:
     from nvidia_resiliency_ext.attribution.analyzer import Analyzer

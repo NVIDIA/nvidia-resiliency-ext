@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import os
 
+LLM_API_KEY_ENV_VAR = "LLM_API_KEY"
+LLM_API_KEY_FILE_ENV_VAR = "LLM_API_KEY_FILE"
+DEFAULT_LLM_API_KEY_PATHS = ("~/.llm_api_key", "~/.config/nvrx/llm_api_key")
+
 
 def _read_key_file(path: str) -> str:
     """Read and strip a secret file; return empty string on missing file or I/O error."""
@@ -21,6 +25,29 @@ def _read_key_file(path: str) -> str:
             return f.read().strip()
     except OSError:
         return ""
+
+
+def llm_api_key_help_text() -> str:
+    """Return user-facing guidance for configuring the LLM API key."""
+    default_paths = " or ".join(DEFAULT_LLM_API_KEY_PATHS)
+    return f"Set {LLM_API_KEY_ENV_VAR} or {LLM_API_KEY_FILE_ENV_VAR}, or create {default_paths}."
+
+
+def llm_api_key_missing_message(
+    *,
+    include_empty: bool = False,
+    context: str = "",
+    suffix: str = "",
+) -> str:
+    """Return the standard user-facing missing-key message."""
+    status = "LLM API key not found or empty." if include_empty else "LLM API key not found."
+    parts = [status]
+    if context:
+        parts.append(context.strip())
+    parts.append(llm_api_key_help_text())
+    if suffix:
+        parts.append(suffix.strip())
+    return " ".join(parts)
 
 
 def load_llm_api_key() -> str:
@@ -36,19 +63,17 @@ def load_llm_api_key() -> str:
     Returns:
         API key string, or empty string if not found or unreadable.
     """
-    api_key = os.getenv("LLM_API_KEY")
+    api_key = os.getenv(LLM_API_KEY_ENV_VAR)
     if api_key:
         return api_key.strip()
 
-    key_file = os.getenv("LLM_API_KEY_FILE")
+    key_file = os.getenv(LLM_API_KEY_FILE_ENV_VAR)
     if key_file and os.path.isfile(key_file):
-        return _read_key_file(key_file)
+        v = _read_key_file(key_file)
+        if v:
+            return v
 
-    home = os.path.expanduser("~")
-    for path in (
-        os.path.join(home, ".llm_api_key"),
-        os.path.join(home, ".config", "nvrx", "llm_api_key"),
-    ):
+    for path in (os.path.expanduser(path) for path in DEFAULT_LLM_API_KEY_PATHS):
         if os.path.isfile(path):
             v = _read_key_file(path)
             if v:

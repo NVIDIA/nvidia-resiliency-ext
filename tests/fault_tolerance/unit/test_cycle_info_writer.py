@@ -19,10 +19,16 @@ import json
 import os
 import tempfile
 import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoWriter, utc_iso_now
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
+    CycleInfoReporter,
+    CycleInfoRoundSnapshot,
+    CycleInfoWriter,
+    utc_iso_now,
+)
 
 
 @pytest.fixture
@@ -148,6 +154,132 @@ def test_cycle_info_writer_update_cycle_end_missing_file_no_crash(tmp_dir):
     # No file created for the update target
     path = os.path.join(tmp_dir, "cycle_info.nonexistent.0.99")
     assert not os.path.isfile(path)
+
+
+def test_cycle_info_reporter_formats_and_starts_cycle(tmp_dir):
+    """CycleInfoReporter formats round snapshots and writes cycle start."""
+    writer = MagicMock()
+    reporter = CycleInfoReporter(
+        tmp_dir,
+        cycle_log_prefix="/logs/train.log",
+        cycle_info_job_id="job1",
+        attempt_index=7,
+        writer=writer,
+    )
+    snapshot = CycleInfoRoundSnapshot(
+        cycle_number=0,
+        active_node_addrs=["node002", "node001"],
+        standby_node_addrs=["node003"],
+        active_ranks=[1, 0],
+    )
+
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.cycle_info_writer.utc_iso_now",
+        return_value="2024-01-01T00:00:00Z",
+    ):
+        assert reporter.report_cycle_start(snapshot)
+
+    writer.write_cycle_start.assert_called_once()
+    call_kw = writer.write_cycle_start.call_args.kwargs
+    assert call_kw["job_id"] == "job1"
+    assert call_kw["attempt_index"] == 7
+    assert call_kw["cycle_number"] == 0
+    assert call_kw["cycle_start_time"] == "2024-01-01T00:00:00Z"
+    assert call_kw["cycle_log_file"] == "/logs/train_cycle0.log"
+    assert call_kw["active_nodes"] == "node[001-002]"
+    assert call_kw["standby_nodes"] == "node[003]"
+    assert call_kw["active_ranks"] == "0-1"
+
+
+def test_cycle_info_reporter_derives_file_namespace_from_env(tmp_dir):
+    """Colocated reporter derives cycle-info file naming from its SLURM environment."""
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, writer=writer)
+    snapshot = CycleInfoRoundSnapshot(cycle_number=0, active_node_addrs=["node001"])
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "SLURM_ARRAY_JOB_ID": "array-job",
+                "SLURM_JOB_ID": "job",
+                "SLURM_RESTART_CNT": "4",
+            },
+            clear=False,
+        ),
+        patch(
+            "nvidia_resiliency_ext.fault_tolerance.cycle_info_writer.utc_iso_now",
+            return_value="2024-01-01T00:00:00Z",
+        ),
+    ):
+        assert reporter.report_cycle_start(snapshot)
+
+    call_kw = writer.write_cycle_start.call_args.kwargs
+    assert call_kw["job_id"] == "array-job"
+    assert call_kw["attempt_index"] == 4
+
+
+def test_cycle_info_reporter_closes_cycle_on_shutdown(tmp_dir):
+    """CycleInfoReporter shutdown finalizes the active cycle and drains the writer."""
+    writer = MagicMock()
+    reporter = CycleInfoReporter(
+        tmp_dir,
+        cycle_info_job_id="job1",
+        attempt_index=2,
+        writer=writer,
+    )
+    snapshot = CycleInfoRoundSnapshot(cycle_number=3, active_node_addrs=["node001"])
+
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.cycle_info_writer.utc_iso_now",
+        side_effect=[
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:01:00Z",
+        ],
+    ):
+        reporter.report_cycle_start(snapshot)
+        reporter.shutdown()
+
+    writer.update_cycle_end.assert_called_once_with(
+        job_id="job1",
+        attempt_index=2,
+        cycle_number=3,
+        cycle_end_time="2024-01-01T00:01:00Z",
+    )
+    writer.shutdown.assert_called_once_with()
+
+
+def test_cycle_info_reporter_closes_previous_cycle_on_next_start(tmp_dir):
+    """Starting cycle N+1 finalizes cycle N before writing the new start file."""
+    writer = MagicMock()
+    reporter = CycleInfoReporter(
+        tmp_dir,
+        cycle_info_job_id="job1",
+        attempt_index=2,
+        writer=writer,
+    )
+    snapshot0 = CycleInfoRoundSnapshot(cycle_number=0, active_node_addrs=["node001"])
+    snapshot1 = CycleInfoRoundSnapshot(cycle_number=1, active_node_addrs=["node002"])
+
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.cycle_info_writer.utc_iso_now",
+        side_effect=[
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:01:00Z",
+            "2024-01-01T00:02:00Z",
+        ],
+    ):
+        reporter.report_cycle_start(snapshot0)
+        reporter.report_cycle_start(snapshot1)
+
+    writer.update_cycle_end.assert_called_once_with(
+        job_id="job1",
+        attempt_index=2,
+        cycle_number=0,
+        cycle_end_time="2024-01-01T00:01:00Z",
+    )
+    assert writer.write_cycle_start.call_count == 2
+    assert writer.write_cycle_start.call_args_list[1].kwargs["cycle_number"] == 1
 
 
 def test_utc_iso_now_format():

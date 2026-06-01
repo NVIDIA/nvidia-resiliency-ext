@@ -95,14 +95,18 @@ class FaultToleranceConfig:
       out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
       timeout monitoring as they can be significantly slower than steady-state iterations.
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
-    * Attribution service (optional):
-      - `attrsvc_host` [str] hostname/IP of the attribution service
-      - `attrsvc_port` [int] port of the attribution service
+    * Attribution service (optional, disabled unless `attribution_endpoint` is set):
+      - `attribution_endpoint` [str] endpoint of the attribution service
+      - `attribution_decision_timeout` [float] launcher-side attribution decision
+        budget in seconds, measured from terminal analysis request to result fetch.
+      - `attribution_export_url` [str] complete export posting URL for
+        launcher-managed attribution service postprocessing.
 
     * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.
-      <base>/nvrx/). If set, the TCPStore host writes cycle info JSON files and the
-      cycle_info.<job_id>.current symlink there. The workload receives the path to
-      the current cycle file via NVRX_CURRENT_CYCLE_INFO. Default: None (disabled).
+      <base>/nvrx/). If set, the rendezvous host writes cycle info JSON files and
+      the cycle_info.<job_id>.current symlink there. The workload receives the path
+      to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
+      Default: None (disabled).
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -145,8 +149,9 @@ class FaultToleranceConfig:
         5  # Number of warmup iterations before monitoring step section and out-of-section timeouts
     )
     # Attribution service configuration (optional)
-    attrsvc_host: Optional[str] = None
-    attrsvc_port: Optional[int] = None
+    attribution_endpoint: Optional[str] = None
+    attribution_decision_timeout: Optional[float] = None
+    attribution_export_url: Optional[str] = None
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None

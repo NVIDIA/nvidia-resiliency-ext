@@ -13,8 +13,8 @@
 #
 # This is the recommended deployment for most use cases. For running
 # services separately, see:
-#   - nvrx_attrsvc/deploy/slurm.sbatch (attribution only)
-#   - nvrx_smonsvc/deploy/slurm.sbatch (monitor only, requires external attrsvc)
+#   - attrsvc/deploy/slurm.sbatch (attribution only)
+#   - smonsvc/deploy/slurm.sbatch (monitor only, requires external attrsvc)
 #
 # Submit with (account is required):
 #   sbatch --account=myaccount nvrx_services.sbatch
@@ -58,20 +58,20 @@ ensure_directory "${NVRX_LOGS_DIR}" "logs directory" || exit 1
 echo "Logs directory: ${NVRX_LOGS_DIR}"
 
 # Configuration - Attribution Service (can be overridden via env vars)
+export NVRX_ATTRSVC_HOST="${NVRX_ATTRSVC_HOST:-0.0.0.0}"
 export NVRX_ATTRSVC_PORT="${NVRX_ATTRSVC_PORT:-8000}"
 ATTRSVC_ENDPOINT="${NVRX_ATTRSVC_ENDPOINT:-http://localhost:${NVRX_ATTRSVC_PORT}}"
 
 # Validate required environment
 validate_attrsvc_allowed_root || exit 1
 
-# nvdataflow configuration
-export NVRX_ATTRSVC_NVDATAFLOW_PROJECT="${NVRX_ATTRSVC_NVDATAFLOW_PROJECT:-}"
 export NVRX_ATTRSVC_CLUSTER_NAME="${NVRX_ATTRSVC_CLUSTER_NAME:-${SLURM_CLUSTER_NAME:-unknown}}"
 
 # Setup API key
 setup_llm_api_key || exit 1
 
 # Configuration - SLURM Monitor Service (can be overridden via env vars)
+export NVRX_SMONSVC_HOST="${NVRX_SMONSVC_HOST:-0.0.0.0}"
 export NVRX_SMONSVC_PORT="${NVRX_SMONSVC_PORT:-8100}"
 export NVRX_SMONSVC_PARTITIONS="${NVRX_SMONSVC_PARTITIONS:-batch batch_long}"
 export NVRX_SMONSVC_INTERVAL="${NVRX_SMONSVC_INTERVAL:-180}"

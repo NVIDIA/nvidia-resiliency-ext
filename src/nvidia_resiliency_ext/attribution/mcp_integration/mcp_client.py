@@ -20,11 +20,33 @@ from nvidia_resiliency_ext.attribution.mcp_integration.registry import deseriali
 from nvidia_resiliency_ext.attribution.mcp_integration.transport_errors import (
     is_mcp_connection_error,
 )
+from nvidia_resiliency_ext.attribution.orchestration.client_response import (
+    recommendation_should_stop,
+)
+from nvidia_resiliency_ext.attribution.orchestration.llm_output import recommendation_payload
+from nvidia_resiliency_ext.attribution.orchestration.types import AttributionRecommendation
 
 logger = logging.getLogger(__name__)
 
 # Must stay in sync with :mod:`server_launcher` ``--log-level`` choices.
 _MCP_SERVER_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
+def _module_result_should_stop(result: Dict[str, Any]) -> bool:
+    recommendation = AttributionRecommendation.from_payload(result.get("recommendation"))
+    if recommendation is not None:
+        return recommendation_should_stop(recommendation)
+    logger.warning("MCP module result missing recommendation envelope; treating as non-stop")
+    return False
+
+
+def _module_error_result(module_name: str, error: Exception) -> Dict[str, Any]:
+    return {
+        "module": module_name,
+        "result": [],
+        "recommendation": recommendation_payload(AttributionRecommendation(source=module_name)),
+        "error": str(error),
+    }
 
 
 def normalize_mcp_server_log_level(level: str) -> str:
@@ -71,7 +93,7 @@ def create_mcp_client(*, mcp_server_log_level: str = "INFO") -> "NVRxMCPClient":
 
     Args:
         mcp_server_log_level: Passed to ``server_launcher`` as ``--log-level`` (e.g. from
-            :class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig`).
+            :class:`~nvidia_resiliency_ext.attribution.orchestration.config.LogSageExecutionConfig`).
 
     Returns:
         Configured NVRxMCPClient ready for use as async context manager.
@@ -411,7 +433,7 @@ class MultiServerClient:
 
                 # Check if any dependency resulted in STOP
                 for dep_name in module_deps:
-                    if results.get(dep_name, {}).get("state") == "STOP":
+                    if _module_result_should_stop(results.get(dep_name, {})):
                         logger.info(
                             f"Module '{module_name}' skipped due to STOP from dependency '{dep_name}'"
                         )
@@ -444,14 +466,14 @@ class MultiServerClient:
                 completed_modules.add(module_name)
 
                 # Check for stop condition
-                if result.get("state") == "STOP":
+                if _module_result_should_stop(result):
                     logger.info(f"Pipeline stopped at module: {module_name}")
                     stop_requested = True
 
                 return result
             except Exception as e:
                 logger.error(f"Error running module '{module_name}': {e}", exc_info=True)
-                results[module_name] = {"error": str(e), "state": "STOP"}
+                results[module_name] = _module_error_result(module_name, e)
                 stop_requested = True
                 raise
 

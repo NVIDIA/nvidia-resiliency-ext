@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, List, TypedDict
+from typing import Any, Dict, List, TypedDict
 
 
 class _CacheStats(TypedDict):
@@ -70,7 +70,7 @@ class CacheEntryInfo(TypedDict):
     age_seconds: float
     module: str
     result_id: str
-    state: str
+    recommendation: Dict[str, str]
 
 
 class CacheResult(TypedDict):
@@ -100,6 +100,13 @@ class SubmittedResult(TypedDict):
 
     count: int
     entries: List[SubmittedEntryInfo]
+
+
+class PeekResult(TypedDict):
+    """Non-blocking cache/coalescer status for a single key."""
+
+    status: str
+    result: Any
 
 
 @dataclass

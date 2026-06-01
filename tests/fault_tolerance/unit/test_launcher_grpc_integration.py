@@ -361,15 +361,16 @@ def test_launcher_without_grpc_flag_does_not_start_server(tmp_dir):
     assert "gRPC log server started" not in output, "gRPC server should not be started"
 
 
-def test_launcher_custom_server_log_path(tmp_dir):
-    """Test that --ft-log-server-log is used for the root in two-level mode (aggregator count 2)."""
+def test_launcher_custom_server_log_prefix(tmp_dir):
+    """Test that --ft-log-server-log-prefix is used for root diagnostics."""
     ft_cfg = fault_tolerance.FaultToleranceConfig()
     ft_cfg.initial_rank_heartbeat_timeout = 3.0
     ft_cfg.rank_heartbeat_timeout = 3.0
     ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
 
     base_log_file = os.path.join(tmp_dir, "test.log")
-    custom_server_log = os.path.join(tmp_dir, "custom_grpc_server.log")
+    custom_server_log_prefix = os.path.join(tmp_dir, "custom_grpc_server")
+    custom_root_log = custom_server_log_prefix + "_root.log"
     default_root_log = os.path.join(tmp_dir, "test_grpc_root.log")
 
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
@@ -379,8 +380,8 @@ def test_launcher_custom_server_log_path(tmp_dir):
         f" --ft-cfg-path={ft_cfg_path}"
         " --ft-enable-log-server=true"
         f" --ft-per-cycle-applog-prefix={base_log_file}"
-        f" --ft-log-server-log={custom_server_log}"
-        " --ft-log-aggregator-count=2"
+        f" --ft-log-server-log-prefix={custom_server_log_prefix}"
+        " --ft-log-server-graceful-shutdown-timeout=1"
         f" --nproc-per-node={WORLD_SIZE}"
         f" {cmd_to_run}"
     )
@@ -388,20 +389,14 @@ def test_launcher_custom_server_log_path(tmp_dir):
     ret_code, output = _run_launcher(launcher_cmd)
 
     assert ret_code in [0, 1], f"Launcher should complete; output:\n{output}"
-    assert (
-        "gRPC root log server:" in output
-    ), f"Expected two-level root startup log line; output:\n{output}"
-    assert "gRPC log server started" not in output, (
-        "Single-level gRPC startup should not appear when --ft-log-aggregator-count=2 "
-        f"(would mask a silent fallback to one root on base port). Output:\n{output}"
-    )
+    assert "gRPC log server started" in output, f"Expected gRPC startup log line; output:\n{output}"
     assert os.path.isfile(
-        custom_server_log
-    ), f"Root log should be written to custom path {custom_server_log}. Output:\n{output}"
-    with open(custom_server_log, 'r') as f:
+        custom_root_log
+    ), f"Root log should be written to custom path {custom_root_log}. Output:\n{output}"
+    with open(custom_root_log, 'r') as f:
         custom_content = f.read()
     assert len(custom_content) > 0, "Custom root gRPC log file should not be empty"
     assert not os.path.isfile(default_root_log), (
         f"Default root log {default_root_log} should not be created when "
-        f"--ft-log-server-log is set (two-level mode regression check)"
+        f"--ft-log-server-log-prefix is set (two-level mode regression check)"
     )

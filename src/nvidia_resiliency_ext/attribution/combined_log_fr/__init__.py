@@ -1,4 +1,18 @@
-from .combined_log_fr import CombinedLogFR
-from .llm_merge import merge_log_fr_llm, unpack_run_result
+from importlib import import_module
 
-__all__ = ["CombinedLogFR", "merge_log_fr_llm", "unpack_run_result"]
+_EXPORTS = {
+    "CombinedLogFR": ".combined_log_fr",
+    "merge_log_fr_llm": ".llm_merge",
+    "unpack_run_result": ".llm_merge",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value

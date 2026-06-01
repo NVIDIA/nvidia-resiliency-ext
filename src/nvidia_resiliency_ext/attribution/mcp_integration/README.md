@@ -10,7 +10,7 @@ This document describes the architecture and design decisions behind the MCP int
 2. **Composability**: Modules can be chained into pipelines
 3. **Scalability**: Support distributed execution across multiple servers
 4. **Flexibility**: Work with both programmatic and AI assistant interfaces
-5. **Compatibility**: Maintain backward compatibility with existing NVRX API
+5. **Stable contracts**: Keep module payloads aligned with the public attribution result types
 
 ## Architecture Layers
 
@@ -41,10 +41,9 @@ This document describes the architecture and design decisions behind the MCP int
 ┌────────────────────────┴────────────────────────────────────┐
 │              Attribution Module Implementations              │
 │  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐    │
-│  │ FR Analyzer   │  │ Application   │  │ Component    │    │
-│  │ (Collective)  │  │ Log Analyzer  │  │ Health       │    │
-│  │               │  │ (possible)    │  │ Analyzer     │    │
-│  │               │  │               │  │ (possible)   │    │
+│  │ FR Analyzer   │  │ LogSage       │  │ Combined     │    │
+│  │ (Collective)  │  │ Analyzer      │  │ Log + FR     │    │
+│  │               │  │               │  │ Analyzer     │    │
 │  └───────────────┘  └───────────────┘  └──────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -123,7 +122,7 @@ Example: attribution://log_analyzer/f47ac10b-58cc-4372-a567-0e02b2c3d479
 **Usage Pattern**:
 ```python
 async with NVRxMCPClient(server_command) as client:
-    result = await client.run_module("log_analyzer", input_data=...)
+    result = await client.run_module("log_analyzer", log_path="/path/to/app.log")
 ```
 
 ### 4. Module Definitions (`module_definitions.py`)
@@ -141,7 +140,7 @@ async with NVRxMCPClient(server_command) as client:
 ### Single Module Execution
 
 ```
-1. Client calls tool "log_analyzer" with input_data
+1. Client calls tool "log_analyzer" with module-specific arguments such as `log_path`
        ↓
 2. MCP Server receives call
        ↓
@@ -153,7 +152,7 @@ async with NVRxMCPClient(server_command) as client:
        ↓
 6. Server caches result with UUID
        ↓
-7. Server returns: {result, result_id, resource_uri, state}
+7. Server returns a module-shaped response; attribution module tools include `{result, result_id, resource_uri, recommendation}`
        ↓
 8. Client receives response
 ```
@@ -169,9 +168,9 @@ class AttributionState(Enum):
 ```
 
 **Usage**:
-- Output handlers return `(result, state)`
-- Pipeline checks state after each module
-- Allows modules to signal critical conditions
+- Output handlers may return `(result, state)` for internal module orchestration
+- Attribution module responses expose `{result, recommendation}`; policy consumers branch on `recommendation.action`
+- Module `state` is diagnostic/informational only and should not drive stop/restart policy
 
 ### Result Caching
 

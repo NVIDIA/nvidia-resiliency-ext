@@ -23,20 +23,33 @@ import os
 import subprocess  # nosec B404
 import sys
 import threading
+import time
 import traceback
-from collections import defaultdict
-from dataclasses import dataclass
+from collections import defaultdict, deque
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, Union
-from urllib.parse import quote_plus
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import defusedxml.ElementTree as ET
 import httpx
 
+from nvidia_resiliency_ext.attribution import parse_attrsvc_response
+from nvidia_resiliency_ext.attribution.orchestration.http_api import (
+    ROUTE_LOGS,
+    get_log_response,
+    post_log,
+)
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    ANALYSIS_INTENT_PROGRESSIVE,
+    ANALYSIS_INTENT_TERMINAL,
+)
+from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env, job_user_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
 # Get the nvrx logger
 logger = logging.getLogger(LogConfig.name)
+
+_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS = 2.0
 
 
 # -----------------------------
@@ -971,6 +984,429 @@ class NVLHealthCheck(PynvmlMixin):
             return False
 
 
+class NVLinkWindowHealthCheck(PynvmlMixin):
+    """
+    Health check that counts NVLink "windows" (calls) with replay or recovery events.
+
+    Each call to _perform_health_check() is one window. A window is flagged when
+    any NVLink port shows a delta > 0 in DL_REPLAY or DL_RECOVERY error counters
+    vs. the previous call. A port is "bad" when it exceeds ``threshold`` flagged
+    windows within the last ``window_count`` calls. A GPU is reported unhealthy
+    when at least ``gpu_ports_threshold`` of its NVLink ports are bad. Returns
+    False when any GPU is unhealthy; the warning log identifies which GPU and
+    which of its ports tripped, matching the per-GPU framing of other checks
+    in this file (e.g. ``NVLHealthCheck``).
+
+    Counter reading uses three tiers (first that works wins per port):
+
+    Tier 1 — NVLink5 / GB200 / newer drivers (preferred):
+      ``nvmlDeviceGetFieldValues`` with per-port field IDs and scopeId = port.
+      Three issue indicators tracked per-counter; any individual counter's
+      delta > 0 vs. the previous call flags the window. Per-counter baselines
+      (rather than a summed total) avoid phantom deltas when the set of
+      successful FIDs varies between calls.
+        NVML_FI_DEV_NVLINK_COUNT_LINK_RECOVERY_EVENTS = 215
+            Up -> recovery transitions (any outcome)
+        NVML_FI_DEV_NVLINK_PLR_XMIT_RETRY_BLOCKS      = 295
+            PHY-layer retry blocks transmitted (NVLink5 retry pressure)
+        NVML_FI_DEV_NVLINK_COUNT_RCV_ERRORS           = 208
+            Rx packets with errors
+
+    Tier 2 — older hardware (ports 0-5 only):
+      ``nvmlDeviceGetFieldValues`` with per-lane field IDs L0..L5:
+        NVML_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_L{n}   = 46-51
+        NVML_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_L{n} = 53-58
+
+    Fallback — LEGACY (drivers <= 450):
+      ``nvmlDeviceGetNvLinkErrorCounter`` with NVML_NVLINK_ERROR_DL_REPLAY /
+      NVML_NVLINK_ERROR_DL_RECOVERY. Marked LEGACY for drivers > 450; may return
+      NVML_ERROR_NOT_SUPPORTED on GB200.
+
+    A one-time warning is logged if tier-1 field IDs are not supported by the
+    driver, and again if all APIs fail on a port.
+
+    Tier-1 first-probe edge case: the tier-1 support flag is latched on the
+    first port probed (always port 0 of the first visible GPU). If port 0
+    returns empty FIDs at process start -- e.g. an inactive port on an unusual
+    topology -- tier-1 latches False process-wide and later active ports fall
+    back to tier-2 / legacy. Restart after topology changes that bring tier-1
+    ports online. On standard GB200 deployments port 0 is always active and
+    this case does not arise.
+    """
+
+    def __init__(
+        self,
+        device_index: Optional[int] = None,
+        interval: int = 60,
+        window_count: int = 30,
+        threshold: int = 15,
+        gpu_ports_threshold: int = 1,
+        on_failure: Optional[Callable] = None,
+    ):
+        """
+        Args:
+            device_index: GPU device index to monitor. None checks all GPUs.
+            interval: Seconds between async health checks.
+            window_count: Rolling window size — how many past checks to consider.
+            threshold: Maximum flagged windows still considered healthy at the
+                per-port level. A port is "bad" when the number of flagged
+                windows in its rolling deque exceeds this value (i.e. at
+                ``threshold + 1`` or more). Default 15 with ``window_count=30``
+                means: a port is bad when more than half of the last 30 samples
+                flagged events.
+            gpu_ports_threshold: Minimum number of bad NVLink ports on a GPU
+                before the GPU is reported unhealthy. Default 1 -- any single
+                bad port flags the whole GPU, matching the per-GPU decision
+                pattern of ``NVLHealthCheck`` and the other health checks in
+                this file. Raise this to tolerate isolated noisy ports and
+                only fail when the failure is more widespread; trade-off is
+                that a GPU with one consistently noisy port produces no
+                ``WARN`` log or ``on_failure`` invocation until enough other
+                ports also exceed the per-port threshold. Values ``< 1``
+                behave identically to ``1`` (every GPU with at least one bad
+                port has ``len(bad_ports) >= 1``, so the rollup always trips).
+            on_failure: Async callable invoked (awaited) when the health
+                check fails. Must be an ``async def`` function -- synchronous
+                callables will raise ``TypeError``. Matches the await pattern
+                of ``NVLHealthCheck.async_check``.
+        """
+        super().__init__()
+        self.device_index = device_index
+        self.interval = interval
+        self.threshold = threshold
+        self.gpu_ports_threshold = gpu_ports_threshold
+        self.on_failure = on_failure
+        self.pynvml_available = self.check_pynvml_availability()
+
+        # Per-port rolling window: {(device_id, port): deque of bools}.
+        # Each bool = True if that port had a delta > 0 in that window.
+        self._window_history: Dict[Tuple[int, int], deque] = {}
+        self._window_count = window_count
+        # Per-counter cumulative error values per (device_id, port) from the
+        # previous call. Outer key: (device_id, port). Inner dict: FID (tier-1/
+        # tier-2) or counter_type (legacy) -> last-seen value. Per-counter
+        # storage lets us compute per-counter diffs even when the set of
+        # successful counters varies between calls.
+        #
+        # Inner-key namespace assumption: a given port stays on a single API
+        # path for the process lifetime — `_tier1_api_supported` /
+        # `_tier2_api_supported` are sticky flags that latch True or False
+        # on first probe and never flip back. So the inner dict only ever
+        # holds one of: tier-1 FIDs (215, 295, 208), tier-2 per-lane FIDs
+        # (46-58), or legacy counter_type enums (NVML_NVLINK_ERROR_DL_REPLAY/
+        # DL_RECOVERY ~ small ints). Current NVML enum values across these
+        # three sets do NOT overlap, so the per-port flat int->int dict is
+        # safe even on the (impossible-today) migration path. Revisit if
+        # NVML ever introduces an FID that collides with a counter_type.
+        self._prev_counters: Dict[Tuple[int, int], Dict[int, int]] = {}
+        # Separate probed flags for tier 1 (GB200) and tier 2 (older HW).
+        # None = not yet probed; True = supported; False = not supported.
+        self._tier1_api_supported: Optional[bool] = None
+        self._tier1_not_supported_warned = False
+        self._tier2_api_supported: Optional[bool] = None
+        self._tier2_not_supported_warned = False
+        # Warn only once when all APIs are unsupported for a port.
+        self._api_not_supported_warned = False
+        # Warn only once when a sample produced zero successful per-port reads
+        # (every port returned None — likely a wedged NVML or all-unsupported
+        # driver). Without this, the check silently passes forever.
+        self._zero_ports_sampled_warned = False
+
+    async def async_check(self) -> None:
+        """Periodically samples NVLink event windows and invokes ``on_failure``
+        when the per-GPU rollup fails (i.e. some GPU has at least
+        ``gpu_ports_threshold`` ports whose flagged-window count exceeds the
+        per-port ``threshold``). See ``_perform_health_check`` for the rollup
+        rule."""
+        while True:
+            await asyncio.sleep(self.interval)
+            result = await self._check_health()
+            if not result and self.on_failure:
+                await self.on_failure()
+
+    async def _check_health(self) -> bool:
+        return self._perform_health_check()
+
+    def __call__(self) -> Union[Optional[Exception], bool]:
+        """Synchronous NVLink window health check."""
+        return self._perform_health_check()
+
+    @with_pynvml_lock
+    def _perform_health_check(self) -> bool:
+        """
+        Sample NVLink counters, update each port's rolling window, then roll
+        up the per-port state to a per-GPU decision.
+
+        A port is "bad" when its flagged-window count exceeds ``threshold``.
+        A GPU is unhealthy when at least ``gpu_ports_threshold`` of its ports
+        are bad. Returns ``False`` when any GPU is unhealthy; emits one warning
+        log per unhealthy GPU listing all its bad ports.
+        """
+        if not self.pynvml_available:
+            return True
+
+        port_events: Dict[Tuple[int, int], bool] = {}
+        try:
+            self.pynvml.nvmlInit()
+            devices = (
+                [self.device_index]
+                if self.device_index is not None
+                else range(self.pynvml.nvmlDeviceGetCount())
+            )
+            port_events = self._sample_nvlink_events(devices)
+            if not port_events and not self._zero_ports_sampled_warned:
+                logger.warning(
+                    "NVLinkWindowHealthCheck: zero ports returned data this sample. "
+                    "Rolling windows will not advance and the check will pass-through "
+                    "True until at least one port produces a successful read. Verify "
+                    "NVML is responsive and NVLink is enabled on the visible GPUs."
+                )
+                self._zero_ports_sampled_warned = True
+        except self.pynvml.NVMLError as e:
+            logger.warning(f"NVLinkWindowHealthCheck NVML error: {e}")
+            return True
+        except Exception as e:
+            logger.warning(f"NVLinkWindowHealthCheck unexpected error: {e}")
+            return True
+        finally:
+            try:
+                self.pynvml.nvmlShutdown()
+            except Exception as e:
+                logger.warning(f"NVLinkWindowHealthCheck NVML shutdown error: {e}")
+
+        # Update per-port rolling window and roll up to per-GPU decision.
+        # A port is "bad" when its flagged-window count exceeds `threshold`.
+        # A GPU is unhealthy when at least `gpu_ports_threshold` of its
+        # ports are bad. The check returns False if any GPU is unhealthy
+        # (True only when every GPU passes), matching the per-GPU framing
+        # of NVLHealthCheck.
+        bad_ports_per_gpu: Dict[int, list] = {}
+        for key, had_events in port_events.items():
+            if key not in self._window_history:
+                self._window_history[key] = deque(maxlen=self._window_count)
+            self._window_history[key].append(had_events)
+            flagged = sum(self._window_history[key])
+            if flagged > self.threshold:
+                device_id, port = key
+                bad_ports_per_gpu.setdefault(device_id, []).append(
+                    (port, flagged, len(self._window_history[key]))
+                )
+
+        all_healthy = True
+        for device_id, bad_ports in bad_ports_per_gpu.items():
+            if len(bad_ports) >= self.gpu_ports_threshold:
+                port_detail = ", ".join(f"port {p} ({f}/{w} flagged)" for p, f, w in bad_ports)
+                logger.warning(
+                    f"NVLinkWindowHealthCheck: GPU {device_id} unhealthy -- "
+                    f"{len(bad_ports)} NVLink ports flagged for replay/recovery "
+                    f"events (gpu_ports_threshold={self.gpu_ports_threshold}, "
+                    f"per-port threshold={self.threshold}): {port_detail}."
+                )
+                all_healthy = False
+        return all_healthy
+
+    def _sample_nvlink_events(self, devices) -> Dict[Tuple[int, int], bool]:
+        """
+        Read replay + recovery counters per port; flag the window if ANY
+        individual counter's diff > 0 vs. the previous call.
+
+        Per-counter baselines (rather than a summed total) avoid the
+        "set of successful FIDs differs between calls" pitfall: a counter
+        that was unavailable last call doesn't contribute a phantom delta
+        on first sighting; new counters get added to the baseline silently.
+
+        Window cadence — one entry per successful sample per (device, port):
+          - First successful sample for a port emits ``False`` (no diff
+            possible yet, but the window starts filling so the rolling
+            count of last-30 events advances on every call).
+          - Subsequent successful samples emit True/False based on whether
+            any per-counter diff > 0.
+          - Failed reads (counters is None — port doesn't exist on this
+            HW, or transient NVML error) emit nothing and the window does
+            NOT advance for that port. The deque keeps its prior entries
+            and resumes appending on the next successful read.
+
+        Returns {(device_id, port): had_events_this_window}.
+        """
+        port_events: Dict[Tuple[int, int], bool] = {}
+        max_links = getattr(self.pynvml, "NVML_NVLINK_MAX_LINKS", 18)
+        for device_id in devices:
+            handle = self.pynvml.nvmlDeviceGetHandleByIndex(device_id)
+            for port in range(max_links):
+                counters = self._read_port_error_counters(handle, device_id, port)
+                if counters is None:
+                    # No data this call — don't advance this port's window.
+                    continue
+                key = (device_id, port)
+                prev = self._prev_counters.setdefault(key, {})
+                if prev:
+                    # Only counters present in BOTH calls contribute a diff.
+                    # Counters new to this call get added to the baseline
+                    # below without flagging the window.
+                    had_event = any(
+                        fid in prev and val > prev[fid] for fid, val in counters.items()
+                    )
+                else:
+                    # First successful read for this port — baseline is
+                    # established below; this window starts at 0 events.
+                    had_event = False
+                port_events[key] = had_event
+                # Update baseline: keep prior FIDs, overwrite current ones,
+                # add new ones. Stale entries from FIDs that disappeared this
+                # call are preserved so deltas across transient failures are
+                # still detected when those counters return.
+                prev.update(counters)
+        return port_events
+
+    def _read_port_error_counters(
+        self, handle, device_id: int, port: int
+    ) -> Optional[Dict[int, int]]:
+        """
+        Read the set of replay/recovery counters for one port as a dict
+        keyed by FID (tier-1/tier-2) or counter_type (legacy). Tries the
+        field-values API first; falls back to the legacy counter API.
+        Returns None if no API is supported on this port.
+        """
+        counters = self._read_via_field_values(handle, device_id, port)
+        if counters is not None:
+            return counters
+        return self._read_via_legacy(handle, device_id, port)
+
+    def _read_via_field_values(self, handle, device_id: int, port: int) -> Optional[Dict[int, int]]:
+        """
+        Read replay + recovery for one port via nvmlDeviceGetFieldValues.
+
+        Returns a dict mapping FID -> value for each FID that returned
+        NVML_SUCCESS in this call. The caller computes per-FID diffs against
+        a baseline so partial-success calls don't produce phantom deltas.
+
+        Tries tier 1 (GB200) then tier 2 (older HW) independently; each
+        tier's supported flag is tracked separately so a tier-2 failure
+        never blocks tier 1. Returns None if both tiers are unsupported.
+        """
+        nvml_success = getattr(self.pynvml, "NVML_SUCCESS", 0)
+
+        # Tier 1: NVLink5 / GB200 per-port (scopeId = port number).
+        # Three issue indicators tracked independently; any per-FID delta > 0
+        # vs. the baseline flags the window. Field IDs 215, 295, 208 are
+        # documented in the public NVML field-value enums and verified working
+        # on GB200 setups.
+        TIER1_FIDS = (
+            getattr(self.pynvml, "NVML_FI_DEV_NVLINK_COUNT_LINK_RECOVERY_EVENTS", 215),
+            getattr(self.pynvml, "NVML_FI_DEV_NVLINK_PLR_XMIT_RETRY_BLOCKS", 295),
+            getattr(self.pynvml, "NVML_FI_DEV_NVLINK_COUNT_RCV_ERRORS", 208),
+        )
+        if self._tier1_api_supported is not False:
+            queries = [(fid, port) for fid in TIER1_FIDS]
+            try:
+                results = self.pynvml.nvmlDeviceGetFieldValues(handle, queries)
+                counters: Dict[int, int] = {
+                    fid: r.value.uiVal
+                    for fid, r in zip(TIER1_FIDS, results)
+                    if r.nvmlReturn == nvml_success
+                }
+                if counters:
+                    self._tier1_api_supported = True
+                    return counters
+                # API returned but all three FIDs said "not supported" on
+                # this port. Only treat as "tier-1 unsupported by driver"
+                # on a first-time probe -- an inactive/out-of-range port
+                # must not demote a tier already confirmed working on
+                # another port (sticky-True semantic, see _prev_counters
+                # comment above).
+                if self._tier1_api_supported is None:
+                    if not self._tier1_not_supported_warned:
+                        logger.warning(
+                            f"NVLinkWindowHealthCheck: tier-1 field IDs (215/295/208) not supported "
+                            f"on device {device_id} port {port}. "
+                            f"Falling back to tier-2 / legacy API."
+                        )
+                        self._tier1_not_supported_warned = True
+                    self._tier1_api_supported = False
+            except self.pynvml.NVMLError:
+                # Persistent driver-level failure on a first-time probe --
+                # disable tier-1 so we don't retry every port every call.
+                # Same sticky-True guard: a transient NVMLError after the
+                # tier was already confirmed working doesn't disable it.
+                if self._tier1_api_supported is None:
+                    self._tier1_api_supported = False
+
+        # Tier 2: per-lane field IDs L0-L5 (older hardware, ports 0-5 only).
+        if self._tier2_api_supported is not False and port < 6:
+            replay_lane = getattr(
+                self.pynvml, f"NVML_FI_DEV_NVLINK_REPLAY_ERROR_COUNT_L{port}", None
+            )
+            recovery_lane = getattr(
+                self.pynvml, f"NVML_FI_DEV_NVLINK_RECOVERY_ERROR_COUNT_L{port}", None
+            )
+            field_ids = [fid for fid in (replay_lane, recovery_lane) if fid is not None]
+            if field_ids:
+                try:
+                    results = self.pynvml.nvmlDeviceGetFieldValues(handle, field_ids)
+                    counters_t2: Dict[int, int] = {
+                        fid: r.value.uiVal
+                        for fid, r in zip(field_ids, results)
+                        if r.nvmlReturn == nvml_success
+                    }
+                    if counters_t2:
+                        self._tier2_api_supported = True
+                        return counters_t2
+                    # API succeeded but no results for this port -- don't
+                    # demote a tier already confirmed working on another
+                    # port (sticky-True semantic).
+                    if self._tier2_api_supported is None:
+                        self._tier2_api_supported = False
+                except self.pynvml.NVMLError as e:
+                    if self._tier2_api_supported is None:
+                        if not self._tier2_not_supported_warned:
+                            logger.warning(
+                                f"NVLinkWindowHealthCheck: nvmlDeviceGetFieldValues tier-2 not "
+                                f"supported on device {device_id}: {e}. Falling back to legacy API."
+                            )
+                            self._tier2_not_supported_warned = True
+                        self._tier2_api_supported = False
+
+        return None
+
+    def _read_via_legacy(self, handle, device_id: int, port: int) -> Optional[Dict[int, int]]:
+        """
+        Legacy: DL_REPLAY + DL_RECOVERY for one port via
+        nvmlDeviceGetNvLinkErrorCounter. Returns a dict keyed by counter_type
+        so per-counter diffs work the same way as the field-values path.
+
+        Marked LEGACY for drivers > 450; may return NVML_ERROR_NOT_SUPPORTED
+        on GB200.
+        """
+        replay_type = getattr(self.pynvml, "NVML_NVLINK_ERROR_DL_REPLAY", None)
+        recovery_type = getattr(self.pynvml, "NVML_NVLINK_ERROR_DL_RECOVERY", None)
+        if replay_type is None and recovery_type is None:
+            return None
+
+        counters: Dict[int, int] = {}
+        for counter_type in (replay_type, recovery_type):
+            if counter_type is None:
+                continue
+            try:
+                counters[counter_type] = self.pynvml.nvmlDeviceGetNvLinkErrorCounter(
+                    handle, port, counter_type
+                )
+            except self.pynvml.NVMLError as e:
+                if "not supported" in str(e).lower() or "invalid argument" in str(e).lower():
+                    continue
+                raise
+
+        if not counters:
+            if not self._api_not_supported_warned:
+                logger.warning(
+                    f"NVLinkWindowHealthCheck: neither field-values nor legacy "
+                    f"nvmlDeviceGetNvLinkErrorCounter is supported on device {device_id} "
+                    f"port {port}. Health check will be skipped."
+                )
+                self._api_not_supported_warned = True
+            return None
+        return counters
+
+
 class NodeHealthCheck:
     """
     Node-level health check that queries the node health check service used by InJob via gRPC over a Unix domain socket (UDS).
@@ -1345,12 +1781,6 @@ class StoragePathHealthCheck:
         return True
 
 
-@dataclass
-class AttrSvcResult:
-    result: Any
-    status: str = "completed"
-
-
 class AttributionService:
     """
     Client that queries an external attribution service to analyze artifacts (e.g., logs).
@@ -1359,85 +1789,204 @@ class AttributionService:
       - GETs results by the last submitted log_path
     """
 
+    DEFAULT_DECISION_TIMEOUT_SECONDS = 60.0
+
     def __init__(
         self,
-        host: str,
-        port: int,
+        endpoint: str,
+        decision_timeout: Optional[float] = None,
     ):
-        self.host = host
-        self.port = port
+        self.endpoint = endpoint.rstrip("/")
+        if decision_timeout is None:
+            decision_timeout = self.DEFAULT_DECISION_TIMEOUT_SECONDS
+        self.decision_timeout = float(decision_timeout)
+        if self.decision_timeout <= 0:
+            raise ValueError("attribution decision timeout must be positive")
+        self._unsupported_transport_warned = False
         # Track the most recent log_path we submitted
         self._last_submitted: Optional[str] = None
+        self._terminal_deadline: Optional[float] = None
+        self._get_started_recorded = False
 
     def __call__(self) -> None:
         """
-        Fire-and-forget entrypoint. GET results for the previously submitted log.
-        Runs in a background daemon thread.
+        Request terminal analysis for the previously submitted log.
 
         Note: _submit_log() should be called first (from launcher) to set _last_submitted.
         """
+        self.request_terminal_analysis()
+
+    def get_last_result(
+        self,
+        node_id: Optional[Any] = None,
+    ) -> Optional[bool]:
+        """Briefly join terminal analysis and fetch whether attribution recommends stopping.
+
+        Returns:
+          - True when attribution recommends stopping the job.
+          - False when attribution recommends continuing, or when the launcher-side
+            decision budget expires and restart should fail open.
+          - None when attribution is still pending within the decision budget.
+        """
         log_path = self._last_submitted
-        if log_path:
-            threading.Thread(
-                target=self._get_results,
-                args=(log_path,),
-                daemon=True,
-            ).start()
+        if not log_path:
+            logger.debug("AttributionService GET skipped: no submitted log path")
+            return False
+
+        self._start_get_profiling(node_id)
+        decision_remaining = self._remaining_decision_timeout()
+        if decision_remaining <= 0:
+            logger.warning(
+                "AttributionService decision budget exhausted for %s; attempting final "
+                "bounded GET",
+                log_path,
+            )
+            result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
+            record_profiling_event(
+                ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
+                node_id=node_id,
+            )
+            if result is None:
+                return False
+            return result
+
+        result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
+
+        if result is None:
+            return None
+
+        record_profiling_event(
+            ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
+            node_id=node_id,
+        )
+        return result
+
+    def _start_get_profiling(self, node_id: Optional[Any]) -> None:
+        if self._get_started_recorded:
+            return
+        self._get_started_recorded = True
+        record_profiling_event(
+            ProfilingEvent.ATTRIBUTION_GET_STARTED,
+            node_id=node_id,
+        )
+
+    def _ensure_decision_deadline(self) -> float:
+        if self._terminal_deadline is None:
+            self._terminal_deadline = time.monotonic() + self.decision_timeout
+        return self._terminal_deadline
+
+    def _remaining_decision_timeout(self) -> float:
+        """Return the remaining launcher-side budget for the current attribution decision."""
+        return self._ensure_decision_deadline() - time.monotonic()
 
     def _submit_log(self, log_path: str) -> None:
         """
-        Submit a log file for analysis via POST.
-        Runs in a background daemon thread (fire-and-forget).
+        Submit a log file for progressive analysis via POST.
+        The POST is synchronous but bounded to avoid delaying launcher progress.
         """
         self._last_submitted = log_path
-        threading.Thread(
-            target=self._do_submit_log,
-            args=(log_path,),
-            daemon=True,
-        ).start()
+        self._terminal_deadline = None
+        self._get_started_recorded = False
+        self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_PROGRESSIVE)
 
-    def _do_submit_log(self, log_path: str) -> None:
-        """Perform the actual POST request (runs in background thread)."""
+    def request_terminal_analysis(self) -> None:
+        """
+        Request terminal analysis for the last submitted workload log.
+
+        The POST returns after attrsvc accepts the request and schedules final analysis.
+        Later GETs use non-blocking probes until a verdict is cached.
+        """
+        log_path = self._last_submitted
+        if not log_path:
+            logger.debug("AttributionService terminal POST skipped: no submitted log path")
+            return
+        self._ensure_decision_deadline()
+        self._do_submit_log(
+            log_path,
+            analysis_intent=ANALYSIS_INTENT_TERMINAL,
+        )
+
+    def _do_submit_log(
+        self,
+        log_path: str,
+        analysis_intent: str = ANALYSIS_INTENT_PROGRESSIVE,
+        timeout: float = _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS,
+    ) -> None:
+        """Perform the actual POST request."""
+        base_url = self._http_base_url()
+        if base_url is None:
+            return
         try:
-            with httpx.Client(timeout=10.0) as client:
-                url = f"http://{self.host}:{self.port}/logs"
-                logger.debug("AttributionService POST: %s (log_path=%s)", url, log_path)
-                client.post(
+            with httpx.Client(base_url=base_url, timeout=timeout) as client:
+                url = f"{base_url}{ROUTE_LOGS}"
+                logger.debug(
+                    "AttributionService POST: %s (log_path=%s, analysis_intent=%s)",
                     url,
-                    json={"log_path": log_path},
-                    headers={"accept": "application/json"},
+                    log_path,
+                    analysis_intent,
+                )
+                post_log(
+                    client,
+                    log_path,
+                    user=job_user_from_env(),
+                    job_id=job_id_from_env(),
+                    analysis_intent=analysis_intent,
                 )
         except Exception as e:
             logger.warning(
                 "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e
             )
 
-    def _get_results(self, log_path: str) -> None:
+    def _get_results(
+        self,
+        log_path: str,
+        timeout: float = _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS,
+    ) -> Optional[bool]:
         """
-        Get analysis results for a previously submitted log file via GET.
+        Get the stop decision for a previously submitted log file via GET.
+
+        Terminal analysis is triggered earlier via POST, so launcher uses a
+        non-blocking probe before rendezvous closes the next round.
         """
+        base_url = self._http_base_url()
+        if base_url is None:
+            return None
         try:
-            with httpx.Client(timeout=60.0) as client:
-                q_path = quote_plus(log_path)
-                url = f"http://{self.host}:{self.port}/logs?log_path={q_path}"
+            with httpx.Client(base_url=base_url, timeout=timeout) as client:
+                url = f"{base_url}{ROUTE_LOGS}"
                 logger.debug("AttributionService GET: %s (log_path=%s)", url, log_path)
-                resp = client.get(url, headers={"accept": "application/json"})
+                resp = get_log_response(client, log_path, wait=False)
                 if resp.status_code == 200:
                     payload = resp.json() if resp.text else {}
-                    result = payload.get("result", payload)
-                    status = payload.get("status", "completed")
-                    attrsvc_result = AttrSvcResult(result=result, status=status)
-                    logger.info("AttrSvcResult for %s: status=%s", log_path, attrsvc_result.status)
-                    logger.info(
-                        "AttrSvcResult for %s: result preview: %s",
-                        log_path,
-                        str(attrsvc_result.result)[:200],
-                    )
+                    attrsvc_result = parse_attrsvc_response(payload, log_path=log_path)
+                    logger.info(attrsvc_result.format_log_message())
+                    if attrsvc_result.status.lower() != "completed":
+                        logger.debug(
+                            "AttributionService GET for %s returned status=%s; polling again",
+                            log_path,
+                            attrsvc_result.status,
+                        )
+                        return None
+                    return attrsvc_result.should_stop
                 else:
                     logger.warning(
                         "AttributionService GET for %s returned %d", log_path, resp.status_code
                     )
+                    return None
         except Exception as e:
             logger.warning(
                 "AttributionService GET %s failed: %s: %s", log_path, type(e).__name__, e
             )
+            return None
+
+    def _http_base_url(self) -> Optional[str]:
+        if self.endpoint.startswith(("http://", "https://")):
+            return self.endpoint
+        if not self._unsupported_transport_warned:
+            logger.warning(
+                "AttributionService endpoint uses a non-HTTP transport that is not "
+                "implemented by the in-job client: %s",
+                self.endpoint,
+            )
+            self._unsupported_transport_warned = True
+        return None

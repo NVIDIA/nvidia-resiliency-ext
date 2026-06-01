@@ -8,7 +8,7 @@ Set config.slack_bot_token and config.slack_channel at startup.
 
 Usage:
     config.slack_bot_token = token; config.slack_channel = channel  # at startup
-    # One-off: send_slack_notification(data, token, channel) when should_notify_slack(auto_resume)
+    # One-off: send_slack_notification(data, token, channel) when should_notify_slack(action)
 
 Requires slack-sdk (optional). When not installed, HAS_SLACK is False and send no-ops.
 """
@@ -16,14 +16,17 @@ Requires slack-sdk (optional). When not installed, HAS_SLACK is False and send n
 import logging
 from dataclasses import dataclass
 
-from nvidia_resiliency_ext.attribution.svc.posting_markdown import format_posting_markdown_body
+from nvidia_resiliency_ext.attribution.orchestration.posting_markdown import (
+    format_posting_markdown_body,
+)
+from nvidia_resiliency_ext.attribution.orchestration.types import (
+    RECOMMENDATION_STOP,
+    normalize_recommendation_action,
+)
 
 from .config import config
 
 logger = logging.getLogger(__name__)
-
-# Value of auto_resume that indicates terminal failure (should notify Slack)
-AUTO_RESUME_TERMINAL = "STOP - DONT RESTART IMMEDIATE"
 
 
 @dataclass
@@ -93,8 +96,12 @@ def send_slack_notification(
         data: Attribution result dict with keys:
             - s_job_id: Job ID
             - s_user: Username
-            - s_attribution: Attribution text
-            - s_auto_resume_explanation: Explanation of why job shouldn't restart
+            - s_recommendation_action: Canonical recommendation action
+            - s_recommendation_source: Signal/source that produced the recommendation
+            - s_auto_resume: Raw LogSage restart/stop text for display
+            - s_primary_issues: Primary failure categories
+            - s_auto_resume_explanation: Raw LogSage explanation for display
+            - s_attribution_result_json: Full normalized attribution result
         slack_bot_token: Slack bot OAuth token
         slack_channel: Slack channel name or ID
 
@@ -124,34 +131,33 @@ def send_slack_notification(
     text = f"{format_posting_markdown_body(data)}{mention}"
 
     _slack_stats.total_attempts += 1
-    if data.get(
-        "s_auto_resume_explanation", ""
-    ):  # Filter SLURM CANCELLED TIME LIMIT and TRAINING DONE cases
-        try:
-            client.chat_postMessage(
-                channel=slack_channel,
-                text=text,
-            )
-            _slack_stats.total_successful += 1
-            logger.info(f"Slack notification sent for job {data.get('s_job_id')}")
-            return True
-        except SlackApiError as e:
-            _slack_stats.total_failed += 1
-            logger.error(f"Error posting Slack message: {e.response['error']}")
-            return False
-    return False
+    try:
+        client.chat_postMessage(
+            channel=slack_channel,
+            text=text,
+        )
+        _slack_stats.total_successful += 1
+        logger.info(f"Slack notification sent for job {data.get('s_job_id')}")
+        return True
+    except SlackApiError as e:
+        _slack_stats.total_failed += 1
+        logger.error(f"Error posting Slack message: {e.response['error']}")
+        return False
 
 
-def should_notify_slack(auto_resume: str) -> bool:
+def should_notify_slack(recommendation_action: str) -> bool:
     """Check if this attribution result should trigger a Slack notification.
 
+    Slack notifications follow the same source-derived recommendation action as
+    attrsvc clients, instead of re-parsing raw LogSage text.
+
     Args:
-        auto_resume: The auto_resume field from attribution result
+        recommendation_action: The canonical ``s_recommendation_action`` field
 
     Returns:
         True if should notify (terminal failure), False otherwise
     """
-    return auto_resume == AUTO_RESUME_TERMINAL
+    return normalize_recommendation_action(recommendation_action) == RECOMMENDATION_STOP
 
 
 def maybe_send_slack_notification(data: dict) -> None:
@@ -163,6 +169,6 @@ def maybe_send_slack_notification(data: dict) -> None:
     if (
         config.slack_bot_token
         and config.slack_channel
-        and should_notify_slack(data.get("s_auto_resume", ""))
+        and should_notify_slack(data.get("s_recommendation_action", ""))
     ):
         send_slack_notification(data, config.slack_bot_token, config.slack_channel)

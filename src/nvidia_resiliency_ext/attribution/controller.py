@@ -19,24 +19,30 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nvidia_resiliency_ext.attribution.analyzer import Analyzer
-from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key, load_slack_bot_token
+from nvidia_resiliency_ext.attribution.api_keys import (
+    llm_api_key_missing_message,
+    load_llm_api_key,
+    load_slack_bot_token,
+)
 from nvidia_resiliency_ext.attribution.coalescing import (
     CacheResult,
     InflightResult,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster
-from nvidia_resiliency_ext.attribution.postprocessing import configure as configure_postprocessing
-from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
-from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
-from nvidia_resiliency_ext.attribution.svc.config import LogSageExecutionConfig
-from nvidia_resiliency_ext.attribution.svc.types import (
+from nvidia_resiliency_ext.attribution.orchestration.config import LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TRACK_ONLY
+from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
     LogAnalyzerFilePreview,
     LogAnalyzerSubmitResult,
 )
+from nvidia_resiliency_ext.attribution.postprocessing import ResultPoster
+from nvidia_resiliency_ext.attribution.postprocessing import configure as configure_postprocessing
+from nvidia_resiliency_ext.attribution.postprocessing import get_posting_stats, get_slack_stats
+from nvidia_resiliency_ext.attribution.postprocessing.config import dataflow_posting_enabled
+from nvidia_resiliency_ext.attribution.postprocessing.post_backend import post
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +84,27 @@ class AttributionPostprocessingConfig:
     """Posting and notification configuration for attribution side effects."""
 
     cluster_name: str = ""
-    dataflow_index: str = ""
     slack_bot_token: str | None = None
     slack_channel: str = ""
     enable_default_poster: bool = True
+
+
+@dataclass(frozen=True)
+class AttributionProgressiveConfig:
+    """Progressive analysis policy owned by attrsvc/controller."""
+
+    mode: str = "off"
+
+    def __post_init__(self) -> None:
+        mode = (self.mode or "off").strip().lower()
+        allowed = ("off", "all_explicit")
+        if mode not in allowed:
+            raise ValueError(f"progressive mode must be one of {allowed}, got {self.mode!r}")
+        object.__setattr__(self, "mode", mode)
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode == "all_explicit"
 
 
 @dataclass(frozen=True)
@@ -110,6 +133,7 @@ class AttributionControllerConfig:
     postprocessing: AttributionPostprocessingConfig = field(
         default_factory=AttributionPostprocessingConfig
     )
+    progressive: AttributionProgressiveConfig = field(default_factory=AttributionProgressiveConfig)
     credentials: AttributionCredentialsConfig = field(default_factory=AttributionCredentialsConfig)
 
 
@@ -134,25 +158,20 @@ class AttributionController:
             coalescing_kwargs["grace_period_seconds"] = config.cache.grace_period_seconds
 
         use_lib = self._engine_backend == "lib"
-        analyzer_engine_kwargs: dict[str, Any] = {
-            "use_lib_log_analysis": use_lib,
-            "mcp_server_log_level": config.analysis.mcp_server_log_level,
-        }
-        if config.analysis.llm_model is not None:
-            analyzer_engine_kwargs["llm_model"] = config.analysis.llm_model
-        if config.analysis.llm_base_url is not None:
-            analyzer_engine_kwargs["llm_base_url"] = config.analysis.llm_base_url
-        if config.analysis.llm_temperature is not None:
-            analyzer_engine_kwargs["llm_temperature"] = config.analysis.llm_temperature
-        if config.analysis.llm_top_p is not None:
-            analyzer_engine_kwargs["llm_top_p"] = config.analysis.llm_top_p
-        if config.analysis.llm_max_tokens is not None:
-            analyzer_engine_kwargs["llm_max_tokens"] = config.analysis.llm_max_tokens
-        analyzer_engine = LogSageExecutionConfig(**analyzer_engine_kwargs)
+        analyzer_engine = LogSageExecutionConfig(
+            use_lib_log_analysis=use_lib,
+            mcp_server_log_level=config.analysis.mcp_server_log_level,
+            llm_model=config.analysis.llm_model,
+            llm_base_url=config.analysis.llm_base_url,
+            llm_temperature=config.analysis.llm_temperature,
+            llm_top_p=config.analysis.llm_top_p,
+            llm_max_tokens=config.analysis.llm_max_tokens,
+        )
 
         self._analyzer = Analyzer(
             allowed_root=config.allowed_root,
             log_sage=analyzer_engine,
+            progressive_analysis_enabled=config.progressive.enabled,
             **coalescing_kwargs,
         )
 
@@ -297,18 +316,25 @@ class AttributionController:
         log_path: str,
         user: str = "unknown",
         job_id: str | None = None,
+        analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
         """Submit a log file for attribution tracking."""
-        return await self._analyzer.submit(log_path, user=user, job_id=job_id)
+        return await self._analyzer.submit(
+            log_path,
+            user=user,
+            job_id=job_id,
+            analysis_intent=analysis_intent,
+        )
 
     async def analyze_log(
         self,
         log_path: str,
         file: str | None = None,
         wl_restart: int | None = None,
+        wait: bool = True,
     ) -> LogAnalysisCycleResult | LogAnalysisSplitlogResult | LogAnalyzerError:
         """Analyze a log file and return the attribution result."""
-        return await self._analyzer.analyze(log_path, file=file, wl_restart=wl_restart)
+        return await self._analyzer.analyze(log_path, file=file, wl_restart=wl_restart, wait=wait)
 
     def read_file_preview(
         self, log_path: str, max_bytes: int = 4096
@@ -441,8 +467,7 @@ class AttributionController:
             },
             "postprocessing": {
                 "cluster_name": self.config.postprocessing.cluster_name,
-                "dataflow_index": self.config.postprocessing.dataflow_index,
-                "dataflow_enabled": bool(self.config.postprocessing.dataflow_index),
+                "dataflow_enabled": dataflow_posting_enabled(),
                 "slack_channel": self.config.postprocessing.slack_channel,
                 "slack_enabled": self._slack_configured,
             },
@@ -455,8 +480,11 @@ class AttributionController:
         if llm_key:
             return True
         logger.error(
-            "LLM API key not found or empty. Attribution requires a key. Set LLM_API_KEY or "
-            "LLM_API_KEY_FILE, or create ~/.llm_api_key. Slack notifications remain optional."
+            llm_api_key_missing_message(
+                include_empty=True,
+                context="Attribution requires a key.",
+                suffix="Slack notifications remain optional.",
+            )
         )
         raise RuntimeError("LLM API key not found or empty")
 
@@ -473,7 +501,6 @@ class AttributionController:
         configure_postprocessing(
             default_poster=poster,
             cluster_name=cfg.cluster_name or "",
-            dataflow_index=cfg.dataflow_index or "",
             slack_bot_token=slack_token,
             slack_channel=slack_channel,
         )

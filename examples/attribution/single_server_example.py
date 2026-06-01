@@ -19,7 +19,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from nvidia_resiliency_ext.attribution.mcp_integration.mcp_client import NVRxMCPClient
-from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(

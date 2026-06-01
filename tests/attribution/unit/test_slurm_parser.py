@@ -9,7 +9,7 @@ import unittest
 PY310_PLUS = sys.version_info >= (3, 10)
 
 if PY310_PLUS:
-    from nvidia_resiliency_ext.attribution.svc.slurm_parser import parse_slurm_output
+    from nvidia_resiliency_ext.attribution.orchestration.slurm_parser import parse_slurm_output
 
 
 @unittest.skipUnless(PY310_PLUS, "attribution tests require Python 3.10+")

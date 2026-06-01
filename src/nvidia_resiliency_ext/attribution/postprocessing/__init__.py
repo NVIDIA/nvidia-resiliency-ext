@@ -3,11 +3,12 @@
 
 """Attribution postprocessing: configure poster, post results, optional Slack.
 
-- :data:`config` — cluster, index, Slack, default :class:`ResultPoster`.
+- :data:`config` — cluster, Slack, default :class:`ResultPoster`.
 - :func:`post_results` — build record, log, post, maybe Slack.
 - :func:`post_analysis_items` — post each cycle item (LogSage + optional FR).
 - :func:`build_dataflow_record` — build the dataflow dict (LogSage + optional FR fields).
-- :mod:`nvidia_resiliency_ext.attribution.postprocessing.post_backend` — retrying post (custom override or nvdataflow).
+- :mod:`nvidia_resiliency_ext.attribution.postprocessing.post_backend` — retrying post
+  (custom override or direct HTTP).
 
 Example:
 
@@ -21,7 +22,6 @@ Example:
     configure(
         default_poster=ResultPoster(post_fn=post_backend.post),
         cluster_name="my-cluster",
-        dataflow_index="my-index",
     )
 """
 
@@ -47,8 +47,8 @@ from .slack import (
     should_notify_slack,
 )
 
-HAS_NVDATAFLOW = post_backend.HAS_NVDATAFLOW
 get_retrying_post_fn = post_backend.get_retrying_post_fn
+make_dataflow_http_post_fn = post_backend.make_dataflow_http_post_fn
 set_post_override = post_backend.set_post_override
 
 __all__ = [
@@ -58,8 +58,8 @@ __all__ = [
     "configure_from_env",
     "load_slack_from_env",
     "post_backend",
-    "HAS_NVDATAFLOW",
     "get_retrying_post_fn",
+    "make_dataflow_http_post_fn",
     "set_post_override",
     "PostingStats",
     "PostFunction",

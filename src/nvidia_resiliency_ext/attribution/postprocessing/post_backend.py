@@ -3,79 +3,124 @@
 
 """Pluggable attribution post path with retries.
 
-Each attempt uses the first available backend:
+Each attempt uses either:
 
-1. **Override** — :func:`set_post_override` (same signature as :class:`~.pipeline.ResultPoster` ``post_fn``).
-2. **nvdataflow** — ``nvdataflow.post`` when that package is installed (typical Elasticsearch path).
-   Its return value is interpreted by :func:`_nvdataflow_result_ok` (``bool``, ``None`` = success,
-   ``int``: ``0`` or HTTP-style ``200`` / ``201`` = success). A ``False`` result (or other int mapped to
-   failure) is **not** retried — it is treated as a definitive soft failure. Only **exceptions**
-   from the backend trigger backoff retries.
+1. **Override** — :func:`set_post_override` (same signature as
+   :class:`~.pipeline.ResultPoster` ``post_fn``).
+2. **HTTP** — direct POST to the dataflow ingestion endpoint using ``httpx``.
 
-If neither applies, :func:`post` returns ``False`` and :func:`get_retrying_post_fn` returns ``None``.
-
-``nvrx_attrsvc`` imports :func:`post` through a small local shim for :class:`~.pipeline.ResultPoster`.
+``nvidia_resiliency_ext.services.attrsvc`` imports :func:`post` through a small local shim for :class:`~.pipeline.ResultPoster`.
 """
 
 import logging
+import os
 import time
 from typing import Any, Callable, Dict, Optional
 
-try:
-    from nvdataflow import post as _nvdataflow_post
+import httpx
 
-    logging.getLogger("nvdataflow").setLevel(logging.WARNING)
-    logging.getLogger("nvdataflow.post").setLevel(logging.WARNING)
-    logging.getLogger("nvdataflow.nvdataflowlog").setLevel(logging.WARNING)
-    HAS_NVDATAFLOW = True
-except ImportError:
-    _nvdataflow_post = None
-    HAS_NVDATAFLOW = False
+from .config import EXPORT_URL_ENV, export_url_from_env
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 INITIAL_BACKOFF_SECONDS = 0.5
+DEFAULT_DATAFLOW_HTTP_TIMEOUT_SECONDS = 10.0
 
 _post_override: Optional[Callable[[Dict[str, Any], str], bool]] = None
+_default_http_post_fn: Optional[Callable[[Dict[str, Any], str], bool]] = None
 
-# nvdataflow may return an HTTP status (e.g. 201 Created) or 0 for legacy success.
-_NVDATAFLOW_SUCCESS_INTS = frozenset({0, 200, 201})
+_DATAFLOW_HTTP_RETRY_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
-def _nvdataflow_result_ok(result: Any) -> bool:
-    """Map ``nvdataflow.post`` return value to success (exceptions are not passed here)."""
-    if isinstance(result, bool):
-        return result
-    if result is None:
-        return True
-    if isinstance(result, int):
-        return result in _NVDATAFLOW_SUCCESS_INTS
-    logger.warning(
-        "nvdataflow.post returned unexpected type %s (%r); treating as failure",
-        type(result).__name__,
-        result,
+def _dataflow_http_timeout_seconds() -> float:
+    raw = os.getenv("NVRX_ATTRSVC_DATAFLOW_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_DATAFLOW_HTTP_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid dataflow HTTP timeout %r; using %.1fs",
+            raw,
+            DEFAULT_DATAFLOW_HTTP_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_DATAFLOW_HTTP_TIMEOUT_SECONDS
+    if timeout <= 0:
+        logger.warning(
+            "invalid dataflow HTTP timeout %.3f; using %.1fs",
+            timeout,
+            DEFAULT_DATAFLOW_HTTP_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_DATAFLOW_HTTP_TIMEOUT_SECONDS
+    return timeout
+
+
+def _dataflow_http_endpoint() -> str:
+    return export_url_from_env()
+
+
+def _dataflow_http_queue() -> str:
+    return os.getenv("NVRX_ATTRSVC_DATAFLOW_QUEUE", "").strip()
+
+
+def _dataflow_http_url(endpoint: str) -> str:
+    """Return the explicitly configured export URL for dataflow HTTP posts."""
+    endpoint = endpoint.strip()
+    if not endpoint:
+        raise ValueError("NVRX_ATTRSVC_EXPORT_URL is required for dataflow HTTP posting")
+    return endpoint
+
+
+def make_dataflow_http_post_fn(
+    *,
+    endpoint: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
+    queue: Optional[str] = None,
+) -> Callable[[Dict[str, Any], str], bool]:
+    """Build a dependency-light dataflow HTTP poster.
+
+    ``endpoint`` must be the full destination URI to post to.
+    """
+    resolved_endpoint = endpoint if endpoint is not None else _dataflow_http_endpoint()
+    resolved_timeout = (
+        timeout_seconds if timeout_seconds is not None else _dataflow_http_timeout_seconds()
     )
-    return False
+    resolved_queue = queue if queue is not None else _dataflow_http_queue()
+    if not resolved_endpoint.strip():
+
+        def _missing_endpoint_post(_data: Dict[str, Any], _unused: str) -> bool:
+            logger.error("%s is required for dataflow HTTP posting", EXPORT_URL_ENV)
+            return False
+
+        return _missing_endpoint_post
+
+    def _post(data: Dict[str, Any], _unused: str) -> bool:
+        url = _dataflow_http_url(resolved_endpoint)
+        payload = dict(data)
+        params = {"queue": resolved_queue} if resolved_queue else None
+        response = httpx.post(url, json=payload, params=params, timeout=resolved_timeout)
+        if 200 <= response.status_code < 300:
+            return True
+        detail = response.text[:500]
+        message = f"dataflow HTTP post returned {response.status_code} for {url}: {detail}"
+        if response.status_code in _DATAFLOW_HTTP_RETRY_STATUS_CODES:
+            raise RuntimeError(message)
+        logger.warning(message)
+        return False
+
+    return _post
 
 
-def _nvdataflow_failure_reason(result: Any) -> str:
-    """Human-readable reason for a failed ``nvdataflow.post`` return (after :func:`_nvdataflow_result_ok` is False)."""
-    if result is False:
-        return (
-            "nvdataflow.post returned False — often ES/index/auth or payload rejection; "
-            "enable DEBUG on loggers nvdataflow.post or nvdataflow for details"
-        )
-    if isinstance(result, int):
-        return (
-            f"nvdataflow.post returned code {result} "
-            f"(success codes: {sorted(_NVDATAFLOW_SUCCESS_INTS)})"
-        )
-    return f"nvdataflow.post returned {type(result).__name__} = {result!r}"
+def _get_default_http_post_fn() -> Callable[[Dict[str, Any], str], bool]:
+    global _default_http_post_fn
+    if _default_http_post_fn is None:
+        _default_http_post_fn = make_dataflow_http_post_fn()
+    return _default_http_post_fn
 
 
 def set_post_override(fn: Optional[Callable[[Dict[str, Any], str], bool]]) -> None:
-    """Register a custom ``(data, index) -> bool`` poster, or ``None`` to use only nvdataflow when installed."""
+    """Register a custom ``(data, label) -> bool`` poster, or ``None`` to use direct HTTP."""
     global _post_override
     _post_override = fn
 
@@ -87,18 +132,13 @@ def _attempt_once(data: Dict[str, Any], index: str) -> tuple[bool, Optional[str]
         if ok:
             return True, None
         return False, "custom post_fn returned False"
-    if _nvdataflow_post is not None:
-        raw = _nvdataflow_post(data=data, project=index)
-        if _nvdataflow_result_ok(raw):
-            return True, None
-        return False, _nvdataflow_failure_reason(raw)
-    return False, "no post backend reachable"
+    ok = _get_default_http_post_fn()(data, index)
+    if ok:
+        return True, None
+    return False, "dataflow HTTP post returned a non-success status"
 
 
 def _post_with_retries(data: Dict[str, Any], index: str) -> bool:
-    if _post_override is None and _nvdataflow_post is None:
-        logger.error("no attribution post backend (set_post_override or install nvdataflow)")
-        return False
     last_error: Optional[Exception] = None
     for attempt in range(MAX_RETRIES):
         try:
@@ -107,10 +147,10 @@ def _post_with_retries(data: Dict[str, Any], index: str) -> bool:
                 if attempt > 0:
                     logger.info("attribution post succeeded on attempt %d", attempt + 1)
                 return True
-            # nvdataflow/override returned False (or mapped a non-zero code to False): application-level
-            # failure, not a transient error — do not retry (avoids triple-posting on soft failures).
+            # The poster returned False: application-level failure, not a transient error.
+            # Do not retry; this avoids duplicate posts on definitive rejections.
             logger.warning(
-                "attribution post failed without exception (not retried): %s (dataflow index=%r, attempt %d)",
+                "attribution post failed without exception (not retried): %s (post label=%r, attempt %d)",
                 soft_detail or "unknown reason",
                 index,
                 attempt + 1,
@@ -141,12 +181,10 @@ def _post_with_retries(data: Dict[str, Any], index: str) -> bool:
 
 
 def post(data: Dict[str, Any], index: str) -> bool:
-    """Post with retries (override, else nvdataflow). For ``ResultPoster(post_fn=post)``."""
+    """Post with retries (override, else direct HTTP). For ``ResultPoster(post_fn=post)``."""
     return _post_with_retries(data, index)
 
 
 def get_retrying_post_fn() -> Optional[Callable[[dict, str], bool]]:
-    """Return the shared retrying post callable, or ``None`` if no backend exists."""
-    if _post_override is not None or HAS_NVDATAFLOW:
-        return _post_with_retries
-    return None
+    """Return the shared retrying post callable."""
+    return _post_with_retries

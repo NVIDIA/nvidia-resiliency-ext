@@ -76,8 +76,9 @@ NC='\033[0m' # No Color
 # Script location
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${SCRIPT_DIR}/.."
-ATTRSVC_DIR="${REPO_DIR}/nvrx_attrsvc"
-SMONSVC_DIR="${REPO_DIR}/nvrx_smonsvc"
+LIB_ROOT="${REPO_DIR}/.."
+ATTRSVC_DIR="${REPO_DIR}/attrsvc"
+SMONSVC_DIR="${REPO_DIR}/smonsvc"
 
 # ─── Helper functions ───
 
@@ -195,12 +196,12 @@ cmd_install() {
     # Check for required files
     echo ""
     echo "=== Checking source files ==="
-    if [[ ! -f "${REPO_DIR}/pyproject.toml" ]]; then
-        echo -e "${RED}Error: pyproject.toml not found at ${REPO_DIR}${NC}"
+    if [[ ! -f "${LIB_ROOT}/pyproject.toml" ]]; then
+        echo -e "${RED}Error: pyproject.toml not found at ${LIB_ROOT}${NC}"
         echo "Run this script from services/scripts/"
         exit 1
     fi
-    echo "Source directory: ${REPO_DIR}"
+    echo "Source directory: ${LIB_ROOT}"
 
     # Verify user exists (only for system mode)
     echo ""
@@ -269,7 +270,6 @@ cmd_install() {
     # Source common.sh and use venv's pip
     source "${SCRIPT_DIR}/common.sh"
     export PATH="${VENV_DIR}/bin:${PATH}"
-    LIB_ROOT="${REPO_DIR}/.."  # Project root (one level up from services/)
     install_nvrx_packages "both" "${LIB_ROOT}"
 
     # Verify installation
@@ -308,11 +308,12 @@ NVRX_ATTRSVC_ALLOWED_ROOT=/
 NVRX_ATTRSVC_PORT=8000
 NVRX_ATTRSVC_HOST=0.0.0.0
 NVRX_ATTRSVC_LOG_LEVEL=DEBUG
-# NVRX_ATTRSVC_DATAFLOW_INDEX=your-index
+# NVRX_ATTRSVC_EXPORT_URL=https://example.test/dataflow2/your-index/posting
 # NVRX_ATTRSVC_CLUSTER_NAME=your-cluster
 
 # ─── SLURM Monitor (nvrx-smonsvc) ───
 NVRX_ATTRSVC_ENDPOINT=http://localhost:8000
+NVRX_SMONSVC_HOST=0.0.0.0
 NVRX_SMONSVC_PORT=8100
 NVRX_SMONSVC_PARTITIONS=batch batch_long
 NVRX_SMONSVC_INTERVAL=180

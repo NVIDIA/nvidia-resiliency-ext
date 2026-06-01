@@ -16,13 +16,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
+from nvidia_resiliency_ext.attribution.api_keys import (
+    llm_api_key_help_text,
+    llm_api_key_missing_message,
+    load_llm_api_key,
+)
 from nvidia_resiliency_ext.attribution.base import (
     AttributionState,
     NVRxAttribution,
     effective_run_or_init_config,
     normalize_attribution_args,
 )
-from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+from nvidia_resiliency_ext.attribution.logging_utils import bounded_log_value
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+)
 
 from .capture import capture_logs
 
@@ -123,6 +132,24 @@ class CollectiveAnalyzer(NVRxAttribution):
             args: Run parameters as a dict (preferred) or :class:`argparse.Namespace` (CLI).
 
         """
+        self._reset_run_state()
+        self._init_config = normalize_attribution_args(args)
+        eprint(f"args: {bounded_log_value(self._init_config)}")
+        self.llm = None
+        # initialize the NVRxAttribution class to run the attribution pipeline
+        super().__init__(
+            preprocess_input=self.preprocess_FR_dumps,
+            attribution=self.collective_analysis,
+            output_handler=self.print_output,
+        )
+
+    @property
+    def init_config(self) -> Dict[str, Any]:
+        """Constructor-normalized parameters (immutable snapshot for introspection/tests)."""
+        return dict(self._init_config)
+
+    def _reset_run_state(self) -> None:
+        """Clear FR data derived from a single trace-analysis run."""
         # the data structures to store the collective operations
         self.collectives_by_file: Dict[str, List[Collective]] = {}
         # the data structure to store the process group status per rank
@@ -133,25 +160,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         self.pg_configs: Dict[str, Dict[int, int]] = {}
         # the data structure to store the node health status per rank
         self.node_health_status: Dict[int, Dict[str, Dict[str, str]]] = {}
-        self._init_config = normalize_attribution_args(args)
-        eprint(f"args: {self._init_config}")
-        self.llm = None
-        # initialize the NVRxAttribution class to run the attribution pipeline
-        super().__init__(
-            preprocess_input=self.preprocess_FR_dumps,
-            attribution=self.collective_analysis,
-            output_handler=self.print_output,
-            attribution_kwargs={
-                "model": self._init_config.get("model"),
-                "base_url": self._init_config.get("base_url"),
-                "verbose": bool(self._init_config.get("verbose", False)),
-            },
-        )
-
-    @property
-    def init_config(self) -> Dict[str, Any]:
-        """Constructor-normalized parameters (immutable snapshot for introspection/tests)."""
-        return dict(self._init_config)
+        self.collectives_to_order: Dict[Any, int] = {}
 
     """
     Routines registered for the attribution pipeline
@@ -163,7 +172,7 @@ class CollectiveAnalyzer(NVRxAttribution):
         hanging_ranks_list = []
         cfg = effective_run_or_init_config(self._init_config)
         if self.llm and cfg.get("llm_analyze"):
-            logger.info(text)
+            logger.info("%s", bounded_log_value(text))
             hanging_ranks = re.search(r'.*hanging ranks: \{([^}]*)\}', text)
             if hanging_ranks is not None:
                 # Parse the hanging ranks from the analysis output
@@ -195,8 +204,9 @@ class CollectiveAnalyzer(NVRxAttribution):
         ``_dump_0``, ``_dump_1``, …). Prefix mode uses ``glob.glob(prefix + "*")``, matching
         :func:`~nvidia_resiliency_ext.attribution.trace_analyzer.fr_support._fr_traces_exist_for_prefix`.
         """
+        self._reset_run_state()
         cfg = effective_run_or_init_config(self._init_config)
-        logger.info(f"FR args: {cfg}")
+        logger.info("FR args: %s", bounded_log_value(cfg))
         file_paths = [cfg["fr_path"]]
         pattern = cfg.get("pattern", "_dump_*")
         logger.info(
@@ -216,7 +226,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             else:
                 # Path prefix (not a directory / not an existing file): match _dump_<rank> siblings.
                 json_files = glob.glob(path + "*")
-            logger.info(f"json_files: {json_files}")
+            logger.info("json_files: %s", bounded_log_value(json_files))
             json_files.sort()
             for filepath in json_files:
                 if cfg.get("verbose"):
@@ -237,8 +247,8 @@ class CollectiveAnalyzer(NVRxAttribution):
                 return order_map
 
             self.collectives_to_order = build_collectives_to_order()
-            logger.info(f"collective_groups: {self.collective_groups.keys()}")
-            logger.info(f"collectives_to_order: {self.collectives_to_order}")
+            logger.info("collective_groups: %s", bounded_log_value(self.collective_groups.keys()))
+            logger.info("collectives_to_order: %s", bounded_log_value(self.collectives_to_order))
             if cfg.get("verbose"):
                 self.print_pg_configs(verbose=bool(cfg.get("verbose")))
 
@@ -248,33 +258,11 @@ class CollectiveAnalyzer(NVRxAttribution):
         logger.info(f"\nSuccessfully processed {processed_files} files.")
         # analyze collectives to find process groups with missing and completed ranks
         completed_pg, missing_pg = self.analyze_matches(verbose=bool(cfg.get("verbose")))
-        grouped_missing_pgs = {}
-
         # if the dump file contains health check results, parse the health check results
         # and print them in a format
         if cfg.get("health_check"):
             self.print_node_health_status(verbose=bool(cfg.get("verbose")))
 
-        # Group only process groups with missing ranks.
-        # Completed-rank summaries are not actionable for attribution and create
-        # misleading output in the feedback loop.
-        grouped_missing_pgs = self.group_pgs(missing_pg)
-
-        # gather the head node of each group with missing ranks
-        # the head node is the first node in the group
-        # the missing ranks in the head node of the missing process groups
-        # are considered to cause the other nodes in the group to hang
-        def gather_head_nodes(grouped_pgs):
-            head_nodes = set()
-            for group_id, pg_indices in grouped_pgs.items():
-                head_nodes.add(pg_indices[0])
-            return head_nodes
-
-        head_nodes_missing = None
-        # Gather the head node of each missing-rank group.
-        if len(grouped_missing_pgs) > 0:
-            head_nodes_missing = gather_head_nodes(grouped_missing_pgs)
-            logger.debug(f"head_nodes of missing_pg: {head_nodes_missing}")
         # Print the analysis output
         original_level = logger.level
         if logger.getEffectiveLevel() > logging.INFO:
@@ -282,26 +270,28 @@ class CollectiveAnalyzer(NVRxAttribution):
         try:
             with capture_logs(logger.name) as output:
 
-                def print_ranks_in_pgs(head_nodes, pg_dict, missing_or_completed="Missing"):
+                def print_ranks_in_pgs(pg_indices, pg_dict, missing_or_completed="Missing"):
                     logger.info(
                         f"{'PGID':<6} | {'Process Group Desc':<25} | {'Op Type':<10} | {'Size':<8} \
                             | {'Dtype':<8} | {missing_or_completed} Ranks"
                     )
-                    for pg_idx in head_nodes:
-                        entry = list(pg_dict[pg_idx][0])
-                        entry.remove(entry[-2])
-                        if missing_or_completed == "Missing":
-                            ranks_to_print = entry[6]
-                        else:
-                            ranks_to_print = entry[5]
-                        logger.info(
-                            f"{entry[0]:<6} | {entry[1]:<25} | {entry[2]:<10} | {entry[3]:<8} \
-                                | {entry[4]:<8} | {ranks_to_print}"
-                        )
+                    for pg_idx in sorted(pg_indices):
+                        for entry in pg_dict[pg_idx]:
+                            op_type = str(entry[2])
+                            if "nccl:send" in op_type or "nccl:recv" in op_type:
+                                continue
+                            if missing_or_completed == "Missing":
+                                ranks_to_print = entry[7]
+                            else:
+                                ranks_to_print = entry[6]
+                            logger.info(
+                                f"{entry[0]:<6} | {entry[1]:<25} | {entry[2]:<10} | {entry[3]:<8} \
+                                    | {entry[4]:<8} | {ranks_to_print}"
+                            )
 
-                if head_nodes_missing:
-                    logger.debug(f"head_nodes_missing: {head_nodes_missing}")
-                    print_ranks_in_pgs(head_nodes_missing, missing_pg, "Missing")
+                if missing_pg:
+                    logger.debug(f"missing_pg_indices: {sorted(missing_pg)}")
+                    print_ranks_in_pgs(missing_pg.keys(), missing_pg, "Missing")
             analysis_output = output.getvalue()
         finally:
             logger.setLevel(original_level)
@@ -323,12 +313,15 @@ class CollectiveAnalyzer(NVRxAttribution):
             None: Results are printed to standard output
 
         Note:
-            Requires the LLM_API_KEY environment variable to be set
+            Requires an LLM API key resolved by ``load_llm_api_key``.
         """
         result = analysis_output
         cfg = effective_run_or_init_config(self._init_config)
         if cfg.get("llm_analyze"):
-            logger.info(f"Using LLM to analyze the output: {analysis_output}")
+            logger.info(
+                "Using LLM to analyze the output: %s",
+                bounded_log_value(analysis_output),
+            )
             model = cfg.get("model")
             base_url = cfg.get("base_url")
             verbose = bool(cfg.get("verbose"))
@@ -361,12 +354,9 @@ class CollectiveAnalyzer(NVRxAttribution):
 
                 prompt = PromptTemplate(template=template, input_variables=["analysis_output"])
 
-                # Check for API key
-                from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
-
                 api_key = load_llm_api_key()
                 if not api_key:
-                    eprint("LLM_API_KEY not found. Set env var or create ~/.llm_api_key")
+                    eprint(llm_api_key_missing_message())
                     return
 
                 default_values = {
@@ -389,7 +379,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                 eprint("pip install langchain langchain-nvidia-ai-endpoints")
             except Exception as e:
                 eprint(f"\nError using LangChain: {e}")
-                eprint("Set LLM_API_KEY env var or create ~/.llm_api_key")
+                eprint(llm_api_key_help_text())
         return result
 
     """

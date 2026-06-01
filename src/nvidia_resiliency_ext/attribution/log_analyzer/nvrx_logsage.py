@@ -1,10 +1,11 @@
 import argparse
+import ast
 import logging
 import os
 import random
 import re
 import time
-from typing import Any, Dict, Mapping, Union
+from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from langchain_openai import ChatOpenAI
 from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
@@ -17,9 +18,28 @@ from nvidia_resiliency_ext.attribution.base import (
     effective_run_or_init_config,
     normalize_attribution_args,
 )
-from nvidia_resiliency_ext.attribution.svc.config import DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+from nvidia_resiliency_ext.attribution.logging_utils import bounded_log_value
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TOP_P,
+    resolved_llm_runtime_kwargs,
+)
+from nvidia_resiliency_ext.attribution.orchestration.llm_output import logsage_recommendation
+from nvidia_resiliency_ext.attribution.orchestration.types import (
+    RECOMMENDATION_CONTINUE,
+    RECOMMENDATION_RESTART,
+    RECOMMENDATION_STOP,
+    RECOMMENDATION_UNKNOWN,
+    LogSageAnalysisResult,
+    RawAnalysisResultItem,
+)
 
 logger = logging.getLogger(__name__)
+
+LogSageCycleFields = tuple[str, str, str, str, str]
 
 FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
 FINISHED_STATUS_SLURM_CANCELLED = "SLURM_CANCELLED"
@@ -43,6 +63,132 @@ LOGSAGE_LLM_ENDPOINT_FAILED = "LLM ENDPOINT FAILED"
 
 
 MARKER_NEW_RUN_DIR_ADDED = "[sbatch_script]: New run dir added:"
+
+
+def _action_from_logsage_head(head: str) -> str:
+    normalized = head.strip().upper()
+    if STOP_NO_RESTART in normalized or normalized.startswith("STOP"):
+        return RECOMMENDATION_STOP
+    if RESTART_IMMEDIATE in normalized:
+        return RECOMMENDATION_RESTART
+    if ATTR_ERRORS_NOT_FOUND in normalized:
+        return RECOMMENDATION_CONTINUE
+    if ATTR_NO_LOGS in normalized:
+        return RECOMMENDATION_UNKNOWN
+    if ATTR_LLM_FAILURE in normalized or LOGSAGE_LLM_ENDPOINT_FAILED in normalized:
+        return RECOMMENDATION_UNKNOWN
+    return RECOMMENDATION_UNKNOWN
+
+
+def _parse_issue_list(inner: str) -> list[str]:
+    inner = inner.strip()
+    if not inner:
+        return []
+    literal_parsed = True
+    try:
+        parsed = ast.literal_eval(f"[{inner}]")
+    except (SyntaxError, ValueError, RecursionError):
+        literal_parsed = False
+        parsed = [inner]
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+
+    issues: list[str] = []
+    for item in parsed:
+        if item is None:
+            continue
+        if isinstance(item, str):
+            parts = [item] if literal_parsed or "," not in item else item.split(",")
+        else:
+            parts = [str(item)]
+        for part in parts:
+            issue = part.strip().strip("'\"")
+            if issue:
+                issues.append(issue)
+    return issues
+
+
+def _extract_bracketed_issue_list(attribution_text: str, label: str) -> Optional[str]:
+    marker = f"{label}:"
+    marker_index = attribution_text.find(marker)
+    if marker_index < 0:
+        return None
+    start = attribution_text.find("[", marker_index + len(marker))
+    if start < 0:
+        return None
+
+    depth = 0
+    quote: Optional[str] = None
+    escaped = False
+    for index, char in enumerate(attribution_text[start:], start=start):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            continue
+        if char == "[":
+            depth += 1
+            continue
+        if char == "]":
+            depth -= 1
+            if depth == 0:
+                return attribution_text[start + 1 : index]
+    return None
+
+
+def _extract_issue_lists(attribution_text: str) -> Tuple[list[str], list[str]]:
+    primary: list[str] = []
+    secondary: list[str] = []
+    primary_inner = _extract_bracketed_issue_list(attribution_text, "Primary issues")
+    secondary_inner = _extract_bracketed_issue_list(attribution_text, "Secondary issues")
+    if primary_inner is not None:
+        primary = _parse_issue_list(primary_inner)
+    if secondary_inner is not None:
+        secondary = _parse_issue_list(secondary_inner)
+    return primary, secondary
+
+
+def _result_item_from_logsage_fields(
+    fields: LogSageCycleFields,
+    *,
+    raw_text: str,
+    action: str,
+) -> RawAnalysisResultItem:
+    auto_resume = str(fields[0]) if len(fields) > 0 else ""
+    auto_resume_explanation = str(fields[1]) if len(fields) > 1 else ""
+    attribution_field = str(fields[2]) if len(fields) > 2 else ""
+    checkpoint_saved = str(fields[4]) if len(fields) > 4 else "false"
+
+    attribution_text = ""
+    if "Attribution:" in attribution_field:
+        attribution_text = (
+            attribution_field.split("Attribution:", 1)[1]
+            .strip()
+            .replace('"\\', "")
+            .replace('\\"', "")
+        )
+
+    checkpoint_saved_flag = 0
+    if checkpoint_saved.strip().lower() != "false":
+        checkpoint_saved_flag = 1
+    primary_issues, secondary_issues = _extract_issue_lists(attribution_text)
+
+    return RawAnalysisResultItem(
+        raw_text=raw_text,
+        auto_resume=auto_resume,
+        auto_resume_explanation=auto_resume_explanation,
+        attribution_text=attribution_text,
+        checkpoint_saved_flag=checkpoint_saved_flag,
+        action=action,
+        primary_issues=primary_issues,
+        secondary_issues=secondary_issues,
+    )
 
 
 def lines_after(lines, needle):
@@ -206,28 +352,22 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
 
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
-        from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
+        from nvidia_resiliency_ext.attribution.api_keys import (
+            llm_api_key_missing_message,
+            load_llm_api_key,
+        )
 
         self._init_config = normalize_attribution_args(args)
         self.api_key = load_llm_api_key()
         if not self.api_key:
-            raise ValueError(
-                "LLM_API_KEY not found. Set LLM_API_KEY env var, "
-                "LLM_API_KEY_FILE env var, or create ~/.llm_api_key"
-            )
+            raise ValueError(llm_api_key_missing_message())
         logger.debug("API key loaded (length=%d)", len(self.api_key))
-        logger.debug(
-            "Using model: %s",
-            self._init_config.get("model", DEFAULT_LLM_MODEL),
-        )
+        llm_kwargs = resolved_llm_runtime_kwargs(self._init_config)
+        logger.debug("Using model: %s", llm_kwargs["model"])
         self.lru_cache = LRUCache(100_000)
         self.llm = ChatOpenAI(
-            model=self._init_config.get("model", DEFAULT_LLM_MODEL),
             api_key=self.api_key,
-            base_url=self._init_config.get("base_url", DEFAULT_LLM_BASE_URL),
-            temperature=float(self._init_config.get("temperature", 0.2)),
-            top_p=float(self._init_config.get("top_p", 0.7)),
-            max_tokens=int(self._init_config.get("max_tokens", 8192)),
+            **llm_kwargs,
         )
         self.exclude_nvrx_logs = bool(self._init_config.get("exclude_nvrx_logs", False))
         self.is_per_cycle = bool(self._init_config.get("is_per_cycle", False))
@@ -314,7 +454,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
         ]
         return output_list
 
-    async def llm_analyze(self, output_list: list[ApplicationData]) -> list[str]:
+    async def llm_analyze(self, output_list: list[ApplicationData]) -> list[LogSageCycleFields]:
 
         result = []
         logger.info("output_list_size: %s", str(len(output_list)))
@@ -414,24 +554,27 @@ class NVRxLogAnalyzer(NVRxAttribution):
         return result
 
     async def print_output(
-        self, attribution_results: list[str]
-    ) -> tuple[list[tuple[str, AttributionState]], AttributionState]:
-        output_list = []
+        self, attribution_results: list[LogSageCycleFields]
+    ) -> tuple[LogSageAnalysisResult, AttributionState]:
+        output_list: list[RawAnalysisResultItem] = []
         overall_state = AttributionState.CONTINUE
         for attribution_result in attribution_results:
             if attribution_result:
-                logger.info(f"attribution_result: {attribution_result}")
-                if isinstance(attribution_result, (list, tuple)):
-                    concatenated_result = '\n'.join(str(item) for item in attribution_result)
-                    head = str(attribution_result[0])
-                else:
-                    concatenated_result = str(attribution_result)
-                    head = concatenated_result
-                attr_state = AttributionState.STOP if 'STOP' in head else AttributionState.CONTINUE
-                if attr_state == AttributionState.STOP:
+                logger.info("attribution_result: %s", bounded_log_value(attribution_result))
+                concatenated_result = '\n'.join(str(item) for item in attribution_result)
+                head = str(attribution_result[0])
+                action = _action_from_logsage_head(head)
+                if action == RECOMMENDATION_STOP:
                     overall_state = AttributionState.STOP
-                output_list.append((concatenated_result, attr_state))
-        return (output_list, overall_state)
+                output_list.append(
+                    _result_item_from_logsage_fields(
+                        attribution_result,
+                        raw_text=concatenated_result,
+                        action=action,
+                    )
+                )
+        recommendation = logsage_recommendation(output_list, source="log_analyzer")
+        return (LogSageAnalysisResult(output_list, recommendation), overall_state)
 
 
 def main():
@@ -451,9 +594,26 @@ def main():
         default=DEFAULT_LLM_BASE_URL,
         help='Base URL for the OpenAI-compatible API endpoint',
     )
-    parser.add_argument('-t', '--temperature', type=float, default=0.2, help='Temperature for LLM')
-    parser.add_argument('-p', '--top_p', type=float, default=0.7, help='Top P for LLM')
-    parser.add_argument('--max_tokens', type=int, default=8192, help='Max tokens for LLM')
+    parser.add_argument(
+        '-t',
+        '--temperature',
+        type=float,
+        default=DEFAULT_LLM_TEMPERATURE,
+        help='Temperature for LLM',
+    )
+    parser.add_argument(
+        '-p',
+        '--top_p',
+        type=float,
+        default=DEFAULT_LLM_TOP_P,
+        help='Top P for LLM',
+    )
+    parser.add_argument(
+        '--max_tokens',
+        type=int,
+        default=DEFAULT_LLM_MAX_TOKENS,
+        help='Max tokens for LLM',
+    )
     parser.add_argument(
         '--exclude_nvrx_logs', action='store_true', help='Exclude nvrx logs from the input data'
     )

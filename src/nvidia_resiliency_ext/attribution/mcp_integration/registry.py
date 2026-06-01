@@ -9,6 +9,7 @@ import logging
 import os
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass
+from enum import Enum
 from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple
 
 logger = logging.getLogger(__name__)
@@ -188,13 +189,29 @@ class AttributionModuleRegistry:
         for key, (_, payload) in self._results_cache.items():
             yield key, payload
 
-    def cache_result(self, module_name: str, arguments: Dict[str, Any], result: Any):
-        """Cache a module execution result."""
-        hash_value = hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
-        key = f"{module_name}:{hash_value}"
+    def result_id_for_args(self, arguments: Dict[str, Any]) -> str:
+        """Stable result ID for a module invocation argument payload."""
+        return hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
+
+    def cache_result_by_id(self, module_name: str, result_id: str, result: Any) -> None:
+        """Cache a module execution result under a known result ID."""
+        key = f"{module_name}:{result_id}"
         self._results_cache_put(key, result)
         logger.info(f"Caching result: {key}")
-        return hash_value
+
+    def cache_result(self, module_name: str, arguments: Dict[str, Any], result: Any) -> str:
+        """Cache a module execution result."""
+        result_id = self.result_id_for_args(arguments)
+        self.cache_result_by_id(module_name, result_id, result)
+        return result_id
+
+    def get_cached_result_by_id(self, result_id: str) -> Optional[Any]:
+        """Retrieve a cached result by exact result ID, regardless of module."""
+        for key, payload in self.iter_results_cache_items():
+            _module_name, cached_result_id = key.split(":", 1)
+            if cached_result_id == result_id:
+                return payload
+        return None
 
     def get_cached_result_by_uri(self, module_name: str, result_id: str) -> Optional[Any]:
         """Retrieve a cached result by URI."""
@@ -205,7 +222,7 @@ class AttributionModuleRegistry:
         self, module_name: str, arguments: Dict[str, Any]
     ) -> Optional[Any]:
         """Retrieve a cached result based on module name and arguments."""
-        hash_value = hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
+        hash_value = self.result_id_for_args(arguments)
         key = f"{module_name}:{hash_value}"
         logger.info(f"Looking up cached result: {key}")
         return self._results_cache_get(key)
@@ -262,23 +279,35 @@ class AttributionModuleRegistry:
 
 def serialize_result(result: Any) -> str:
     """Serialize attribution result to JSON string."""
+    return json.dumps(_jsonable_result(result), default=str)
+
+
+def _jsonable_result(result: Any) -> Any:
     if result is None:
-        return json.dumps(None)
+        return None
 
     if is_dataclass(result):
-        return json.dumps(asdict(result), default=str)
+        return _jsonable_result(asdict(result))
+
+    if isinstance(result, Enum):
+        return result.name
 
     if hasattr(result, 'to_dict'):
-        return json.dumps(result.to_dict(), default=str)
+        return _jsonable_result(result.to_dict())
 
     if hasattr(result, '__dict__'):
-        return json.dumps(result.__dict__, default=str)
+        return _jsonable_result(result.__dict__)
 
-    if isinstance(result, (dict, list, str, int, float, bool)):
-        return json.dumps(result, default=str)
+    if isinstance(result, dict):
+        return {str(key): _jsonable_result(value) for key, value in result.items()}
 
-    # Fallback to string representation
-    return json.dumps(str(result))
+    if isinstance(result, (list, tuple)):
+        return [_jsonable_result(value) for value in result]
+
+    if isinstance(result, (str, int, float, bool)):
+        return result
+
+    return str(result)
 
 
 def deserialize_result(result_str: str) -> Any:

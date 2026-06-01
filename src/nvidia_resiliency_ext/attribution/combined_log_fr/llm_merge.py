@@ -4,7 +4,7 @@
 """Fuse LogSage output with NCCL flight-recorder analysis via an LLM (LangChain + ChatOpenAI).
 
 Used by :class:`~nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr.CombinedLogFR` and
-by :func:`~nvidia_resiliency_ext.attribution.svc.analysis_pipeline.run_attribution_pipeline` (``LOG_AND_TRACE_WITH_LLM``).
+by :func:`~nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline.run_attribution_pipeline` (``LOG_AND_TRACE_WITH_LLM``).
 Kept as a standalone function so library code does not need ``NVRxAttribution`` or CLI wiring.
 """
 
@@ -14,6 +14,18 @@ import asyncio
 from typing import Any, Tuple
 
 from nvidia_resiliency_ext.attribution.base import AttributionState
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_LLM_TOP_P,
+)
+from nvidia_resiliency_ext.attribution.orchestration.types import (
+    RECOMMENDATION_STOP,
+    LogSageAnalysisResult,
+    RawAnalysisResultItem,
+)
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import FRAnalysisResult
 
 
@@ -24,29 +36,36 @@ def unpack_run_result(result: Any) -> Tuple[Any, AttributionState]:
     return ``(payload, AttributionState)``.
 
     :class:`~nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage.NVRxLogAnalyzer` returns
-    ``tuple[list[tuple[str, AttributionState]], AttributionState]`` from
+    ``tuple[list[RawAnalysisResultItem], AttributionState]`` from
     :meth:`~nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage.NVRxLogAnalyzer.print_output`.
-    The outer 2-tuple is unpacked first (``payload = list[tuple[str, AttributionState]]``, ``state``),
-    then the inner list is unpacked on a second call to join per-cycle strings; combined state is
-    ``STOP`` if any cycle requested STOP.
+    The outer 2-tuple is unpacked first (``payload = list[RawAnalysisResultItem]``, ``state``),
+    then the inner list is unpacked on a second call to join per-cycle strings.
     """
+    if isinstance(result, tuple) and len(result) == 2:
+        payload, state = result
+        if isinstance(payload, LogSageAnalysisResult):
+            return payload.items, state
+        return payload, state
+    if isinstance(result, LogSageAnalysisResult):
+        state = (
+            AttributionState.STOP
+            if result.recommendation.action == RECOMMENDATION_STOP
+            else AttributionState.CONTINUE
+        )
+        return result.items, state
     if isinstance(result, list):
         if not result:
             return "", AttributionState.CONTINUE
-        if all(
-            isinstance(x, tuple) and len(x) == 2 and isinstance(x[1], AttributionState)
-            for x in result
-        ):
-            texts = [str(x[0]) for x in result]
+        if all(isinstance(x, (RawAnalysisResultItem, dict)) for x in result):
+            items = [RawAnalysisResultItem.from_payload(x) for x in result]
+            texts = [item.raw_text for item in items]
             combined = "\n\n".join(t for t in texts if t)
             merged_state = (
                 AttributionState.STOP
-                if any(x[1] == AttributionState.STOP for x in result)
+                if any(item.action == RECOMMENDATION_STOP for item in items)
                 else AttributionState.CONTINUE
             )
             return combined, merged_state
-    if isinstance(result, tuple) and len(result) == 2:
-        return result[0], result[1]
     return result, AttributionState.CONTINUE
 
 
@@ -95,11 +114,11 @@ async def merge_log_fr_llm(
     fr_result: Any,
     *,
     llm_api_key: str,
-    model: str,
-    base_url: str,
-    temperature: float = 0.2,
-    top_p: float = 0.7,
-    max_tokens: int = 16384,
+    model: str = DEFAULT_LLM_MODEL,
+    base_url: str = DEFAULT_LLM_BASE_URL,
+    temperature: float = DEFAULT_LLM_TEMPERATURE,
+    top_p: float = DEFAULT_LLM_TOP_P,
+    max_tokens: int = DEFAULT_LLM_MAX_TOKENS,
 ) -> str:
     """Run the Nemotron-style fusion prompt; ``fr_result`` may be :class:`FRAnalysisResult` or raw text.
 
@@ -107,16 +126,16 @@ async def merge_log_fr_llm(
     at startup or pipeline entry) so the merge step does not re-read env/files on every call.
 
     """
-    from langchain_core.output_parsers import StrOutputParser
-    from langchain_core.prompts import PromptTemplate
-    from langchain_openai import ChatOpenAI
-
-    if not llm_api_key.strip():
+    if not (llm_api_key and llm_api_key.strip()):
         raise ValueError(
             "LLM API key is empty. Load it once via load_llm_api_key() and pass llm_api_key=... "
             "Required for log+FR LLM merge."
         )
     api_key = llm_api_key.strip()
+
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import PromptTemplate
+    from langchain_openai import ChatOpenAI
 
     log_payload, _ = unpack_run_result(log_result)
     fr_payload, _ = unpack_run_result(fr_result)

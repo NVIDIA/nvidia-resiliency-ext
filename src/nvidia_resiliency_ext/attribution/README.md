@@ -1,6 +1,6 @@
 # `nvidia_resiliency_ext.attribution`
 
-Python library for **failure attribution** on job logs: LogSage (LLM over logs), optional **NCCL flight-recorder** analysis, optional **LLM merge** of log + trace, **request coalescing**, SLURM-oriented **splitlog** tracking, and hooks for posting results (e.g. Elasticsearch, Slack).
+Python library for **failure attribution** on job logs: LogSage (LLM over logs), optional **NCCL flight-recorder** analysis, optional **LLM merge** of log + trace, **request coalescing**, SLURM-oriented **splitlog** tracking, and best-effort observability hooks (direct dataflow HTTP posting and Slack).
 
 Install the optional attribution dependency set with:
 

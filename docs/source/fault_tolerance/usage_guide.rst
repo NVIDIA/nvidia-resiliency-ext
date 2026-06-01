@@ -54,10 +54,9 @@ using ``--ft-<parameter-name>``.
 
 Details:
 
-* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint used by InJob.
-  Accepts Unix domain socket (UDS): ``/var/run/nodehealth.sock`` or ``unix:///var/run/nodehealth.sock``.
-* The rendezvous implementations call ``NodeHealthCheck`` which will connect to the provided endpoint.
-* Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
+* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the optional node health check service endpoint used by InJob.
+  Accepts Unix domain socket (UDS): ``/var/run/nvhcd.sock`` or ``unix:///var/run/nvhcd.sock``.
+  See `Node health check service`_ for the BCM-backed and compatible-service usage model.
 
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
 The ``--ft-restart-policy`` parameter is deprecated; only ``any-failed`` is supported: all workers
@@ -66,13 +65,104 @@ are restarted if any worker fails (torchrun-style behavior). This option may be 
 Node health check service
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The launcher accepts an optional argument to point to the node health check service endpoint.
-When provided, the launcher exports the socket path to child processes and
-the rendezvous handlers will use it in their node health checks.
+The launcher can query an optional node-local health check service before workers enter
+rendezvous. A practical public deployment model is to reuse NVIDIA Base Command
+Manager (BCM) Slurm prolog or epilog health checks behind an ``nvhcd``-compatible
+daemon. The NVRx integration point is service-compatible: any equivalent daemon
+can be used if it implements the expected gRPC API over a Unix domain socket
+(UDS).
 
-* ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the node health check service endpoint (UDS).
-* The rendezvous implementations call ``NodeHealthCheck`` which will connect to this UDS endpoint.
-* Connectivity errors are treated as non-fatal (health passes); explicit RPC failures reported by the service mark the node unhealthy.
+To enable the external node health check with BCM:
+
+* Build and deploy an ``nvhcd``-compatible daemon on every allocated node.
+* Configure the daemon to invoke a BCM health check script, or a wrapper around
+  an existing BCM prolog or epilog health check.
+* Ensure the wrapper translates the BCM result into JSON with ``fail_count == 0``
+  for a healthy node and a nonzero ``fail_count`` for an unhealthy node.
+* Make the daemon's UDS visible from the job environment or training container.
+* Pass the socket path to ``ft_launcher`` with ``--ft-node-health-check-endpoint``
+  (alias: ``--ft-node_health_check_endpoint``).
+
+For protocol details, see the ``nvhcd`` protobuf schema at
+``src/nvidia_resiliency_ext/shared_utils/proto/nvhcd.proto``. The functional test
+server at ``tests/fault_tolerance/func/nodehc_service.py`` is a minimal example
+of a UDS gRPC service that implements this API.
+
+Example:
+
+.. code-block:: bash
+
+   ft_launcher \
+     --ft-node-health-check-endpoint unix:///var/run/nvhcd.sock \
+     train.py
+
+Endpoint behavior:
+
+* UDS endpoints are supported. The value can be a path such as ``/var/run/nvhcd.sock``
+  or a ``unix://`` URI such as ``unix:///var/run/nvhcd.sock``.
+* If the endpoint is omitted, NVRx skips the external node health check.
+* If the gRPC client dependencies are unavailable, the UDS socket is missing, or a
+  connectivity error occurs, NVRx treats the external check as unavailable and does
+  not fail the job for that reason.
+* Explicit failures reported by the service mark the node unhealthy.
+
+Compatible service contract:
+
+* The service must implement ``HealthCheckService.RunHealthCheck`` from the NVRx
+  ``nvhcd`` protobuf API and listen on the configured UDS.
+* NVRx calls the service with ``args=["--no-slurm"]``.
+* The response must set ``success`` and return JSON in ``output``. A healthy node
+  is reported with ``success=true`` and ``{"fail_count": 0}``.
+* If ``success`` is false, ``fail_count`` is nonzero, or ``output`` cannot be parsed
+  as JSON with a ``fail_count`` field, NVRx treats the node as unhealthy.
+
+Example ``nvhcd`` configuration for BCM:
+
+.. code-block:: yaml
+
+   socket_path: /var/run/nvhcd.sock
+   healthcheck_path: /usr/local/sbin/nvrx-bcm-healthcheck-wrapper.sh
+   log_level: info
+   timeout: 120
+
+Start the daemon on each node with this configuration, for example as a node-level
+service or directly with:
+
+.. code-block:: bash
+
+   nvhcd -config /etc/nvhcd/config.yaml
+
+If the training job runs inside a container, bind mount the UDS path into the
+container so that ``ft_launcher`` can reach the daemon.
+
+The wrapper can call the same reusable health check entry point that BCM uses for
+Slurm prolog or epilog validation, then normalize the result for NVRx. When using
+``nvhcd``, the gRPC request ``args`` are forwarded to the configured
+``healthcheck_path`` as command-line arguments, so NVRx's ``--no-slurm`` argument
+will appear in the wrapper's ``"$@"``. For example:
+
+.. code-block:: bash
+
+   #!/usr/bin/env bash
+   set -euo pipefail
+
+   if /path/to/bcm-healthcheck "$@"; then
+     printf '{"fail_count": 0, "failed_checks": []}\n'
+     exit 0
+   else
+     printf '{"fail_count": 1, "failed_checks": ["bcm_healthcheck"]}\n'
+     exit 1
+   fi
+
+Because NVRx invokes this check during rendezvous rather than during Slurm's
+actual prolog or epilog phase, the wrapper should also provide any inputs that
+the BCM script expects from the Slurm lifecycle environment, or call a reusable
+health check entry point from the local BCM deployment that does not depend on
+those lifecycle-only variables.
+
+This lets NVRx run the same class of node validation during in-job restart
+rendezvous that cluster administrators may already run at Slurm prolog or epilog
+time.
 
 Distributed storage health check (Lustre + NFS)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -112,30 +202,79 @@ Validation behavior:
 Attribution service integration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Enable artifact analysis (e.g., logs) during rendezvous health checks by pointing to a running attribution service.
-The feature is enabled by specifying both host and port.
+Per-cycle application logs do not enable attribution by themselves. To enable attribution, set
+``--ft-attribution-endpoint``. The endpoint value ``localhost`` makes ``ft_launcher`` run the
+attribution service on the TCPStore host; other endpoints are treated as externally managed
+attribution services.
+External endpoints may use schemes such as ``http://``, ``grpc://``, or ``unix://``. The current
+in-job attribution client submits logs over HTTP(S); non-HTTP endpoint strings are preserved but do
+not add a new transport implementation.
+If ``--ft-attribution-endpoint`` is set, ``--ft-per-cycle-applog-prefix`` is required because the
+attribution service analyzes the per-cycle application logs.
+
+The service code is included in the NVRx wheel, but the service dependencies are optional.
+Install the wheel with the ``attribution`` extra before running a launcher-managed attribution
+service:
+
+.. code-block:: bash
+
+   python -m pip install 'nvidia_resiliency_ext-<version>-<tags>.whl[attribution]'
+
+Plain ``python -m pip install nvidia_resiliency_ext-*.whl`` does not install the attribution
+service dependencies.
 
 * CLI:
 
-  - ``--ft-attrsvc-host <HOST>`` (alias: ``--ft_attrsvc_host``)
-  - ``--ft-attrsvc-port <PORT>`` (alias: ``--ft_attrsvc_port``)
+  - ``--ft-attribution-endpoint <ENDPOINT>`` (alias: ``--ft_attribution_endpoint``), default disabled
+  - ``--ft-attribution-llm-api-key-file <PATH>`` (alias: ``--ft_attribution_llm_api_key_file``)
+  - ``--ft-attribution-llm-base-url <URL>`` (alias: ``--ft_attribution_llm_base_url``)
+  - ``--ft-attribution-llm-model <MODEL>`` (alias: ``--ft_attribution_llm_model``)
+  - ``--ft-attribution-startup-timeout <SECONDS>`` (alias: ``--ft_attribution_startup_timeout``), default ``20``
+  - ``--ft-attribution-decision-timeout <SECONDS>`` (alias: ``--ft_attribution_decision_timeout``), default ``60``
+  - ``--ft-attribution-export-url <URL>`` (alias: ``--ft_attribution_export_url``)
+
+  The managed attribution app-log directory is derived from
+  ``dirname(realpath(--ft-per-cycle-applog-prefix))``. Its stdout/stderr log is derived
+  from ``--ft-per-cycle-applog-prefix`` as ``*_attribution.log``. The managed service listens on
+  ``127.0.0.1:50050`` and is exposed to the in-job client as ``http://localhost:50050``.
+
+  The managed attribution API key must come from ``--ft-attribution-llm-api-key-file`` or inherited
+  ``LLM_API_KEY_FILE``. If neither points to a readable file, the TCPStore-host launcher fails
+  before starting the attribution service.
+
+  To export managed attribution results, pass ``--ft-attribution-export-url`` or
+  set ``attribution_export_url`` in the fault tolerance YAML config.
+
+  ``--ft-attribution-decision-timeout`` is the total launcher-side budget for one
+  attribution decision, measured from the terminal analysis request until the rendezvous
+  host fetches the STOP/RESTART recommendation.
+
+  ``ft_launcher`` sends job metadata with each attribution submission: ``user`` is read from
+  ``SLURM_JOB_USER`` or ``USER``, and ``job_id`` is read from ``SLURM_ARRAY_JOB_ID`` or
+  ``SLURM_JOB_ID``. If no corresponding environment variable is set, that field is omitted from
+  the submission payload.
 
   Example:
 
   .. code-block:: bash
 
      ft_launcher \
-       --ft-attrsvc-host 127.0.0.1 \
-       --ft-attrsvc-port 8000 \
+       --ft-per-cycle-applog-prefix /lustre/job123/train.log \
+       --ft-attribution-endpoint localhost \
+       --ft-attribution-llm-api-key-file /secure/llm_api_key \
+       --ft-attribution-llm-base-url https://integrate.api.nvidia.com/v1 \
+       --ft-attribution-llm-model nvidia/nemotron-3-super-120b-a12b \
+       --ft-attribution-export-url https://dataflow.example.test/dataflow2/example-index/posting \
        train.py
 
-* YAML: under the ``fault_tolerance`` section
+  To use an externally managed attribution service instead, specify an explicit endpoint:
 
-  .. code-block:: yaml
+  .. code-block:: bash
 
-     fault_tolerance:
-       attrsvc_host: "127.0.0.1"
-       attrsvc_port: 8000
+     ft_launcher \
+       --ft-per-cycle-applog-prefix /lustre/job123/train.log \
+       --ft-attribution-endpoint http://attribution.service.internal:8000 \
+       train.py
 
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^

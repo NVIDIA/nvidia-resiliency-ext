@@ -69,18 +69,6 @@ class TestNVRxAttribution(unittest.TestCase):
                 output_handler=self.sync_output_handler,
             )
 
-    def test_init_with_custom_kwargs(self):
-        """Test initialization with custom attribution kwargs."""
-        custom_kwargs = {"param1": "value1", "param2": 42}
-        attribution = attr.NVRxAttribution(
-            preprocess_input=self.sync_preprocess,
-            attribution=self.sync_attribution,
-            output_handler=self.sync_output_handler,
-            attribution_kwargs=custom_kwargs,
-        )
-
-        self.assertEqual(attribution.attribution_kwargs, custom_kwargs)
-
     def test_init_with_custom_thread_pool(self):
         """Test initialization with custom thread pool."""
         custom_pool = ThreadPoolExecutor(max_workers=4)
@@ -115,6 +103,23 @@ class TestNVRxAttribution(unittest.TestCase):
         # Expected: (5 * 2 + 10) * 3 = 60
         self.assertEqual(result, 60)
 
+    def test_run_sync_refreshes_loop_after_thread_loop_reset(self):
+        """Existing analyzer instances should survive a thread-local loop reset."""
+        attribution = attr.NVRxAttribution(
+            preprocess_input=self.sync_preprocess,
+            attribution=self.sync_attribution,
+            output_handler=self.sync_output_handler,
+        )
+        old_loop = attribution._loop
+
+        attr.NVRxAttribution.reset_thread_event_loop()
+        result = attribution.run_sync({"n": 5})
+
+        self.assertEqual(result, 60)
+        self.assertTrue(old_loop.is_closed())
+        self.assertIsNot(attribution._loop, old_loop)
+        self.assertFalse(attribution._loop.is_closed())
+
     def test_run_sync_list_input(self):
         """Test running the attribution pipeline with list input synchronously."""
         attribution = attr.NVRxAttribution(
@@ -126,20 +131,6 @@ class TestNVRxAttribution(unittest.TestCase):
         result = attribution.run_sync({"items": [1, 2, 3]})
         # Expected: ([2, 4, 6] + 10) * 3 = [36, 42, 48]
         self.assertEqual(result, [36, 42, 48])
-
-    def test_attribution_with_kwargs(self):
-        """Attribution kwargs are stored on the instance; pipeline uses the attribution callable as registered."""
-
-        attribution = attr.NVRxAttribution(
-            preprocess_input=self.sync_preprocess,
-            attribution=lambda x: x * 3 + 5,
-            output_handler=self.sync_output_handler,
-            attribution_kwargs={"note": "unused by base pipeline"},
-        )
-
-        result = attribution.run_sync({"n": 5})
-        # Expected: ((5 * 2) * 3 + 5) * 3 = 105
-        self.assertEqual(result, 105)
 
     def test_cleanup_on_deletion(self):
         """Test that thread pool is properly cleaned up on deletion."""

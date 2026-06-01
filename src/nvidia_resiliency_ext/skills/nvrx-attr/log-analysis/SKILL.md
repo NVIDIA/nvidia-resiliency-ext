@@ -69,7 +69,7 @@ analyzer = NVRxLogAnalyzer({
     "is_per_cycle": False,
 })
 results = analyzer.run_sync({"log_path": "/path/to/job.log"})
-# results: list[tuple[str, AttributionState]]
+# results: tuple[list[RawAnalysisResultItem], AttributionState]
 ```
 
 Run-time overrides take precedence over constructor config (see `base.effective_run_or_init_config`).
@@ -78,8 +78,8 @@ Run-time overrides take precedence over constructor config (see `base.effective_
 
 ## Output
 
-Each element of the returned list is a `(text, AttributionState)` pair where `text` is five
-fields joined by `\n`:
+Each returned `RawAnalysisResultItem` keeps `raw_text` with five fields joined by `\n`,
+but also carries the parsed fields directly so consumers do not reparse the text:
 
 ```
 <restart_decision>      # "RESTART IMMEDIATE" | "STOP - DONT RESTART IMMEDIATE"
@@ -89,7 +89,11 @@ fields joined by `\n`:
 <checkpoint_saved>      # "True" | "False"
 ```
 
-`AttributionState.STOP` is set when `restart_decision` contains `"STOP"`; otherwise `CONTINUE`.
+The serialized cycle fields are `auto_resume`, `auto_resume_explanation`,
+`attribution_text`, `checkpoint_saved_flag`, `primary_issues`, and
+`secondary_issues`, plus the parsed cycle `action`. The overall client decision
+is emitted separately as `recommendation.action` / `recommendation.source`. The runner's internal
+`AttributionState.STOP` is set only when the parsed cycle action is `STOP`.
 
 ### Fast-path decisions (no LLM call)
 

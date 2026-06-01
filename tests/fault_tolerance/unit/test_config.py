@@ -64,6 +64,8 @@ def test_from_args():
         "123.0",
         "--ft-rank-section-timeouts",
         "custom1:111.1,custom2:222.2",
+        "--ft-attribution-export-url",
+        "https://dataflow.example.test/dataflow2/example-index/posting",
     ]
 
     # Add a the dummy training script required by the torchrun argparser
@@ -77,6 +79,9 @@ def test_from_args():
     assert ft.log_level == logging.DEBUG
     assert ft.rank_out_of_section_timeout == 123.0
     assert ft.rank_section_timeouts == {'custom1': 111.1, 'custom2': 222.2}
+    assert (
+        ft.attribution_export_url == "https://dataflow.example.test/dataflow2/example-index/posting"
+    )
 
 
 def test_signal_field_with_valid_values():
@@ -141,6 +146,24 @@ def tmp_yaml_file(lines):
         yield temp_file.name
     finally:
         os.remove(temp_file.name)
+
+
+def test_from_args_preserves_progress_tracking_yaml_when_cli_absent():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
+
+    YAML_LINES = [
+        "fault_tolerance:",
+        "    max_no_progress_cycles: 3",
+        "    min_progress_iterations: 7",
+    ]
+
+    parser = get_args_parser()
+    with tmp_yaml_file(YAML_LINES) as temp_file:
+        args = parser.parse_args(["--ft-cfg-path", temp_file, "dummy.py"])
+        ft = fault_tolerance.FaultToleranceConfig.from_args(args)
+
+    assert ft.max_no_progress_cycles == 3
+    assert ft.min_progress_iterations == 7
 
 
 def test_read_from_yaml():

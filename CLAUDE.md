@@ -98,7 +98,7 @@ Shared infrastructure: `health_check.py` (GPU/NIC/storage health checks via NVML
 ## Repository Root
 
 ### `services/`
-Standalone services at the **repository root** (`services/`, not inside `src/nvidia_resiliency_ext/`): `nvrx_attrsvc/` (FastAPI server for LLM log analysis), `nvrx_smonsvc/` (SLURM job monitor).
+Deployment assets for standalone services: `attrsvc/` (FastAPI server for LLM log analysis), `smonsvc/` (SLURM job monitor), and shared scripts. Python service packages live under `src/nvidia_resiliency_ext/services/`.
 
 ## Key Environment Variables
 

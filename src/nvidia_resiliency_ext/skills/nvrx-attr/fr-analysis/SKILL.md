@@ -73,14 +73,14 @@ analyzer = CollectiveAnalyzer({
 results = analyzer.run_sync({
     "fr_path": "/path/to/fr_dumps/",
 })
-# results: list[tuple[str, AttributionState]]
+# results: tuple[FRAnalysisResult | str, AttributionState]
 ```
 
 ---
 
 ## Output
 
-Returns `(text, AttributionState)` pairs where `text` is the FR analysis table and describes:
+Returns `(result, AttributionState)` where `result` is the FR analysis table and describes:
 
 - The selected wavefront/front process group
 - **Missing ranks** at that process group (root-cause suspects)

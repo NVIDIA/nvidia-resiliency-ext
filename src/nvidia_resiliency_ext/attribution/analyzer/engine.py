@@ -3,11 +3,11 @@
 
 """Attribution orchestration: :class:`Analyzer` (jobs, coalescing, cache, pipelines).
 
-This layer sits above :mod:`nvidia_resiliency_ext.attribution.svc` (LogSage, SLURM
+This layer sits above :mod:`nvidia_resiliency_ext.attribution.orchestration` (LogSage, SLURM
 parsers, splitlog, optional FR via :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`).
 :class:`Analyzer` adds request coalescing; on cache miss,
-:meth:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer.run_attribution_for_path`
-runs LogSage and optional FR (see :mod:`~nvidia_resiliency_ext.attribution.svc.analysis_pipeline`).
+:meth:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer.run_attribution_for_path`
+runs LogSage and optional FR (see :mod:`~nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline`).
 
 Standalone API (no HTTP):
 
@@ -20,7 +20,7 @@ Standalone API (no HTTP):
 
 Architecture:
 - :class:`Analyzer`: :class:`~nvidia_resiliency_ext.attribution.coalescing.RequestCoalescer` (cache) and
-  :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer` (jobs, LogSage, optional FR pipeline)
+  :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer` (jobs, LogSage, optional FR pipeline)
 
 **Event loop (splitlog / thread callbacks):** :meth:`~Analyzer.set_event_loop` must be called with the
 process main asyncio loop **as soon as it is available** (e.g. FastAPI ``startup``). Splitlog polling
@@ -31,6 +31,7 @@ Job modes (tracking): PENDING, SINGLE, SPLITLOG — see class docstring.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -42,20 +43,34 @@ from nvidia_resiliency_ext.attribution.coalescing import (
     RequestCoalescer,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.svc.analysis_pipeline import (
+from nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline import (
     AnalysisPipelineMode,
     FrDumpPathNotFoundError,
 )
-from nvidia_resiliency_ext.attribution.svc.config import ErrorCode, LogSageExecutionConfig
-from nvidia_resiliency_ext.attribution.svc.job import Job, JobMode
-from nvidia_resiliency_ext.attribution.svc.log_analyzer import LogAnalyzer
-from nvidia_resiliency_ext.attribution.svc.types import (
+from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode, LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.orchestration.job import Job, JobMode
+from nvidia_resiliency_ext.attribution.orchestration.llm_output import (
+    fr_only_no_log_payload,
+    logsage_recommendation_from_payload,
+    recommendation_payload,
+)
+from nvidia_resiliency_ext.attribution.orchestration.log_analyzer import LogAnalyzer
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    ANALYSIS_INTENT_PROGRESSIVE,
+    ANALYSIS_INTENT_TERMINAL,
+    ANALYSIS_INTENT_TRACK_ONLY,
+    normalize_analysis_intent,
+)
+from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalysisCycleResult,
     LogAnalysisSplitlogResult,
     LogAnalyzerError,
     LogAnalyzerFilePreview,
     LogAnalyzerOutcome,
     LogAnalyzerSubmitResult,
+)
+from nvidia_resiliency_ext.attribution.orchestration.utils import (
+    selected_log_analyzer_cycle_payload,
 )
 from nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer import TraceAnalyzer
 
@@ -64,13 +79,53 @@ from ..coalescing import LogAnalysisCoalesced, coalesced_from_cache
 logger = logging.getLogger(__name__)
 
 
+def _coalesced_log_result_or_fr_only(bundle: LogAnalysisCoalesced) -> tuple[Dict[str, Any], bool]:
+    """Return the LogSage-shaped result payload and whether it was synthesized for FR-only."""
+    if bundle.log_result is not None:
+        return bundle.log_result, False
+    if not (bundle.fr_dump_path or bundle.fr_analysis):
+        raise RuntimeError("cached entry has no log analysis and no FR data")
+    return fr_only_no_log_payload(), True
+
+
+def _recommendation_payload_for_result(result: Dict[str, Any]) -> Dict[str, str]:
+    return recommendation_payload(logsage_recommendation_from_payload(result))
+
+
+def _nonblocking_cycle_result(status: str, wl_restart: Optional[int]) -> LogAnalysisCycleResult:
+    return LogAnalysisCycleResult(
+        result={},
+        status=status,
+        wl_restart=wl_restart or 0,
+        wl_restart_count=None,
+        recommendation=_recommendation_payload_for_result({}),
+    )
+
+
+def _nonblocking_splitlog_result(
+    status: str,
+    job: Job,
+    log_file: str,
+    wl_restart: Optional[int],
+) -> LogAnalysisSplitlogResult:
+    return LogAnalysisSplitlogResult(
+        result={},
+        status=status,
+        mode=JobMode.SPLITLOG.value,
+        sched_restarts=job.sched_restarts,
+        log_file=log_file,
+        wl_restart=wl_restart or 0,
+        recommendation=_recommendation_payload_for_result({}),
+    )
+
+
 class Analyzer:
     """
-    Entry point: request coalescing plus :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`.
+    Entry point: request coalescing plus :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`.
 
     On :meth:`analyze`, the coalescer returns a cached :class:`~nvidia_resiliency_ext.attribution.coalescing.LogAnalysisCoalesced`
     when possible; on a miss, :meth:`_run_llm_analysis` delegates to
-    :meth:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer.run_attribution_for_path`.
+    :meth:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer.run_attribution_for_path`.
 
     Call :meth:`set_event_loop` during app startup so splitlog background threads can schedule work on the
     main loop (see module docstring).
@@ -97,6 +152,7 @@ class Analyzer:
         analysis_pipeline_mode: AnalysisPipelineMode = AnalysisPipelineMode.LOG_AND_TRACE,
         compute_timeout: float | None = None,
         grace_period_seconds: float | None = None,
+        progressive_analysis_enabled: bool = False,
     ):
         """
         Args:
@@ -108,17 +164,19 @@ class Analyzer:
             log_analyzer: Optional log-side facade. When omitted, one is built from ``allowed_root``,
                 ``use_lib_log_analysis`` / ``log_sage``, the coalescer, and optional ``trace_analyzer``.
             trace_analyzer: Optional FR :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`
-                passed into the default :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`
+                passed into the default :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`
                 (ignored when ``log_analyzer`` is provided).
-            log_sage: Optional :class:`~nvidia_resiliency_ext.attribution.svc.config.LogSageExecutionConfig`
+            log_sage: Optional :class:`~nvidia_resiliency_ext.attribution.orchestration.config.LogSageExecutionConfig`
                 (LLM model, temperature, lib vs MCP). When omitted, defaults are used with
                 ``use_lib_log_analysis`` only.
-            analysis_pipeline_mode: Passed to the default :class:`~nvidia_resiliency_ext.attribution.svc.log_analyzer.LogAnalyzer`
+            analysis_pipeline_mode: Passed to the default :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`
                 (ignored when ``log_analyzer`` is provided). Default is :attr:`AnalysisPipelineMode.LOG_AND_TRACE`;
                 set :attr:`AnalysisPipelineMode.LOG_ONLY`, :attr:`AnalysisPipelineMode.TRACE_ONLY`, or
                 :attr:`AnalysisPipelineMode.LOG_AND_TRACE_WITH_LLM` without pre-building ``LogAnalyzer``.
             compute_timeout: Per-compute timeout for the coalescer (seconds). Default: coalescer default.
             grace_period_seconds: Cache grace before stat validation (seconds). Default: coalescer default.
+            progressive_analysis_enabled: If True, explicit progressive submit intent is forwarded
+                to the loganalysis tool boundary. If False, submit remains track-only.
 
         After construction, call :meth:`set_event_loop` when the asyncio loop exists (e.g. HTTP server
         startup) so splitlog fire-and-forget analysis can be scheduled; see module docstring.
@@ -157,6 +215,7 @@ class Analyzer:
             trace_analyzer=trace_analyzer,
             analysis_pipeline_mode=analysis_pipeline_mode,
         )
+        self._progressive_analysis_enabled = progressive_analysis_enabled
         self._main_loop: asyncio.AbstractEventLoop | None = None  # For thread-safe callbacks
 
         self._log.register_callbacks(self._fire_and_forget_analyze)
@@ -243,6 +302,7 @@ class Analyzer:
         log_path: str,
         user: str = "unknown",
         job_id: Optional[str] = None,
+        analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
         """
         Submit a log file for analysis tracking.
@@ -254,17 +314,150 @@ class Analyzer:
             log_path: Path to the log file (or slurm output for splitlog mode)
             user: Job owner (for dataflow records)
             job_id: Job ID (required for split logging mode)
+            analysis_intent: Track-only by default; ``progressive`` starts early
+                analysis when the configured backend supports it; ``terminal`` starts
+                final analysis through the coalescer without waiting for the result.
 
         Returns:
             LogAnalyzerSubmitResult on success, LogAnalyzerError on failure
         """
-        return await self._log.submit(log_path, user=user, job_id=job_id)
+        try:
+            intent = normalize_analysis_intent(analysis_intent)
+        except ValueError as e:
+            return LogAnalyzerError(error_code=ErrorCode.INVALID_PARAMETER, message=str(e))
+
+        result = await self._log.submit(log_path, user=user, job_id=job_id)
+        if isinstance(result, LogAnalyzerError):
+            return result
+
+        if intent == ANALYSIS_INTENT_PROGRESSIVE:
+            self._schedule_progressive_analysis(result.normalized_path, user, job_id)
+        elif intent == ANALYSIS_INTENT_TERMINAL:
+            self._schedule_terminal_analysis(result.normalized_path)
+
+        return result
+
+    def _schedule_progressive_analysis(
+        self,
+        normalized_path: str,
+        user: str,
+        job_id: Optional[str],
+    ) -> None:
+        """Schedule progressive analysis without delaying submit/POST response."""
+        if not self._progressive_analysis_enabled:
+            logger.debug(
+                "Progressive analysis intent ignored because the feature gate is disabled: %s",
+                normalized_path,
+            )
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._main_loop is None or self._main_loop.is_closed():
+                logger.error(
+                    "Event loop not set — skipping progressive analysis start for %s",
+                    normalized_path,
+                )
+                return
+            asyncio.run_coroutine_threadsafe(
+                self._start_progressive_analysis(normalized_path, user, job_id),
+                self._main_loop,
+            )
+        else:
+            loop.create_task(self._start_progressive_analysis(normalized_path, user, job_id))
+        logger.debug("Scheduled progressive analysis start for %s", normalized_path)
+
+    async def _start_progressive_analysis(
+        self,
+        normalized_path: str,
+        user: str,
+        job_id: Optional[str],
+    ) -> None:
+        """Initiate progressive analysis if the feature gate and loganalysis tool allow it."""
+        if not self._progressive_analysis_enabled:
+            logger.debug(
+                "Progressive analysis intent ignored because the feature gate is disabled: %s",
+                normalized_path,
+            )
+            return
+        try:
+            result = await self._log.start_progressive_analysis(
+                normalized_path,
+                user=user,
+                job_id=job_id,
+            )
+            logger.debug(
+                "Progressive analysis start result for %s: status=%s message=%s",
+                normalized_path,
+                result.status,
+                result.message,
+            )
+        except Exception as e:
+            logger.warning(
+                "Progressive analysis start failed for %s: %s: %s",
+                normalized_path,
+                type(e).__name__,
+                e,
+            )
+
+    async def _run_terminal_analysis(self, normalized_path: str) -> None:
+        """Run the normal result-gathering path after an explicit terminal signal."""
+        result = await self.analyze(normalized_path)
+        if isinstance(result, LogAnalyzerError):
+            logger.warning(
+                "Terminal analysis failed for %s: %s: %s",
+                normalized_path,
+                result.error_code,
+                result.message,
+            )
+        else:
+            logger.debug("Terminal analysis completed for %s", normalized_path)
+
+    def _schedule_terminal_analysis(self, normalized_path: str) -> None:
+        """Start final analysis without delaying POST /logs terminal responses."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._main_loop is None or self._main_loop.is_closed():
+                logger.error(
+                    "Event loop not set — skipping terminal analysis start for %s",
+                    normalized_path,
+                )
+                return
+            future = asyncio.run_coroutine_threadsafe(
+                self._run_terminal_analysis(normalized_path),
+                self._main_loop,
+            )
+            future.add_done_callback(
+                lambda done: self._log_terminal_analysis_failure(normalized_path, done)
+            )
+        else:
+            task = loop.create_task(self._run_terminal_analysis(normalized_path))
+            task.add_done_callback(
+                lambda done: self._log_terminal_analysis_failure(normalized_path, done)
+            )
+        logger.debug("Scheduled terminal analysis start for %s", normalized_path)
+
+    @staticmethod
+    def _log_terminal_analysis_failure(normalized_path: str, done: Any) -> None:
+        try:
+            done.result()
+        except (asyncio.CancelledError, concurrent.futures.CancelledError):
+            logger.debug("Terminal analysis task cancelled for %s", normalized_path)
+        except Exception as e:
+            logger.warning(
+                "Terminal analysis task failed for %s: %s: %s",
+                normalized_path,
+                type(e).__name__,
+                e,
+            )
 
     async def analyze(
         self,
         log_path: str,
         file: Optional[str] = None,
         wl_restart: Optional[int] = None,
+        wait: bool = True,
     ) -> LogAnalyzerOutcome:
         """
         Analyze a log file using LLM.
@@ -276,6 +469,8 @@ class Analyzer:
             log_path: Path to the log file (or slurm output for splitlog mode)
             file: Filename for splitlog mode (None = all files)
             wl_restart: Workload restart index within file (None = all)
+            wait: When false, only probe cache/in-flight state and never start or
+                await analysis.
 
         Returns:
             LogAnalysisCycleResult or LogAnalysisSplitlogResult on success, LogAnalyzerError on failure
@@ -311,7 +506,7 @@ class Analyzer:
                 self._log.record_deferred_single_demotion()
 
         if mode == JobMode.SPLITLOG and job:
-            return await self._analyze_splitlog_mode(validated, job, file, wl_restart)
+            return await self._analyze_splitlog_mode(validated, job, file, wl_restart, wait=wait)
 
         # Single file mode
         validated = self.validate_path(log_path, require_regular_file=True, reject_empty=True)
@@ -320,43 +515,47 @@ class Analyzer:
 
         try:
             user = job.user if job else "unknown"
-            job_id = job.job_id if job else ""
+            job_id = job.job_id if job else None
             if not job_id:
                 logger.debug(
                     f"No job_id for path {validated}: job_found={job is not None}, "
                     f"job.job_id={getattr(job, 'job_id', 'N/A') if job else 'N/A'}"
                 )
-            coalesced_raw = await self._coalescer.get_or_compute(
-                validated, lambda: self._run_llm_analysis(validated, user=user, job_id=job_id)
-            )
+            if wait:
+                coalesced_raw = await self._coalescer.get_or_compute(
+                    validated, lambda: self._run_llm_analysis(validated, user=user, job_id=job_id)
+                )
+            else:
+                peek = await self._coalescer.peek(validated)
+                if peek["status"] != "completed":
+                    return _nonblocking_cycle_result(peek["status"], wl_restart)
+                coalesced_raw = peek["result"]
             bundle = coalesced_from_cache(coalesced_raw)
-            log_result = bundle.log_result
             fr_dump = bundle.fr_dump_path
             fr_analysis = bundle.fr_analysis
             llm_merged = bundle.llm_merged_summary
-            if log_result is None:
-                if not (fr_dump or fr_analysis):
-                    return LogAnalyzerError(
-                        error_code=ErrorCode.INTERNAL_ERROR,
-                        message="cached entry has no log analysis and no FR data",
-                    )
+            try:
+                log_result, fr_only = _coalesced_log_result_or_fr_only(bundle)
+            except RuntimeError as e:
+                return LogAnalyzerError(
+                    error_code=ErrorCode.INTERNAL_ERROR,
+                    message=str(e),
+                )
+            if fr_only:
                 if wl_restart is not None:
                     return LogAnalyzerError(
                         error_code=ErrorCode.INVALID_PATH,
                         message="wl_restart is not applicable for FR-only cache entries",
                     )
                 return LogAnalysisCycleResult(
-                    result={
-                        "state": "no_log",
-                        "result": [],
-                        "module": "fr_only",
-                    },
+                    result=log_result,
                     status="completed",
                     wl_restart=0,
                     wl_restart_count=None,
                     fr_dump_path=fr_dump,
                     fr_analysis=fr_analysis,
                     llm_merged_summary=llm_merged,
+                    recommendation=_recommendation_payload_for_result(log_result),
                 )
             # LLM returns multiple results per file (one per workload cycle); support wl_restart to select one
             results_list = (
@@ -370,8 +569,10 @@ class Analyzer:
                         error_code=ErrorCode.INVALID_PATH,
                         message=f"wl_restart={wl_restart} out of range (file has {wl_restart_count or 0} workload cycle(s))",
                     )
-                # Return single-cycle result (copy so we don't mutate cached log_result)
-                single_result = {**log_result, "result": [results_list[wl_restart]]}
+                single_result = selected_log_analyzer_cycle_payload(
+                    log_result,
+                    results_list[wl_restart],
+                )
                 return LogAnalysisCycleResult(
                     result=single_result,
                     status="completed",
@@ -380,8 +581,10 @@ class Analyzer:
                     fr_dump_path=fr_dump,
                     fr_analysis=fr_analysis,
                     llm_merged_summary=llm_merged,
+                    recommendation=_recommendation_payload_for_result(single_result),
                 )
             # No wl_restart: return full result (all cycles) with count so client can iterate
+            recommendation = logsage_recommendation_from_payload(log_result)
             return LogAnalysisCycleResult(
                 result=log_result,
                 status="completed",
@@ -390,6 +593,7 @@ class Analyzer:
                 fr_dump_path=fr_dump,
                 fr_analysis=fr_analysis,
                 llm_merged_summary=llm_merged,
+                recommendation=recommendation_payload(recommendation),
             )
         except FrDumpPathNotFoundError as e:
             return LogAnalyzerError(
@@ -423,7 +627,7 @@ class Analyzer:
     # ─── Internal methods ───
 
     async def _run_llm_analysis(
-        self, path: str, user: str = "unknown", job_id: str = ""
+        self, path: str, user: str = "unknown", job_id: Optional[str] = None
     ) -> LogAnalysisCoalesced:
         """On cache miss: delegate to :meth:`LogAnalyzer.run_attribution_for_path`."""
         return await self._log.run_attribution_for_path(path, user=user, job_id=job_id)
@@ -434,6 +638,7 @@ class Analyzer:
         job: Job,
         file: Optional[str],
         wl_restart: Optional[int],
+        wait: bool = True,
     ) -> LogAnalysisSplitlogResult | LogAnalyzerError:
         """Handle analysis for split logging mode jobs."""
         tracker = self._log.splitlog_tracker
@@ -457,12 +662,23 @@ class Analyzer:
             )
 
         try:
-            coalesced_raw = await self._coalescer.get_or_compute(
-                file_info.log_file,
-                lambda: self._run_llm_analysis(
-                    file_info.log_file, user=job.user, job_id=job.job_id
-                ),
-            )
+            if wait:
+                coalesced_raw = await self._coalescer.get_or_compute(
+                    file_info.log_file,
+                    lambda: self._run_llm_analysis(
+                        file_info.log_file, user=job.user, job_id=job.job_id
+                    ),
+                )
+            else:
+                peek = await self._coalescer.peek(file_info.log_file)
+                if peek["status"] != "completed":
+                    return _nonblocking_splitlog_result(
+                        peek["status"],
+                        job,
+                        file_info.log_file,
+                        wl_restart,
+                    )
+                coalesced_raw = peek["result"]
         except FrDumpPathNotFoundError as e:
             return LogAnalyzerError(
                 error_code=ErrorCode.FR_DUMP_NOT_FOUND,
@@ -475,20 +691,15 @@ class Analyzer:
             )
 
         bundle = coalesced_from_cache(coalesced_raw)
-        result = bundle.log_result
         fr_dump = bundle.fr_dump_path
         fr_analysis = bundle.fr_analysis
-        if result is None:
-            if not (fr_dump or fr_analysis):
-                return LogAnalyzerError(
-                    error_code=ErrorCode.INTERNAL_ERROR,
-                    message="cached entry has no log analysis and no FR data",
-                )
-            result = {
-                "state": "no_log",
-                "result": [],
-                "module": "fr_only",
-            }
+        try:
+            result, _fr_only = _coalesced_log_result_or_fr_only(bundle)
+        except RuntimeError as e:
+            return LogAnalyzerError(
+                error_code=ErrorCode.INTERNAL_ERROR,
+                message=str(e),
+            )
         return LogAnalysisSplitlogResult(
             result=result,
             status="completed",
@@ -499,10 +710,11 @@ class Analyzer:
             fr_dump_path=fr_dump,
             fr_analysis=fr_analysis,
             llm_merged_summary=bundle.llm_merged_summary,
+            recommendation=_recommendation_payload_for_result(result),
         )
 
     def _sync_analyze_via_coalescer(
-        self, log_path: str, user: str, job_id: str = ""
+        self, log_path: str, user: str, job_id: Optional[str] = None
     ) -> Dict[str, Any] | None:
         """Synchronous wrapper for background thread analysis.
 
@@ -530,7 +742,9 @@ class Analyzer:
         # Block until complete (same behavior as before)
         return future.result(timeout=self._compute_timeout)
 
-    def _fire_and_forget_analyze(self, log_path: str, user: str = "", job_id: str = "") -> None:
+    def _fire_and_forget_analyze(
+        self, log_path: str, user: str = "unknown", job_id: Optional[str] = None
+    ) -> None:
         """
         Schedule analysis without waiting for completion.
 

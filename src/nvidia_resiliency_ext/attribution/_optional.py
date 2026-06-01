@@ -11,6 +11,13 @@ _OPTIONAL_ATTRIBUTION_MODULES = frozenset(
         "logsage",
         "mcp",
         "setproctitle",
+        "fastapi",
+        "uvicorn",
+        "pydantic",
+        "pydantic_settings",
+        "slowapi",
+        "slack_bolt",
+        "slack_sdk",
     }
 )
 

@@ -3,6 +3,8 @@
 
 import unittest
 
+from nvidia_resiliency_ext.attribution.base import AttributionState
+from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
     FRAnalysisResult,
     fr_result_from_mcp_module_response,
@@ -21,6 +23,7 @@ class TestFrResultFromMcpModuleResponse(unittest.TestCase):
             {
                 "module": "fr_analyzer",
                 "result": {"analysis_text": "table\nhere", "hanging_ranks": "hanging ranks: [1]"},
+                "recommendation": {"action": "UNKNOWN", "source": "fr_analyzer"},
             }
         )
         self.assertIsInstance(r2, FRAnalysisResult)
@@ -41,6 +44,31 @@ class TestFrResultFromMcpModuleResponse(unittest.TestCase):
         self.assertIsNone(
             fr_result_from_mcp_module_response({"error": "boom", "result": {}}),
         )
+
+    def test_collective_analyzer_print_output_is_monitor_only(self) -> None:
+        analyzer = CollectiveAnalyzer(
+            {
+                "fr_path": "dummy",
+                "pattern": "_dump*",
+                "verbose": False,
+                "health_check": False,
+                "llm_analyze": False,
+                "model": None,
+                "base_url": None,
+                "threshold": None,
+            }
+        )
+        text = "\n".join(
+            [
+                "PGID | Process Group Desc | Op Type | Size | Dtype | Missing Ranks",
+                "0 | dp | allreduce | 1 | fp32 | 1,2",
+            ]
+        )
+
+        packed, state = analyzer._loop.run_until_complete(analyzer.print_output(text))
+
+        self.assertEqual(state, AttributionState.CONTINUE)
+        self.assertEqual(packed["hanging_ranks"], "hanging ranks: [1, 2]")
 
 
 if __name__ == "__main__":

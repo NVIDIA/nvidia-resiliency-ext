@@ -30,13 +30,12 @@ def _normalize_fr_analysis(raw_fr: Any) -> Optional[FRAnalysisResult]:
 class LogAnalysisCoalesced:
     """Cache value: joint LogSage result and optional FR attribution.
 
-    ``log_result`` is the dict from LogSage (``result``, ``state``, …), or ``None`` when the
-    payload is FR-only (no LogSage output). FR fields are optional:
+    ``log_result`` is the LogSage-shaped dict (``result`` plus ``recommendation``), or ``None``
+    when the payload is FR-only (no LogSage output). FR fields are optional:
     ``fr_dump_path`` when :func:`~nvidia_resiliency_ext.attribution.trace_analyzer.extract_fr_dump_path`
     finds a path in the log; ``fr_analysis`` when :func:`~nvidia_resiliency_ext.attribution.trace_analyzer.analyze_fr_dump`
-    succeeds.     ``llm_merged_summary`` is set when the merge LLM ran: **LOG_AND_TRACE_WITH_LLM** on the lib
-    backend, or **LOG_AND_TRACE** / **LOG_AND_TRACE_WITH_LLM** on the MCP backend (``log_fr_analyzer``
-    runs merge in the MCP process). Older cache entries may store only a bare
+    succeeds. ``llm_merged_summary`` is set only when the merge LLM ran
+    (**LOG_AND_TRACE_WITH_LLM** and FR data was present). Older cache entries may store only a bare
     ``log_result`` dict (no wrapper keys).
     """
 
