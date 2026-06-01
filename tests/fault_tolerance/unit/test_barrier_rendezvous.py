@@ -695,6 +695,42 @@ class Step2CompletionTest(BaseRendezvousTest):
         ]
         self.assertEqual(ranks, [0, 1])
 
+    def test_step2_rechecks_close_state_after_attribution_resolves(self):
+        """Restart attribution resolution forces one fresh close-loop pass."""
+        min_nodes = 2
+        max_nodes = 2
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        state._round = 1
+        state._compute_step2_poll_interval = lambda min_nodes, segment_check_interval: 0.0
+        state._get_unhealthy_count = MagicMock(return_value=0)
+        state._attribution_service = MagicMock()
+        state._attribution_service.get_last_result.side_effect = [None, False]
+        state.get_all_participants = MagicMock(wraps=state.get_all_participants)
+
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+        ]
+        _seed_joined_participants(self.store, state, participants, round_id=1)
+
+        state._rendezvous_start_time = time.monotonic()
+        state._host_close_round(
+            _NodeDesc("control", 10, 0),
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=0.0,
+        )
+
+        self.assertEqual(state._attribution_service.get_last_result.call_count, 2)
+        self.assertEqual(state._get_unhealthy_count.call_count, 2)
+        state.get_all_participants.assert_called_once()
+        self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "1")
+
     def test_step2_waits_for_complete_replacement_group_before_segment_check(self):
         """Raw participants may satisfy segment while complete replacement groups do not."""
         min_nodes = 2

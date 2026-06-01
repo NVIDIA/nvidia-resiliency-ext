@@ -9,6 +9,7 @@ from nvidia_resiliency_ext.attribution.orchestration.http_api import (
     PARAM_JOB_ID,
     PARAM_LOG_PATH,
     PARAM_USER,
+    PARAM_WAIT,
     PARAM_WL_RESTART,
     ROUTE_LOGS,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "PARAM_JOB_ID",
     "PARAM_LOG_PATH",
     "PARAM_USER",
+    "PARAM_WAIT",
     "PARAM_WL_RESTART",
     "ROUTE_LOGS",
 ]

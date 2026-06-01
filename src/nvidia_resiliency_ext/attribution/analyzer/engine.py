@@ -92,6 +92,33 @@ def _recommendation_payload_for_result(result: Dict[str, Any]) -> Dict[str, str]
     return recommendation_payload(logsage_recommendation_from_payload(result))
 
 
+def _nonblocking_cycle_result(status: str, wl_restart: Optional[int]) -> LogAnalysisCycleResult:
+    return LogAnalysisCycleResult(
+        result={},
+        status=status,
+        wl_restart=wl_restart or 0,
+        wl_restart_count=None,
+        recommendation=_recommendation_payload_for_result({}),
+    )
+
+
+def _nonblocking_splitlog_result(
+    status: str,
+    job: Job,
+    log_file: str,
+    wl_restart: Optional[int],
+) -> LogAnalysisSplitlogResult:
+    return LogAnalysisSplitlogResult(
+        result={},
+        status=status,
+        mode=JobMode.SPLITLOG.value,
+        sched_restarts=job.sched_restarts,
+        log_file=log_file,
+        wl_restart=wl_restart or 0,
+        recommendation=_recommendation_payload_for_result({}),
+    )
+
+
 class Analyzer:
     """
     Entry point: request coalescing plus :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`.
@@ -430,6 +457,7 @@ class Analyzer:
         log_path: str,
         file: Optional[str] = None,
         wl_restart: Optional[int] = None,
+        wait: bool = True,
     ) -> LogAnalyzerOutcome:
         """
         Analyze a log file using LLM.
@@ -441,6 +469,8 @@ class Analyzer:
             log_path: Path to the log file (or slurm output for splitlog mode)
             file: Filename for splitlog mode (None = all files)
             wl_restart: Workload restart index within file (None = all)
+            wait: When false, only probe cache/in-flight state and never start or
+                await analysis.
 
         Returns:
             LogAnalysisCycleResult or LogAnalysisSplitlogResult on success, LogAnalyzerError on failure
@@ -476,7 +506,7 @@ class Analyzer:
                 self._log.record_deferred_single_demotion()
 
         if mode == JobMode.SPLITLOG and job:
-            return await self._analyze_splitlog_mode(validated, job, file, wl_restart)
+            return await self._analyze_splitlog_mode(validated, job, file, wl_restart, wait=wait)
 
         # Single file mode
         validated = self.validate_path(log_path, require_regular_file=True, reject_empty=True)
@@ -491,9 +521,15 @@ class Analyzer:
                     f"No job_id for path {validated}: job_found={job is not None}, "
                     f"job.job_id={getattr(job, 'job_id', 'N/A') if job else 'N/A'}"
                 )
-            coalesced_raw = await self._coalescer.get_or_compute(
-                validated, lambda: self._run_llm_analysis(validated, user=user, job_id=job_id)
-            )
+            if wait:
+                coalesced_raw = await self._coalescer.get_or_compute(
+                    validated, lambda: self._run_llm_analysis(validated, user=user, job_id=job_id)
+                )
+            else:
+                peek = await self._coalescer.peek(validated)
+                if peek["status"] != "completed":
+                    return _nonblocking_cycle_result(peek["status"], wl_restart)
+                coalesced_raw = peek["result"]
             bundle = coalesced_from_cache(coalesced_raw)
             fr_dump = bundle.fr_dump_path
             fr_analysis = bundle.fr_analysis
@@ -602,6 +638,7 @@ class Analyzer:
         job: Job,
         file: Optional[str],
         wl_restart: Optional[int],
+        wait: bool = True,
     ) -> LogAnalysisSplitlogResult | LogAnalyzerError:
         """Handle analysis for split logging mode jobs."""
         tracker = self._log.splitlog_tracker
@@ -625,12 +662,23 @@ class Analyzer:
             )
 
         try:
-            coalesced_raw = await self._coalescer.get_or_compute(
-                file_info.log_file,
-                lambda: self._run_llm_analysis(
-                    file_info.log_file, user=job.user, job_id=job.job_id
-                ),
-            )
+            if wait:
+                coalesced_raw = await self._coalescer.get_or_compute(
+                    file_info.log_file,
+                    lambda: self._run_llm_analysis(
+                        file_info.log_file, user=job.user, job_id=job.job_id
+                    ),
+                )
+            else:
+                peek = await self._coalescer.peek(file_info.log_file)
+                if peek["status"] != "completed":
+                    return _nonblocking_splitlog_result(
+                        peek["status"],
+                        job,
+                        file_info.log_file,
+                        wl_restart,
+                    )
+                coalesced_raw = peek["result"]
         except FrDumpPathNotFoundError as e:
             return LogAnalyzerError(
                 error_code=ErrorCode.FR_DUMP_NOT_FOUND,

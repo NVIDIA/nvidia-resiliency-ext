@@ -135,6 +135,7 @@ Example: `NVRX_ATTRSVC_CACHE_FILE=/var/lib/nvrx/attrsvc_cache.json`
 - `log_path` (required): Path to job output file
 - `file` (optional): Filename for splitlog mode
 - `wl_restart` (optional): Workload restart index within file (0-based; single-file supports multiple cycles)
+- `wait` (optional, default `true`): Set `false` to probe cache/in-flight state without starting or waiting for analysis.
 
 ---
 
@@ -168,13 +169,14 @@ All success responses use HTTP 200. Interpret outcome from the response body onl
 | `log_path` | string | Yes | Same path as used in POST |
 | `file` | string | No | Filename for splitlog (e.g. `model_12345_cycle0.log`) |
 | `wl_restart` | int | No | Workload restart index within file (0-based). Omit to get all cycles (single-file) or use default. |
+| `wait` | bool | No | Default `true`. Set `false` to return immediately with cached result, `in_flight`, or `pending`. |
 
 **Response (200)** — same top-level shape for single-file and splitlog; splitlog adds extra fields.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `result` | object | **Inner result** from the analysis pipeline (see below). |
-| `status` | string | Always `"completed"` (request completed). |
+| `status` | string | `"completed"` for a result. With `wait=false`, may be `"in_flight"` or `"pending"`. |
 | `recommendation` | object | Normalized client contract for restart/stop decisions. |
 | `wl_restart` | int | Which workload cycle this result is for (0 when returning all). |
 | `wl_restart_count` | int \| null | Total workload cycles in the file (single-file; null if N/A). |

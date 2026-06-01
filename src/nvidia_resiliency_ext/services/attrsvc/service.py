@@ -160,12 +160,14 @@ class AttributionHttpAdapter:
         log_path: str,
         file: str | None = None,
         wl_restart: int | None = None,
+        wait: bool = True,
     ) -> LogAnalysisCycleResult | LogAnalysisSplitlogResult | LogAnalyzerError:
         """Analyze a log file using the configured attribution backend."""
         return await self._controller.analyze_log(
             log_path,
             file=file,
             wl_restart=wl_restart,
+            wait=wait,
         )
 
     def read_file_preview(

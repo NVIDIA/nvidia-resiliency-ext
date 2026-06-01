@@ -13,6 +13,7 @@ from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     _attribution_command,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.shared_utils.health_check import AttributionService
 
 
 def _args(**overrides):
@@ -23,7 +24,7 @@ def _args(**overrides):
         "ft_attribution_llm_base_url": None,
         "ft_attribution_llm_model": None,
         "ft_attribution_analysis_backend": None,
-        "ft_attribution_compute_timeout": None,
+        "ft_attribution_decision_timeout": None,
         "ft_attribution_log_level": None,
         "ft_attribution_export_url": None,
     }
@@ -95,6 +96,8 @@ def test_managed_attribution_config_derives_applog_dir_and_log_file(tmp_path):
     assert cfg.client_endpoint.endpoint == f"http://localhost:{DEFAULT_ATTRIBUTION_PORT}"
     assert cfg.applog_dir == str(tmp_path / "logs")
     assert cfg.log_file == str(tmp_path / "logs" / "train_attribution.log")
+    assert cfg.client_endpoint.decision_timeout is None
+    assert AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS == 60.0
     assert cfg.is_enabled
     assert cfg.is_managed
 
@@ -179,7 +182,7 @@ def test_attribution_config_maps_launcher_args(tmp_path):
             ft_attribution_llm_base_url="https://llm.example/v1",
             ft_attribution_llm_model="model-a",
             ft_attribution_analysis_backend="lib",
-            ft_attribution_compute_timeout=12.5,
+            ft_attribution_decision_timeout=12.5,
             ft_attribution_log_level="DEBUG",
             ft_attribution_export_url=(
                 "https://dataflow.example.test/dataflow2/example-index/posting"
@@ -196,12 +199,33 @@ def test_attribution_config_maps_launcher_args(tmp_path):
     assert env["NVRX_ATTRSVC_LLM_BASE_URL"] == "https://llm.example/v1"
     assert env["NVRX_ATTRSVC_LLM_MODEL"] == "model-a"
     assert env["NVRX_ATTRSVC_ANALYSIS_BACKEND"] == "lib"
-    assert env["NVRX_ATTRSVC_COMPUTE_TIMEOUT"] == "12.5"
+    assert cfg.client_endpoint.decision_timeout == 12.5
     assert env["NVRX_ATTRSVC_LOG_LEVEL"] == "DEBUG"
     assert (
         env["NVRX_ATTRSVC_EXPORT_URL"]
         == "https://dataflow.example.test/dataflow2/example-index/posting"
     )
+
+
+def test_yaml_attribution_decision_timeout_is_used(tmp_path):
+    cfg = AttributionConfig.from_args(
+        _args(ft_attribution_endpoint="localhost"),
+        str(tmp_path / "train.log"),
+        FaultToleranceConfig(attribution_decision_timeout=9.0),
+    )
+
+    assert cfg.decision_timeout == 9.0
+    assert cfg.client_endpoint.decision_timeout == 9.0
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_attribution_decision_timeout_must_be_positive(tmp_path, value):
+    with pytest.raises(ValueError, match="--ft-attribution-decision-timeout"):
+        AttributionConfig.from_args(
+            _args(ft_attribution_endpoint="localhost", ft_attribution_decision_timeout=value),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(),
+        )
 
 
 def test_attribution_child_env_does_not_inherit_export_url_from_launcher_env(tmp_path, monkeypatch):

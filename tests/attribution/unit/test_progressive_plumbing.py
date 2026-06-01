@@ -266,6 +266,61 @@ def test_terminal_submit_starts_final_analysis_that_get_can_join(monkeypatch, tm
     assert log_analyzer.terminal_runs == [(log_path, "alice", "123")]
 
 
+def test_terminal_get_nonblocking_reports_in_flight_without_joining(monkeypatch, tmp_path):
+    Analyzer = _import_analyzer_with_optional_dependency_stubs(monkeypatch)
+    log_analyzer = FakeLogAnalyzer()
+    analyzer = Analyzer(
+        allowed_root=str(tmp_path),
+        log_analyzer=log_analyzer,
+        progressive_analysis_enabled=False,
+    )
+    log_path = str(tmp_path / "train_cycle0.log")
+
+    async def run() -> None:
+        log_analyzer.terminal_started = asyncio.Event()
+        log_analyzer.terminal_release = asyncio.Event()
+
+        result = await analyzer.submit(
+            log_path,
+            user="alice",
+            job_id="123",
+            analysis_intent=ANALYSIS_INTENT_TERMINAL,
+        )
+        assert result.submitted is True
+
+        await asyncio.wait_for(log_analyzer.terminal_started.wait(), timeout=0.5)
+        probe = await asyncio.wait_for(analyzer.analyze(log_path, wait=False), timeout=0.5)
+
+        assert probe.status == "in_flight"
+        assert log_analyzer.terminal_runs == [(log_path, "alice", "123")]
+
+        log_analyzer.terminal_release.set()
+        completed = await asyncio.wait_for(analyzer.analyze(log_path), timeout=0.5)
+        assert completed.status == "completed"
+
+    asyncio.run(run())
+
+
+def test_nonblocking_get_does_not_start_analysis_on_pending_result(monkeypatch, tmp_path):
+    Analyzer = _import_analyzer_with_optional_dependency_stubs(monkeypatch)
+    log_analyzer = FakeLogAnalyzer()
+    analyzer = Analyzer(
+        allowed_root=str(tmp_path),
+        log_analyzer=log_analyzer,
+        progressive_analysis_enabled=False,
+    )
+    log_path = str(tmp_path / "train_cycle0.log")
+
+    async def run() -> None:
+        result = await analyzer.analyze(log_path, wait=False)
+
+        assert result.status == "pending"
+
+    asyncio.run(run())
+
+    assert log_analyzer.terminal_runs == []
+
+
 def test_terminal_analysis_threadsafe_cancellation_logs_debug(monkeypatch, caplog):
     Analyzer = _import_analyzer_with_optional_dependency_stubs(monkeypatch)
     future = concurrent.futures.Future()

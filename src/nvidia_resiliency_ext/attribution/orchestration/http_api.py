@@ -22,6 +22,7 @@ PARAM_ANALYSIS_INTENT = "analysis_intent"
 # GET /logs optional query parameters (splitlog mode)
 PARAM_FILE = "file"
 PARAM_WL_RESTART = "wl_restart"
+PARAM_WAIT = "wait"
 
 ACCEPT_JSON_HEADERS = {"accept": "application/json"}
 
@@ -49,6 +50,7 @@ def log_result_params(
     *,
     file: str | None = None,
     wl_restart: int | None = None,
+    wait: bool | None = None,
 ) -> dict[str, Any]:
     """Build query params for ``GET /logs``."""
     params: dict[str, Any] = {PARAM_LOG_PATH: log_path}
@@ -56,6 +58,8 @@ def log_result_params(
         params[PARAM_FILE] = file
     if wl_restart is not None:
         params[PARAM_WL_RESTART] = wl_restart
+    if wait is not None:
+        params[PARAM_WAIT] = wait
     return params
 
 
@@ -86,10 +90,11 @@ def get_log_response(
     *,
     file: str | None = None,
     wl_restart: int | None = None,
+    wait: bool | None = None,
 ) -> Any:
     """Fetch a log-analysis response from attrsvc with an existing HTTP client."""
     return client.get(
         ROUTE_LOGS,
-        params=log_result_params(log_path, file=file, wl_restart=wl_restart),
+        params=log_result_params(log_path, file=file, wl_restart=wl_restart, wait=wait),
         headers=ACCEPT_JSON_HEADERS,
     )

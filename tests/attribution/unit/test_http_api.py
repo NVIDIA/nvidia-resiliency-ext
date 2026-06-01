@@ -42,6 +42,13 @@ def test_log_result_params_includes_splitlog_fields():
     }
 
 
+def test_log_result_params_includes_wait_when_requested():
+    assert log_result_params("/tmp/train.log", wait=False) == {
+        "log_path": "/tmp/train.log",
+        "wait": False,
+    }
+
+
 def test_post_log_uses_shared_logs_route():
     client = MagicMock()
 
@@ -81,10 +88,10 @@ def test_post_log_uses_shared_logs_route_with_terminal_intent():
 def test_get_log_response_uses_shared_logs_route():
     client = MagicMock()
 
-    get_log_response(client, "/tmp/train.log", wl_restart=2)
+    get_log_response(client, "/tmp/train.log", wl_restart=2, wait=False)
 
     client.get.assert_called_once_with(
         "/logs",
-        params={"log_path": "/tmp/train.log", "wl_restart": 2},
+        params={"log_path": "/tmp/train.log", "wl_restart": 2, "wait": False},
         headers={"accept": "application/json"},
     )

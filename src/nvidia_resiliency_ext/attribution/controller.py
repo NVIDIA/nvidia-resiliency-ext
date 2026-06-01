@@ -331,9 +331,10 @@ class AttributionController:
         log_path: str,
         file: str | None = None,
         wl_restart: int | None = None,
+        wait: bool = True,
     ) -> LogAnalysisCycleResult | LogAnalysisSplitlogResult | LogAnalyzerError:
         """Analyze a log file and return the attribution result."""
-        return await self._analyzer.analyze(log_path, file=file, wl_restart=wl_restart)
+        return await self._analyzer.analyze(log_path, file=file, wl_restart=wl_restart, wait=wait)
 
     def read_file_preview(
         self, log_path: str, max_bytes: int = 4096

@@ -330,6 +330,12 @@ def create_app(cfg: Settings) -> FastAPI:
             ge=0,
             description="Workload restart index within file (0-indexed). See spec Section 17.",
         ),
+        wait: bool = Query(
+            default=True,
+            description=(
+                "Wait for analysis completion. Set false to only probe cached/in-flight state."
+            ),
+        ),
     ) -> LogAnalysisCycleResult | LogAnalysisSplitlogResult:
         """
         Analyze a log file and return attribution results.
@@ -347,7 +353,7 @@ def create_app(cfg: Settings) -> FastAPI:
         See spec Section 10 and 17 for GET flow details.
         """
         adapter: AttributionHttpAdapter = request.app.state.attribution
-        result = await adapter.analyze_log(log_path, file, wl_restart)
+        result = await adapter.analyze_log(log_path, file, wl_restart, wait=wait)
         if isinstance(result, LogAnalyzerError):
             _raise_error(result)
         return result

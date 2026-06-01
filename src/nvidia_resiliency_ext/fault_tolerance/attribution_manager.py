@@ -40,6 +40,7 @@ class AttributionEndpoint:
     """Endpoint used by the in-launcher attribution client."""
 
     endpoint: str
+    decision_timeout: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,7 @@ class AttributionConfig:
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
     analysis_backend: Optional[str] = None
-    compute_timeout: Optional[float] = None
+    decision_timeout: Optional[float] = None
     log_level: Optional[str] = None
     export_url: Optional[str] = None
 
@@ -75,8 +76,14 @@ class AttributionConfig:
             raise ValueError("attribution endpoint requested while attribution service is disabled")
         assert self.endpoint is not None
         if self.is_managed:
-            return AttributionEndpoint(endpoint=_managed_attribution_client_endpoint())
-        return AttributionEndpoint(endpoint=self.endpoint)
+            return AttributionEndpoint(
+                endpoint=_managed_attribution_client_endpoint(),
+                decision_timeout=self.decision_timeout,
+            )
+        return AttributionEndpoint(
+            endpoint=self.endpoint,
+            decision_timeout=self.decision_timeout,
+        )
 
     @classmethod
     def from_args(
@@ -110,6 +117,8 @@ class AttributionConfig:
         if startup_timeout <= 0:
             raise ValueError("--ft-attribution-startup-timeout must be positive")
 
+        decision_timeout = _resolve_decision_timeout(args, ft_cfg)
+
         if endpoint is None:
             return cls(
                 endpoint=None,
@@ -120,7 +129,7 @@ class AttributionConfig:
                 llm_base_url=getattr(args, "ft_attribution_llm_base_url", None),
                 llm_model=getattr(args, "ft_attribution_llm_model", None),
                 analysis_backend=getattr(args, "ft_attribution_analysis_backend", None),
-                compute_timeout=getattr(args, "ft_attribution_compute_timeout", None),
+                decision_timeout=decision_timeout,
                 log_level=getattr(args, "ft_attribution_log_level", None),
                 export_url=None,
             )
@@ -149,7 +158,7 @@ class AttributionConfig:
             llm_base_url=getattr(args, "ft_attribution_llm_base_url", None),
             llm_model=getattr(args, "ft_attribution_llm_model", None),
             analysis_backend=getattr(args, "ft_attribution_analysis_backend", None),
-            compute_timeout=getattr(args, "ft_attribution_compute_timeout", None),
+            decision_timeout=decision_timeout,
             log_level=getattr(args, "ft_attribution_log_level", None),
             export_url=export_url,
         )
@@ -185,11 +194,16 @@ class AttributionManager:
 
         logger.info(
             "Starting managed attribution service on localhost:%s "
-            "(applog_dir=%s, log_file=%s, startup_timeout=%.1fs)",
+            "(applog_dir=%s, log_file=%s, startup_timeout=%.1fs, decision_timeout=%s)",
             DEFAULT_ATTRIBUTION_PORT,
             self.cfg.applog_dir,
             self.cfg.log_file,
             self.cfg.startup_timeout,
+            (
+                f"{self.cfg.decision_timeout:.1f}s"
+                if self.cfg.decision_timeout is not None
+                else "default"
+            ),
         )
 
         log_fd = open(self.cfg.log_file, "w")
@@ -280,7 +294,6 @@ class AttributionManager:
         _set_if_not_none(env, "NVRX_ATTRSVC_LLM_BASE_URL", self.cfg.llm_base_url)
         _set_if_not_none(env, "NVRX_ATTRSVC_LLM_MODEL", self.cfg.llm_model)
         _set_if_not_none(env, "NVRX_ATTRSVC_ANALYSIS_BACKEND", self.cfg.analysis_backend)
-        _set_if_not_none(env, "NVRX_ATTRSVC_COMPUTE_TIMEOUT", self.cfg.compute_timeout)
         _set_if_not_none(env, "NVRX_ATTRSVC_LOG_LEVEL", self.cfg.log_level)
         _set_if_not_none(env, _ATTRSVC_EXPORT_URL_ENV, self.cfg.export_url)
         return env
@@ -387,6 +400,18 @@ def _resolve_export_url(args: Any, ft_cfg: FaultToleranceConfig) -> Optional[str
     if not value:
         return None
     _validate_export_url(value)
+    return value
+
+
+def _resolve_decision_timeout(args: Any, ft_cfg: FaultToleranceConfig) -> Optional[float]:
+    value = getattr(args, "ft_attribution_decision_timeout", None)
+    if value is None:
+        value = getattr(ft_cfg, "attribution_decision_timeout", None)
+    if value is None:
+        return None
+    value = float(value)
+    if value <= 0:
+        raise ValueError("--ft-attribution-decision-timeout must be positive")
     return value
 
 
