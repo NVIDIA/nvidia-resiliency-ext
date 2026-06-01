@@ -179,6 +179,8 @@
 <span class="sd">      Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).</span>
 <span class="sd">    * Attribution service (optional, disabled unless `attribution_endpoint` is set):</span>
 <span class="sd">      - `attribution_endpoint` [str] endpoint of the attribution service</span>
+<span class="sd">      - `attribution_decision_timeout` [float] launcher-side attribution decision</span>
+<span class="sd">        budget in seconds, measured from terminal analysis request to result fetch.</span>
 <span class="sd">      - `attribution_export_url` [str] complete export posting URL for</span>
 <span class="sd">        launcher-managed attribution service postprocessing.</span>
 
@@ -230,6 +232,7 @@
     <span class="p">)</span>
     <span class="c1"># Attribution service configuration (optional)</span>
     <span class="n">attribution_endpoint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">attribution_decision_timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">attribution_export_url</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="c1"># NVRx cycle info: base directory for cycle_info JSON files</span>
