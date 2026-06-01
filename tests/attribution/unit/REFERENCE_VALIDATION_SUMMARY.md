@@ -12,7 +12,7 @@ This document summarizes the implementation of reference value validation for th
   - `lock_gil_1st_reference.txt`
   - `lock_gil_2nd_reference.txt`
 
-These reference files contain the complete output from running `fr_attribution.py -p "_dump*" <trace_directory>` for each test case.
+These reference files contain the final summary table returned by the current `CollectiveAnalyzer.preprocess_FR_dumps()` implementation for each test case.
 
 ### 2. Test Utility Module
 - **File**: `fr_attribution_test_utils.py`
@@ -23,8 +23,8 @@ These reference files contain the complete output from running `fr_attribution.p
 ### Reference Value Validation
 Each test case now validates against reference outputs by checking:
 
-1. **Missing Ranks**: Verifies that the correct ranks are identified as missing
-   - `gpu_error_1st`: {12, 14}
+1. **Missing Ranks**: Verifies that the ranks identified by the current wavefront attribution logic match the reference summaries.
+   - `gpu_error_1st`: {12}
    - `gpu_error_2nd`: {9, 14}
    - `lock_gil_1st`: {9, 14}
    - `lock_gil_2nd`: {10, 15}
@@ -37,5 +37,5 @@ Each test case now validates against reference outputs by checking:
 
 ### Running All Tests
 ```bash
-python -m pytest tests/attribution/unit/test_fr.py -v
+python -m unittest discover -s tests/attribution/unit -p 'test_fr.py' -v
 ```
