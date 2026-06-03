@@ -530,7 +530,7 @@ class _ProgressiveLogState:
     with only what the final history-aware attribution actually consumes:
 
       * ``latest_offset``        - file offset to resume reading from
-      * ``recent_chunks``        - rolling window of the last ``window`` polls' new lines
+      * ``recent_chunks``        - rolling window of the last ``window`` *non-empty* polls' lines
       * ``checkpoint_seen``      - OR-reduced ``checkpoint_saved`` across *all* polls
       * ``checkpoint_first_poll``- checkpoint observed on the very first poll
       * ``poll_count``           - number of polls reconciled (logging / truthiness)
@@ -544,6 +544,17 @@ class _ProgressiveLogState:
     ``__len__`` returns ``poll_count`` so an unused state (no polls) is falsy,
     preserving the previous "empty list is falsy" semantics at call sites that
     test ``job_inline_data_dict.get(path)``.
+
+    **Concurrency / lifecycle.** When the start phase polls as a background task,
+    its reconcile interleaves (at ``await`` points) with a final ``analyze_logs``
+    that reads the same state. ``lock()`` is a *narrow, per-path* async lock that
+    guards the reconcile/snapshot critical sections so final attribution never
+    consumes a half-mutated state. It must be acquired only around those sync
+    sections — never held across the poller's ``await asyncio.sleep`` — and is
+    deliberately *not* the broad ``LogSageRunner`` lock (which would serialize all
+    analysis for a whole poll interval). ``closed`` is the cooperative cancel flag
+    the poller checks each iteration; ``poller_task`` (set by the owner when the
+    poll runs as a background task) lets :meth:`request_close` hard-cancel it.
     """
 
     __slots__ = (
@@ -553,6 +564,10 @@ class _ProgressiveLogState:
         "checkpoint_seen",
         "checkpoint_first_poll",
         "poll_count",
+        "closed",
+        "poller_task",
+        "_lock",
+        "_lock_loop",
     )
 
     def __init__(self, window: int) -> None:
@@ -562,26 +577,71 @@ class _ProgressiveLogState:
         self.checkpoint_seen = False
         self.checkpoint_first_poll = False
         self.poll_count = 0
+        # Cooperative cancel flag + optional background-poller handle. The owner
+        # that launches polling as a task assigns ``poller_task``; cooperative
+        # close via ``closed`` works even when no task handle is registered.
+        self.closed = False
+        self.poller_task: "asyncio.Task[Any] | None" = None
+        # Lazily bound to the running loop on first use (see ``lock``).
+        self._lock: "asyncio.Lock | None" = None
+        self._lock_loop: "asyncio.AbstractEventLoop | None" = None
 
     def __len__(self) -> int:
         return self.poll_count
 
+    def lock(self) -> asyncio.Lock:
+        """Per-path async lock, bound lazily to the running event loop.
+
+        Recreated if the running loop changes, so a state object that outlives a
+        single ``asyncio.run`` (e.g. tests driving the start and end phases in
+        separate loops, where the phases are sequential and need no cross-loop
+        guarding) does not reuse a lock bound to a defunct loop.
+        """
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
     def reconcile(self, file_offset: int, new_lines: list[str], checkpoint_saved: bool) -> None:
-        """Fold one poll into the bounded state."""
+        """Fold one poll into the bounded state. Call under :meth:`lock`.
+
+        Only *non-empty* polls enter ``recent_chunks``: empty reads (the writer
+        has gone idle, but the start phase keeps polling until its deadline) must
+        not evict real content from the bounded window — otherwise the last
+        log chunk (which carries the terminal error) can scroll out before final
+        attribution reads it. ``latest_offset`` / ``poll_count`` still advance on
+        every poll.
+        """
         if checkpoint_saved:
             if self.poll_count == 0:
                 self.checkpoint_first_poll = True
             self.checkpoint_seen = True
         self.latest_offset = file_offset
-        self.recent_chunks.append(list(new_lines))
+        if new_lines:
+            self.recent_chunks.append(list(new_lines))
         self.poll_count += 1
 
-    def recent_lines(self) -> list[str]:
-        """Flatten the rolling window into a single list of lines."""
+    def snapshot(self) -> "tuple[int, list[str], bool]":
+        """Return ``(latest_offset, recent_lines, checkpoint_seen)`` atomically.
+
+        Flattens the rolling window into a single list. Call under :meth:`lock`
+        so a concurrent :meth:`reconcile` cannot observe a partial read.
+        """
         lines: list[str] = []
         for chunk in self.recent_chunks:
             lines.extend(chunk)
-        return lines
+        return self.latest_offset, lines, self.checkpoint_seen
+
+    def request_close(self) -> None:
+        """Signal the poller to stop; cancel its task if one is registered.
+
+        Call under :meth:`lock` so the poller cannot reconcile after close.
+        """
+        self.closed = True
+        task = self.poller_task
+        if task is not None and not task.done():
+            task.cancel()
 
 
 class NVRxLogAnalyzer(NVRxAttribution):
@@ -672,6 +732,11 @@ class NVRxLogAnalyzer(NVRxAttribution):
         empty_logs_stop = self.stop_accumulating_count
 
         while True:
+            # Final attribution sets ``closed`` (under the per-path lock) to stop
+            # the poller; honor it before doing more work.
+            if state.closed:
+                break
+
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     f.seek(file_offset)
@@ -691,19 +756,29 @@ class NVRxLogAnalyzer(NVRxAttribution):
             if empty_logs_stop <= 0:
                 break
 
-            # Only ``checkpoint_saved`` (set by error extraction) is consumed
-            # from this poll; reconcile it plus the offset and raw lines into the
-            # bounded state. No per-poll get_attribution: its output was never read.
+            # Error extraction (the only consumer of this poll is its
+            # ``checkpoint_saved`` flag) runs *outside* the per-path lock — it is
+            # synchronous LLM/CPU work, not state mutation. No per-poll
+            # get_attribution: its output was never read.
             chunk_data = _retry_return_application_errors_rt(
                 llm, new_lines, cache_dict, self.temporal_cache_dict[path]
             )
             checkpoint_saved = bool(getattr(chunk_data, "checkpoint_saved", False))
-            state.reconcile(file_offset, new_lines, checkpoint_saved)
+            # Narrow critical section: fold this poll into the shared state under
+            # the per-path lock so a concurrent final ``analyze_logs`` cannot read
+            # a half-mutated state. Bail if final attribution closed us meanwhile.
+            async with state.lock():
+                if state.closed:
+                    break
+                state.reconcile(file_offset, new_lines, checkpoint_saved)
+                poll_no = state.poll_count
             logger.info(
-                f"[ckpt] analyze_logs_rt_start poll #{state.poll_count}: "
+                f"[ckpt] analyze_logs_rt_start poll #{poll_no}: "
                 f"chunk_data.checkpoint_saved={checkpoint_saved}",
             )
 
+            # Sleep is deliberately outside the lock so the poll interval never
+            # blocks final attribution (or anything else) on the per-path lock.
             await asyncio.sleep(self.chunks_per_time * 60)
 
         return ProgressiveStartResult(
@@ -737,7 +812,16 @@ class NVRxLogAnalyzer(NVRxAttribution):
             if path not in self.temporal_cache_dict:
                 self.temporal_cache_dict[path] = {}
 
-            file_offset = state.latest_offset
+            # Under the per-path lock: close the poller (so it stops reconciling)
+            # and snapshot the state atomically. A concurrent poll either ran its
+            # reconcile fully before this, or sees ``closed`` and bails — it can
+            # never interleave with this read.
+            async with state.lock():
+                state.request_close()
+                file_offset, recent_lines, checkpoint_seen = state.snapshot()
+                poll_count = state.poll_count
+
+            # File I/O stays outside the lock; ``file_offset`` was snapshotted.
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     f.seek(file_offset)
@@ -747,16 +831,16 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     f.seek(file_offset)
                     new_lines = f.readlines()
 
-            chunk = state.recent_lines() + new_lines
+            chunk = recent_lines + new_lines
 
             chunk_data = _retry_return_application_errors_rt(
                 self.llm, chunk, self.lru_cache, self.temporal_cache_dict[path]
             )
-            chunk_data.checkpoint_saved = state.checkpoint_seen
+            chunk_data.checkpoint_saved = checkpoint_seen
             logger.info(
                 f"[ckpt] analyze_logs (history-aware): OR-reduced "
                 f"checkpoint_saved={chunk_data.checkpoint_saved} "
-                f"across {state.poll_count} polls",
+                f"across {poll_count} polls",
             )
             return [chunk_data]
 
@@ -819,8 +903,11 @@ class NVRxLogAnalyzer(NVRxAttribution):
         path = cfg.get("log_path")
         if path and self.job_inline_data_dict.get(path) and len(output_list) == 1:
             rt_result = self._streaming_attribution(output_list[0], cfg, path)
-            # Final attribution has consumed the progressive state; drop the
-            # per-path entry so it does not accumulate across long-running jobs.
+            # Final attribution has consumed the progressive state (and already
+            # closed the poller while snapshotting in ``analyze_logs``); remove
+            # the per-path entry so it does not accumulate across long-running
+            # jobs. The poller holds its own reference and exits on ``closed``,
+            # so it will not resurrect the entry after this pop.
             self.job_inline_data_dict.pop(path, None)
             if rt_result is None:
                 return []
