@@ -6,6 +6,7 @@ import os
 import random
 import re
 import time
+from collections import deque
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from langchain_core.output_parsers import StrOutputParser
@@ -521,6 +522,68 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
     return fallback
 
 
+class _ProgressiveLogState:
+    """Bounded per-path state for progressive (start -> end) log attribution.
+
+    Replaces an append-only per-poll list of 7-tuples (which retained raw lines,
+    ``ApplicationData``, and intermediate attribution objects for *every* poll)
+    with only what the final history-aware attribution actually consumes:
+
+      * ``latest_offset``        - file offset to resume reading from
+      * ``recent_chunks``        - rolling window of the last ``window`` polls' new lines
+      * ``checkpoint_seen``      - OR-reduced ``checkpoint_saved`` across *all* polls
+      * ``checkpoint_first_poll``- checkpoint observed on the very first poll
+      * ``poll_count``           - number of polls reconciled (logging / truthiness)
+
+    Only the last ``window`` chunks of raw lines are retained, so memory stays
+    bounded no matter how long the start phase polls. ``checkpoint_seen`` is
+    tracked independently so a checkpoint that has scrolled out of the window
+    (e.g. a boot-time checkpoint on the first poll) still flips the final
+    attribution.
+
+    ``__len__`` returns ``poll_count`` so an unused state (no polls) is falsy,
+    preserving the previous "empty list is falsy" semantics at call sites that
+    test ``job_inline_data_dict.get(path)``.
+    """
+
+    __slots__ = (
+        "window",
+        "latest_offset",
+        "recent_chunks",
+        "checkpoint_seen",
+        "checkpoint_first_poll",
+        "poll_count",
+    )
+
+    def __init__(self, window: int) -> None:
+        self.window = max(int(window), 1)
+        self.latest_offset = 0
+        self.recent_chunks: "deque[list[str]]" = deque(maxlen=self.window)
+        self.checkpoint_seen = False
+        self.checkpoint_first_poll = False
+        self.poll_count = 0
+
+    def __len__(self) -> int:
+        return self.poll_count
+
+    def reconcile(self, file_offset: int, new_lines: list[str], checkpoint_saved: bool) -> None:
+        """Fold one poll into the bounded state."""
+        if checkpoint_saved:
+            if self.poll_count == 0:
+                self.checkpoint_first_poll = True
+            self.checkpoint_seen = True
+        self.latest_offset = file_offset
+        self.recent_chunks.append(list(new_lines))
+        self.poll_count += 1
+
+    def recent_lines(self) -> list[str]:
+        """Flatten the rolling window into a single list of lines."""
+        lines: list[str] = []
+        for chunk in self.recent_chunks:
+            lines.extend(chunk)
+        return lines
+
+
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
         from nvidia_resiliency_ext.attribution.api_keys import (
@@ -562,13 +625,26 @@ class NVRxLogAnalyzer(NVRxAttribution):
     def init_config(self) -> Dict[str, Any]:
         return dict(self._init_config)
 
+    def _history_window(self) -> int:
+        """Number of recent poll-chunks the end phase glues to the freshly read
+        tail: ``int(logs_minutes_before_job_end / chunks_per_time)``, floored at 1.
+
+        Bounds :attr:`_ProgressiveLogState.recent_chunks` so progressive memory
+        stays constant regardless of how long the start phase polls.
+        """
+        if self.chunks_per_time:
+            return max(int(self.logs_minutes_before_job_end / self.chunks_per_time), 1)
+        return 1
+
     async def analyze_logs_rt_start(self) -> dict[str, str | None]:
         """Run the progressive-analysis start phase for the configured log path.
 
-        This is a non-result-producing phase: it polls the log file, accumulating
-        per-poll attribution data into ``self.job_inline_data_dict[path]`` as a side
-        effect for a later (history-aware) ``analyze_logs`` call. It does not return
-        the attribution itself.
+        This is a non-result-producing phase: it polls the log file, reconciling
+        each poll into a bounded :class:`_ProgressiveLogState` at
+        ``self.job_inline_data_dict[path]`` (latest offset, a rolling window of
+        recent lines, and an accumulated checkpoint flag) as a side effect for a
+        later (history-aware) ``analyze_logs`` call. It does not return the
+        attribution itself.
 
         Returns:
             A :class:`~nvidia_resiliency_ext.attribution.orchestration.progressive.ProgressiveStartResult`
@@ -588,17 +664,12 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         if path not in self.temporal_cache_dict:
             self.temporal_cache_dict[path] = {}
-        self.job_inline_data_dict.setdefault(path, [])
+        state = self.job_inline_data_dict.get(path)
+        if not isinstance(state, _ProgressiveLogState):
+            state = _ProgressiveLogState(self._history_window())
+            self.job_inline_data_dict[path] = state
         file_offset = 0
-        log_lines: list[str] = []
         empty_logs_stop = self.stop_accumulating_count
-
-        application_log, attribution_raw_chunk, attribution_dict_chunk, hw_category_chunk = (
-            None,
-            None,
-            None,
-            None,
-        )
 
         while True:
             try:
@@ -620,48 +691,24 @@ class NVRxLogAnalyzer(NVRxAttribution):
             if empty_logs_stop <= 0:
                 break
 
-            log_lines.extend(new_lines)
-            attribution_list = []
-
+            # Only ``checkpoint_saved`` (set by error extraction) is consumed
+            # from this poll; reconcile it plus the offset and raw lines into the
+            # bounded state. No per-poll get_attribution: its output was never read.
             chunk_data = _retry_return_application_errors_rt(
                 llm, new_lines, cache_dict, self.temporal_cache_dict[path]
             )
-            app_data = chunk_data
-            if chunk_data.application_errors_list_full:
-                (
-                    application_log,
-                    attribution_raw_chunk,
-                    attribution_dict_chunk,
-                    hw_category_chunk,
-                ) = get_attribution(llm, app_data, True)
-                attribution_list.append(attribution_raw_chunk)
-
-            self.job_inline_data_dict[path].append(
-                (
-                    file_offset,
-                    new_lines,
-                    chunk_data,
-                    application_log,
-                    attribution_raw_chunk,
-                    attribution_dict_chunk,
-                    hw_category_chunk,
-                )
-            )
+            checkpoint_saved = bool(getattr(chunk_data, "checkpoint_saved", False))
+            state.reconcile(file_offset, new_lines, checkpoint_saved)
             logger.info(
-                f"[ckpt] analyze_logs_rt_start poll #"
-                f"{len(self.job_inline_data_dict[path])}: "
-                f"chunk_data.checkpoint_saved="
-                f"{getattr(chunk_data, 'checkpoint_saved', False)}",
+                f"[ckpt] analyze_logs_rt_start poll #{state.poll_count}: "
+                f"chunk_data.checkpoint_saved={checkpoint_saved}",
             )
 
             await asyncio.sleep(self.chunks_per_time * 60)
 
         return ProgressiveStartResult(
             status=PROGRESSIVE_STATUS_STARTED,
-            message=(
-                f"progressive analysis accumulated "
-                f"{len(self.job_inline_data_dict[path])} chunk(s) for {path}"
-            ),
+            message=(f"progressive analysis accumulated {state.poll_count} chunk(s) for {path}"),
         ).as_payload()
 
     async def analyze_logs(self) -> list[ApplicationData]:
@@ -669,9 +716,9 @@ class NVRxLogAnalyzer(NVRxAttribution):
         Analyzes the logs and returns the application errors.
 
         If progressive analysis (``analyze_logs_rt_start``) has accumulated
-        per-poll history for this log path in ``job_inline_data_dict``, read
-        only the tail beyond the last polled offset, glue it onto the last N
-        history chunks, and run a single extraction over the combined chunk
+        bounded state for this log path in ``job_inline_data_dict``, read only
+        the tail beyond the last polled offset, glue it onto the rolling window
+        of recent chunks, and run a single extraction over the combined chunk
         — returning a one-element list.
 
         Otherwise read the whole file, optionally exclude nvrx lines, chunk
@@ -680,8 +727,8 @@ class NVRxLogAnalyzer(NVRxAttribution):
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg["log_path"]
 
-        history = self.job_inline_data_dict.get(path)
-        if history:
+        state = self.job_inline_data_dict.get(path)
+        if isinstance(state, _ProgressiveLogState) and state.poll_count:
             cycle_counter = int(cfg.get("cycle_counter", 0))
             cycle_counter_key = _cycle_counter_key(path)
             if cycle_counter == 0:
@@ -690,7 +737,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
             if path not in self.temporal_cache_dict:
                 self.temporal_cache_dict[path] = {}
 
-            file_offset = history[-1][0]
+            file_offset = state.latest_offset
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     f.seek(file_offset)
@@ -700,20 +747,16 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     f.seek(file_offset)
                     new_lines = f.readlines()
 
-            num_chunks = int(self.logs_minutes_before_job_end / self.chunks_per_time)
-            chunk: list[str] = []
-            for item in history[-num_chunks:]:
-                chunk = chunk + item[1]
-            chunk = chunk + new_lines
+            chunk = state.recent_lines() + new_lines
 
             chunk_data = _retry_return_application_errors_rt(
                 self.llm, chunk, self.lru_cache, self.temporal_cache_dict[path]
             )
-            chunk_data.checkpoint_saved = any(item[2].checkpoint_saved for item in history)
+            chunk_data.checkpoint_saved = state.checkpoint_seen
             logger.info(
                 f"[ckpt] analyze_logs (history-aware): OR-reduced "
                 f"checkpoint_saved={chunk_data.checkpoint_saved} "
-                f"across {len(history)} history entries",
+                f"across {state.poll_count} polls",
             )
             return [chunk_data]
 
@@ -776,6 +819,9 @@ class NVRxLogAnalyzer(NVRxAttribution):
         path = cfg.get("log_path")
         if path and self.job_inline_data_dict.get(path) and len(output_list) == 1:
             rt_result = self._streaming_attribution(output_list[0], cfg, path)
+            # Final attribution has consumed the progressive state; drop the
+            # per-path entry so it does not accumulate across long-running jobs.
+            self.job_inline_data_dict.pop(path, None)
             if rt_result is None:
                 return []
             attribution_str = str(rt_result.attribution)

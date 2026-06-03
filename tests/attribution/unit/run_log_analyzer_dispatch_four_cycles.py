@@ -19,20 +19,20 @@ With the writer producing identical errors across cycles and default
 ``repeated_amount=3``, the third identical attribution should override
 ``auto_resume`` to ``STOP - DONT RESTART IMMEDIATE``.
 
-Workarounds applied (each is a current source quirk in ``nvrx_logsage.py``):
+Test harness notes:
 
-  - ``__init__`` assigns ``self.stop_accumulating_count``,
-    ``self.chunks_per_time``, ``self.logs_minutes_before_job_end``, and
-    ``self.repeated_amount`` with trailing commas → 1-tuples. We
-    rewrite them to scalar ints after construction.
-  - ``analyze_logs_rt_start`` appends to ``self.job_inline_data_dict[path]``
-    without initializing the list — we pre-seed it.
-  - ``_streaming_attribution`` reads ``cycle_counter_dict[ck]`` without
-    a ``setdefault`` — we pre-seed the shared key to 0.
-  - The start phase's ``while True`` polling loop is bounded by
-    patching ``time.sleep`` with a deadline. When the deadline elapses
-    the sleep raises ``_Phase1Deadline``, ``analyze_logs_rt_start``
-    exits, and the script moves on to the end phase.
+  - ``_override_scalar_config`` pins the test's polling cadence and
+    end-phase window on the analyzer (``chunks_per_time``,
+    ``stop_accumulating_count``, ``logs_minutes_before_job_end``,
+    ``repeated_amount``) after construction.
+  - The start phase's ``while True`` polling loop is bounded by patching
+    ``asyncio.sleep`` (which the loop awaits between polls) with a deadline.
+    When the deadline elapses the patched sleep raises ``_Phase1Deadline``,
+    ``analyze_logs_rt_start`` exits, and the script moves on to the end phase.
+  - Progressive state is the bounded ``_ProgressiveLogState`` at
+    ``job_inline_data_dict[path]``; the canonical assertions read its
+    ``checkpoint_seen`` / ``checkpoint_first_poll`` / ``poll_count`` fields
+    (captured per cycle right after the start phase).
 
 Usage:
     # Real timing (60s polls, 300s cycles = 20 min total):
@@ -100,8 +100,7 @@ def _override_scalar_config(
     poll_interval_sec: float,
     end_window_minutes: float,
 ) -> None:
-    """Undo the 1-tuple bug in ``NVRxLogAnalyzer.__init__`` and pin the
-    polling cadence + end-phase history window.
+    """Pin the test's polling cadence + end-phase history window on the analyzer.
 
     ``end_window_minutes`` is how many minutes of history the end phase
     glues to the tail before re-running extraction. With the writer's
@@ -123,21 +122,16 @@ def _override_scalar_config(
 
 
 def _prime_state(analyzer, path: str, cycle: int) -> None:
-    """Set per-call cfg + seed shared state the analyzer assumes exists.
+    """Set per-call cfg for this cycle.
 
-    ``analyze_logs_rt_start`` appends to ``job_inline_data_dict[path]`` without
-    initializing it, and ``_streaming_attribution`` reads
-    ``cycle_counter_dict[ck]`` without a setdefault. Seed both here.
+    The analyzer now seeds its own shared state — ``analyze_logs_rt_start``
+    creates the bounded ``_ProgressiveLogState`` at ``job_inline_data_dict[path]``
+    and ``_streaming_attribution`` reads ``cycle_counter_dict`` via ``.get(..., 0)``
+    — so no seeding is needed here; this just pins the per-call config.
     """
     analyzer._init_config["log_path"] = path
     analyzer._init_config["cycle_counter"] = cycle
     analyzer._init_config["attribution"] = True
-
-    from nvidia_resiliency_ext.attribution.log_analyzer import nvrx_logsage
-
-    analyzer.job_inline_data_dict.setdefault(path, [])
-    ck = nvrx_logsage._cycle_counter_key(path)
-    analyzer.cycle_counter_dict.setdefault(ck, 0)
 
 
 def _run_start_phase(analyzer, path: str, cycle: int):
@@ -242,11 +236,17 @@ def run_dispatch_all_cycles(
                 )
         start_elapsed = time.monotonic() - start_t0
 
-        history_len = len(analyzer.job_inline_data_dict.get(path, []))
+        # Snapshot the bounded progressive state now, before the end phase (and
+        # before final attribution can drop it). These are what the canonical
+        # assertions check, in place of the old per-poll list introspection.
+        state = analyzer.job_inline_data_dict.get(path)
+        poll_count = getattr(state, "poll_count", 0)
+        ckpt_saved_in_history = bool(getattr(state, "checkpoint_seen", False))
+        ckpt_first_poll = bool(getattr(state, "checkpoint_first_poll", False))
         print(
             f"[dispatch] cycle {cycle}: start took {start_elapsed:.2f}s, "
-            f"job_inline_data_dict[{os.path.basename(path)}] len="
-            f"{history_len}",
+            f"job_inline_data_dict[{os.path.basename(path)}] polls="
+            f"{poll_count}",
             flush=True,
         )
 
@@ -261,13 +261,6 @@ def run_dispatch_all_cycles(
         print(
             f"[dispatch] cycle {cycle}: end took {end_elapsed:.2f}s",
             flush=True,
-        )
-        # The end phase OR-reduces checkpoint_saved across all per-poll
-        # entries in job_inline_data_dict[path]; recompute the same way
-        # for visibility.
-        ckpt_saved_in_history = any(
-            getattr(item[2], "checkpoint_saved", False)
-            for item in analyzer.job_inline_data_dict.get(path, [])
         )
 
         if end_result is None:
@@ -292,7 +285,16 @@ def run_dispatch_all_cycles(
                 flush=True,
             )
         per_cycle_result.append(
-            (cycle, path, end_result, ckpt_saved_in_history, start_elapsed, end_elapsed)
+            (
+                cycle,
+                path,
+                end_result,
+                ckpt_saved_in_history,
+                start_elapsed,
+                end_elapsed,
+                ckpt_first_poll,
+                poll_count,
+            )
         )
 
     print("\n[dispatch] ====== summary ======", flush=True)
@@ -305,7 +307,7 @@ def run_dispatch_all_cycles(
         print(f"  {os.path.basename(key)}: {counter}", flush=True)
 
     print("[dispatch] per-cycle auto_resume:", flush=True)
-    for cycle, _path, result, ckpt, start_s, end_s in per_cycle_result:
+    for cycle, _path, result, ckpt, start_s, end_s, _first, _polls in per_cycle_result:
         ar = getattr(result, "auto_resume", None) if result else None
         verb = getattr(result, "auto_resume_verbose", "") if result else ""
         ckpt_tag = " [checkpoint_saved]" if ckpt else ""
@@ -339,8 +341,8 @@ def _assert_canonical_run(
       cycle 3   → bypass + checkpoint override → RESTART IMMEDIATE; the
                   checkpoint flag appears mid-stream (chunk index 3)
       cycle 4   → bypass + checkpoint override → RESTART IMMEDIATE; the
-                  checkpoint flag appears in the very first poll (chunk
-                  index 0), i.e. at the head of job_inline_data_dict[path]
+                  checkpoint flag appears in the very first poll (i.e. the
+                  progressive state records checkpoint_first_poll=True)
     """
     if num_cycles != NUM_CYCLES:
         print(
@@ -357,44 +359,37 @@ def _assert_canonical_run(
     ), f"expected {num_cycles} per-cycle results, got {len(per_cycle_result)}"
 
     # All cycles must produce an ErrorAttribution and attribute the OOM.
-    for cycle, _path, result, _ckpt, _start_s, _end_s in per_cycle_result:
+    for cycle, _path, result, _ckpt, _start_s, _end_s, _first, _polls in per_cycle_result:
         assert result is not None, f"cycle {cycle}: end_result is None"
         attribution_text = str(getattr(result, "attribution", ""))
         assert (
             "OutOfMemoryError" in attribution_text or "out of memory" in attribution_text.lower()
         ), f"cycle {cycle}: attribution missing OOM token: {attribution_text!r}"
 
-    # Per-cycle history: cycles 0..2 see no checkpoint; cycles 3 and 4 each
-    # see at least one history entry with checkpoint_saved=True. For cycle 4
-    # specifically the flag must be on the *first* history entry (writer's
-    # minute-0 placement), which is what makes this scenario distinct from
-    # cycle 3.
+    # Progressive checkpoint state (captured per cycle right after the start
+    # phase): index 3 = checkpoint_seen (OR-reduced over all polls), index 6 =
+    # checkpoint_first_poll. Cycles 0..2 see no checkpoint; cycles 3 and 4 both
+    # see one. Cycle 4 specifically observes it on the *first* poll (writer's
+    # minute-0 placement), which is what makes it distinct from cycle 3.
     for cycle in range(num_cycles - 2):
-        cpath = cycle_log_path(log_dir, cycle)
-        history = analyzer.job_inline_data_dict.get(cpath, [])
-        assert not any(item[2].checkpoint_saved for item in history), (
-            f"cycle {cycle}: unexpected checkpoint_saved=True in history "
-            f"({len(history)} entries)"
+        assert not per_cycle_result[cycle][3], (
+            f"cycle {cycle}: unexpected checkpoint_seen=True "
+            f"(polls={per_cycle_result[cycle][7]})"
         )
 
-    cycle3_path = cycle_log_path(log_dir, num_cycles - 2)
-    cycle3_history = analyzer.job_inline_data_dict.get(cycle3_path, [])
-    assert any(item[2].checkpoint_saved for item in cycle3_history), (
-        f"cycle {num_cycles - 2}: expected checkpoint_saved=True in at least "
-        f"one history entry ({len(cycle3_history)} entries)"
+    cycle3 = num_cycles - 2
+    assert per_cycle_result[cycle3][3], (
+        f"cycle {cycle3}: expected checkpoint_seen=True " f"(polls={per_cycle_result[cycle3][7]})"
     )
 
-    cycle4_path = cycle_log_path(log_dir, num_cycles - 1)
-    cycle4_history = analyzer.job_inline_data_dict.get(cycle4_path, [])
-    assert any(item[2].checkpoint_saved for item in cycle4_history), (
-        f"cycle {num_cycles - 1}: expected checkpoint_saved=True in at least "
-        f"one history entry ({len(cycle4_history)} entries)"
+    cycle4 = num_cycles - 1
+    assert per_cycle_result[cycle4][3], (
+        f"cycle {cycle4}: expected checkpoint_seen=True " f"(polls={per_cycle_result[cycle4][7]})"
     )
-    assert cycle4_history and cycle4_history[0][2].checkpoint_saved, (
-        f"cycle {num_cycles - 1}: expected the FIRST history entry to carry "
-        f"checkpoint_saved=True (minute-0 placement); got history of length "
-        f"{len(cycle4_history)} with first entry checkpoint_saved="
-        f"{cycle4_history[0][2].checkpoint_saved if cycle4_history else 'N/A'}"
+    assert per_cycle_result[cycle4][6], (
+        f"cycle {cycle4}: expected checkpoint_first_poll=True (minute-0 "
+        f"placement); got checkpoint_first_poll=False "
+        f"(polls={per_cycle_result[cycle4][7]})"
     )
 
     # Cycle 2 (third identical attribution, repeated_amount=3) → repeated-issue
@@ -428,6 +423,7 @@ def _assert_canonical_run(
 
     # cycle_counter_dict reset to 1 after cycle 3's bypass (then re-reset
     # on cycle 4's bypass) — final value 1.
+    cycle4_path = per_cycle_result[cycle4][1]
     ck = nvrx_logsage._cycle_counter_key(cycle4_path)
     counter_final = analyzer.cycle_counter_dict.get(ck)
     assert counter_final == 1, (
