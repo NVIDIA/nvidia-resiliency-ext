@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 # Log scan: optional activation (Megatron prints TORCH_FR_DUMP_TEMP_FILE=...)
 # ---------------------------------------------------------------------------
 
-FR_DUMP_PATH_LOG_LINE_PATTERN = re.compile(r"TORCH_FR_DUMP_TEMP_FILE=(\S+)")
+FR_DUMP_PATH_ENV = "TORCH_FR_DUMP_TEMP_FILE"
+FR_DUMP_PATH_LOG_LINE_PATTERN = re.compile(rf"{FR_DUMP_PATH_ENV}=(\S+)")
 FR_DUMP_PATH_LOG_SCAN_LINES = 1000
 
 
@@ -57,44 +58,111 @@ def fr_path_resolvable_for_collective_analyzer(fr_path: str) -> bool:
     return _fr_traces_exist_for_prefix(fr_path)
 
 
+def _validated_torch_fr_dump_prefix(
+    prefix: str,
+    *,
+    allowed_root: Optional[str] = None,
+    source: str = FR_DUMP_PATH_ENV,
+) -> Optional[str]:
+    """Return ``prefix`` when it is a usable ``TORCH_FR_DUMP_TEMP_FILE`` path prefix."""
+    prefix = prefix.strip().strip("'\"")
+    if not prefix:
+        return None
+    if os.path.isdir(prefix):
+        logger.warning(
+            "%s=%r is a directory, not a path prefix; env var is misconfigured — "
+            "skipping FR analysis",
+            source,
+            prefix,
+        )
+        return None
+    if not _fr_traces_exist_for_prefix(prefix):
+        logger.debug(
+            "%s prefix %r has no matching trace files; skipping FR analysis",
+            source,
+            prefix,
+        )
+        return None
+    if allowed_root is not None and not path_is_under_allowed_root(prefix, allowed_root):
+        logger.warning(
+            "%s prefix %r is outside allowed_root %r; skipping FR analysis",
+            source,
+            prefix,
+            allowed_root,
+        )
+        return None
+    return prefix
+
+
+def _valid_checkpoints_dir(
+    directory: str,
+    *,
+    allowed_root: Optional[str] = None,
+    source: str,
+) -> Optional[str]:
+    """Return ``directory`` when it exists, contains FR traces, and passes path policy."""
+    if not os.path.isdir(directory):
+        return None
+    if not _fr_traces_exist_in_dir(directory):
+        logger.debug(
+            "%s checkpoints dir %s has no _dump_* traces; skipping candidate",
+            source,
+            directory,
+        )
+        return None
+    if allowed_root is not None and not path_is_under_allowed_root(directory, allowed_root):
+        logger.warning(
+            "%s FR checkpoints path %r is outside allowed_root %r; skipping candidate",
+            source,
+            directory,
+            allowed_root,
+        )
+        return None
+    logger.debug(
+        "FR dump path inferred from %s: checkpoints=%s",
+        source,
+        directory,
+    )
+    return directory
+
+
 def _infer_checkpoints_dir_from_log_path(
     log_path: str, allowed_root: Optional[str] = None
 ) -> Optional[str]:
-    """If ``log_path`` lives under a ``.../logs/...`` tree, return sibling ``.../checkpoints`` when
-    it exists **and** contains at least one ``_dump_*`` trace file.
+    """Infer common shared-filesystem FR dump directories from ``log_path``.
 
-    Many training runs use ``<run>/logs/`` for Slurm step logs and ``<run>/checkpoints/`` for FR dumps
-    (``_dump_<rank>``). The log line ``TORCH_FR_DUMP_TEMP_FILE=`` often points at a container-local path
-    that attrsvc cannot read; the shared run directory is derivable from the log file path.
+    Resolution order:
+    1. ``<log_dir>/checkpoints`` for flat per-cycle logs, e.g.
+       ``/mnt/logs/test_job_cycle0.log`` -> ``/mnt/logs/checkpoints``.
+    2. ``<run>/checkpoints`` when ``log_path`` is under a ``.../logs/...`` tree, e.g.
+       ``<run>/logs/slurm/job.log`` -> ``<run>/checkpoints``.
+
+    These shared path candidates are fallback locations when the explicit
+    ``TORCH_FR_DUMP_TEMP_FILE`` prefix is absent or not resolvable by attrsvc.
     """
     try:
-        d = os.path.dirname(os.path.abspath(log_path))
+        log_dir = os.path.dirname(os.path.abspath(log_path))
     except (OSError, ValueError):
         return None
+    local_checkpoints = _valid_checkpoints_dir(
+        os.path.join(log_dir, "checkpoints"),
+        allowed_root=allowed_root,
+        source="log directory",
+    )
+    if local_checkpoints is not None:
+        return local_checkpoints
+    d = log_dir
     while True:
         if os.path.basename(d) == "logs":
             run_root = os.path.dirname(d)
             cand = os.path.join(run_root, "checkpoints")
-            if os.path.isdir(cand):
-                if not _fr_traces_exist_in_dir(cand):
-                    logger.debug(
-                        "Inferred checkpoints dir %s has no _dump_* traces; skipping FR analysis",
-                        cand,
-                    )
-                    return None
-                if allowed_root is not None and not path_is_under_allowed_root(cand, allowed_root):
-                    logger.warning(
-                        "Inferred FR checkpoints path %r is outside allowed_root %r; skipping FR analysis",
-                        cand,
-                        allowed_root,
-                    )
-                    return None
-                logger.debug(
-                    "FR dump path inferred from log layout: log_path=%s -> checkpoints=%s",
-                    log_path,
-                    cand,
-                )
-                return cand
+            sibling_checkpoints = _valid_checkpoints_dir(
+                cand,
+                allowed_root=allowed_root,
+                source="logs sibling",
+            )
+            if sibling_checkpoints is not None:
+                return sibling_checkpoints
         parent = os.path.dirname(d)
         if parent == d:
             break
@@ -122,32 +190,11 @@ def _read_torch_fr_dump_from_log(
                     break
                 m = FR_DUMP_PATH_LOG_LINE_PATTERN.search(line)
                 if m:
-                    prefix = m.group(1)
-                    if os.path.isdir(prefix):
-                        logger.warning(
-                            "TORCH_FR_DUMP_TEMP_FILE=%r is a directory, not a path prefix; "
-                            "env var is misconfigured — skipping FR analysis",
-                            prefix,
-                        )
-                        return None
-                    if not _fr_traces_exist_for_prefix(prefix):
-                        logger.debug(
-                            "TORCH_FR_DUMP_TEMP_FILE prefix %r has no matching trace files; "
-                            "skipping FR analysis",
-                            prefix,
-                        )
-                        return None
-                    if allowed_root is not None and not path_is_under_allowed_root(
-                        prefix, allowed_root
-                    ):
-                        logger.warning(
-                            "TORCH_FR_DUMP_TEMP_FILE prefix %r is outside allowed_root %r; "
-                            "skipping FR analysis",
-                            prefix,
-                            allowed_root,
-                        )
-                        return None
-                    return prefix
+                    return _validated_torch_fr_dump_prefix(
+                        m.group(1),
+                        allowed_root=allowed_root,
+                        source=f"log {FR_DUMP_PATH_ENV}",
+                    )
     except OSError:
         pass
     return None
@@ -156,9 +203,10 @@ def _read_torch_fr_dump_from_log(
 def extract_fr_dump_path(log_path: str, allowed_root: Optional[str] = None) -> Optional[str]:
     """Resolve FR dump path for attrsvc.
 
-    Prefer ``<run>/checkpoints`` (directory containing ``_dump_*`` files) when ``log_path`` is
-    under ``<run>/logs/`` (shared filesystem).  Otherwise scan the log for
-    ``TORCH_FR_DUMP_TEMP_FILE=`` (a path prefix; may be container-local).
+    Apply discovery rules in order:
+    1. ``TORCH_FR_DUMP_TEMP_FILE=`` scanned from the log (a path prefix).
+    2. ``<log_dir>/checkpoints`` for flat per-cycle logs.
+    3. ``<run>/checkpoints`` when ``log_path`` is under ``<run>/logs/...``.
 
     When ``allowed_root`` is set, inferred directories and ``TORCH_FR_DUMP_TEMP_FILE`` prefixes must
     resolve under that root (same containment as log path validation); otherwise discovery returns
@@ -166,10 +214,13 @@ def extract_fr_dump_path(log_path: str, allowed_root: Optional[str] = None) -> O
 
     Returns ``None`` if no valid FR traces are found — analysis should not be triggered.
     """
+    from_log = _read_torch_fr_dump_from_log(log_path, allowed_root=allowed_root)
+    if from_log is not None:
+        return from_log
     inferred = _infer_checkpoints_dir_from_log_path(log_path, allowed_root=allowed_root)
     if inferred is not None:
         return inferred
-    return _read_torch_fr_dump_from_log(log_path, allowed_root=allowed_root)
+    return None
 
 
 # ---------------------------------------------------------------------------

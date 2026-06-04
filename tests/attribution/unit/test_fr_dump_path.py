@@ -63,6 +63,44 @@ class TestFrDumpPathInference(unittest.TestCase):
 
             self.assertEqual(extract_fr_dump_path(log_file), prefix)
 
+    def test_log_dir_checkpoints_for_flat_cycle_log(self):
+        """Infer <log_dir>/checkpoints when TORCH_FR_DUMP_TEMP_FILE is not readable by attrsvc."""
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = os.path.join(tmp, "logs")
+            ckpt = os.path.join(logs, "checkpoints")
+            os.makedirs(ckpt)
+            prefix = os.path.join(ckpt, "_dump_")
+            open(prefix + "0", "w", encoding="utf-8").close()
+            open(prefix + "1", "w", encoding="utf-8").close()
+            log_file = os.path.join(logs, "test_job_cycle0.log")
+            with open(log_file, "w", encoding="utf-8") as f:
+                f.write("TORCH_FR_DUMP_TEMP_FILE=/container/checkpoints/_dump_\n")
+
+            self.assertEqual(
+                extract_fr_dump_path(log_file, allowed_root=logs),
+                ckpt,
+            )
+
+    def test_torch_prefix_wins_over_inferred_checkpoints(self):
+        """Use TORCH_FR_DUMP_TEMP_FILE when it resolves, before inferred checkpoint dirs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = os.path.join(tmp, "logs")
+            inferred = os.path.join(logs, "checkpoints")
+            explicit = os.path.join(logs, "explicit_fr")
+            os.makedirs(inferred)
+            os.makedirs(explicit)
+            open(os.path.join(inferred, "_dump_0"), "w", encoding="utf-8").close()
+            explicit_prefix = os.path.join(explicit, "_dump_")
+            open(explicit_prefix + "0", "w", encoding="utf-8").close()
+            log_file = os.path.join(logs, "test_job_cycle0.log")
+            with open(log_file, "w", encoding="utf-8") as f:
+                f.write(f"TORCH_FR_DUMP_TEMP_FILE={explicit_prefix}\n")
+
+            self.assertEqual(
+                extract_fr_dump_path(log_file, allowed_root=logs),
+                explicit_prefix,
+            )
+
     def test_torch_fallback_prefix_no_traces_returns_none(self):
         """TORCH_FR_DUMP_TEMP_FILE prefix with no matching files — analysis must not be triggered."""
         with tempfile.TemporaryDirectory() as tmp:
