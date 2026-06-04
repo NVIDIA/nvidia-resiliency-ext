@@ -666,7 +666,9 @@ class PersistentAsyncCaller(AsyncCaller):
         to properly release any IPC handles stored in the cache.
         """
         if cls._worker_data_cache:
-            logger.debug(f"Cleaning up worker data cache with {len(cls._worker_data_cache)} entries")
+            logger.debug(
+                f"Cleaning up worker data cache with {len(cls._worker_data_cache)} entries"
+            )
             # Clear all cached data structures which may contain IPC handles
             cls._worker_data_cache.clear()
             gc.collect()
