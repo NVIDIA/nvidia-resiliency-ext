@@ -1,16 +1,40 @@
 import argparse
 import ast
+import asyncio
 import logging
 import os
 import random
 import re
 import time
+from collections import deque
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI
-from logsage.auto_resume_policy.attribution_classes import ApplicationData, LRUCache
-from logsage.auto_resume_policy.error_attribution import get_proposed_solution_cat
-from logsage.auto_resume_policy.error_extraction import return_application_errors
+from logsage.auto_resume_policy.attribution_classes import (
+    ApplicationData,
+    Attribution,
+    AutoResumeAction,
+    ErrorAttribution,
+    FinishedStatus,
+    LRUCache,
+)
+from logsage.auto_resume_policy.error_attribution import (
+    CONTEXT_SIZE,
+    get_attribution,
+    get_auto_resume,
+    get_proposed_solution_cat,
+)
+from logsage.auto_resume_policy.error_extraction import (
+    finished_validation,
+    return_application_errors,
+    return_application_errors_rt,
+)
+from logsage.auto_resume_policy.prompts import template_post_error_check
+from logsage.auto_resume_policy.util_postprocessing import get_auto_resume_postprocessing
+from logsage.auto_resume_policy.utils import chunk_indices
 
 from nvidia_resiliency_ext.attribution.base import (
     AttributionState,
@@ -28,6 +52,10 @@ from nvidia_resiliency_ext.attribution.orchestration.config import (
     resolved_llm_runtime_kwargs,
 )
 from nvidia_resiliency_ext.attribution.orchestration.llm_output import logsage_recommendation
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    PROGRESSIVE_STATUS_STARTED,
+    ProgressiveStartResult,
+)
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     RECOMMENDATION_CONTINUE,
     RECOMMENDATION_RESTART,
@@ -63,6 +91,31 @@ LOGSAGE_LLM_ENDPOINT_FAILED = "LLM ENDPOINT FAILED"
 
 
 MARKER_NEW_RUN_DIR_ADDED = "[sbatch_script]: New run dir added:"
+
+
+def _previous_path(path: str) -> str | None:
+    """Return ``path`` with its last digit-run decremented by one.
+
+    Returns None if the path has no digits or the last number is 0.
+    """
+    match = re.search(r"(\d+)(?!.*\d)", path)
+    if not match:
+        return None
+    num = int(match.group(1))
+    if num <= 0:
+        return None
+    start, end = match.span(1)
+    return path[:start] + str(num - 1) + path[end:]
+
+
+def _cycle_counter_key(path: str) -> str:
+    """Strip a trailing ``_<digits>`` from the filename stem so per-cycle
+    paths (``nvrx_0.log``, ``nvrx_1.log``, ...) share one
+    ``cycle_counter_dict`` entry.
+    """
+    stem, ext = os.path.splitext(path)
+    stem = re.sub(r"_\d+$", "", stem)
+    return stem + ext
 
 
 def _action_from_logsage_head(head: str) -> str:
@@ -191,6 +244,98 @@ def _result_item_from_logsage_fields(
     )
 
 
+def attribution_from_finished_status(
+    app_data,
+    application_errors_list_unique,
+) -> ErrorAttribution:
+    """Build ErrorAttribution when no application errors were found,
+    based solely on app_data.finished status.
+    """
+    finished = app_data.finished
+
+    if finished == FinishedStatus.LLM_FAILURE:
+        logger.info("LLM failure")
+        return ErrorAttribution(
+            application_errors_full=[],
+            application_errors_unique=application_errors_list_unique,
+            auto_resume=AutoResumeAction.LLM_FAILURE,
+            auto_resume_verbose=AutoResumeAction.LLM_FAILURE,
+            attribution=Attribution.LLM_FAILURE,
+            infra_category="",
+            temp_category="",
+            single_multiple="",
+            cor_category="",
+        )
+
+    if finished == FinishedStatus.SLURM_CANCELLED:
+        logger.info("Slurm cancelled")
+        return ErrorAttribution(
+            application_errors_full=[],
+            application_errors_unique=application_errors_list_unique,
+            auto_resume=AutoResumeAction.RESTART_IMMEDIATE,
+            auto_resume_verbose="",
+            attribution=Attribution.SLURM_STEP_CANCELLED,
+            infra_category="",
+            temp_category="",
+            single_multiple="",
+            cor_category="",
+        )
+
+    if finished == FinishedStatus.SLURM_CANCELLED_JOB_REQUEUE:
+        logger.info("Slurm cancelled due to job requeue")
+        return ErrorAttribution(
+            application_errors_full=[],
+            application_errors_unique=application_errors_list_unique,
+            auto_resume=AutoResumeAction.RESTART_IMMEDIATE,
+            auto_resume_verbose="",
+            attribution=Attribution.SLURM_STEP_CANCELLED_JOB_REQUEUE,
+            infra_category="",
+            temp_category="",
+            single_multiple="",
+            cor_category="",
+        )
+
+    if FinishedStatus.SLURM_CANCELLED_TIME_LIMIT in finished:
+        logger.info("Slurm cancelled due to time limit")
+        return ErrorAttribution(
+            application_errors_full=[],
+            application_errors_unique=application_errors_list_unique,
+            auto_resume=AutoResumeAction.STOP_NO_RESTART,
+            auto_resume_verbose="",
+            attribution=finished.replace("_", " "),
+            infra_category="",
+            temp_category="",
+            single_multiple="",
+            cor_category="",
+        )
+
+    if finished == FinishedStatus.APPLICATION_DONE:
+        logger.info(Attribution.APPLICATION_DONE)
+        return ErrorAttribution(
+            application_errors_full=[],
+            application_errors_unique=application_errors_list_unique,
+            auto_resume=AutoResumeAction.STOP_NO_RESTART,
+            auto_resume_verbose="",
+            attribution=Attribution.APPLICATION_DONE,
+            infra_category="",
+            temp_category="",
+            single_multiple="",
+            cor_category="",
+        )
+
+    return ErrorAttribution(
+        application_errors_full=[],
+        application_errors_unique=application_errors_list_unique,
+        auto_resume=AutoResumeAction.ERRORS_NOT_FOUND,
+        auto_resume_verbose=AutoResumeAction.ERRORS_NOT_FOUND,
+        attribution=Attribution.ERRORS_NOT_FOUND,
+        infra_category="",
+        temp_category="",
+        single_multiple="",
+        cor_category="",
+    )
+
+
 def lines_after(lines, needle):
     for i, line in enumerate(lines):
         if needle in line:
@@ -310,6 +455,33 @@ def _retry_return_application_errors(
     return app_data
 
 
+def _retry_return_application_errors_rt(
+    llm: ChatOpenAI, lines: list[str], cache_dict: LRUCache, temporal_cache: dict[str, str]
+) -> ApplicationData:
+    retries, initial_backoff, max_backoff, jitter = _log_analysis_retry_config()
+    backoff = initial_backoff
+    last_status = None
+
+    for attempt in range(1, retries + 1):
+        app_data = return_application_errors_rt(llm, lines, cache_dict, temporal_cache)
+        status_name = _finished_status_name(app_data.finished)
+        if status_name != FINISHED_STATUS_LLM_FAILURE:
+            return app_data
+
+        last_status = status_name
+        if attempt == retries:
+            logger.error(
+                "Log-analysis extraction failed after %d attempts; last status: %s",
+                retries,
+                last_status,
+            )
+            return app_data
+
+        backoff = _sleep_with_backoff(attempt, retries, backoff, max_backoff, jitter)
+
+    return app_data
+
+
 def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, str, str, str, str]:
     retries, initial_backoff, max_backoff, jitter = _log_analysis_retry_config()
     backoff = initial_backoff
@@ -350,6 +522,128 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
     return fallback
 
 
+class _ProgressiveLogState:
+    """Bounded per-path state for progressive (start -> end) log attribution.
+
+    Replaces an append-only per-poll list of 7-tuples (which retained raw lines,
+    ``ApplicationData``, and intermediate attribution objects for *every* poll)
+    with only what the final history-aware attribution actually consumes:
+
+      * ``latest_offset``        - file offset to resume reading from
+      * ``recent_chunks``        - rolling window of the last ``window`` *non-empty* polls' lines
+      * ``checkpoint_seen``      - OR-reduced ``checkpoint_saved`` across *all* polls
+      * ``checkpoint_first_poll``- checkpoint observed on the very first poll
+      * ``poll_count``           - number of polls reconciled (logging / truthiness)
+
+    Only the last ``window`` chunks of raw lines are retained, so memory stays
+    bounded no matter how long the start phase polls. ``checkpoint_seen`` is
+    tracked independently so a checkpoint that has scrolled out of the window
+    (e.g. a boot-time checkpoint on the first poll) still flips the final
+    attribution.
+
+    ``__len__`` returns ``poll_count`` so an unused state (no polls) is falsy,
+    preserving the previous "empty list is falsy" semantics at call sites that
+    test ``job_inline_data_dict.get(path)``.
+
+    **Concurrency / lifecycle.** When the start phase polls as a background task,
+    its reconcile interleaves (at ``await`` points) with a final ``analyze_logs``
+    that reads the same state. ``lock()`` is a *narrow, per-path* async lock that
+    guards the reconcile/snapshot critical sections so final attribution never
+    consumes a half-mutated state. It must be acquired only around those sync
+    sections — never held across the poller's ``await asyncio.sleep`` — and is
+    deliberately *not* the broad ``LogSageRunner`` lock (which would serialize all
+    analysis for a whole poll interval). ``closed`` is the cooperative cancel flag
+    the poller checks each iteration; ``poller_task`` (set by the owner when the
+    poll runs as a background task) lets :meth:`request_close` hard-cancel it.
+    """
+
+    __slots__ = (
+        "window",
+        "latest_offset",
+        "recent_chunks",
+        "checkpoint_seen",
+        "checkpoint_first_poll",
+        "poll_count",
+        "closed",
+        "poller_task",
+        "_lock",
+        "_lock_loop",
+    )
+
+    def __init__(self, window: int) -> None:
+        self.window = max(int(window), 1)
+        self.latest_offset = 0
+        self.recent_chunks: "deque[list[str]]" = deque(maxlen=self.window)
+        self.checkpoint_seen = False
+        self.checkpoint_first_poll = False
+        self.poll_count = 0
+        # Cooperative cancel flag + optional background-poller handle. The owner
+        # that launches polling as a task assigns ``poller_task``; cooperative
+        # close via ``closed`` works even when no task handle is registered.
+        self.closed = False
+        self.poller_task: "asyncio.Task[Any] | None" = None
+        # Lazily bound to the running loop on first use (see ``lock``).
+        self._lock: "asyncio.Lock | None" = None
+        self._lock_loop: "asyncio.AbstractEventLoop | None" = None
+
+    def __len__(self) -> int:
+        return self.poll_count
+
+    def lock(self) -> asyncio.Lock:
+        """Per-path async lock, bound lazily to the running event loop.
+
+        Recreated if the running loop changes, so a state object that outlives a
+        single ``asyncio.run`` (e.g. tests driving the start and end phases in
+        separate loops, where the phases are sequential and need no cross-loop
+        guarding) does not reuse a lock bound to a defunct loop.
+        """
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
+    def reconcile(self, file_offset: int, new_lines: list[str], checkpoint_saved: bool) -> None:
+        """Fold one poll into the bounded state. Call under :meth:`lock`.
+
+        Only *non-empty* polls enter ``recent_chunks``: empty reads (the writer
+        has gone idle, but the start phase keeps polling until its deadline) must
+        not evict real content from the bounded window — otherwise the last
+        log chunk (which carries the terminal error) can scroll out before final
+        attribution reads it. ``latest_offset`` / ``poll_count`` still advance on
+        every poll.
+        """
+        if checkpoint_saved:
+            if self.poll_count == 0:
+                self.checkpoint_first_poll = True
+            self.checkpoint_seen = True
+        self.latest_offset = file_offset
+        if new_lines:
+            self.recent_chunks.append(list(new_lines))
+        self.poll_count += 1
+
+    def snapshot(self) -> "tuple[int, list[str], bool]":
+        """Return ``(latest_offset, recent_lines, checkpoint_seen)`` atomically.
+
+        Flattens the rolling window into a single list. Call under :meth:`lock`
+        so a concurrent :meth:`reconcile` cannot observe a partial read.
+        """
+        lines: list[str] = []
+        for chunk in self.recent_chunks:
+            lines.extend(chunk)
+        return self.latest_offset, lines, self.checkpoint_seen
+
+    def request_close(self) -> None:
+        """Signal the poller to stop; cancel its task if one is registered.
+
+        Call under :meth:`lock` so the poller cannot reconcile after close.
+        """
+        self.closed = True
+        task = self.poller_task
+        if task is not None and not task.done():
+            task.cancel()
+
+
 class NVRxLogAnalyzer(NVRxAttribution):
     def __init__(self, args: Union[argparse.Namespace, Mapping[str, Any]]):
         from nvidia_resiliency_ext.attribution.api_keys import (
@@ -369,8 +663,18 @@ class NVRxLogAnalyzer(NVRxAttribution):
             api_key=self.api_key,
             **llm_kwargs,
         )
+        self.temporal_cache_dict = {}
+        self.cycle_counter_dict = {}
+        self.job_inline_data_dict = {}
+        self.attribution_dict = {}
         self.exclude_nvrx_logs = bool(self._init_config.get("exclude_nvrx_logs", False))
         self.is_per_cycle = bool(self._init_config.get("is_per_cycle", False))
+        self.repeated_amount = int(self._init_config.get("repeated_amount", 3))
+        self.stop_accumulating_count = int(self._init_config.get("stop_accumulating_count", 3))
+        self.logs_minutes_before_job_end = int(
+            self._init_config.get("logs_minutes_before_job_end", 20)
+        )
+        self.chunks_per_time = int(self._init_config.get("chunks_per_time", 5))
         super().__init__(
             preprocess_input=self.analyze_logs,
             attribution=self.llm_analyze,
@@ -381,26 +685,165 @@ class NVRxLogAnalyzer(NVRxAttribution):
     def init_config(self) -> Dict[str, Any]:
         return dict(self._init_config)
 
+    def _history_window(self) -> int:
+        """Number of recent poll-chunks the end phase glues to the freshly read
+        tail: ``int(logs_minutes_before_job_end / chunks_per_time)``, floored at 1.
+
+        Bounds :attr:`_ProgressiveLogState.recent_chunks` so progressive memory
+        stays constant regardless of how long the start phase polls.
+        """
+        if self.chunks_per_time:
+            return max(int(self.logs_minutes_before_job_end / self.chunks_per_time), 1)
+        return 1
+
+    async def analyze_logs_rt_start(self) -> dict[str, str | None]:
+        """Run the progressive-analysis start phase for the configured log path.
+
+        This is a non-result-producing phase: it polls the log file, reconciling
+        each poll into a bounded :class:`_ProgressiveLogState` at
+        ``self.job_inline_data_dict[path]`` (latest offset, a rolling window of
+        recent lines, and an accumulated checkpoint flag) as a side effect for a
+        later (history-aware) ``analyze_logs`` call. It does not return the
+        attribution itself.
+
+        Returns:
+            A :class:`~nvidia_resiliency_ext.attribution.orchestration.progressive.ProgressiveStartResult`
+            payload (``status`` / ``message`` / ``handle``) describing the start outcome.
+            The ``module`` key is added by the calling MCP tool.
+        """
+        cfg = effective_run_or_init_config(self._init_config)
+        path = cfg["log_path"]
+
+        llm = self.llm
+        cache_dict = self.lru_cache
+
+        cycle_counter = int(cfg.get("cycle_counter", 0))
+        cycle_counter_key = _cycle_counter_key(path)
+        if cycle_counter == 0:
+            self.cycle_counter_dict[cycle_counter_key] = cycle_counter
+
+        if path not in self.temporal_cache_dict:
+            self.temporal_cache_dict[path] = {}
+        state = self.job_inline_data_dict.get(path)
+        if not isinstance(state, _ProgressiveLogState):
+            state = _ProgressiveLogState(self._history_window())
+            self.job_inline_data_dict[path] = state
+        file_offset = 0
+        empty_logs_stop = self.stop_accumulating_count
+
+        while True:
+            # Final attribution sets ``closed`` (under the per-path lock) to stop
+            # the poller; honor it before doing more work.
+            if state.closed:
+                break
+
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    f.seek(file_offset)
+                    new_lines = f.readlines()
+                    file_offset = f.tell()
+            except UnicodeDecodeError:
+                with open(path, 'r', encoding='latin-1') as f:
+                    f.seek(file_offset)
+                    new_lines = f.readlines()
+                    file_offset = f.tell()
+
+            if len(new_lines):
+                empty_logs_stop = self.stop_accumulating_count
+            else:
+                empty_logs_stop -= 1
+
+            if empty_logs_stop <= 0:
+                break
+
+            # Error extraction (the only consumer of this poll is its
+            # ``checkpoint_saved`` flag) runs *outside* the per-path lock — it is
+            # synchronous LLM/CPU work, not state mutation. No per-poll
+            # get_attribution: its output was never read.
+            chunk_data = _retry_return_application_errors_rt(
+                llm, new_lines, cache_dict, self.temporal_cache_dict[path]
+            )
+            checkpoint_saved = bool(getattr(chunk_data, "checkpoint_saved", False))
+            # Narrow critical section: fold this poll into the shared state under
+            # the per-path lock so a concurrent final ``analyze_logs`` cannot read
+            # a half-mutated state. Bail if final attribution closed us meanwhile.
+            async with state.lock():
+                if state.closed:
+                    break
+                state.reconcile(file_offset, new_lines, checkpoint_saved)
+                poll_no = state.poll_count
+            logger.info(
+                f"[ckpt] analyze_logs_rt_start poll #{poll_no}: "
+                f"chunk_data.checkpoint_saved={checkpoint_saved}",
+            )
+
+            # Sleep is deliberately outside the lock so the poll interval never
+            # blocks final attribution (or anything else) on the per-path lock.
+            await asyncio.sleep(self.chunks_per_time * 60)
+
+        return ProgressiveStartResult(
+            status=PROGRESSIVE_STATUS_STARTED,
+            message=(f"progressive analysis accumulated {state.poll_count} chunk(s) for {path}"),
+        ).as_payload()
+
     async def analyze_logs(self) -> list[ApplicationData]:
         """
         Analyzes the logs and returns the application errors.
 
-        Args:
-            input_data: The input data to analyze.
+        If progressive analysis (``analyze_logs_rt_start``) has accumulated
+        bounded state for this log path in ``job_inline_data_dict``, read only
+        the tail beyond the last polled offset, glue it onto the rolling window
+        of recent chunks, and run a single extraction over the combined chunk
+        — returning a one-element list.
 
-        Returns:
-            application_errors_list_full_purified: The application errors list full purified.
-            application_errors_list_full: The application errors list full.
-            application_errors_list_full_purified_with_rank: The application errors list full purified with rank.
-            application_errors_list_full_with_rank: The application errors list full with rank.
-            error_type: The error type.
-            error_type_with_rank: The error type with rank.
-            error_type_with_rank_and_rank: The error type with rank and rank.
-            error_type_with_rank_and_rank_and_rank: The error type with rank and rank and rank.
-
+        Otherwise read the whole file, optionally exclude nvrx lines, chunk
+        by cycle markers, and run extraction per chunk.
         """
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg["log_path"]
+
+        state = self.job_inline_data_dict.get(path)
+        if isinstance(state, _ProgressiveLogState) and state.poll_count:
+            cycle_counter = int(cfg.get("cycle_counter", 0))
+            cycle_counter_key = _cycle_counter_key(path)
+            if cycle_counter == 0:
+                self.cycle_counter_dict[cycle_counter_key] = cycle_counter
+
+            if path not in self.temporal_cache_dict:
+                self.temporal_cache_dict[path] = {}
+
+            # Under the per-path lock: close the poller (so it stops reconciling)
+            # and snapshot the state atomically. A concurrent poll either ran its
+            # reconcile fully before this, or sees ``closed`` and bails — it can
+            # never interleave with this read.
+            async with state.lock():
+                state.request_close()
+                file_offset, recent_lines, checkpoint_seen = state.snapshot()
+                poll_count = state.poll_count
+
+            # File I/O stays outside the lock; ``file_offset`` was snapshotted.
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    f.seek(file_offset)
+                    new_lines = f.readlines()
+            except UnicodeDecodeError:
+                with open(path, 'r', encoding='latin-1') as f:
+                    f.seek(file_offset)
+                    new_lines = f.readlines()
+
+            chunk = recent_lines + new_lines
+
+            chunk_data = _retry_return_application_errors_rt(
+                self.llm, chunk, self.lru_cache, self.temporal_cache_dict[path]
+            )
+            chunk_data.checkpoint_saved = checkpoint_seen
+            logger.info(
+                f"[ckpt] analyze_logs (history-aware): OR-reduced "
+                f"checkpoint_saved={chunk_data.checkpoint_saved} "
+                f"across {poll_count} polls",
+            )
+            return [chunk_data]
+
         is_per_cycle = bool(cfg.get("is_per_cycle", self.is_per_cycle))
         exclude_nvrx = bool(cfg.get("exclude_nvrx_logs", self.exclude_nvrx_logs))
         try:
@@ -455,6 +898,37 @@ class NVRxLogAnalyzer(NVRxAttribution):
         return output_list
 
     async def llm_analyze(self, output_list: list[ApplicationData]) -> list[LogSageCycleFields]:
+
+        cfg = effective_run_or_init_config(self._init_config)
+        path = cfg.get("log_path")
+        if path and self.job_inline_data_dict.get(path) and len(output_list) == 1:
+            rt_result = self._streaming_attribution(output_list[0], cfg, path)
+            # Final attribution has consumed the progressive state (and already
+            # closed the poller while snapshotting in ``analyze_logs``); remove
+            # the per-path entry so it does not accumulate across long-running
+            # jobs. The poller holds its own reference and exits on ``closed``,
+            # so it will not resurrect the entry after this pop.
+            self.job_inline_data_dict.pop(path, None)
+            if rt_result is None:
+                return []
+            attribution_str = str(rt_result.attribution)
+            if "Primary issues:" in attribution_str:
+                attribution_field = f"Attribution: {attribution_str}"
+            else:
+                # Fallback for malformed LLM output: stuff the raw text into a
+                # Primary-issues bracket so downstream parsers still pick it up.
+                attribution_field = (
+                    f"Attribution: Primary issues: [{attribution_str}], Secondary issues: []"
+                )
+            return [
+                (
+                    str(rt_result.auto_resume),
+                    str(rt_result.auto_resume_verbose),
+                    attribution_field,
+                    "",
+                    str(getattr(rt_result, "checkpoint_saved", False)),
+                )
+            ]
 
         result = []
         logger.info("output_list_size: %s", str(len(output_list)))
@@ -552,6 +1026,176 @@ class NVRxLogAnalyzer(NVRxAttribution):
                             )
                         )
         return result
+
+    def _streaming_attribution(
+        self,
+        last_with_errors: ApplicationData,
+        cfg: Mapping[str, Any],
+        path: str,
+    ) -> ErrorAttribution | None:
+        """Attribution flow for the streaming/progressive analyze_logs path.
+
+        Mirrors what was formerly inline in ``analyze_logs_rt_end``: run the
+        post-error LLM filter, attribute remaining errors, and apply
+        cross-cycle repeated-attribution policy.
+        """
+        s_time = time.time()
+        llm = self.llm
+
+        path_previous = _previous_path(path)
+        attribution_previous = self.attribution_dict.get(path_previous, '') if path_previous else ''
+        cycle_counter = int(cfg.get("cycle_counter", 0))
+        cycle_counter_key = _cycle_counter_key(path)
+
+        logger.info(
+            f"[ckpt] _streaming_attribution entry: "
+            f"input checkpoint_saved="
+            f"{getattr(last_with_errors, 'checkpoint_saved', False)}, "
+            f"cycle_counter={cycle_counter}, "
+            f"cycle_counter_dict[{cycle_counter_key}]="
+            f"{self.cycle_counter_dict.get(cycle_counter_key)}",
+        )
+
+        last_attribution_dict_chunk = None
+        last_attribution_raw_chunk = None
+        last_application_log_chunk = None
+        last_hw_category_chunk = None
+
+        if last_with_errors.application_errors_list_full:
+            indices = [error[2] for error in last_with_errors.application_errors_list_full]
+            error_groups = chunk_indices(indices, len(last_with_errors.original_text))
+
+            n_lines = len(last_with_errors.original_text)
+            prompt_post_error = ChatPromptTemplate.from_template(template_post_error_check)
+            post_error_chain = (
+                {"question": RunnablePassthrough()} | prompt_post_error | llm | StrOutputParser()
+            )
+
+            post_error_texts = []
+            checked_groups = []
+            for group in error_groups:
+                if len(group) == 0:
+                    continue
+                first_idx = int(group[0])
+                last_idx = int(group[-1])
+                if (
+                    first_idx < n_lines - last_idx
+                    and len(last_with_errors.original_text) > last_idx + 50
+                ):
+                    post_error_lines = last_with_errors.original_text[last_idx + 1 : last_idx + 51]
+                    post_error_texts.append("\n".join(post_error_lines)[:CONTEXT_SIZE])
+                    checked_groups.append(group)
+
+            post_error_results = (
+                post_error_chain.batch(post_error_texts) if post_error_texts else []
+            )
+
+            indices_to_remove = set()
+            for group, result in zip(checked_groups, post_error_results):
+                if result.strip().lower() == "no":
+                    indices_to_remove.update(int(idx) for idx in group)
+
+            last_with_errors.application_errors_list_full = [
+                error
+                for error in last_with_errors.application_errors_list_full
+                if error[2] not in indices_to_remove
+            ]
+        if last_with_errors.application_errors_list_full:
+            (
+                last_application_log_chunk,
+                last_attribution_raw_chunk,
+                last_attribution_dict_chunk,
+                last_hw_category_chunk,
+            ) = get_attribution(llm, last_with_errors, True)
+
+        last_with_errors = finished_validation(llm, last_with_errors)
+
+        logger.info("error extraction latency: %s", time.time() - s_time)
+        application_errors_full = [
+            error[0] for error in last_with_errors.application_errors_list_full
+        ]
+
+        self.temporal_cache_dict.pop(path, None)
+
+        if (
+            len(last_with_errors.application_errors_list_full) == 0
+            or last_with_errors.finished == FinishedStatus.APPLICATION_DONE
+        ):
+            return attribution_from_finished_status(
+                last_with_errors, last_with_errors.application_errors_list_unique
+            )
+
+        attribution_output = last_attribution_dict_chunk["attribution"]
+        self.attribution_dict[path] = attribution_output
+        auto_resume_output, auto_resume_verbose = get_auto_resume(
+            llm,
+            last_with_errors,
+            last_attribution_raw_chunk,
+            last_attribution_dict_chunk,
+            last_hw_category_chunk,
+            last_application_log_chunk,
+        )
+
+        is_attribution_current_last = get_auto_resume_postprocessing(
+            attribution_output,
+            attribution_previous,
+            cycle_counter,
+            llm,
+        )
+        logger.info(
+            f"[ckpt] _streaming_attribution: post-processing → "
+            f"is_attribution_current_last={is_attribution_current_last} "
+            f"(checkpoint_saved={last_with_errors.checkpoint_saved}, "
+            f"cycle_counter={cycle_counter})",
+        )
+
+        if last_with_errors.checkpoint_saved and cycle_counter > 0:
+            is_attribution_current_last = False
+            logger.info(
+                "[ckpt] _streaming_attribution: checkpoint_saved bypass FIRED "
+                "→ is_attribution_current_last forced to False; "
+                "repeated-issue STOP override will be skipped",
+            )
+
+        if (
+            is_attribution_current_last
+            and self.cycle_counter_dict.get(cycle_counter_key, 0) == self.repeated_amount - 1
+        ):
+            auto_resume_output = 'STOP - DONT RESTART IMMEDIATE'
+            auto_resume_verbose = "Stop job due to repeated issue"
+
+        if is_attribution_current_last:
+            if auto_resume_verbose != "Stop job due to repeated issue":
+                self.cycle_counter_dict[cycle_counter_key] = (
+                    self.cycle_counter_dict.get(cycle_counter_key, 0) + 1
+                )
+        else:
+            self.cycle_counter_dict[cycle_counter_key] = 1
+
+        if last_with_errors.checkpoint_saved:
+            if len(auto_resume_verbose) > 0 and "STOP" in auto_resume_output:
+                logger.info(
+                    "[ckpt] _streaming_attribution: checkpoint_saved override "
+                    f"FIRED; flipping {auto_resume_output!r} → 'RESTART IMMEDIATE'",
+                )
+                auto_resume_output = "RESTART IMMEDIATE"
+                auto_resume_verbose = (
+                    auto_resume_verbose[0]
+                    + "Restart immediate, due to checkpoint saved. "
+                    + auto_resume_verbose[1:]
+                )
+
+        logger.info("Policy recommendation and error attribution:")
+        logger.info("Recommendation: ", auto_resume_output)
+        logger.info("Attribution: ", attribution_output)
+
+        return ErrorAttribution(
+            application_errors_full=application_errors_full,
+            application_errors_unique=last_with_errors.application_errors_list_unique,
+            auto_resume=auto_resume_output,
+            auto_resume_verbose=auto_resume_verbose,
+            attribution=attribution_output,
+        )
 
     async def print_output(
         self, attribution_results: list[LogSageCycleFields]
