@@ -486,7 +486,10 @@ class PersistentAsyncCaller(AsyncCaller):
             rank (int): the rank of the current trainer process.
         """
         ctx = mp.get_context('spawn')
-        logger.info(f"PersistentAsyncCaller: {rank}, Starting Async Caller")
+        if rank == 0:
+            logger.info(f"PersistentAsyncCaller: {rank}, Starting Async Caller")
+        else:
+            logger.debug(f"PersistentAsyncCaller: {rank}, Starting Async Caller")
         if self.background_worker_is_daemon:
             async_loop_target = PersistentAsyncCaller.async_loop_for_daemon_worker
         else:
@@ -612,7 +615,10 @@ class PersistentAsyncCaller(AsyncCaller):
             abort (bool, optional): Default to False. Needs to be manually set to true when
                 the checkpoint async process needs to be aborted.
         """
-        logger.info(f"PersistentAsyncCaller: {self.rank}, Destroying Async Caller")
+        if self.rank == 0:
+            logger.info(f"PersistentAsyncCaller: {self.rank}, Destroying Async Caller")
+        else:
+            logger.debug(f"PersistentAsyncCaller: {self.rank}, Destroying Async Caller")
         if self.process:
             if abort:
                 logger.error(f"Persistent worker aborted in rank {self.rank}")
@@ -663,7 +669,9 @@ class PersistentAsyncCaller(AsyncCaller):
         to properly release any IPC handles stored in the cache.
         """
         if cls._worker_data_cache:
-            logger.info(f"Cleaning up worker data cache with {len(cls._worker_data_cache)} entries")
+            logger.debug(
+                f"Cleaning up worker data cache with {len(cls._worker_data_cache)} entries"
+            )
             # Clear all cached data structures which may contain IPC handles
             cls._worker_data_cache.clear()
             gc.collect()
