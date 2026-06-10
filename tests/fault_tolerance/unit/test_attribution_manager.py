@@ -181,7 +181,7 @@ def test_attribution_config_maps_launcher_args(tmp_path):
             ft_attribution_llm_api_key_file=str(api_key_file),
             ft_attribution_llm_base_url="https://llm.example/v1",
             ft_attribution_llm_model="model-a",
-            ft_attribution_analysis_backend="lib",
+            ft_attribution_analysis_backend="mcp",
             ft_attribution_decision_timeout=12.5,
             ft_attribution_log_level="DEBUG",
             ft_attribution_export_url=(
@@ -198,13 +198,25 @@ def test_attribution_config_maps_launcher_args(tmp_path):
     assert env["NVRX_ATTRSVC_ALLOWED_ROOT"] == str(applog_dir)
     assert env["NVRX_ATTRSVC_LLM_BASE_URL"] == "https://llm.example/v1"
     assert env["NVRX_ATTRSVC_LLM_MODEL"] == "model-a"
-    assert env["NVRX_ATTRSVC_ANALYSIS_BACKEND"] == "lib"
+    assert env["NVRX_ATTRSVC_ANALYSIS_BACKEND"] == "mcp"
     assert cfg.client_endpoint.decision_timeout == 12.5
     assert env["NVRX_ATTRSVC_LOG_LEVEL"] == "DEBUG"
     assert (
         env["NVRX_ATTRSVC_EXPORT_URL"]
         == "https://dataflow.example.test/dataflow2/example-index/posting"
     )
+
+
+def test_attribution_config_rejects_lib_analysis_backend(tmp_path):
+    with pytest.raises(ValueError, match="only 'mcp'"):
+        AttributionConfig.from_args(
+            _args(
+                ft_attribution_endpoint="localhost",
+                ft_attribution_analysis_backend="lib",
+            ),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(),
+        )
 
 
 def test_yaml_attribution_decision_timeout_is_used(tmp_path):

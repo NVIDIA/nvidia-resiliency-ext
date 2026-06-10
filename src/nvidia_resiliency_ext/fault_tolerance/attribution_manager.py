@@ -59,6 +59,13 @@ class AttributionConfig:
     log_level: Optional[str] = None
     export_url: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "analysis_backend",
+            _normalize_analysis_backend(self.analysis_backend),
+        )
+
     @property
     def is_enabled(self) -> bool:
         return self.endpoint is not None
@@ -413,6 +420,20 @@ def _resolve_decision_timeout(args: Any, ft_cfg: FaultToleranceConfig) -> Option
     if value <= 0:
         raise ValueError("--ft-attribution-decision-timeout must be positive")
     return value
+
+
+def _normalize_analysis_backend(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    if normalized != "mcp":
+        raise ValueError(
+            "--ft-attribution-analysis-backend supports only 'mcp'; "
+            f"'lib' is no longer supported by launcher-managed attrsvc, got {value!r}"
+        )
+    return normalized
 
 
 def _validate_export_url(url: str) -> None:

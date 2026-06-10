@@ -229,6 +229,7 @@ service dependencies.
   - ``--ft-attribution-llm-api-key-file <PATH>`` (alias: ``--ft_attribution_llm_api_key_file``)
   - ``--ft-attribution-llm-base-url <URL>`` (alias: ``--ft_attribution_llm_base_url``)
   - ``--ft-attribution-llm-model <MODEL>`` (alias: ``--ft_attribution_llm_model``)
+  - ``--ft-attribution-analysis-backend mcp`` (alias: ``--ft_attribution_analysis_backend``)
   - ``--ft-attribution-startup-timeout <SECONDS>`` (alias: ``--ft_attribution_startup_timeout``), default ``20``
   - ``--ft-attribution-decision-timeout <SECONDS>`` (alias: ``--ft_attribution_decision_timeout``), default ``60``
   - ``--ft-attribution-export-url <URL>`` (alias: ``--ft_attribution_export_url``)
@@ -244,6 +245,10 @@ service dependencies.
 
   To export managed attribution results, pass ``--ft-attribution-export-url`` or
   set ``attribution_export_url`` in the fault tolerance YAML config.
+
+  Launcher-managed attribution supports only the ``mcp`` analysis backend. The backend flag may be
+  left unset, which uses the service default, or set explicitly to ``mcp``. The in-process ``lib``
+  backend is available only when running ``nvrx-attrsvc`` as a standalone service.
 
   ``--ft-attribution-decision-timeout`` is the total launcher-side budget for one
   attribution decision, measured from the terminal analysis request until the rendezvous
