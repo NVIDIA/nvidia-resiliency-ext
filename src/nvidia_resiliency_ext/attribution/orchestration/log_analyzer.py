@@ -58,6 +58,7 @@ class LogSageRunner:
         # Set on first failed NVRxLogAnalyzer() so we do not retry init every request.
         self._lib_log_analyzer_init_error: Optional[BaseException] = None
         self._log_analysis_lock = asyncio.Lock()
+        self._lib_log_analysis_tasks: set[asyncio.Task[Any]] = set()
         self._mcp_client: Any = None
         if not config.use_lib_log_analysis:
             try:
@@ -122,6 +123,59 @@ class LogSageRunner:
             return True
         return await self._mcp_client.reconnect()
 
+    @staticmethod
+    def _run_lib_log_analyzer_sync(analyzer: Any, run_kwargs: Dict[str, Any]) -> Any:
+        """Run the in-process LogSage coroutine on this worker thread's event loop."""
+        return asyncio.run(analyzer.run(dict(run_kwargs)))
+
+    async def _run_lib_log_analyzer_serialized(
+        self, analyzer: Any, run_kwargs: Dict[str, Any]
+    ) -> Any:
+        """Run in-process LogSage without blocking the caller's event loop.
+
+        In lib mode, ``NVRxLogAnalyzer.run`` is async-shaped but can spend most
+        of its wall time inside synchronous LogSage/LLM work. If that runs on
+        the attrsvc/coalescer event loop, ``asyncio.wait_for`` cannot fire until
+        the work has already completed. Offloading the full lib run gives the
+        coalescer an actual await point to time out on.
+
+        The serialization lock is released when the worker task finishes, not
+        when the waiting request is cancelled, so a timed-out lib analysis does
+        not overlap a retry on the same singleton analyzer.
+        """
+        await self._log_analysis_lock.acquire()
+        try:
+            worker_task = asyncio.create_task(
+                asyncio.to_thread(self._run_lib_log_analyzer_sync, analyzer, run_kwargs)
+            )
+        except BaseException:
+            self._log_analysis_lock.release()
+            raise
+
+        self._lib_log_analysis_tasks.add(worker_task)
+        waiter_cancelled = False
+
+        def _finish_lib_run(task: "asyncio.Task[Any]") -> None:
+            self._lib_log_analysis_tasks.discard(task)
+            if self._log_analysis_lock.locked():
+                self._log_analysis_lock.release()
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc is not None and waiter_cancelled:
+                logger.warning(
+                    "Lib LogSage analysis worker failed after caller cancellation or timeout",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+        worker_task.add_done_callback(_finish_lib_run)
+        try:
+            return await asyncio.shield(worker_task)
+        except asyncio.CancelledError:
+            waiter_cancelled = True
+            raise
+
     async def _get_lib_log_analyzer(self, run_kwargs: Dict[str, Any]) -> Any:
         """Return the cached in-process :class:`NVRxLogAnalyzer`, creating it on first success.
 
@@ -163,8 +217,7 @@ class LogSageRunner:
             **self.config.llm_runtime_overrides(),
         }
         analyzer = await self._get_lib_log_analyzer(run_kwargs)
-        async with self._log_analysis_lock:
-            result = await analyzer.run(run_kwargs)
+        result = await self._run_lib_log_analyzer_serialized(analyzer, run_kwargs)
 
         return nvrx_run_result_to_log_dict(result, path)
 

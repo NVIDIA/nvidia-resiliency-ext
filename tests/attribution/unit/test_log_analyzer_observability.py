@@ -3,12 +3,14 @@
 
 import asyncio
 import importlib
+import logging
 import sys
 import threading
 import time
 import types
 from typing import Any, Dict
 
+from nvidia_resiliency_ext.attribution.coalescing.coalescer import RequestCoalescer
 from nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline import AnalysisPipelineMode
 from nvidia_resiliency_ext.attribution.orchestration.config import LogSageExecutionConfig
 
@@ -34,19 +36,72 @@ def _import_log_analyzer_with_optional_dependency_stubs(monkeypatch):
     langchain_openai = _stub_module(monkeypatch, "langchain_openai")
     langchain_openai.ChatOpenAI = object
 
+    output_parsers = _stub_module(monkeypatch, "langchain_core.output_parsers")
+    output_parsers.StrOutputParser = object
+    prompts = _stub_module(monkeypatch, "langchain_core.prompts")
+    prompts.ChatPromptTemplate = types.SimpleNamespace(
+        from_template=lambda *_args, **_kwargs: object()
+    )
+    runnables = _stub_module(monkeypatch, "langchain_core.runnables")
+    runnables.RunnablePassthrough = object
+
     _stub_module(monkeypatch, "logsage")
     _stub_module(monkeypatch, "logsage.auto_resume_policy")
     attribution_classes = _stub_module(
         monkeypatch, "logsage.auto_resume_policy.attribution_classes"
     )
+
+    class StubErrorAttribution:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    stub_attribution = types.SimpleNamespace(
+        APPLICATION_DONE="APPLICATION_DONE",
+        ERRORS_NOT_FOUND="ERRORS_NOT_FOUND",
+        LLM_FAILURE="LLM_FAILURE",
+        SLURM_STEP_CANCELLED="SLURM_STEP_CANCELLED",
+        SLURM_STEP_CANCELLED_JOB_REQUEUE="SLURM_STEP_CANCELLED_JOB_REQUEUE",
+    )
+    stub_auto_resume = types.SimpleNamespace(
+        ERRORS_NOT_FOUND="ERRORS_NOT_FOUND",
+        LLM_FAILURE="LLM_FAILURE",
+        RESTART_IMMEDIATE="RESTART IMMEDIATE",
+        STOP_NO_RESTART="STOP - DONT RESTART IMMEDIATE",
+    )
+    stub_finished = types.SimpleNamespace(
+        APPLICATION_DONE="APPLICATION_DONE",
+        LLM_FAILURE="LLM_FAILURE",
+        SLURM_CANCELLED="SLURM_CANCELLED",
+        SLURM_CANCELLED_JOB_REQUEUE="SLURM_CANCELLED_JOB_REQUEUE",
+        SLURM_CANCELLED_TIME_LIMIT="SLURM_CANCELLED_TIME_LIMIT",
+    )
     attribution_classes.ApplicationData = object
+    attribution_classes.Attribution = stub_attribution
+    attribution_classes.AutoResumeAction = stub_auto_resume
+    attribution_classes.ErrorAttribution = StubErrorAttribution
+    attribution_classes.FinishedStatus = stub_finished
     attribution_classes.LRUCache = object
 
     error_attribution = _stub_module(monkeypatch, "logsage.auto_resume_policy.error_attribution")
+    error_attribution.CONTEXT_SIZE = 4096
+    error_attribution.get_attribution = lambda *args, **kwargs: (None, None, None, None)
+    error_attribution.get_auto_resume = lambda *args, **kwargs: ("", "")
     error_attribution.get_proposed_solution_cat = lambda *args, **kwargs: None
 
     error_extraction = _stub_module(monkeypatch, "logsage.auto_resume_policy.error_extraction")
+    error_extraction.finished_validation = lambda _llm, data: data
     error_extraction.return_application_errors = lambda *args, **kwargs: []
+    error_extraction.return_application_errors_rt = lambda *args, **kwargs: types.SimpleNamespace(
+        checkpoint_saved=False
+    )
+    prompts_mod = _stub_module(monkeypatch, "logsage.auto_resume_policy.prompts")
+    prompts_mod.template_post_error_check = ""
+    util_postprocessing = _stub_module(
+        monkeypatch, "logsage.auto_resume_policy.util_postprocessing"
+    )
+    util_postprocessing.get_auto_resume_postprocessing = lambda *args, **kwargs: False
+    utils = _stub_module(monkeypatch, "logsage.auto_resume_policy.utils")
+    utils.chunk_indices = lambda *args, **kwargs: []
 
     httpx = _stub_module(monkeypatch, "httpx")
     httpx.post = lambda *args, **kwargs: types.SimpleNamespace(status_code=201, text="created")
@@ -211,6 +266,83 @@ def test_log_sage_runner_preserves_explicit_llm_overrides(monkeypatch):
         assert kwargs["temperature"] == 0.0
         assert kwargs["top_p"] == 0.0
         assert kwargs["max_tokens"] == 0
+
+
+def test_log_sage_runner_lib_run_allows_coalescer_timeout(monkeypatch):
+    _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    runner = module.LogSageRunner(LogSageExecutionConfig(use_lib_log_analysis=True))
+    started = threading.Event()
+    finished = threading.Event()
+
+    class BlockingFakeLogAnalyzer:
+        async def run(self, kwargs: dict[str, Any]) -> list[Any]:
+            started.set()
+            time.sleep(0.5)
+            finished.set()
+            return []
+
+    async def fake_get_lib_log_analyzer(kwargs: dict[str, Any]) -> BlockingFakeLogAnalyzer:
+        return BlockingFakeLogAnalyzer()
+
+    runner._get_lib_log_analyzer = fake_get_lib_log_analyzer
+
+    async def run() -> None:
+        coalescer = RequestCoalescer(compute_timeout=0.05)
+
+        t0 = time.monotonic()
+        result = await coalescer.get_or_compute(
+            "/tmp/job.log",
+            lambda: runner._fetch_log_result_lib("/tmp/job.log"),
+        )
+        elapsed = time.monotonic() - t0
+
+        assert started.is_set()
+        assert result["state"] == "timeout"
+        assert result["recommendation"]["action"] == "TIMEOUT"
+        assert elapsed < 0.3
+
+        assert await asyncio.to_thread(finished.wait, 1.0)
+        await asyncio.wait_for(runner._log_analysis_lock.acquire(), timeout=0.1)
+        runner._log_analysis_lock.release()
+
+    asyncio.run(run())
+
+
+def test_log_sage_runner_logs_worker_exception_after_timeout(monkeypatch, caplog):
+    _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    runner = module.LogSageRunner(LogSageExecutionConfig(use_lib_log_analysis=True))
+
+    class FailingFakeLogAnalyzer:
+        async def run(self, kwargs: dict[str, Any]) -> list[Any]:
+            time.sleep(0.2)
+            raise RuntimeError("logsage worker failed")
+
+    async def fake_get_lib_log_analyzer(kwargs: dict[str, Any]) -> FailingFakeLogAnalyzer:
+        return FailingFakeLogAnalyzer()
+
+    runner._get_lib_log_analyzer = fake_get_lib_log_analyzer
+
+    async def run() -> None:
+        coalescer = RequestCoalescer(compute_timeout=0.05)
+        result = await coalescer.get_or_compute(
+            "/tmp/job.log",
+            lambda: runner._fetch_log_result_lib("/tmp/job.log"),
+        )
+
+        assert result["state"] == "timeout"
+
+        deadline = time.monotonic() + 1.0
+        while runner._lib_log_analysis_tasks and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert not runner._lib_log_analysis_tasks
+
+    with caplog.at_level(logging.WARNING, logger=module.logger.name):
+        asyncio.run(run())
+
+    assert "Lib LogSage analysis worker failed after caller cancellation or timeout" in caplog.text
+    assert "logsage worker failed" in caplog.text
 
 
 def test_log_fr_analyzer_mcp_uses_top_level_log_contract(monkeypatch):

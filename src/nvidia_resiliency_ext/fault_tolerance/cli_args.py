@@ -384,11 +384,15 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ft-attribution-analysis-backend",
         "--ft_attribution_analysis_backend",
-        type=str,
+        type=str.lower,
         default=None,
         dest="ft_attribution_analysis_backend",
-        choices=("mcp", "lib"),
-        help="Analysis backend for launcher-managed attribution service: mcp or lib.",
+        choices=("mcp",),
+        metavar="mcp",
+        help=(
+            "Analysis backend for launcher-managed attribution service. "
+            "Only mcp is supported; use standalone nvrx-attrsvc for lib backend experiments."
+        ),
     )
     parser.add_argument(
         "--ft-attribution-decision-timeout",
