@@ -202,6 +202,10 @@ class UnhealthyNodeException(Exception):
         super().__init__(self.message)
 
 
+class TerminalWorkerGroupFailure(Exception):
+    """Raised when the worker group failed without local child failure details."""
+
+
 def _wrap_entrypoint_with_numactl(
     entrypoint: str,
     args: Tuple,
@@ -499,6 +503,13 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._record_worker_events(result)
             return result
         except RendezvousGracefulExitError as e:
+            if self._rdzv_handler.is_shutdown_due_to_failure():
+                msg = (
+                    "Rendezvous closed because another launcher reported "
+                    "a terminal worker-group failure."
+                )
+                logger.error("%s Original rendezvous message: %s", msg, e)
+                raise TerminalWorkerGroupFailure(msg) from e
             logger.info("Rendezvous gracefully exited: %s", e)
             return None
         except SignalException as e:
@@ -626,7 +637,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # No more restarts (either exhausted or early termination)
                 self._stop_workers(self._worker_group)
                 self._worker_group.state = WorkerState.FAILED
-                return RunResult(state=WorkerState.FAILED)
+                return RunResult(state=WorkerState.FAILED, failures=run_result.failures)
             elif state == WorkerState.HEALTHY:
                 # Check if any node in the cluster has opened the next rendezvous round,
                 # which signals that a peer detected a failure and triggered a restart.
@@ -1568,6 +1579,7 @@ def launch_agent(
     spec.rdzv_handler.set_agent(agent)
 
     shutdown_rdzv = True
+    shutdown_due_to_failure = False
     try:
         metrics.initialize_metrics(metrics.MetricsConfig(config.metrics_cfg))
 
@@ -1581,13 +1593,19 @@ def launch_agent(
             return None
 
         if result.is_failed():
+            shutdown_due_to_failure = True
             # ChildFailedError is treated specially by @record
             # if the error files for the failed children exist
             # @record will copy the first error (root cause)
             # to the error file of the launcher process.
-            raise ChildFailedError(
-                name=entrypoint_name,
-                failures=result.failures,
+            if result.failures:
+                raise ChildFailedError(
+                    name=entrypoint_name,
+                    failures=result.failures,
+                )
+            raise TerminalWorkerGroupFailure(
+                f"Worker group failed for {entrypoint_name}, but no local child "
+                "failure details were available."
             )
 
         logger.info(f"Agent .run() is OK. No failures in the result. {result=}")
@@ -1602,17 +1620,20 @@ def launch_agent(
         logger.error(f"Agent .run() raised UnhealthyNodeException: {e}")
         events.record(agent.get_event_failed())
 
-        # Exit behavior depends on deployment mode:
-        # - Job array: raise (exit 1) so replacement job can be launched
-        # - Single job with hot spares: don't raise (instead, exit 0) to avoid killing job
-        #   since --kill-on-bad-exit is the default srun behavior
+        # Always exit non-zero for unhealthy nodes so the scheduler/infrastructure
+        # can requeue or apply policy. Single-job hot-spare deployments that should
+        # keep the allocation alive must launch with srun --kill-on-bad-exit=0.
         if is_slurm_job_array():
             logger.info("Job array deployment: exiting with code 1 for replacement.")
-            raise
         else:
-            logger.info("Single job deployment: exiting with code 0 for hot spare takeover.")
-            # Don't raise - returns None, main() will exit with 0
+            logger.info("Single job deployment: exiting with code 1 for policy handling.")
+        raise
     except ChildFailedError:
+        raise
+    except TerminalWorkerGroupFailure as e:
+        shutdown_due_to_failure = True
+        logger.error(f"Agent .run() ended with terminal worker-group failure: {e}")
+        events.record(agent.get_event_failed())
         raise
     except SignalException as e:
         # when the agent dies with a signal do NOT shutdown the rdzv_handler
@@ -1624,8 +1645,7 @@ def launch_agent(
         if agent.any_rank_failed():
             logger.warning("Some ranks exited with non-zero. Re-raising SignalException.")
             raise
-        else:
-            logger.info("All ranks exited gracefully. Launcher exiting without an error.")
+        logger.info("All ranks exited gracefully. Launcher exiting without an error.")
     except Exception as e:
         logger.error(f"Agent .run() raised exception, {e=}")
         events.record(agent.get_event_failed())
@@ -1633,7 +1653,10 @@ def launch_agent(
     finally:
         # Shutdown rdzv and rank monitors (may produce logs; reader thread must stay alive).
         if shutdown_rdzv:
-            agent._rdzv_handler.shutdown()
+            if shutdown_due_to_failure:
+                agent._rdzv_handler.shutdown_due_to_failure()
+            else:
+                agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
 
         # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
