@@ -226,6 +226,7 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         )
 
         self.assertFalse(state.is_shutdown())
+        self.assertIsNone(state.get_shutdown_reason())
 
     def test_set_shutdown(self):
         """Test that set_shutdown marks rendezvous as permanently shut down."""
@@ -238,6 +239,62 @@ class BarrierStateBasicTest(BaseRendezvousTest):
 
         state.set_shutdown()
         self.assertTrue(state.is_shutdown())
+        self.assertEqual(
+            state.get_shutdown_reason(),
+            ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_GRACEFUL,
+        )
+
+    def test_set_shutdown_records_failure_reason(self):
+        """An explicit failure shutdown is visible as the shutdown reason."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        state.set_shutdown(ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_FAILURE)
+
+        self.assertTrue(state.is_shutdown())
+        self.assertEqual(
+            state.get_shutdown_reason(),
+            ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_FAILURE,
+        )
+
+    def test_set_shutdown_does_not_overwrite_failure_reason(self):
+        """The first shutdown reason is stable once the shutdown is visible."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        state.set_shutdown(ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_FAILURE)
+        state.set_shutdown()
+
+        self.assertTrue(state.is_shutdown())
+        self.assertEqual(
+            state.get_shutdown_reason(),
+            ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_FAILURE,
+        )
+
+    def test_attribution_gate_sets_failure_shutdown_when_stop_recommended(self):
+        """Attribution-stop is a terminal failure reason, not a graceful shutdown."""
+        state = object.__new__(_RendezvousBarrierState)
+        state._round = 1
+        state._attribution_service = MagicMock()
+        state._attribution_service.get_last_result.return_value = True
+        state._attribution_settled_for_round = -1
+        state.set_shutdown = MagicMock()
+
+        with self.assertRaises(RendezvousGracefulExitError):
+            state._attribution_gate("node-a")
+
+        state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
+        state.set_shutdown.assert_called_once_with(
+            ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_FAILURE
+        )
 
     def test_join_increments_join_count(self):
         """Test that joining increments join_count atomically."""
@@ -2275,7 +2332,7 @@ class ErrorCaseTest(BaseRendezvousTest):
             state.perform_rendezvous(node, min_nodes, max_nodes, segment_check_interval)
 
     def test_closed_rendezvous_raises_error(self):
-        """Test that joining a closed rendezvous raises RendezvousGracefulExitError (exit 0)."""
+        """A normal closed rendezvous raises the passive graceful-exit exception."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,

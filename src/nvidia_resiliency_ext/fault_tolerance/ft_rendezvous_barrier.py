@@ -80,6 +80,9 @@ from .utils import get_infrastructure_rank, is_slurm_job_array, slurm_sort_addrs
 
 log = logging.getLogger(LogConfig.name)
 
+RDZV_SHUTDOWN_REASON_GRACEFUL = "graceful"
+RDZV_SHUTDOWN_REASON_FAILURE = "failure"
+
 
 def _rdzv_signal_exception_handler(sig: int, frame: Optional[FrameType]) -> None:
     del frame
@@ -628,7 +631,7 @@ class _RendezvousBarrierState:
 
         # Key prefixes for the barrier
         self.prefix = f"ft_rendezvous_barrier:{run_id}"
-        # Permanent shutdown: once set, no further rendezvous rounds (graceful exit).
+        # Permanent shutdown reason: empty means open; non-empty means no further rounds.
         self.shutdown_key = f"{self.prefix}:shutdown"
         self._attribution_service: Optional[AttributionService] = None
         self._attribution_settled_for_round: int = -1
@@ -644,6 +647,10 @@ class _RendezvousBarrierState:
         # Initialize round_done_0 to 0 (open) if this is the first time any node connects.
         if not self.store.check([self.round_done_key]):
             self.store.set(self.round_done_key, "0".encode('utf-8'))
+        if self.is_store_host and not self.store.check([self.shutdown_key]):
+            # Empty value is the open-state sentinel. Consumers must check the value,
+            # not just key existence, to decide whether rendezvous is shut down.
+            self.store.set(self.shutdown_key, b"")
 
     @property
     def join_count_key(self) -> str:
@@ -1290,7 +1297,8 @@ class _RendezvousBarrierState:
             node_desc: Node descriptor for logging
 
         Raises:
-            RendezvousGracefulExitError: If rendezvous is permanently shut down (graceful exit 0)
+            RendezvousGracefulExitError: If rendezvous is permanently shut down. The
+                launcher maps the recorded shutdown reason to the final process exit code.
 
         Note:
             This wait does NOT timeout unless the rendezvous is permanently closed.
@@ -1374,7 +1382,7 @@ class _RendezvousBarrierState:
                 f"recommended stopping the job."
             )
             log.error(msg)
-            self.set_shutdown()
+            self.set_shutdown(RDZV_SHUTDOWN_REASON_FAILURE)
             raise RendezvousGracefulExitError(msg)
 
         self._attribution_settled_for_round = self._round
@@ -2053,12 +2061,24 @@ class _RendezvousBarrierState:
 
     def is_shutdown(self) -> bool:
         """Check if rendezvous is permanently shut down (no further rounds)."""
-        return self.store.check([self.shutdown_key])
+        if not self.store.check([self.shutdown_key]):
+            return False
+        return bool(self.store.get(self.shutdown_key))
 
-    def set_shutdown(self) -> None:
+    def get_shutdown_reason(self) -> Optional[str]:
+        """Return the recorded shutdown reason, if one was written."""
+        if not self.store.check([self.shutdown_key]):
+            return None
+        return self.store.get(self.shutdown_key).decode('utf-8') or None
+
+    def set_shutdown(self, reason: str = RDZV_SHUTDOWN_REASON_GRACEFUL) -> None:
         """Mark rendezvous as permanently shut down (graceful exit, no further rounds)."""
         try:
-            self.store.set(self.shutdown_key, "1".encode('utf-8'))
+            self.store.compare_set(
+                self.shutdown_key,
+                b"",
+                reason.encode('utf-8'),
+            )
         except Exception as e:
             log.error(f"Failed to set shutdown: {e}")
 
@@ -2679,10 +2699,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         addr_to_rank = dict(zip(addrs, ranks))
         return [addr_to_rank[a] for a in slurm_sort_addrs(addrs)]
 
-    def shutdown(self) -> bool:
+    def shutdown(self, reason: str = RDZV_SHUTDOWN_REASON_GRACEFUL) -> bool:
         """See base class."""
         try:
-            self._close()
+            self._close(reason)
             return True
         except RendezvousError as ex:
             msg = (
@@ -2699,13 +2719,19 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             )
             raise
 
+    def shutdown_due_to_failure(self) -> bool:
+        return self.shutdown(reason=RDZV_SHUTDOWN_REASON_FAILURE)
+
+    def is_shutdown_due_to_failure(self) -> bool:
+        return self._barrier_state.get_shutdown_reason() == RDZV_SHUTDOWN_REASON_FAILURE
+
     def shutdown_cycle_info_reporter(self) -> None:
         if self._cycle_info_reporter is not None:
             self._cycle_info_reporter.shutdown()
 
-    def _close(self) -> None:
+    def _close(self, reason: str = RDZV_SHUTDOWN_REASON_GRACEFUL) -> None:
         """Permanently shut down the rendezvous (no further rounds)."""
-        self._barrier_state.set_shutdown()
+        self._barrier_state.set_shutdown(reason)
         self.shutdown_cycle_info_reporter()
 
         msg = f"The node '{self._this_node}' has permanently closed the rendezvous '{self._settings.run_id}'."
