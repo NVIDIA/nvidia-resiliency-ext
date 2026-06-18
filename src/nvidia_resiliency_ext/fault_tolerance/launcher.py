@@ -514,6 +514,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             return None
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
+            if self._is_store_host:
+                shutdown_cycle_info_reporter = getattr(
+                    self._rdzv_handler, "shutdown_cycle_info_reporter", None
+                )
+                if callable(shutdown_cycle_info_reporter):
+                    shutdown_cycle_info_reporter()
             self._shutdown(e.sigval, timeout=self._term_timeout)
             shutdown_called = True
             raise

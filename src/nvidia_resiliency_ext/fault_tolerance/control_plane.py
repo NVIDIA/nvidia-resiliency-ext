@@ -293,6 +293,9 @@ def run(args: argparse.Namespace) -> None:
         _run_control_rendezvous_loop(args, ft_cfg, store, services, stop_event)
     finally:
         with contextlib.suppress(Exception):
+            if services.cycle_info_reporter is not None:
+                services.cycle_info_reporter.shutdown()
+        with contextlib.suppress(Exception):
             if services.grpc_processes:
                 stop_grpc_log_servers(
                     services.grpc_processes,
@@ -301,9 +304,6 @@ def run(args: argparse.Namespace) -> None:
         with contextlib.suppress(Exception):
             if services.attribution_manager is not None:
                 services.attribution_manager.stop()
-        with contextlib.suppress(Exception):
-            if services.cycle_info_reporter is not None:
-                services.cycle_info_reporter.shutdown()
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
 
