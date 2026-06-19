@@ -66,12 +66,14 @@ import argparse
 import contextlib
 import logging
 import os
+import re
 import signal
 import sys
 import threading
 import time
 import urllib.parse
 from concurrent import futures
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import grpc
@@ -95,6 +97,24 @@ except ImportError:
 
 # Default bind: all interfaces so remote training nodes can connect (cluster log funnel).
 _DEFAULT_GRPC_BIND_HOST = "0.0.0.0"  # nosec B104
+_DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS = 10.0
+_CYCLE_LOG_RE = re.compile(r"_cycle(?P<cycle>\d+)(?=\D|$)")
+
+
+def _cycle_log_info(file_path: str) -> Optional[Tuple[str, int]]:
+    """Return (log_family, cycle_number) for files such as train_cycle7.log."""
+    dirname = os.path.dirname(file_path)
+    basename = os.path.basename(file_path)
+    match = _CYCLE_LOG_RE.search(basename)
+    if match is None:
+        return None
+    log_family_basename = basename[: match.start()] + basename[match.end() :]
+    log_family = os.path.join(dirname, log_family_basename) if dirname else log_family_basename
+    return log_family, int(match.group("cycle"))
+
+
+def _utc_iso_from_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _format_grpc_peer(raw: Optional[str]) -> str:
@@ -120,6 +140,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         max_buffer_size: int = 1024 * 1024,
         graceful_shutdown_timeout: float = 60.0,
         flush_interval: float = 1.0,
+        completion_idle_timeout: float = _DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS,
     ):
         """
         Initialize log aggregation server.
@@ -133,13 +154,20 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                                        clients to disconnect or this timeout to elapse,
                                        whichever comes first.
             flush_interval: Interval in seconds between periodic buffer flushes (default 1.0).
+            completion_idle_timeout: Seconds a per-cycle application log must receive no new
+                                     chunks after its latest flush before a heuristic completion
+                                     line is emitted.
         """
+        if completion_idle_timeout < 0:
+            raise ValueError("completion_idle_timeout must be non-negative")
         self.max_buffer_size = max_buffer_size
         self.graceful_shutdown_timeout = graceful_shutdown_timeout
+        self.completion_idle_timeout = completion_idle_timeout
 
         # Per-file state: file_path -> {file_handle, buffer, buffer_size}
         self.files: Dict[str, Dict[str, Any]] = {}
         self.files_lock = threading.Lock()
+        self.latest_cycle_by_family: Dict[str, int] = {}
 
         # Track connected clients
         self.connected_clients = 0
@@ -180,6 +208,16 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 # Create new file state
                 os.makedirs(os.path.dirname(os.path.abspath(file_path)) or ".", exist_ok=True)
                 file_handle = open(file_path, 'ab', buffering=self.max_buffer_size)
+                cycle_info = _cycle_log_info(file_path)
+                if cycle_info is None:
+                    log_family = None
+                    cycle_number = None
+                else:
+                    log_family, cycle_number = cycle_info
+                    self.latest_cycle_by_family[log_family] = max(
+                        self.latest_cycle_by_family.get(log_family, cycle_number),
+                        cycle_number,
+                    )
 
                 self.files[file_path] = {
                     'file_handle': file_handle,
@@ -187,6 +225,12 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                     'buffer_size': 0,
                     'buffer_lock': threading.Lock(),  # Protects buffer operations (fast)
                     'io_lock': threading.Lock(),  # Protects file_handle I/O (slow)
+                    'is_cycle_log': cycle_info is not None,
+                    'log_family': log_family,
+                    'cycle_number': cycle_number,
+                    'last_chunk_time': None,
+                    'last_flush_time': None,
+                    'completion_logged': False,
                 }
                 self.logger.info(f"Opened new log file: {file_path}")
 
@@ -276,6 +320,12 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 # Add to buffer for this specific file
                 # Use buffer_lock (not io_lock) - fast memory operations only
                 with file_state['buffer_lock']:
+                    if file_state['is_cycle_log'] and file_state['completion_logged']:
+                        self.logger.warning(
+                            f"Late chunk after heuristic cycle log complete: file_path={file_path}"
+                        )
+                        file_state['completion_logged'] = False
+                    file_state['last_chunk_time'] = time.time()
                     file_state['buffer'].append(data)
                     file_state['buffer_size'] += len(data)
 
@@ -388,6 +438,11 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
 
                 # Flush to OS (kernel will aggregate for Lustre RPC)
                 file_handle.flush()
+                flush_time = time.time()
+
+                if file_state.get('is_cycle_log'):
+                    with file_state['buffer_lock']:
+                        file_state['last_flush_time'] = flush_time
 
                 # Log statistics
                 self.logger.debug(
@@ -403,6 +458,56 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 # Unexpected errors
                 self.logger.error(f"Unexpected error flushing to {file_path}: {e}", exc_info=True)
                 raise
+
+    def _scan_cycle_log_completions(
+        self,
+        now: Optional[float] = None,
+        *,
+        include_latest: bool = False,
+    ) -> None:
+        """Emit heuristic completion lines for flushed per-cycle app logs that are idle."""
+        scan_time = time.time() if now is None else now
+        with self.files_lock:
+            files_snapshot = list(self.files.items())
+            latest_cycle_by_family = dict(self.latest_cycle_by_family)
+
+        for file_path, file_state in files_snapshot:
+            last_flush_time = None
+            if not file_state['buffer_lock'].acquire(blocking=False):
+                continue
+            try:
+                if not file_state.get('is_cycle_log'):
+                    continue
+                if file_state.get('completion_logged'):
+                    continue
+                last_chunk_time = file_state.get('last_chunk_time')
+                last_flush_time = file_state.get('last_flush_time')
+                if last_chunk_time is None or last_flush_time is None:
+                    continue
+                log_family = file_state.get('log_family')
+                cycle_number = file_state.get('cycle_number')
+                if (
+                    not include_latest
+                    and log_family is not None
+                    and cycle_number is not None
+                    and cycle_number >= latest_cycle_by_family.get(log_family, cycle_number)
+                ):
+                    continue
+                if last_flush_time < last_chunk_time:
+                    continue
+                if file_state['buffer'] or file_state['buffer_size']:
+                    continue
+                if scan_time - last_chunk_time < self.completion_idle_timeout:
+                    continue
+                file_state['completion_logged'] = True
+            finally:
+                file_state['buffer_lock'].release()
+
+            self.logger.info(
+                "Heuristic cycle log complete: "
+                f"file_path={file_path} "
+                f"last_flush_time={_utc_iso_from_timestamp(last_flush_time)}"
+            )
 
     def _periodic_flush(self):
         """Background thread that flushes all file buffers periodically."""
@@ -421,6 +526,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 for file_path, file_state in files_snapshot:
                     if file_state['buffer']:  # Quick check without lock
                         self._flush_file_buffer_locked(file_path, file_state)
+                self._scan_cycle_log_completions()
             except (OSError, IOError) as e:
                 # I/O errors during periodic flush - log but keep thread alive
                 self.logger.error(
@@ -554,6 +660,8 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         else:
             self.logger.info("Final flush: all per-file in-memory buffers are empty.")
 
+        self._scan_cycle_log_completions(include_latest=True)
+
         self.logger.info(
             f"Server shutdown complete. "
             f"Total: {self.total_chunks_received} chunks, "
@@ -561,7 +669,13 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         )
 
 
-def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeout: float = 60.0):
+def serve(
+    host: str,
+    port: int,
+    max_workers: int = 100,
+    graceful_shutdown_timeout: float = 60.0,
+    completion_idle_timeout: float = _DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS,
+):
     """
     Start gRPC log aggregation server.
 
@@ -573,6 +687,7 @@ def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeou
         port: Port to listen on
         max_workers: Maximum number of worker threads for gRPC
         graceful_shutdown_timeout: Maximum seconds to wait for clients during shutdown
+        completion_idle_timeout: Idle seconds before heuristic per-cycle completion is logged
     """
     # Set up logging (using aegis-style format)
     logging.basicConfig(
@@ -581,7 +696,10 @@ def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeou
     )
     logger = logging.getLogger("LogAggregationServer")
 
-    servicer = LogAggregationServicer(graceful_shutdown_timeout=graceful_shutdown_timeout)
+    servicer = LogAggregationServicer(
+        graceful_shutdown_timeout=graceful_shutdown_timeout,
+        completion_idle_timeout=completion_idle_timeout,
+    )
 
     # Create gRPC server
     server = grpc.server(
@@ -616,6 +734,7 @@ def serve(host: str, port: int, max_workers: int = 100, graceful_shutdown_timeou
     logger.info(f"Log aggregation server started on {server_address}")
     logger.info(f"Max workers: {max_workers}")
     logger.info(f"Graceful shutdown timeout: {graceful_shutdown_timeout}s")
+    logger.info(f"Heuristic cycle log completion idle timeout: {completion_idle_timeout}s")
 
     stop_grace_seconds = 5.0
     termination_wait_timeout_seconds = stop_grace_seconds + 60.0
@@ -687,6 +806,13 @@ def main():
         'When store host exits, server will continue accepting logs from other ranks '
         'for up to this timeout or until all clients disconnect, whichever comes first.',
     )
+    parser.add_argument(
+        '--completion-idle-timeout',
+        type=float,
+        default=_DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS,
+        help='Seconds a per-cycle application log must be idle after flush before the root '
+        'emits a heuristic completion line (default: 10.0).',
+    )
 
     args = parser.parse_args()
 
@@ -695,6 +821,7 @@ def main():
         port=args.port,
         max_workers=args.max_workers,
         graceful_shutdown_timeout=args.graceful_shutdown_timeout,
+        completion_idle_timeout=args.completion_idle_timeout,
     )
 
 

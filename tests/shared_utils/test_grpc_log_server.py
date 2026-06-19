@@ -3,6 +3,7 @@
 
 """Unit tests for gRPC log aggregation server."""
 
+import logging
 import os
 import tempfile
 import time
@@ -325,6 +326,135 @@ class TestPeriodicFlush:
         assert log_file.exists()
         with open(log_file, 'r') as f:
             assert "Small data\n" in f.read()
+
+
+class TestHeuristicCycleLogCompletion:
+    """Tests for root-only heuristic per-cycle completion logging."""
+
+    def _mock_context(self):
+        mock_context = MagicMock()
+        mock_context.peer.return_value = "ipv4:127.0.0.1:12345"
+        return mock_context
+
+    def _completion_messages(self, caplog):
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if "Heuristic cycle log complete:" in record.getMessage()
+        ]
+
+    def _late_messages(self, caplog):
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if "Late chunk after heuristic cycle log complete:" in record.getMessage()
+        ]
+
+    def _stream_chunk(self, servicer, log_file, data=b"cycle data\n"):
+        servicer.StreamLogs(
+            iter(
+                [
+                    log_aggregation_pb2.LogChunk(
+                        node_id="node_1",
+                        data=data,
+                        file_path=str(log_file),
+                    )
+                ]
+            ),
+            self._mock_context(),
+        )
+
+    def _flush_and_scan_after_idle(self, servicer, log_file):
+        file_path = str(log_file)
+        file_state = servicer.files[file_path]
+        servicer._flush_file_buffer_locked(file_path, file_state)
+        with file_state['buffer_lock']:
+            last_chunk_time = file_state['last_chunk_time']
+        servicer._scan_cycle_log_completions(
+            now=last_chunk_time + servicer.completion_idle_timeout + 0.1
+        )
+
+    def test_current_cycle_log_does_not_complete_on_idle_only(self, tmp_path, caplog):
+        log_file = tmp_path / "train_cycle3.log"
+        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1.0)
+        try:
+            with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
+                self._stream_chunk(servicer, log_file)
+                self._flush_and_scan_after_idle(servicer, log_file)
+
+            assert self._completion_messages(caplog) == []
+        finally:
+            servicer.shutdown()
+
+    def test_cycle_log_completion_logs_after_later_cycle_seen_flush_and_idle(
+        self, tmp_path, caplog
+    ):
+        log_file = tmp_path / "train_cycle3.log"
+        next_log_file = tmp_path / "train_cycle4.log"
+        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1.0)
+        try:
+            with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
+                self._stream_chunk(servicer, log_file)
+                self._flush_and_scan_after_idle(servicer, log_file)
+                assert self._completion_messages(caplog) == []
+
+                self._stream_chunk(servicer, next_log_file, data=b"next cycle data\n")
+                self._flush_and_scan_after_idle(servicer, log_file)
+
+            messages = self._completion_messages(caplog)
+            assert len(messages) == 1
+            assert f"file_path={log_file}" in messages[0]
+            assert "last_flush_time=" in messages[0]
+            assert "chunks" not in messages[0]
+            assert "bytes" not in messages[0]
+        finally:
+            servicer.shutdown()
+
+    def test_non_cycle_log_is_ignored_by_completion_scan(self, tmp_path, caplog):
+        log_file = tmp_path / "train.log"
+        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1.0)
+        try:
+            with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
+                servicer.StreamLogs(
+                    iter(
+                        [
+                            log_aggregation_pb2.LogChunk(
+                                node_id="node_1",
+                                data=b"regular data\n",
+                                file_path=str(log_file),
+                            )
+                        ]
+                    ),
+                    self._mock_context(),
+                )
+                file_state = servicer.files[str(log_file)]
+                servicer._flush_file_buffer_locked(str(log_file), file_state)
+                servicer._scan_cycle_log_completions(now=time.time() + 100.0)
+
+            assert self._completion_messages(caplog) == []
+        finally:
+            servicer.shutdown()
+
+    def test_late_cycle_chunk_warns_and_allows_updated_completion(self, tmp_path, caplog):
+        log_file = tmp_path / "train_cycle7.log"
+        next_log_file = tmp_path / "train_cycle8.log"
+        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1.0)
+        try:
+            with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
+                self._stream_chunk(servicer, log_file, data=b"first chunk\n")
+                self._stream_chunk(servicer, next_log_file, data=b"next cycle chunk\n")
+                self._flush_and_scan_after_idle(servicer, log_file)
+
+                self._stream_chunk(servicer, log_file, data=b"late chunk\n")
+                self._flush_and_scan_after_idle(servicer, log_file)
+
+            completion_messages = self._completion_messages(caplog)
+            late_messages = self._late_messages(caplog)
+            assert len(completion_messages) == 2
+            assert len(late_messages) == 1
+            assert f"file_path={log_file}" in late_messages[0]
+        finally:
+            servicer.shutdown()
 
 
 class TestGracefulShutdown:
