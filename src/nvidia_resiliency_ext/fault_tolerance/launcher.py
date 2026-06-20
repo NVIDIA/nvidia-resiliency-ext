@@ -133,6 +133,17 @@ _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
 _GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
 _ATTRIBUTION_MANAGER: Optional[AttributionManager] = None
 
+
+def _shutdown_cycle_info_reporter_safely(rdzv_handler: Any) -> None:
+    shutdown_cycle_info_reporter = getattr(rdzv_handler, "shutdown_cycle_info_reporter", None)
+    if not callable(shutdown_cycle_info_reporter):
+        return
+    try:
+        shutdown_cycle_info_reporter()
+    except Exception:
+        logger.warning("Failed to shut down cycle info reporter", exc_info=True)
+
+
 def init_node_health_check(endpoint: Optional[str]) -> None:
     global _NODE_HEALTH_CHECK_INSTANCE
     if endpoint:
@@ -515,11 +526,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
             if self._is_store_host:
-                shutdown_cycle_info_reporter = getattr(
-                    self._rdzv_handler, "shutdown_cycle_info_reporter", None
-                )
-                if callable(shutdown_cycle_info_reporter):
-                    shutdown_cycle_info_reporter()
+                _shutdown_cycle_info_reporter_safely(self._rdzv_handler)
             self._shutdown(e.sigval, timeout=self._term_timeout)
             shutdown_called = True
             raise
@@ -1674,11 +1681,7 @@ def launch_agent(
             if agent._rdzv_handler._attribution_service is not None:
                 agent._rdzv_handler._attribution_service()
 
-            shutdown_cycle_info_reporter = getattr(
-                agent._rdzv_handler, "shutdown_cycle_info_reporter", None
-            )
-            if callable(shutdown_cycle_info_reporter):
-                shutdown_cycle_info_reporter()
+            _shutdown_cycle_info_reporter_safely(agent._rdzv_handler)
 
             grace_period = 3.0  # seconds
             logger.info(

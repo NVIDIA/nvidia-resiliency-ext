@@ -386,6 +386,19 @@ class TestHeuristicCycleLogCompletion:
         finally:
             servicer.shutdown()
 
+    def test_shutdown_completion_includes_latest_cycle_without_idle_wait(self, tmp_path, caplog):
+        log_file = tmp_path / "train_cycle3.log"
+        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1000.0)
+
+        with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
+            self._stream_chunk(servicer, log_file)
+            servicer.shutdown()
+
+        messages = self._completion_messages(caplog)
+        assert len(messages) == 1
+        assert f"file_path={log_file}" in messages[0]
+        assert "last_flush_time=" in messages[0]
+
     def test_cycle_log_completion_logs_after_later_cycle_seen_flush_and_idle(
         self, tmp_path, caplog
     ):

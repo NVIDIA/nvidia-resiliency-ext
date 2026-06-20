@@ -464,6 +464,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         now: Optional[float] = None,
         *,
         include_latest: bool = False,
+        force_idle: bool = False,
     ) -> None:
         """Emit heuristic completion lines for flushed per-cycle app logs that are idle."""
         scan_time = time.time() if now is None else now
@@ -497,7 +498,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                     continue
                 if file_state['buffer'] or file_state['buffer_size']:
                     continue
-                if scan_time - last_chunk_time < self.completion_idle_timeout:
+                if not force_idle and scan_time - last_chunk_time < self.completion_idle_timeout:
                     continue
                 file_state['completion_logged'] = True
             finally:
@@ -660,7 +661,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         else:
             self.logger.info("Final flush: all per-file in-memory buffers are empty.")
 
-        self._scan_cycle_log_completions(include_latest=True)
+        self._scan_cycle_log_completions(include_latest=True, force_idle=True)
 
         self.logger.info(
             f"Server shutdown complete. "
