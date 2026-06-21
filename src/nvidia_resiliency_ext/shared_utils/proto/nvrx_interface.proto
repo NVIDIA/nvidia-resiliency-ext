@@ -24,7 +24,7 @@ message NVRxCycleInfo {
   // Slurm job id (or Slurm array job id)
   string job_id = 1;
 
-  // Slurm attempt index (SLURM_RESTART_CNT)
+  // Slurm attempt index (SLURM_RESTART_COUNT)
   uint32 attempt_index = 2;
 
   // Cycle number (0-based)

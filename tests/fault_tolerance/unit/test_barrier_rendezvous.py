@@ -153,7 +153,7 @@ class BaseRendezvousTest(TestCase):
             'SLURM_ARRAY_TASK_ID',
             'SLURM_ARRAY_JOB_ID',
             'SLURM_JOB_ID',  # Must clear to avoid validation error when SLURM_PROCID is cleared
-            'SLURM_RESTART_CNT',
+            'SLURM_RESTART_COUNT',
             'SLURM_NNODES',
             'SLURM_JOB_NUM_NODES',
         ]
@@ -1329,8 +1329,8 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual(snapshot.standby_node_addrs, [])
         self.assertEqual(snapshot.active_ranks, [0, 1])
 
-    def test_open_rendezvous_does_not_report_cycle_end(self):
-        """Opening the next round only opens rendezvous; cycle end is reporter-owned."""
+    def test_open_rendezvous_reports_cycle_end_when_round_created(self):
+        """Opening the next round closes the store-host's current cycle."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
@@ -1342,7 +1342,106 @@ class GroupRankAssignmentTest(TestCase):
 
         state.open_rendezvous()
 
+        reporter.report_cycle_end.assert_called_once_with()
+
+    def test_open_rendezvous_reports_cycle_end_when_round_already_exists(self):
+        """Store host closes the current cycle even if another node opened the next round."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        state._cycle_info_reporter = reporter
+        self.store.set(f"{state.prefix}:round_done_1", b"0")
+
+        state.open_rendezvous()
+
+        reporter.report_cycle_end.assert_called_once_with()
+
+    def test_open_rendezvous_without_cycle_info_reporter_does_not_write_cycle_end(self):
+        """Non-store-host paths have no reporter and only open the next round."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=False,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+
+        state.open_rendezvous()
+
+        self.assertTrue(self.store.check([f"{state.prefix}:round_done_1"]))
+
+    def test_is_next_round_open_reports_cycle_end(self):
+        """Healthy store host closes the current cycle when it observes peer restart."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        state._cycle_info_reporter = reporter
+        self.store.set(f"{state.prefix}:round_done_1", b"0")
+
+        self.assertTrue(state.is_next_round_open())
+
+        reporter.report_cycle_end.assert_called_once_with()
+
+    def test_sync_from_per_round_state_reports_cycle_end_for_open_round(self):
+        """Store host closes the current cycle after syncing to an opened later round."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        state._cycle_info_reporter = reporter
+        self.store.set(f"{state.prefix}:round_done_0", b"1")
+        self.store.set(f"{state.prefix}:round_done_1", b"0")
+
+        self.assertTrue(state._sync_from_per_round_state())
+
+        self.assertEqual(state._round, 1)
+        reporter.report_cycle_end.assert_called_once_with()
+
+    def test_sync_from_per_round_state_does_not_close_without_open_round(self):
+        """Advancing past a closed round alone does not mean the cycle has ended."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        state._cycle_info_reporter = reporter
+        self.store.set(f"{state.prefix}:round_done_0", b"1")
+
+        self.assertTrue(state._sync_from_per_round_state())
+
+        self.assertEqual(state._round, 1)
         reporter.report_cycle_end.assert_not_called()
+
+    def test_cycle_end_reporter_exception_does_not_block_open_rendezvous(self):
+        """Cycle info failures are logged without interrupting rendezvous progress."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        reporter.report_cycle_end.side_effect = RuntimeError("cycle info failed")
+        state._cycle_info_reporter = reporter
+
+        with patch.object(ft_rendezvous_barrier_module.log, "warning") as mock_warning:
+            state.open_rendezvous()
+
+        self.assertTrue(self.store.check([f"{state.prefix}:round_done_1"]))
+        reporter.report_cycle_end.assert_called_once_with()
+        mock_warning.assert_called_once()
 
     def test_previous_active_last_call_gate_waits_for_missing_infra_rank(self):
         """The close gate waits while previous active infra ranks are missing."""

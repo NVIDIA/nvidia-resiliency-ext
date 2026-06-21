@@ -58,12 +58,12 @@ def _cycle_info_job_id_from_env() -> str:
 
 
 def _cycle_info_attempt_index_from_env() -> int:
-    raw_attempt_index = os.environ.get("SLURM_RESTART_CNT", "0")
+    raw_attempt_index = os.environ.get("SLURM_RESTART_COUNT", "0")
     try:
         return int(raw_attempt_index)
     except ValueError:
         logger.warning(
-            "Invalid SLURM_RESTART_CNT=%r for cycle info; using 0",
+            "Invalid SLURM_RESTART_COUNT=%r for cycle info; using 0",
             raw_attempt_index,
         )
         return 0

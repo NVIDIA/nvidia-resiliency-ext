@@ -1092,7 +1092,12 @@ class _RendezvousBarrierState:
         loop can poll this instead of a separate peer_restart_count key.
         """
         next_key = f"{self.prefix}:round_done_{self._round + 1}"
-        return self.store.check([next_key])
+        if not self.store.check([next_key]):
+            return False
+        # The next round may be opened by a non-store-host. The store host closes the
+        # active cycle when it creates or observes round N+1.
+        self._report_cycle_end_as_host(self._round + 1)
+        return True
 
     def _sync_from_per_round_state(self) -> bool:
         """Sync local _round by scanning round_done_N keys forward from current round.
@@ -1110,6 +1115,7 @@ class _RendezvousBarrierState:
             True if _round was advanced (was behind), False if already current
         """
         N = self._round
+        observed_open_round = None
         while True:
             key = f"{self.prefix}:round_done_{N}"
             if not self.store.check([key]):
@@ -1118,6 +1124,7 @@ class _RendezvousBarrierState:
             if val == 1:
                 N += 1  # Round N completed, check N+1
             else:
+                observed_open_round = N
                 break  # Round N is open or in progress (val==0)
 
         if N > self._round:
@@ -1128,6 +1135,8 @@ class _RendezvousBarrierState:
             if self._agent is not None:
                 self._agent._progress_tracker.sync_cycle_number(N)
             log.debug(f"Synced round {old_round} -> {N} (per-round scan)")
+            if observed_open_round is not None:
+                self._report_cycle_end_as_host(observed_open_round)
             return True
 
         return False
@@ -1604,6 +1613,20 @@ class _RendezvousBarrierState:
             log.warning(
                 "Failed to report cycle info after closing rendezvous round %s: %s",
                 round_id,
+                e,
+                exc_info=True,
+            )
+
+    def _report_cycle_end_as_host(self, opened_round_id: int) -> None:
+        """Report cycle end from the rendezvous host when a later round is observed."""
+        if self._cycle_info_reporter is None:
+            return
+        try:
+            self._cycle_info_reporter.report_cycle_end()
+        except Exception as e:
+            log.warning(
+                "Failed to report cycle info end after opening rendezvous round %s: %s",
+                opened_round_id,
                 e,
                 exc_info=True,
             )
@@ -2102,10 +2125,12 @@ class _RendezvousBarrierState:
         next_round_done_key = f"{self.prefix}:round_done_{self._round + 1}"
         if self.store.check([next_round_done_key]):
             log.debug(f"open_rendezvous() deferred - round_done_{self._round + 1} already exists.")
+            self._report_cycle_end_as_host(self._round + 1)
             return
 
         self.store.set(next_round_done_key, "0".encode('utf-8'))
         log.debug(f"Opened round {self._round + 1} for joining")
+        self._report_cycle_end_as_host(self._round + 1)
 
 
 class FtRendezvousBarrierHandler(RendezvousHandler):
