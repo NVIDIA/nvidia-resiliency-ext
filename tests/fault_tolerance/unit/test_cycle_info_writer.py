@@ -16,6 +16,7 @@
 """Unit tests for cycle_info_writer module."""
 
 import json
+import logging
 import os
 import tempfile
 import time
@@ -203,7 +204,7 @@ def test_cycle_info_reporter_derives_file_namespace_from_env(tmp_dir):
             {
                 "SLURM_ARRAY_JOB_ID": "array-job",
                 "SLURM_JOB_ID": "job",
-                "SLURM_RESTART_CNT": "4",
+                "SLURM_RESTART_COUNT": "4",
             },
             clear=False,
         ),
@@ -217,6 +218,49 @@ def test_cycle_info_reporter_derives_file_namespace_from_env(tmp_dir):
     call_kw = writer.write_cycle_start.call_args.kwargs
     assert call_kw["job_id"] == "array-job"
     assert call_kw["attempt_index"] == 4
+
+
+def test_cycle_info_reporter_defaults_missing_restart_count_to_zero(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, writer=writer)
+
+    with patch.dict(
+        os.environ,
+        {
+            "SLURM_ARRAY_JOB_ID": "array-job",
+            "SLURM_JOB_ID": "job",
+        },
+        clear=True,
+    ):
+        assert reporter.report_cycle_start(CycleInfoRoundSnapshot(cycle_number=0))
+
+    call_kw = writer.write_cycle_start.call_args.kwargs
+    assert call_kw["job_id"] == "array-job"
+    assert call_kw["attempt_index"] == 0
+
+
+def test_cycle_info_reporter_invalid_restart_count_falls_back_to_zero(tmp_dir, caplog):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, writer=writer)
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "SLURM_ARRAY_JOB_ID": "array-job",
+                "SLURM_JOB_ID": "job",
+                "SLURM_RESTART_COUNT": "invalid",
+            },
+            clear=True,
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert reporter.report_cycle_start(CycleInfoRoundSnapshot(cycle_number=0))
+
+    call_kw = writer.write_cycle_start.call_args.kwargs
+    assert call_kw["job_id"] == "array-job"
+    assert call_kw["attempt_index"] == 0
+    assert "Invalid SLURM_RESTART_COUNT='invalid' for cycle info; using 0" in caplog.text
 
 
 def test_cycle_info_reporter_closes_cycle_on_shutdown(tmp_dir):

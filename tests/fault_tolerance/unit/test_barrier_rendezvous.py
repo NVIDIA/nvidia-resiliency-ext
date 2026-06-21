@@ -153,7 +153,7 @@ class BaseRendezvousTest(TestCase):
             'SLURM_ARRAY_TASK_ID',
             'SLURM_ARRAY_JOB_ID',
             'SLURM_JOB_ID',  # Must clear to avoid validation error when SLURM_PROCID is cleared
-            'SLURM_RESTART_CNT',
+            'SLURM_RESTART_COUNT',
             'SLURM_NNODES',
             'SLURM_JOB_NUM_NODES',
         ]
