@@ -1167,6 +1167,23 @@ def _make_launch_agent_config(**overrides):
     return SimpleNamespace(**values)
 
 
+def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    reporter_error = RuntimeError("reporter failed")
+    rdzv_handler = SimpleNamespace(
+        shutdown_cycle_info_reporter=MagicMock(side_effect=reporter_error)
+    )
+
+    with caplog.at_level(logging.WARNING, logger=launcher.logger.name):
+        launcher._shutdown_cycle_info_reporter_safely(rdzv_handler)
+
+    rdzv_handler.shutdown_cycle_info_reporter.assert_called_once_with()
+    assert "Failed to shut down cycle info reporter" in caplog.text
+
+
 @pytest.mark.parametrize("is_job_array", [False, True])
 def test_launch_agent_unhealthy_node_exits_failure_without_rdzv_shutdown(is_job_array):
     from types import SimpleNamespace
