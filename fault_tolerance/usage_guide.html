@@ -310,6 +310,7 @@ service dependencies.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span> <span class="pre">&lt;PATH&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_api_key_file</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-base-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_base_url</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-model</span> <span class="pre">&lt;MODEL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_model</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-analysis-backend</span> <span class="pre">mcp</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_analysis_backend</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-startup-timeout</span> <span class="pre">&lt;SECONDS&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_startup_timeout</span></code>), default <code class="docutils literal notranslate"><span class="pre">20</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-decision-timeout</span> <span class="pre">&lt;SECONDS&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_decision_timeout</span></code>), default <code class="docutils literal notranslate"><span class="pre">60</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_export_url</span></code>)</p></li>
@@ -323,6 +324,9 @@ from <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle
 before starting the attribution service.</p>
 <p>To export managed attribution results, pass <code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span></code> or
 set <code class="docutils literal notranslate"><span class="pre">attribution_export_url</span></code> in the fault tolerance YAML config.</p>
+<p>Launcher-managed attribution supports only the <code class="docutils literal notranslate"><span class="pre">mcp</span></code> analysis backend. The backend flag may be
+left unset, which uses the service default, or set explicitly to <code class="docutils literal notranslate"><span class="pre">mcp</span></code>. The in-process <code class="docutils literal notranslate"><span class="pre">lib</span></code>
+backend is available only when running <code class="docutils literal notranslate"><span class="pre">nvrx-attrsvc</span></code> as a standalone service.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-decision-timeout</span></code> is the total launcher-side budget for one
 attribution decision, measured from the terminal analysis request until the rendezvous
 host fetches the STOP/RESTART recommendation.</p>
