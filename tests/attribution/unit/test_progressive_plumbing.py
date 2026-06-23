@@ -43,19 +43,68 @@ def _import_analyzer_with_optional_dependency_stubs(monkeypatch):
     langchain_openai = _stub_module(monkeypatch, "langchain_openai")
     langchain_openai.ChatOpenAI = object
 
+    output_parsers = _stub_module(monkeypatch, "langchain_core.output_parsers")
+    output_parsers.StrOutputParser = object
+    prompts = _stub_module(monkeypatch, "langchain_core.prompts")
+    prompts.ChatPromptTemplate = types.SimpleNamespace(
+        from_template=lambda *_args, **_kwargs: object()
+    )
+    runnables = _stub_module(monkeypatch, "langchain_core.runnables")
+    runnables.RunnablePassthrough = object
+
     _stub_module(monkeypatch, "logsage")
     _stub_module(monkeypatch, "logsage.auto_resume_policy")
     attribution_classes = _stub_module(
         monkeypatch, "logsage.auto_resume_policy.attribution_classes"
     )
+    stub_attribution = types.SimpleNamespace(
+        APPLICATION_DONE="APPLICATION_DONE",
+        ERRORS_NOT_FOUND="ERRORS_NOT_FOUND",
+        LLM_FAILURE="LLM_FAILURE",
+        SLURM_STEP_CANCELLED="SLURM_STEP_CANCELLED",
+        SLURM_STEP_CANCELLED_JOB_REQUEUE="SLURM_STEP_CANCELLED_JOB_REQUEUE",
+    )
+    stub_auto_resume = types.SimpleNamespace(
+        ERRORS_NOT_FOUND="ERRORS_NOT_FOUND",
+        LLM_FAILURE="LLM_FAILURE",
+        RESTART_IMMEDIATE="RESTART IMMEDIATE",
+        STOP_NO_RESTART="STOP - DONT RESTART IMMEDIATE",
+    )
+    stub_finished = types.SimpleNamespace(
+        APPLICATION_DONE="APPLICATION_DONE",
+        LLM_FAILURE="LLM_FAILURE",
+        SLURM_CANCELLED="SLURM_CANCELLED",
+        SLURM_CANCELLED_JOB_REQUEUE="SLURM_CANCELLED_JOB_REQUEUE",
+        SLURM_CANCELLED_TIME_LIMIT="SLURM_CANCELLED_TIME_LIMIT",
+    )
     attribution_classes.ApplicationData = object
+    attribution_classes.Attribution = stub_attribution
+    attribution_classes.AutoResumeAction = stub_auto_resume
+    attribution_classes.ErrorAttribution = object
+    attribution_classes.FinishedStatus = stub_finished
     attribution_classes.LRUCache = object
 
     error_attribution = _stub_module(monkeypatch, "logsage.auto_resume_policy.error_attribution")
+    error_attribution.CONTEXT_SIZE = 4096
+    error_attribution.get_attribution = lambda *args, **kwargs: (None, None, None, None)
+    error_attribution.get_auto_resume = lambda *args, **kwargs: ("", "")
     error_attribution.get_proposed_solution_cat = lambda *args, **kwargs: None
 
     error_extraction = _stub_module(monkeypatch, "logsage.auto_resume_policy.error_extraction")
+    error_extraction.finished_validation = lambda _llm, data: data
     error_extraction.return_application_errors = lambda *args, **kwargs: []
+    error_extraction.return_application_errors_rt = lambda *args, **kwargs: types.SimpleNamespace(
+        checkpoint_saved=False
+    )
+
+    prompts_mod = _stub_module(monkeypatch, "logsage.auto_resume_policy.prompts")
+    prompts_mod.template_post_error_check = ""
+    util_postprocessing = _stub_module(
+        monkeypatch, "logsage.auto_resume_policy.util_postprocessing"
+    )
+    util_postprocessing.get_auto_resume_postprocessing = lambda *args, **kwargs: False
+    utils = _stub_module(monkeypatch, "logsage.auto_resume_policy.utils")
+    utils.chunk_indices = lambda *args, **kwargs: []
 
     httpx = _stub_module(monkeypatch, "httpx")
     httpx.post = lambda *args, **kwargs: types.SimpleNamespace(status_code=201, text="created")
@@ -389,7 +438,7 @@ def test_progressive_start_uses_mcp_loganalysis_tool(monkeypatch, tmp_path):
 
     async def run() -> ProgressiveStartResult:
         return await runner.start_progressive_analysis(
-            str(tmp_path / "train_cycle0.log"),
+            str(tmp_path / "train_cycle3.log"),
             user="alice",
             job_id="123",
         )
@@ -405,10 +454,44 @@ def test_progressive_start_uses_mcp_loganalysis_tool(monkeypatch, tmp_path):
             MODULE_LOG_ANALYZER_PROGRESSIVE_START,
             {
                 "max_attempts": 3,
-                "log_path": str(tmp_path / "train_cycle0.log"),
+                "log_path": str(tmp_path / "train_cycle3.log"),
                 "is_per_cycle": True,
+                "cycle_counter": 3,
                 "user": "alice",
                 "job_id": "123",
+            },
+        )
+    ]
+
+
+def test_terminal_log_analyzer_mcp_uses_cycle_counter(monkeypatch, tmp_path):
+    _import_analyzer_with_optional_dependency_stubs(monkeypatch)
+    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    fake_client = FakeMcpClient(
+        {
+            "module": "log_analyzer",
+            "result": [],
+            "recommendation": {"action": "RESTART", "source": "test"},
+        }
+    )
+    monkeypatch.setattr(module, "create_mcp_client", lambda **_kwargs: fake_client)
+    runner = module.LogSageRunner(LogSageExecutionConfig(use_lib_log_analysis=False))
+
+    async def run() -> dict[str, Any]:
+        return await runner.fetch_log_result(str(tmp_path / "train_CYCLE4.log"))
+
+    result = asyncio.run(run())
+
+    assert result["recommendation"]["action"] == "RESTART"
+    assert fake_client.calls == [
+        (
+            "log_analyzer",
+            {
+                "max_attempts": 3,
+                "log_path": str(tmp_path / "train_CYCLE4.log"),
+                "exclude_nvrx_logs": False,
+                "is_per_cycle": True,
+                "cycle_counter": 4,
             },
         )
     ]
