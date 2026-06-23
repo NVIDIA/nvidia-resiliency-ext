@@ -38,6 +38,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
+    CheckpointMetadataCache,
     save_state_dict_async_finalize,
     save_state_dict_async_plan,
 )
@@ -81,6 +82,7 @@ class TestAsyncSave:
         is_multiproc_io=False,
         use_cached_data_structure=False,
         use_cpu_shm_for_gpu_tensors=False,
+        metadata_cache=None,
     ):
         """Performs an asynchronous model checkpoint save."""
         writer = FileSystemWriterAsync(
@@ -94,7 +96,13 @@ class TestAsyncSave:
         coordinator_rank = 0
 
         save_state_dict_ret = save_state_dict_async_plan(
-            state_dict, writer, None, coordinator_rank, planner=planner, enable_cache=caching
+            state_dict,
+            writer,
+            None,
+            coordinator_rank,
+            planner=planner,
+            enable_cache=caching,
+            metadata_cache=metadata_cache,
         )
         async_request = self.get_async_save_request(writer, save_state_dict_ret)
         async_queue.schedule_async_request(async_request)
@@ -281,6 +289,33 @@ class TestAsyncSave:
                 ), f'{field.name} is different in metadata from non-cached, cached metadata impls'
         ckpt_dir.cleanup()
         async_queue.close()
+
+    def test_cached_metadata_plans_survive_reload(self, tmp_path_dist_ckpt, async_queue):
+        """Cached local plans are restored from metadata after a checkpoint reload."""
+        Utils.initialize_distributed()
+        model = FSDP(Model((1024, 1024), 8))
+        state_dict = model.state_dict()
+        planner = DefaultSavePlanner()
+        metadata_cache = CheckpointMetadataCache()
+
+        with TempNamedDir(tmp_path_dist_ckpt / 'cached_metadata_reload', sync=True) as ckpt_dir:
+            self.async_save_checkpoint(
+                ckpt_dir,
+                state_dict,
+                planner,
+                async_queue,
+                caching=True,
+                metadata_cache=metadata_cache,
+            )
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+
+            loaded_metadata = FileSystemReader(ckpt_dir).read_metadata()
+            resumed_metadata_cache = CheckpointMetadataCache()
+            resumed_metadata_cache.set_cached_global_metadata(loaded_metadata)
+            _, _, _, loaded_all_plans = resumed_metadata_cache.get_cache_metadata()
+
+            assert loaded_all_plans is not None
+            assert len(loaded_all_plans) == torch.distributed.get_world_size()
 
     def test_cached_data_structure(self, tmp_path_dist_ckpt):
         """

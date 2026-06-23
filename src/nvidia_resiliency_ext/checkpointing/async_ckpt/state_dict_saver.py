@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
+_ALL_LOCAL_PLANS_KEY = "__nvrx_all_local_plans"
+
 
 def _compare_dataclasses(obj1, obj2):
     if type(obj1) is not type(obj2):
@@ -47,6 +49,25 @@ def _compare_dataclasses(obj1, obj2):
             differences.append(f"{field.name}: {value1} != {value2}")
 
     return differences if differences else "All fields are equal"
+
+
+def _get_all_local_plans(metadata: Optional[Metadata]) -> Optional[List[SavePlan]]:
+    """Return cached local plans from checkpoint metadata, including serialized metadata."""
+    if metadata is None:
+        return None
+    all_local_plans = getattr(metadata, "all_local_plans", None)
+    if all_local_plans is not None:
+        return all_local_plans
+    planner_data = getattr(metadata, "planner_data", None) or {}
+    return planner_data.get(_ALL_LOCAL_PLANS_KEY)
+
+
+def _set_all_local_plans(metadata: Metadata, all_local_plans: List[SavePlan]) -> None:
+    """Store local plans in serialized metadata and preserve the legacy in-memory attr."""
+    metadata.all_local_plans = all_local_plans
+    if metadata.planner_data is None:
+        metadata.planner_data = {}
+    metadata.planner_data[_ALL_LOCAL_PLANS_KEY] = all_local_plans
 
 
 class CheckpointMetadataCache:
@@ -108,7 +129,7 @@ class CheckpointMetadataCache:
             that global metadata reuse verification will not be possible.
         """
         self.cached_global_metadata = cached_global_metadata
-        self.loaded_all_plans = getattr(self.cached_global_metadata, "all_local_plans", None)
+        self.loaded_all_plans = _get_all_local_plans(self.cached_global_metadata)
         if self.loaded_all_plans is None:
             logger.debug("no all_local_plans in metadata - can't verify global metadata reuse...")
 
@@ -342,7 +363,7 @@ def save_state_dict_async_plan(
             all_local_plans = dist_wrapper.gather_object(local_plan)
             if dist_wrapper.is_coordinator:
                 _, global_metadata = planner.create_global_plan(all_local_plans)
-                global_metadata.all_local_plans = all_local_plans
+                _set_all_local_plans(global_metadata, all_local_plans)
         else:
             logger.debug(f"rank: {rank}, Passed cached global metadata, {global_md_verify_reuse}")
             global_metadata = None
