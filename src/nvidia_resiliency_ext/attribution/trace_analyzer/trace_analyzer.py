@@ -26,6 +26,11 @@ class TraceAnalyzer:
         """Return path to NCCL FR dump referenced by the job log, or ``None``."""
         return extract_fr_dump_path(log_path, allowed_root=self._allowed_root)
 
-    async def analyze_fr_dump(self, dump_path: str) -> Optional[FRAnalysisResult]:
+    async def analyze_fr_dump(
+        self,
+        dump_path: str,
+        *,
+        fr_min_mtime: Optional[float] = None,
+    ) -> Optional[FRAnalysisResult]:
         """Analyze a single FR dump file."""
-        return await analyze_fr_dump(dump_path)
+        return await analyze_fr_dump(dump_path, fr_min_mtime=fr_min_mtime)

@@ -28,6 +28,7 @@ from .config import (
     ErrorCode,
 )
 from .job import Job, JobMode
+from .log_path_metadata import CYCLE_NUM_PATTERN
 from .slurm_parser import read_and_parse_slurm_output
 from .splitlog import SplitlogTracker
 from .types import LogAnalyzerError, LogAnalyzerSubmitResult
@@ -36,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 # Fire-and-forget: (log_path, user, job_id)
 FireAndForgetAnalyze = Callable[[str, str, Optional[str]], None]
+
+
+def _is_direct_app_log_path(path: str) -> bool:
+    return bool(CYCLE_NUM_PATTERN.search(path))
 
 
 class TrackedJobs:
@@ -92,7 +97,11 @@ class TrackedJobs:
         self._total_permission_errors += 1
         self._file_permission_errors += 1
 
-    def handle_existing_job(self, job: Job, validated: str) -> LogAnalyzerSubmitResult:
+    def handle_existing_job(
+        self,
+        job: Job,
+        validated: str,
+    ) -> LogAnalyzerSubmitResult:
         if job.is_splitlog():
             self._splitlog_tracker.poll_now()
             return LogAnalyzerSubmitResult(
@@ -126,10 +135,21 @@ class TrackedJobs:
         )
 
     async def create_new_job(
-        self, validated: str, user: str, job_id: Optional[str]
+        self,
+        validated: str,
+        user: str,
+        job_id: Optional[str],
+        *,
+        record_submission_time: bool = True,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
-        if job_id:
-            logger.debug("create_new_job: job_id=%s, checking for splitlog mode", job_id)
+        is_direct_app_log = _is_direct_app_log_path(validated)
+        if job_id and is_direct_app_log:
+            logger.debug(
+                "create_new_job: path is a direct app log, using SINGLE mode: %s",
+                validated,
+            )
+        elif job_id:
+            logger.debug("create_new_job: job_id=%s, checking splitlog/pending mode", job_id)
             info = read_and_parse_slurm_output(validated)
             logger.debug(
                 "create_new_job: slurm parse - logs_dir=%s, cycle_count=%s",
@@ -191,11 +211,18 @@ class TrackedJobs:
                 mode=JobMode.PENDING.value,
             )
 
+        submitted_at_wall = time.time() if record_submission_time and is_direct_app_log else None
         self._total_single += 1
-        job = Job(path=validated, user=user, mode=JobMode.SINGLE)
+        job = Job(
+            path=validated,
+            user=user,
+            mode=JobMode.SINGLE,
+            job_id=job_id,
+            submitted_at_wall=submitted_at_wall,
+        )
         with self._jobs_lock:
             self._jobs[validated] = job
-        logger.debug("Created SINGLE job (no job_id): path=%s", validated)
+        logger.debug("Created SINGLE job: path=%s, job_id=%s", validated, job_id)
         await self._track_submission(validated)
         return LogAnalyzerSubmitResult(
             submitted=True,
