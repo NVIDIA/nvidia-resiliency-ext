@@ -300,6 +300,10 @@ def register_all_modules():
                     "description": "File pattern to match",
                     "default": "_dump_*",
                 },
+                "fr_min_mtime": {
+                    "type": "number",
+                    "description": "Optional lower-bound file mtime for FR dump freshness filtering",
+                },
             },
             "required": ["fr_path"],
         },
@@ -373,6 +377,10 @@ def register_all_modules():
                 "exclude_nvrx_logs": {"type": "boolean", "default": False},
                 "is_per_cycle": {"type": "boolean", "default": False},
                 "pattern": {"type": "string", "default": "_dump_*"},
+                "fr_min_mtime": {
+                    "type": "number",
+                    "description": "Optional lower-bound file mtime for FR dump freshness filtering",
+                },
                 "verbose": {"type": "boolean", "default": False},
                 "health_check": {"type": "boolean", "default": False},
                 "llm_analyze": {"type": "boolean", "default": False},

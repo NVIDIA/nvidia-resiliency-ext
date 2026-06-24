@@ -145,6 +145,267 @@ def _log_result() -> Dict[str, Any]:
     }
 
 
+def test_submit_records_pstart_wall_time_only_on_create(tmp_path, monkeypatch):
+    LogAnalyzer = _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    tracked_jobs = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs"
+    )
+    log_path = tmp_path / "train_cycle0.log"
+    log_path.write_text("training started\n", encoding="utf-8")
+    times = iter([111.0])
+    monkeypatch.setattr(tracked_jobs.time, "time", lambda: next(times))
+
+    analyzer = LogAnalyzer(
+        allowed_root=str(tmp_path),
+        log_sage=LogSageExecutionConfig(use_lib_log_analysis=True),
+        track_submission=_track_submission,
+        trace_analyzer=None,
+        analysis_pipeline_mode=AnalysisPipelineMode.LOG_ONLY,
+        runner=_FakeRunner(_log_result()),
+    )
+
+    async def run() -> None:
+        await analyzer.submit(str(log_path), record_submission_time=True)
+        job = analyzer.get_job(str(log_path))
+        assert job is not None
+        assert job.submitted_at_wall == 111.0
+
+        await analyzer.submit(str(log_path), record_submission_time=False)
+        assert job.submitted_at_wall == 111.0
+
+        await analyzer.submit(str(log_path), record_submission_time=True)
+        assert job.submitted_at_wall == 111.0
+
+    asyncio.run(run())
+
+
+def test_run_attribution_for_exact_job_passes_pstart_to_fr(tmp_path, monkeypatch):
+    LogAnalyzer = _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    tracked_jobs = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs"
+    )
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("TORCH_FR_DUMP_TEMP_FILE=/container/_dump_\n", encoding="utf-8")
+    fr_dir = tmp_path / "checkpoints"
+    fr_dir.mkdir()
+    monkeypatch.setattr(tracked_jobs.time, "time", lambda: 123.0)
+
+    class FakeTraceAnalyzer:
+        def __init__(self) -> None:
+            self.fr_min_mtimes: list[float | None] = []
+
+        def discover_fr_dump_path(self, _log_path: str) -> str:
+            return str(fr_dir)
+
+        async def analyze_fr_dump(
+            self,
+            _dump_path: str,
+            *,
+            fr_min_mtime: float | None = None,
+        ) -> None:
+            self.fr_min_mtimes.append(fr_min_mtime)
+            return None
+
+    trace_analyzer = FakeTraceAnalyzer()
+    analyzer = LogAnalyzer(
+        allowed_root=str(tmp_path),
+        log_sage=LogSageExecutionConfig(use_lib_log_analysis=True),
+        track_submission=_track_submission,
+        trace_analyzer=trace_analyzer,
+        analysis_pipeline_mode=AnalysisPipelineMode.LOG_AND_TRACE,
+        runner=_FakeRunner(_log_result()),
+    )
+    analyzer._schedule_post_analysis_results = lambda *args, **kwargs: None
+
+    async def run() -> None:
+        await analyzer.submit(str(log_path))
+        await analyzer.run_attribution_for_path(str(log_path), user="alice", job_id="123")
+
+    asyncio.run(run())
+
+    assert trace_analyzer.fr_min_mtimes == [123.0]
+
+
+def test_submit_does_not_record_pstart_for_non_cycle_single_file(tmp_path, monkeypatch):
+    LogAnalyzer = _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    tracked_jobs = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs"
+    )
+    log_path = tmp_path / "job.log"
+    log_path.write_text("training started\n", encoding="utf-8")
+
+    def fail_time_call() -> None:
+        raise AssertionError("non-cycle single-file submits should not record a Pstart time")
+
+    monkeypatch.setattr(tracked_jobs.time, "time", fail_time_call)
+
+    analyzer = LogAnalyzer(
+        allowed_root=str(tmp_path),
+        log_sage=LogSageExecutionConfig(use_lib_log_analysis=True),
+        track_submission=_track_submission,
+        trace_analyzer=None,
+        analysis_pipeline_mode=AnalysisPipelineMode.LOG_ONLY,
+        runner=_FakeRunner(_log_result()),
+    )
+
+    async def run() -> None:
+        result = await analyzer.submit(str(log_path), record_submission_time=True)
+        job = analyzer.get_job(str(log_path))
+        assert result.mode == "single"
+        assert job is not None
+        assert job.is_single()
+        assert job.submitted_at_wall is None
+
+    asyncio.run(run())
+
+
+def test_submit_does_not_record_pstart_for_splitlog_job(tmp_path, monkeypatch):
+    LogAnalyzer = _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    tracked_jobs = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs"
+    )
+    log_path = tmp_path / "slurm.out"
+    log_path.write_text("LOGS_DIR=/unused\n", encoding="utf-8")
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    monkeypatch.setattr(
+        tracked_jobs,
+        "read_and_parse_slurm_output",
+        lambda _path: types.SimpleNamespace(logs_dir=str(logs_dir), cycle_count=1),
+    )
+
+    analyzer = LogAnalyzer(
+        allowed_root=str(tmp_path),
+        log_sage=LogSageExecutionConfig(use_lib_log_analysis=True),
+        track_submission=_track_submission,
+        trace_analyzer=None,
+        analysis_pipeline_mode=AnalysisPipelineMode.LOG_ONLY,
+        runner=_FakeRunner(_log_result()),
+    )
+
+    async def run() -> None:
+        result = await analyzer.submit(str(log_path), job_id="123")
+        job = analyzer.get_job(str(log_path))
+        assert result.mode == "splitlog"
+        assert job is not None
+        assert job.is_splitlog()
+        assert job.submitted_at_wall is None
+
+    asyncio.run(run())
+
+
+def test_submit_records_pstart_for_per_cycle_app_log_with_job_id(tmp_path, monkeypatch):
+    LogAnalyzer = _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    tracked_jobs = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs"
+    )
+    log_path = tmp_path / "train_Cycle7.log"
+    log_path.write_text("TORCH_FR_DUMP_TEMP_FILE=/container/_dump_\n", encoding="utf-8")
+    monkeypatch.setattr(tracked_jobs.time, "time", lambda: 333.0)
+
+    def fail_slurm_parse(_path: str) -> None:
+        raise AssertionError("direct app logs should not be parsed as slurm output")
+
+    monkeypatch.setattr(tracked_jobs, "read_and_parse_slurm_output", fail_slurm_parse)
+
+    analyzer = LogAnalyzer(
+        allowed_root=str(tmp_path),
+        log_sage=LogSageExecutionConfig(use_lib_log_analysis=True),
+        track_submission=_track_submission,
+        trace_analyzer=None,
+        analysis_pipeline_mode=AnalysisPipelineMode.LOG_ONLY,
+        runner=_FakeRunner(_log_result()),
+    )
+
+    async def run() -> None:
+        result = await analyzer.submit(str(log_path), job_id="123")
+        job = analyzer.get_job(str(log_path))
+        assert result.mode == "single"
+        assert job is not None
+        assert job.is_single()
+        assert job.job_id == "123"
+        assert job.submitted_at_wall == 333.0
+
+    asyncio.run(run())
+
+
+def test_terminal_create_does_not_record_pstart_for_app_log(tmp_path, monkeypatch):
+    LogAnalyzer = _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    tracked_jobs = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs"
+    )
+    log_path = tmp_path / "train_cycle8.log"
+    log_path.write_text("TORCH_FR_DUMP_TEMP_FILE=/container/_dump_\n", encoding="utf-8")
+
+    def fail_time_call() -> None:
+        raise AssertionError("terminal create should not record a Pstart wall time")
+
+    def fail_slurm_parse(_path: str) -> None:
+        raise AssertionError("direct app logs should not be parsed as slurm output")
+
+    monkeypatch.setattr(tracked_jobs.time, "time", fail_time_call)
+    monkeypatch.setattr(tracked_jobs, "read_and_parse_slurm_output", fail_slurm_parse)
+
+    analyzer = LogAnalyzer(
+        allowed_root=str(tmp_path),
+        log_sage=LogSageExecutionConfig(use_lib_log_analysis=True),
+        track_submission=_track_submission,
+        trace_analyzer=None,
+        analysis_pipeline_mode=AnalysisPipelineMode.LOG_ONLY,
+        runner=_FakeRunner(_log_result()),
+    )
+
+    async def run() -> None:
+        result = await analyzer.submit(
+            str(log_path),
+            job_id="123",
+            record_submission_time=False,
+        )
+        job = analyzer.get_job(str(log_path))
+        assert result.mode == "single"
+        assert job is not None
+        assert job.is_single()
+        assert job.submitted_at_wall is None
+
+    asyncio.run(run())
+
+
+def test_submit_does_not_record_pstart_for_pending_job(tmp_path, monkeypatch):
+    LogAnalyzer = _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    tracked_jobs = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs"
+    )
+    log_path = tmp_path / "slurm.out"
+    log_path.write_text("no logs dir yet\n", encoding="utf-8")
+    monkeypatch.setattr(
+        tracked_jobs,
+        "read_and_parse_slurm_output",
+        lambda _path: types.SimpleNamespace(logs_dir=None, cycle_count=0),
+    )
+
+    analyzer = LogAnalyzer(
+        allowed_root=str(tmp_path),
+        log_sage=LogSageExecutionConfig(use_lib_log_analysis=True),
+        track_submission=_track_submission,
+        trace_analyzer=None,
+        analysis_pipeline_mode=AnalysisPipelineMode.LOG_ONLY,
+        runner=_FakeRunner(_log_result()),
+    )
+
+    async def run() -> None:
+        result = await analyzer.submit(str(log_path), job_id="123")
+        job = analyzer.get_job(str(log_path))
+        assert result.mode == "pending"
+        assert job is not None
+        assert job.is_pending()
+        assert job.submitted_at_wall is None
+
+        await analyzer.submit(str(log_path), job_id="123")
+        assert job.submitted_at_wall is None
+
+    asyncio.run(run())
+
+
 def test_run_attribution_returns_before_observability_post_completes(tmp_path, monkeypatch):
     LogAnalyzer = _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
 
@@ -403,5 +664,12 @@ def test_log_fr_analyzer_mcp_uses_top_level_log_contract(monkeypatch):
         )
         assert captured["kwargs"]["merge_llm"] is True
         assert merged_summary == "ignored unless merge_llm=true"
+
+        await runner.fetch_log_fr_analyzer_mcp(
+            "/tmp/job.log",
+            "/tmp/fr",
+            fr_min_mtime=123.0,
+        )
+        assert captured["kwargs"]["fr_min_mtime"] == 123.0
 
     asyncio.run(run())

@@ -43,6 +43,41 @@ def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _filter_files_by_min_mtime(filepaths: List[str], min_mtime: Optional[float]) -> List[str]:
+    if min_mtime is None:
+        return filepaths
+
+    kept = []
+    filtered_stale = 0
+    skipped_unavailable = 0
+    for filepath in filepaths:
+        try:
+            file_mtime = os.path.getmtime(filepath)
+        except OSError:
+            skipped_unavailable += 1
+            logger.debug("Skipping FR dump with unavailable mtime: %s", filepath)
+            continue
+        if file_mtime >= min_mtime:
+            kept.append(filepath)
+        else:
+            filtered_stale += 1
+    logger.info(
+        "FR min-mtime filter applied: min_mtime=%.6f, kept=%d, "
+        "filtered_stale=%d, skipped_unavailable=%d",
+        min_mtime,
+        len(kept),
+        filtered_stale,
+        skipped_unavailable,
+    )
+    return kept
+
+
 def _parse_rank_list(rank_text: str) -> List[int]:
     ranks = []
     for token in rank_text.split(','):
@@ -209,10 +244,12 @@ class CollectiveAnalyzer(NVRxAttribution):
         logger.info("FR args: %s", bounded_log_value(cfg))
         file_paths = [cfg["fr_path"]]
         pattern = cfg.get("pattern", "_dump_*")
+        fr_min_mtime = _optional_float(cfg.get("fr_min_mtime"))
         logger.info(
-            "file_paths: %s, pattern: %s",
+            "file_paths: %s, pattern: %s, fr_min_mtime: %s",
             file_paths,
             pattern,
+            fr_min_mtime,
         )
         processed_files = 0
         # Process all input paths
@@ -226,6 +263,7 @@ class CollectiveAnalyzer(NVRxAttribution):
             else:
                 # Path prefix (not a directory / not an existing file): match _dump_<rank> siblings.
                 json_files = glob.glob(path + "*")
+            json_files = _filter_files_by_min_mtime(json_files, fr_min_mtime)
             logger.info("json_files: %s", bounded_log_value(json_files))
             json_files.sort()
             for filepath in json_files:

@@ -326,7 +326,12 @@ class Analyzer:
         except ValueError as e:
             return LogAnalyzerError(error_code=ErrorCode.INVALID_PARAMETER, message=str(e))
 
-        result = await self._log.submit(log_path, user=user, job_id=job_id)
+        result = await self._log.submit(
+            log_path,
+            user=user,
+            job_id=job_id,
+            record_submission_time=(intent != ANALYSIS_INTENT_TERMINAL),
+        )
         if isinstance(result, LogAnalyzerError):
             return result
 

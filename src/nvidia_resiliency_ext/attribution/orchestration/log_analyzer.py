@@ -295,29 +295,49 @@ class LogSageRunner:
             return await self._start_progressive_analysis_lib(path, user=user, job_id=job_id)
         return await self._start_progressive_analysis_mcp(path, user=user, job_id=job_id)
 
-    async def _fetch_fr_result_mcp(self, dump_path: str) -> Optional[FRAnalysisResult]:
+    async def _fetch_fr_result_mcp(
+        self,
+        dump_path: str,
+        *,
+        fr_min_mtime: Optional[float] = None,
+    ) -> Optional[FRAnalysisResult]:
         self._ensure_mcp_ready()
+        kwargs: Dict[str, Any] = {
+            "fr_path": dump_path,
+            "pattern": "_dump_*",
+            "verbose": False,
+            "health_check": False,
+            "llm_analyze": False,
+            **self.config.llm_endpoint_overrides(),
+        }
+        if fr_min_mtime is not None:
+            kwargs["fr_min_mtime"] = fr_min_mtime
         async with self._log_analysis_lock:
             resp = await self._mcp_client.run_module_resilient(
                 "fr_analyzer",
                 max_attempts=3,
-                fr_path=dump_path,
-                pattern="_dump_*",
-                verbose=False,
-                health_check=False,
-                llm_analyze=False,
-                **self.config.llm_endpoint_overrides(),
+                **kwargs,
             )
         return fr_result_from_mcp_module_response(resp)
 
-    async def fetch_fr_result(self, dump_path: str) -> Optional[FRAnalysisResult]:
+    async def fetch_fr_result(
+        self,
+        dump_path: str,
+        *,
+        fr_min_mtime: Optional[float] = None,
+    ) -> Optional[FRAnalysisResult]:
         """Run flight-recorder analysis (lib or MCP) for ``dump_path``."""
         if self.config.use_lib_log_analysis:
-            return await analyze_fr_dump(dump_path)
-        return await self._fetch_fr_result_mcp(dump_path)
+            return await analyze_fr_dump(dump_path, fr_min_mtime=fr_min_mtime)
+        return await self._fetch_fr_result_mcp(dump_path, fr_min_mtime=fr_min_mtime)
 
     async def fetch_log_fr_analyzer_mcp(
-        self, log_path: str, fr_dump_path: str, *, merge_llm: bool = False
+        self,
+        log_path: str,
+        fr_dump_path: str,
+        *,
+        merge_llm: bool = False,
+        fr_min_mtime: Optional[float] = None,
     ) -> Tuple[Dict[str, Any], Optional[FRAnalysisResult], Optional[str]]:
         """Single MCP ``log_fr_analyzer`` call: collect log+FR, optionally merge with LLM."""
         self._ensure_mcp_ready()
@@ -335,6 +355,8 @@ class LogSageRunner:
             "threshold": 0,
             **self.config.llm_runtime_overrides(),
         }
+        if fr_min_mtime is not None:
+            kwargs["fr_min_mtime"] = fr_min_mtime
 
         async with self._log_analysis_lock:
             resp = await self._mcp_client.run_module_resilient(
@@ -438,6 +460,11 @@ class LogAnalyzer:
             )
             return None
         return discovered
+
+    def _fr_min_mtime_for_path(self, path: str) -> Optional[float]:
+        """Return recorded Pstart wall time for FR freshness filtering, if any."""
+        job = self.get_job(path)
+        return job.submitted_at_wall if job is not None else None
 
     def read_file_preview(
         self, log_path: str, max_bytes: int = 4096
@@ -592,13 +619,26 @@ class LogAnalyzer:
         mode = self._analysis_pipeline_mode
         cfg = self._runner.config
         pipeline_kw: Dict[str, Any] = {}
+        fr_min_mtime = self._fr_min_mtime_for_path(path)
         if self._trace_analyzer is not None:
             pipeline_kw["discover_fr_dump_path"] = self._discover_fr_dump_path
-            pipeline_kw["run_fr_analysis"] = (
-                self._trace_analyzer.analyze_fr_dump
-                if cfg.use_lib_log_analysis
-                else self._runner.fetch_fr_result
-            )
+            if cfg.use_lib_log_analysis:
+
+                async def _run_fr_analysis(fd: str) -> Optional[FRAnalysisResult]:
+                    return await self._trace_analyzer.analyze_fr_dump(
+                        fd,
+                        fr_min_mtime=fr_min_mtime,
+                    )
+
+            else:
+
+                async def _run_fr_analysis(fd: str) -> Optional[FRAnalysisResult]:
+                    return await self._runner.fetch_fr_result(
+                        fd,
+                        fr_min_mtime=fr_min_mtime,
+                    )
+
+            pipeline_kw["run_fr_analysis"] = _run_fr_analysis
             if not cfg.use_lib_log_analysis:
 
                 async def _mcp_combined(
@@ -608,6 +648,7 @@ class LogAnalyzer:
                         lp,
                         fd,
                         merge_llm=(mode == AnalysisPipelineMode.LOG_AND_TRACE_WITH_LLM),
+                        fr_min_mtime=fr_min_mtime,
                     )
 
                 pipeline_kw["run_log_fr_analyzer_mcp"] = _mcp_combined
@@ -713,6 +754,8 @@ class LogAnalyzer:
         log_path: str,
         user: str = "unknown",
         job_id: Optional[str] = None,
+        *,
+        record_submission_time: bool = True,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
         """Submit a log path for tracking (splitlog / pending / single)."""
         if not log_path:
@@ -734,4 +777,9 @@ class LogAnalyzer:
         if existing_job:
             return self._tracked.handle_existing_job(existing_job, validated)
 
-        return await self._tracked.create_new_job(validated, user, job_id)
+        return await self._tracked.create_new_job(
+            validated,
+            user,
+            job_id,
+            record_submission_time=record_submission_time,
+        )

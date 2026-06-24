@@ -217,6 +217,8 @@ class CombinedLogFRMCPOrchestrator:
             "llm_analyze": bool(arguments.get("llm_analyze", False)),
             "threshold": arguments.get("threshold"),
         }
+        if arguments.get("fr_min_mtime") is not None:
+            fr_kw["fr_min_mtime"] = float(arguments["fr_min_mtime"])
 
         log_analyzer = NVRxLogAnalyzer(log_kw)
         fr_analyzer = CollectiveAnalyzer(fr_kw)

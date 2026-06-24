@@ -261,7 +261,11 @@ def fr_result_from_mcp_module_response(resp: Any) -> Optional[FRAnalysisResult]:
     return None
 
 
-async def analyze_fr_dump(dump_path: str) -> Optional[FRAnalysisResult]:
+async def analyze_fr_dump(
+    dump_path: str,
+    *,
+    fr_min_mtime: Optional[float] = None,
+) -> Optional[FRAnalysisResult]:
     """Run CollectiveAnalyzer on a flight recorder dump (deterministic table analysis only)."""
     try:
         from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import (
@@ -277,6 +281,8 @@ async def analyze_fr_dump(dump_path: str) -> Optional[FRAnalysisResult]:
             "llm_analyze": False,
             "threshold": None,
         }
+        if fr_min_mtime is not None:
+            args["fr_min_mtime"] = fr_min_mtime
 
         def _run_sync() -> FRAnalysisResult:
             try:

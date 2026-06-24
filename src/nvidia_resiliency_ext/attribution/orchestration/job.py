@@ -65,6 +65,8 @@ class Job:
     user: str  # Job owner (for dataflow posting)
     mode: JobMode = JobMode.PENDING  # Job mode
     created_at: float = field(default_factory=time.monotonic)
+    # time.time() from the Pstart POST; comparable to file mtimes.
+    submitted_at_wall: Optional[float] = None
 
     # Optional job_id (provided in POST for splitlog detection)
     job_id: Optional[str] = None
@@ -106,6 +108,7 @@ class Job:
         """Promote a pending job to splitlog mode."""
         self.mode = JobMode.SPLITLOG
         self.logs_dir = logs_dir
+        self.submitted_at_wall = None
 
     def demote_to_single(self) -> None:
         """Demote a pending job to single-file mode (fallback)."""
