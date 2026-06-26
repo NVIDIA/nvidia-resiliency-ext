@@ -1892,9 +1892,11 @@ class _RendezvousBarrierState:
             # slot_key and rank_key are reused across rounds (normally bounded by
             # max_nodes) to avoid TCPStore keyspace bloat.  A round with surplus
             # joiners may briefly create slots beyond max_nodes; these are transient
-            # and self-clear once the surplus nodes leave and join_count resets next
-            # round.  Each value embeds the round that wrote it,
-            # so participant-published writes use per-key CAS:
+            # and become stale once the surplus nodes leave and join_count resets next
+            # round (TCPStore never deletes keys, so a slot_N beyond max_nodes persists
+            # but is filtered out by expected_round_id on later rounds).  Each value
+            # embeds the round that wrote it, so participant-published writes use
+            # per-key CAS:
             #
             #   old_value, old_round = get(key)
             #   if old_round > this_round: go back to Step 0
@@ -1973,6 +1975,10 @@ class _RendezvousBarrierState:
         kept in one call; only sub-ranges containing a hole are split further. This is
         O((holes+1)*log N) round-trips rather than the O(N) of a per-key probe -- it
         must stay cheap at up to 32K participants, where holes are rare.
+
+        Note: the returned list is NOT in the same order as ``keys`` (the DFS visits
+        sub-ranges in LIFO order). Callers must not depend on ordering; look results up
+        by key name (e.g. via a dict) rather than by position.
         """
         present: List[str] = []
         # Half-open [lo, hi) index ranges into keys still to resolve.
