@@ -17,11 +17,13 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
 from nvidia_resiliency_ext.shared_utils.health_check import (
     AttributionService,
     NicHealthCheck,
+    NodeHealthCheck,
     NVLHealthCheck,
     PciMixin,
     PynvmlMixin,
@@ -560,6 +562,57 @@ class TestNVLHealthCheck(unittest.TestCase):
                 result = checker._perform_health_check()
                 self.assertTrue(result)
                 mock_check.assert_called_once_with(0)
+
+
+class TestNodeHealthCheck(unittest.TestCase):
+
+    def _checker_with_mocked_grpc(self, args=None):
+        checker = NodeHealthCheck(args=args)
+        checker._channel_target = "unix:///tmp/nvhcd.sock"
+
+        channel = MagicMock()
+        channel_context = MagicMock()
+        channel_context.__enter__.return_value = channel
+        channel_context.__exit__.return_value = None
+        checker._grpc = MagicMock()
+        checker._grpc.insecure_channel.return_value = channel_context
+
+        response = MagicMock()
+        response.success = True
+        response.output = '{"fail_count": 0}'
+        stub = MagicMock()
+        stub.RunHealthCheck.return_value = response
+        checker._pb2_grpc = MagicMock()
+        checker._pb2_grpc.HealthCheckServiceStub.return_value = stub
+
+        checker._pb2 = MagicMock()
+        checker._pb2.HealthCheckRequest.side_effect = lambda args: SimpleNamespace(args=args)
+        return checker, stub
+
+    def test_perform_health_check_uses_default_dcahc_groups(self):
+        checker, stub = self._checker_with_mocked_grpc()
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+        checker._pb2.HealthCheckRequest.assert_called_once_with(
+            args=["--no-slurm", "--group", "prolog", "epilog", "logs", "gpu"]
+        )
+        request = stub.RunHealthCheck.call_args.args[0]
+        self.assertEqual(
+            request.args,
+            ["--no-slurm", "--group", "prolog", "epilog", "logs", "gpu"],
+        )
+
+    def test_perform_health_check_preserves_custom_args(self):
+        checker, stub = self._checker_with_mocked_grpc(args=["--group", "epilog"])
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+        checker._pb2.HealthCheckRequest.assert_called_once_with(args=["--group", "epilog"])
+        request = stub.RunHealthCheck.call_args.args[0]
+        self.assertEqual(request.args, ["--group", "epilog"])
 
 
 class TestAttributionService(unittest.TestCase):

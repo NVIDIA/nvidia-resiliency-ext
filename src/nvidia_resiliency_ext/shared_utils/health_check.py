@@ -50,6 +50,14 @@ from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_
 logger = logging.getLogger(LogConfig.name)
 
 _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS = 2.0
+_DEFAULT_NODE_HEALTH_CHECK_ARGS = (
+    "--no-slurm",
+    "--group",
+    "prolog",
+    "epilog",
+    "logs",
+    "gpu",
+)
 
 
 # -----------------------------
@@ -1423,7 +1431,7 @@ class NodeHealthCheck:
     ):
         self.socket_path = socket_path
         self.endpoint = endpoint
-        self.args = args or []
+        self.args = list(args) if args is not None else list(_DEFAULT_NODE_HEALTH_CHECK_ARGS)
         self.interval = interval
         self.on_failure = on_failure
         self.request_timeout_sec = request_timeout_sec
@@ -1511,7 +1519,8 @@ class NodeHealthCheck:
         try:
             with self._grpc.insecure_channel(target) as channel:
                 stub = self._pb2_grpc.HealthCheckServiceStub(channel)
-                request = self._pb2.HealthCheckRequest(args=["--no-slurm"])
+                logger.debug("Node health check request args: %s", list(self.args))
+                request = self._pb2.HealthCheckRequest(args=list(self.args))
                 if self.request_timeout_sec is not None:
                     response = stub.RunHealthCheck(request, timeout=self.request_timeout_sec)
                 else:
