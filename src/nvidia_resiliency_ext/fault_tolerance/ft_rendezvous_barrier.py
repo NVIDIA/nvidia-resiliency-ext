@@ -76,7 +76,7 @@ from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_h
 if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
     from ..testing_utils import health_check_injector
 
-from .utils import get_infrastructure_rank, is_slurm_job_array, slurm_sort_addrs
+from .utils import get_infrastructure_rank, is_slurm_job_array, parse_bool_env, slurm_sort_addrs
 
 log = logging.getLogger(LogConfig.name)
 
@@ -1442,7 +1442,7 @@ class _RendezvousBarrierState:
                     f"Permanently closing rendezvous to terminate the job."
                 )
                 log.error(msg)
-                self.set_shutdown()
+                self.set_shutdown(RDZV_SHUTDOWN_REASON_FAILURE)
                 # Loop: _check_timeout_and_closure will raise RendezvousClosedError next iteration.
                 continue
 
@@ -1479,11 +1479,13 @@ class _RendezvousBarrierState:
                 1 for participant in slot_participants if participant is not None
             )
 
-            # If snapshot count doesn't match counter, some slots are still being written
-            # (normal during slot write propagation) or a slot was permanently corrupted
-            # by a stale write from a previous round (bug scenario).  Either way, retry;
-            # _check_timeout_and_closure() is the hard backstop.  Escalate to WARNING
-            # after 30 s so a bug is diagnosable well before the join timeout fires.
+            # join_count counts every node that claimed a slot, including surplus
+            # survivors of a failed array task that may never finish writing their
+            # slot (SLURM kills them mid-join). A snapshot smaller than the counter
+            # is therefore expected and benign: we proceed using the slots that are
+            # actually present and let the segment/replacement-group constraint below
+            # decide whether enough real nodes have arrived. Missing slots are simply
+            # excluded from selection. This is diagnostic-only and no longer blocks.
             if current_round_participant_count != current_joined:
                 now = time.monotonic()
                 if mismatch_first_seen is None:
@@ -1491,28 +1493,29 @@ class _RendezvousBarrierState:
                 mismatch_duration = now - mismatch_first_seen
                 if mismatch_duration > 30.0:
                     log.warning(
-                        f"[{node_desc}] [Step 2] Snapshot count mismatch has persisted "
-                        f"for {mismatch_duration:.0f}s "
-                        f"(current_round_snapshot={current_round_participant_count}, "
-                        f"joined={current_joined}, "
-                        f"round={self._round}). "
-                        f"Possible cause: a node incremented join_count but its slot "
-                        f"write was delayed or overwritten by a stale write from a "
-                        f"previous round. Will timeout after "
-                        f"{self.join_timeout_seconds}s total."
+                        f"[{node_desc}] [Step 2] Snapshot below join_count for "
+                        f"{mismatch_duration:.0f}s "
+                        f"(present={current_round_participant_count}, "
+                        f"join_count={current_joined}, round={self._round}). "
+                        f"Likely surplus survivors that incremented join_count without "
+                        f"completing their slot write; proceeding with present nodes "
+                        f"once the constraint is satisfied."
                     )
                 else:
                     log.debug(
-                        f"[{node_desc}] [Step 2] Full snapshot incomplete "
-                        f"(current_round_snapshot={current_round_participant_count}, "
-                        f"joined={current_joined}, "
-                        f"round={self._round}); retrying."
+                        f"[{node_desc}] [Step 2] Snapshot below join_count "
+                        f"(present={current_round_participant_count}, "
+                        f"join_count={current_joined}, round={self._round}); "
+                        f"proceeding with present nodes once the constraint is satisfied."
                     )
-                continue
+            else:
+                mismatch_first_seen = None  # full snapshot; reset diagnostic timer
 
-            mismatch_first_seen = None  # resolved; reset for next occurrence
-
-            # Verify counters are still stable after the fetch before committing.
+            # Stability check (anti-race guard, replaces the old exact snapshot==counter
+            # gate): ensure join_count did not move during the fetch. While nodes are
+            # still actively joining the counter keeps changing and we retry; once it
+            # settles -- including the steady inflated value left by dead survivors --
+            # we evaluate the constraint.
             current_joined_after = int(self.store.get(self.join_count_key).decode('utf-8'))
             if current_joined_after != current_joined:
                 log.debug(
@@ -1524,7 +1527,6 @@ class _RendezvousBarrierState:
             current_round_participants = [
                 participant for participant in slot_participants if participant is not None
             ]
-            assert len(current_round_participants) == current_joined
 
             # Check if the segment/replacement-group constraint is satisfied.
             unhealthy_replacement_groups = self._get_unhealthy_replacement_groups()
@@ -1563,6 +1565,37 @@ class _RendezvousBarrierState:
                     list(decision.missing_previous_active),
                 )
 
+            # Defensive misconfiguration guard: two ft_launchers on the same physical
+            # node appear as two participants sharing an addr (FQDN). This is the case
+            # the old slot>max_nodes check was meant to catch. Legitimate survivors and
+            # replacements always live on different physical nodes, so they never
+            # collide here. Allowed only in simulation, matching the launch-time
+            # _validate_slurm_single_launcher_per_node() override. Evaluated here, on the
+            # authoritative snapshot we are about to close with, so it fires once rather
+            # than on every poll and never hard-fails on a transient pre-close state.
+            if not parse_bool_env("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE"):
+                seen_addrs: Set[str] = set()
+                duplicate_addr: Optional[str] = None
+                for participant in current_round_participants:
+                    addr = participant[0].addr
+                    if addr in seen_addrs:
+                        # One collision is enough to declare the misconfiguration; stop.
+                        duplicate_addr = addr
+                        break
+                    seen_addrs.add(addr)
+                if duplicate_addr is not None:
+                    log.error(
+                        f"[{node_desc}] [Step 2] Detected multiple participants on the "
+                        f"same node ({duplicate_addr}) in round {self._round}. "
+                        f"This indicates more than one ft_launcher per node "
+                        f"(misconfiguration). Permanently closing the rendezvous. If "
+                        f"this is intentional simulation, set "
+                        f"NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1."
+                    )
+                    self.set_shutdown(RDZV_SHUTDOWN_REASON_FAILURE)
+                    # Loop: _check_timeout_and_closure raises RendezvousClosedError next.
+                    continue
+
             replacement_group_info = ""
             if self.replacement_group_size is not None:
                 replacement_group_info = (
@@ -1584,11 +1617,14 @@ class _RendezvousBarrierState:
             )
             # Assign ranks BEFORE setting round_done=1 so Step 3 readers can get their rank
             # immediately without any additional waiting.
+            # Pass the full slot-indexed snapshot (may contain None for missing/late
+            # slots) so rank keys are written to the actual slot each participant
+            # claimed. Selection buckets are derived from the present participants.
             self.assign_group_ranks(
                 min_nodes,
                 max_nodes,
                 node_desc,
-                slot_participants=current_round_participants,
+                slot_participants=slot_participants,
                 active_candidate_participants=complete_replacement_group_participants,
                 standby_only_participants=incomplete_replacement_group_participants,
             )
@@ -1745,7 +1781,9 @@ class _RendezvousBarrierState:
 
           Step 1 — Join (all participants):
             Atomically claim a slot via join_count_key. Write participant metadata and
-            an initial UNASSIGNED rank to the slot. Raise if max_nodes is exceeded.
+            an initial UNASSIGNED rank to the slot. A slot index beyond max_nodes
+            is benign (surplus/transient node) and is handled as standby; it does
+            not fail the rendezvous.
 
           Step 2 — Close round (store host only):
             Poll the participant snapshot until the segment constraint is satisfied
@@ -1765,7 +1803,9 @@ class _RendezvousBarrierState:
         Args:
             node_desc: Node descriptor for this participant
             min_nodes: Minimum number of nodes required for training to proceed
-            max_nodes: Maximum number of nodes allowed (active + standby)
+            max_nodes: Target number of nodes (active + standby) selected per round.
+                Not a hard admission cap: join_count may transiently exceed it when
+                surplus nodes co-join; the surplus is handled as standby.
             segment_check_interval: Base interval in seconds for the store host's snapshot
                 check in Step 2. Actual interval is adaptive by min_nodes (1s floor).
 
@@ -1809,18 +1849,20 @@ class _RendezvousBarrierState:
             # join_count_key is per-round, so each round starts counting from 1.
             self._slot = self.store.add(self.join_count_key, 1)
 
-            # max_nodes is a hard cap on total joined participants, including SLURM
-            # job-array deployments.
-            if self._slot > max_nodes:
-                msg = (
-                    f"Maximum number of nodes ({max_nodes}) exceeded. "
-                    f"Joined participant count would be {self._slot}. "
-                    f"This is likely a configuration error - please check max_nodes setting."
-                )
-                log.error(f"[{node_desc}] {msg}")
-                # Permanently shut down rendezvous so other nodes see this final state before we raise
-                self.set_shutdown()
-                raise RendezvousClosedError(msg)
+            # NOTE: a slot index beyond max_nodes is intentionally NOT treated as an
+            # error here (an earlier version shut the rendezvous down on slot >
+            # max_nodes, which tore down the whole job). It is benign and expected: in
+            # SLURM job-array deployments, surviving nodes of a failed task can briefly
+            # co-join the round before SLURM terminates them, inflating join_count and
+            # pushing legitimate nodes past max_nodes. The slot index is only a
+            # join-sequence artifact: it does NOT decide active vs standby. The store
+            # host selects the active set from the present participants via the
+            # replacement_group/segment logic and writes the resulting rank to each
+            # node's actual slot, so a node at a slot > max_nodes may still be chosen
+            # active this round (or be standby) -- that is determined by its assigned
+            # rank, not its slot. Genuine misconfiguration (multiple ft_launchers per
+            # node) is caught at launch time by _validate_slurm_single_launcher_per_node()
+            # and, defensively, by the duplicate-addr check in the store host's close path.
 
             # Determine infrastructure rank
             infra_rank = get_infrastructure_rank()
@@ -1847,8 +1889,11 @@ class _RendezvousBarrierState:
 
             # SLOT WRITE PROTOCOL — key reuse safety
             #
-            # slot_key and rank_key are reused across rounds (bounded by max_nodes) to
-            # avoid TCPStore keyspace bloat.  Each value embeds the round that wrote it,
+            # slot_key and rank_key are reused across rounds (normally bounded by
+            # max_nodes) to avoid TCPStore keyspace bloat.  A round with surplus
+            # joiners may briefly create slots beyond max_nodes; these are transient
+            # and self-clear once the surplus nodes leave and join_count resets next
+            # round.  Each value embeds the round that wrote it,
             # so participant-published writes use per-key CAS:
             #
             #   old_value, old_round = get(key)
@@ -1918,6 +1963,35 @@ class _RendezvousBarrierState:
             # Loop back to Step 0; _sync_from_per_round_state() will advance _round
             # from N to N+1 when it sees round_done_N=1 (closed).
 
+    def _present_slot_keys(self, keys: List[str]) -> List[str]:
+        """Return the subset of ``keys`` that currently exist in the store.
+
+        Used only on the degraded close path, where a dead survivor may have bumped
+        join_count without writing its slot, leaving holes in an otherwise dense slot
+        range. ``store.check(list)`` is all-or-nothing (True only if every key exists),
+        so we divide-and-conquer: a sub-range that checks True is wholly present and
+        kept in one call; only sub-ranges containing a hole are split further. This is
+        O((holes+1)*log N) round-trips rather than the O(N) of a per-key probe -- it
+        must stay cheap at up to 32K participants, where holes are rare.
+        """
+        present: List[str] = []
+        # Half-open [lo, hi) index ranges into keys still to resolve.
+        ranges: List[Tuple[int, int]] = [(0, len(keys))]
+        while ranges:
+            lo, hi = ranges.pop()
+            if lo >= hi:
+                continue
+            segment = keys[lo:hi]
+            if self.store.check(segment):
+                present.extend(segment)  # entire sub-range present
+            elif hi - lo == 1:
+                continue  # single key absent -> hole, drop it
+            else:
+                mid = (lo + hi) // 2
+                ranges.append((lo, mid))
+                ranges.append((mid, hi))
+        return present
+
     def get_all_participants(
         self,
         total_participants: int,
@@ -1974,8 +2048,22 @@ class _RendezvousBarrierState:
             # Nothing to fetch
             return participants
 
-        # Use multi_get to fetch data
-        participant_data_list = self.store.multi_get(participant_keys)
+        # Fetch slot data without blocking on gaps. TCPStore.multi_get waits until
+        # *every* requested key exists, but a dead survivor can bump join_count and
+        # then die before writing its slot, leaving a permanent gap; a blind
+        # multi_get would stall the close loop until the join timeout fires.
+        # Fast path: a single check() confirms all slots are present, then one
+        # multi_get fetches them. Degraded path (some slot missing): locate the holes
+        # without a per-slot probe storm, fetch only the slots that exist; absent slots
+        # stay None and are excluded from selection below.
+        if self.store.check(participant_keys):
+            participant_data_list = list(self.store.multi_get(participant_keys))
+        else:
+            present_keys = self._present_slot_keys(participant_keys)
+            present_data = self.store.multi_get(present_keys) if present_keys else []
+            data_by_key = dict(zip(present_keys, present_data))
+            # get() returns None for hole keys absent from the map -> treated as missing.
+            participant_data_list = [data_by_key.get(key) for key in participant_keys]
 
         # Unpack participant information; one entry per slot so list index maps to slot
         # (participants[i] = slot start_index + i). Use None for missing, stale,
@@ -2026,8 +2114,12 @@ class _RendezvousBarrierState:
 
         Args:
             world_size: Target world size for training (number of active participants)
-            max_nodes: Maximum number of participants allowed
-            slot_participants: Already-fetched slot-indexed snapshot for this round.
+            max_nodes: Target number of selected nodes (active + standby). Not a hard
+                cap: the slot space (and join_count) may transiently exceed it when
+                surplus nodes co-join; the surplus is simply not selected as active.
+            slot_participants: Full slot-indexed snapshot for this round. Entry i maps
+                to slot i+1 and may be None for missing/late/dead slots, which are
+                skipped (their slot keeps its UNASSIGNED rank from Step 1).
             active_candidate_participants: Participants already selected for active rank
                 consideration.
             standby_only_participants: Participants that must receive standby ranks.
@@ -2035,18 +2127,16 @@ class _RendezvousBarrierState:
         slot_count = len(slot_participants)
         assert slot_count > 0, "Expected at least one participant"
 
-        # Ensure participant count does not exceed max_nodes
-        if slot_count > max_nodes:
-            raise RuntimeError(
-                f"Participants ({slot_count}) exceeds max_nodes ({max_nodes}). "
-                f"This indicates a deployment/configuration error."
-            )
-
         assigned_group_ranks = self._assign_group_ranks(
             active_candidate_participants,
             world_size,
             standby_only_participants=standby_only_participants,
         )
+
+        # Number of participants actually assigned a rank (present active + standby);
+        # reported back to nodes as total_participants. May be < slot_count when the
+        # snapshot has gaps (surplus survivors that never finished their slot write).
+        total_assigned = len(assigned_group_ranks)
 
         # Write rank to each active participant's slot_{N}_rank key.
         # These writes happen BEFORE round_done_key is set to 1, ensuring all ranks
@@ -2057,7 +2147,12 @@ class _RendezvousBarrierState:
         self._standby_node_addrs = []
         self._active_ranks = []
         for slot in range(1, slot_count + 1):
-            node_desc_item, _, _, _ = slot_participants[slot - 1]
+            entry = slot_participants[slot - 1]
+            if entry is None:
+                # Missing/late/dead slot: leave its UNASSIGNED rank so the node (if it
+                # ever materializes) treats itself as a late joiner and waits.
+                continue
+            node_desc_item = entry[0]
             if node_desc_item in assigned_group_ranks:
                 assigned_group_rank = assigned_group_ranks[node_desc_item]
 
@@ -2071,7 +2166,7 @@ class _RendezvousBarrierState:
                 rank_key = f"{self.prefix}:slot_{slot}_rank"
                 rank_value = self._pack_rank_value(
                     assigned_group_rank,
-                    slot_count,
+                    total_assigned,
                     self._round,
                 )
                 rank_keys.append(rank_key)
