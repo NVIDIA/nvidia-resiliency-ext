@@ -234,6 +234,21 @@ def is_slurm_job_array() -> bool:
     return os.getenv('SLURM_ARRAY_TASK_ID') is not None
 
 
+def parse_bool_env(var_name: str) -> bool:
+    """Parse a boolean-like env var. Unset means False."""
+    raw = os.getenv(var_name)
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    raise ValueError(
+        f"Invalid value for {var_name}: {raw!r}. " "Expected one of: 1/0, true/false, yes/no."
+    )
+
+
 def get_log_aggregator_shard_index(num_aggregators: int) -> int:
     """Shard index in ``[0, num_aggregators)`` for first-level log aggregator selection.
 

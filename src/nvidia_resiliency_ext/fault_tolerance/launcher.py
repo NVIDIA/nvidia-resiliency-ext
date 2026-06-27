@@ -96,6 +96,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_log_aggregator_shard_index,
     get_processes_by_pgids,
     is_slurm_job_array,
+    parse_bool_env,
     patched_method,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
@@ -2734,22 +2735,6 @@ def _get_logs_specs_class(logs_specs_name: Optional[str]) -> Type[LogsSpecs]:
     return logs_specs_cls
 
 
-def _parse_bool_env(var_name: str) -> bool:
-    """Parse a boolean-like env var. Unset means False."""
-    raw = os.getenv(var_name)
-    if raw is None:
-        return False
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes"}:
-        return True
-    if value in {"0", "false", "no"}:
-        return False
-    raise ValueError(
-        f"Invalid value for {var_name}: {raw!r}. "
-        "Expected one of: 1/0, true/false, yes/no."
-    )
-
-
 def _validate_slurm_single_launcher_per_node() -> None:
     """
     Validate Slurm launch shape to prevent accidental multiple ft_launchers per node.
@@ -2760,7 +2745,7 @@ def _validate_slurm_single_launcher_per_node() -> None:
     if os.getenv("SLURM_JOB_ID") is None:
         return
 
-    if _parse_bool_env("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE"):
+    if parse_bool_env("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE"):
         logger.warning(
             "NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE is enabled; "
             "skipping one-ft-launcher-per-node Slurm validation."
